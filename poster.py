@@ -95,13 +95,21 @@ def note_model(id, author_id, author_name, text):
         'comments': []
     }
 
-def note2tg_message(basic_url, author_id, author_name, note_text):
-    if author_id == '0':
-        header = '<b>Анонимно:</b>\n'
-    else:
-        header_tpl = '<b><a href="{}/profile/{}">{}:</a></b>\n'
-        header = header_tpl . format(basic_url, author_id, author_name)
-    return '{}{}' . format(header, note_text)
+def note2message_obj(basic_url, note, note_id):
+    try:
+        author_link = tag2attr(note, '.lv-people__nickname', 'href')
+        author_id   = lnk2digits(author_link)
+        author_name = tag2txt(note, '.lv-people__nickname')
+        header      = f'<b><a href="{basic_url}/profile/{author_id}">{author_name}:</a></b>\n'
+    except:
+        author_id   = '0'
+        author_name = 'Анонимно'
+        header      = f'<b>{author_name}:</b>\n'
+
+    note_text = tag2txt(note, '.lv-notes__note-text')
+    note_obj  = note_model(note_id, author_id, author_name, note_text)
+
+    return f'{header}{note_text}', note_obj
 
 def get_soup(url, **kwargs):
     try:
@@ -128,16 +136,7 @@ def crawl_notes(bot, notes, cfg):
         note_link = note.select_one('.lv-notes__comment-link')
         note_id = note_link.attrs['name']
         if not any(d['id'] == note_id for d in notes):
-            note_text       = tag2txt(note, '.lv-notes__note-text')
-            try:
-                author_link = tag2attr(note, '.lv-people__nickname', 'href')
-                author_id   = lnk2digits(author_link)
-                author_name = tag2txt(note, '.lv-people__nickname')
-            except:
-                author_id   = '0'
-                author_name = 'Анонимно'
-            message_text = note2tg_message(cfg['basic_url'], author_id, author_name, note_text)
-            note_obj = note_model(note_id, author_id, author_name, note_text)
+            message_text, note_obj = note2message_obj(cfg['basic_url'], note, note_id)
             note_obj['tg_message_id'] = send_tg_message(bot,
                 cfg['tg_channel_posts'],
                 message_text)            
@@ -188,15 +187,14 @@ def check_sbscrbs(bot, note_tg_id, comment, sbscrbs, tg_vars):
     comment_text = comment['text']
     for sbr in sbscrbs:
         if comment_text.find(sbr['key'])>-1:
-            message_tpl = 'https://t.me/txtmaniacomments/{}?thread={}'
-            message = message_tpl . format(comment['tg_message_id'], note_tg_id)
+            message = f"https://t.me/txtmaniacomments/{comment['tg_message_id']}?thread={note_tg_id}"
             bot.send_message(chat_id = sbr['value'], text = message)
 
 def crawl_comments(bot, notes, cfg, tg_vars, sbscrbs):
     print('***')
     for note in notes[len(notes) - cfg['notes_limit']:]:
         note_id = note['id']
-        print('note number: {} max comment {}' . format(note_id, note['max_comment_id']))
+        print(f"note number: {note_id} max comment {note['max_comment_id']}")
         comments_url = '/notes/comments/'
         params_url   = '/desc/limit~30/?view=linear'
         url = cfg['basic_url'] + comments_url + note_id + params_url
@@ -322,11 +320,11 @@ def love_comment_data(note_id, comment_id, message_text):
 
 def send_love_comment(cfg, tg_user_id, note_id, comment_id, message_text):
     try:
-        session_file_name = 'sessions/{}.cookie' . format(tg_user_id)
+        session_file_name = f'sessions/{tg_user_id}.cookie'
         if not os.path.exists(session_file_name):
             return
         s = get_user_session(session_file_name)
-        url = '/notes/comments/{}' . format(note_id)
+        url = f'/notes/comments/{note_id}'
         data = love_comment_data(note_id, comment_id, message_text)
         r = s.post(cfg['basic_url'] + url, 
             data = data,
@@ -344,7 +342,7 @@ def process_comment(notes, cfg, tg_message):
                 note_id, comment_id = noteid_by_tgid(notes, reply_to_message['forward_from_message_id'])             
             else:
                 note_id, comment_id, comment_author = comid_by_tgid(notes, reply_to_message['message_id'])
-                message_text = '{}, {}' . format(comment_author, message_text)
+                message_text = f'{comment_author}, {message_text}'
             if comment_id != None:
                 send_love_comment(cfg, from_user['id'], note_id, comment_id, message_text)
 
@@ -352,7 +350,7 @@ def process_note(cfg, tg_message):
     message_text = tg_message['text']
     if message_text != None:
         try:
-            session_file_name = 'sessions/{}.cookie' . format(cfg['default_tg_userid_session'])
+            session_file_name = f"sessions/{cfg['default_tg_userid_session']}.cookie"
             s = get_user_session(session_file_name)
             url = ''
             data = ''
