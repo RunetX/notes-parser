@@ -125,7 +125,7 @@ def get_soup(url, **kwargs):
 
 def crawl_notes(bot, notes, cfg):
     try:
-        soup = get_soup(cfg['basic_url'] + '/notes')
+        soup = get_soup(cfg['basic_url'] + '/notes/limit~5/')
     except Exception as e:
        print(str(e))
     if soup is None:
@@ -141,7 +141,7 @@ def crawl_notes(bot, notes, cfg):
                 cfg['tg_channel_posts'],
                 message_text)            
             notes.append(note_obj)
-    if len(notes) > 25: #notes limit plus notes number on mainpage
+    if len(notes) > 10: #notes limit plus notes number on mainpage
         notes.pop(0)
 
 def check_avatar(basic_url, avatar_link):
