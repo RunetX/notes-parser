@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import json
-#import os
 import os.path
 import pickle
 import random
@@ -12,6 +11,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 #Область Глобальные переменные
+
 interrupted = False
 tg_last_post_date = datetime.now()
 
@@ -19,13 +19,10 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
 }
 
-#os.environ['HTTP_PROXY'] = 'http://127.0.0.1:8888'
-#os.environ['http_proxy'] = 'http://127.0.0.1:8888'
-#os.environ['HTTPS_PROXY'] = 'https://127.0.0.1:8888'
-#os.environ['https_proxy'] = 'https://127.0.0.1:8888'
 #Конец области
 
 #Область Служебные процедуры и функции
+
 def signal_handler(signal, frame):
     global interrupted
     interrupted = True
@@ -69,9 +66,11 @@ def warm_exit(notes, e = None):
 def intrpd(notes):
     if interrupted:
         warm_exit(notes)
+
 #Конец области
 
 #Область Общего назначения
+
 def tag2txt(note, tag):
     return note.select_one(tag).text.strip()
 
@@ -81,9 +80,11 @@ def tag2attr(note, tag, attr):
 def lnk2digits(lnk):
     digits = [int(i) for i in list(lnk) if i.isdigit()]
     return ''.join(map(str, digits))
+
 #Конец области
 
 #Область Парсинг
+
 def note_model(id, author_id, author_name, text):
     return {
         'id': id,
@@ -111,17 +112,6 @@ def note2message_obj(basic_url, note, note_id):
     note_obj  = note_model(note_id, author_id, author_name, note_text)
 
     return f'{header}{note_text}', note_obj
-
-def first_comment():
-    comments = [
-        "Я тебя читаю",
-        "Ставьте лайки. Подписывайтесь на наш канал.",
-        "Здесь может быть ваш текст. Закупаем волосы от 30см.",
-        "Заметки - источник знаний",
-        "РюмЪ всему голова",
-        "Не смотри рекламу на ночь"
-    ]
-    return random.choice(comments)
 
 def get_soup(url, **kwargs):
     try:
@@ -157,7 +147,6 @@ def crawl_notes(bot, notes, cfg):
             if tgm_id != None:
                 note_obj['tg_message_id'] = tgm_id
                 notes.append(note_obj)
-            #send_love_comment(cfg, cfg['default_tg_userid_session'], note_id, 0, first_comment())
     if len(notes) > 10: #notes limit plus notes number on mainpage
         notes.pop(0)
 
@@ -241,9 +230,11 @@ def crawl_comments(bot, notes, cfg, tg_vars, sbscrbs):
                 send_comment2tg(bot, comment_obj, note['tg_discussion_id'], tg_vars, cfg['tg_channel_comments'])
                 note['comments'].append(comment_obj)
                 check_sbscrbs(bot, note['tg_discussion_id'], comment_obj, sbscrbs, cfg['tg_channel_comments'])
+
 #Конец области
 
 #Область Telegram
+
 def send_tg_photo(bot, tg_channel, photo, caption, reply_id = None):
     if photo == None:
         photo = 'https://play-lh.googleusercontent.com/9sO4wJVf_QTx3MRGDCNBIrXVUrhmA9_lV17Z3OLFX4UKVz4_7Q7_EXz39OJUyMEpTCU'
