@@ -3,6 +3,7 @@ import json
 #import os
 import os.path
 import pickle
+import random
 import requests
 import signal
 import telegram
@@ -15,7 +16,7 @@ interrupted = False
 tg_last_post_date = datetime.now()
 
 headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
 }
 
 #os.environ['HTTP_PROXY'] = 'http://127.0.0.1:8888'
@@ -106,10 +107,21 @@ def note2message_obj(basic_url, note, note_id):
         author_name = 'Анонимно'
         header      = f'<b>{author_name}:</b>\n'
 
-    note_text = tag2txt(note, '.lv-notes__note-text')
+    note_text = tag2txt(note, '.lv-notes__note-text') + "\n\n@grfmn"
     note_obj  = note_model(note_id, author_id, author_name, note_text)
 
     return f'{header}{note_text}', note_obj
+
+def first_comment():
+    comments = [
+        "Я тебя читаю",
+        "Ставьте лайки. Подписывайтесь на наш канал.",
+        "Здесь может быть ваш текст. Закупаем волосы от 30см.",
+        "Заметки - источник знаний",
+        "РюмЪ всему голова",
+        "Не смотри рекламу на ночь"
+    ]
+    return random.choice(comments)
 
 def get_soup(url, **kwargs):
     try:
@@ -134,13 +146,18 @@ def crawl_notes(bot, notes, cfg):
     for note in reversed(parsed_notes):
         intrpd(notes)
         note_link = note.select_one('.lv-notes__comment-link')
+        if note_link == None:
+            continue
         note_id = note_link.attrs['name']
         if not any(d['id'] == note_id for d in notes):
             message_text, note_obj = note2message_obj(cfg['basic_url'], note, note_id)
-            note_obj['tg_message_id'] = send_tg_message(bot,
+            tgm_id = send_tg_message(bot,
                 cfg['tg_channel_posts'],
-                message_text)            
-            notes.append(note_obj)
+                message_text)
+            if tgm_id != None:
+                note_obj['tg_message_id'] = tgm_id
+                notes.append(note_obj)
+            #send_love_comment(cfg, cfg['default_tg_userid_session'], note_id, 0, first_comment())
     if len(notes) > 10: #notes limit plus notes number on mainpage
         notes.pop(0)
 
@@ -183,16 +200,19 @@ def send_comment2tg(bot, comment, discussion_id, tg_vars, tg_channel_comments):
         comment['tg_message_id'] = tg_message_id
     tg_vars['tg_last_post_date'] = datetime.now()
 
-def check_sbscrbs(bot, note_tg_id, comment, sbscrbs, tg_vars):
+def check_sbscrbs(bot, note_tg_id, comment, sbscrbs, tg_channel_comments):
     comment_text = comment['text']
     for sbr in sbscrbs:
         if comment_text.find(sbr['key'])>-1:
-            message = f"https://t.me/txtmaniacomments/{comment['tg_message_id']}?thread={note_tg_id}"
-            bot.send_message(chat_id = sbr['value'], text = message)
+            message = f"https://t.me/c/1418271018/{comment['tg_message_id']}?thread={note_tg_id}"
+            try:
+                bot.send_message(chat_id = sbr['value'], text = message)
+            except Exception as e:
+                print(str(e))
 
 def crawl_comments(bot, notes, cfg, tg_vars, sbscrbs):
     print('***')
-    for note in notes[len(notes) - cfg['notes_limit']:]:
+    for note in notes:
         note_id = note['id']
         print(f"note number: {note_id} max comment {note['max_comment_id']}")
         comments_url = '/notes/comments/'
@@ -220,7 +240,7 @@ def crawl_comments(bot, notes, cfg, tg_vars, sbscrbs):
                     comment_text)
                 send_comment2tg(bot, comment_obj, note['tg_discussion_id'], tg_vars, cfg['tg_channel_comments'])
                 note['comments'].append(comment_obj)
-                check_sbscrbs(bot, note['tg_discussion_id'], comment_obj, sbscrbs, tg_vars)
+                check_sbscrbs(bot, note['tg_discussion_id'], comment_obj, sbscrbs, cfg['tg_channel_comments'])
 #Конец области
 
 #Область Telegram
@@ -260,14 +280,18 @@ def send_tg_message(bot, tg_channel, message, reply_id = None):
     else:
         disable_web_page_preview = False    
     
-    tg_message = bot.send_message(
-        chat_id = tg_channel, 
-        text = message,
-        reply_to_message_id = reply_id,
-        parse_mode = telegram.constants.PARSEMODE_HTML,
-        disable_web_page_preview = disable_web_page_preview)
+    try:
+        tg_message = bot.send_message(
+            chat_id = tg_channel, 
+            text = message,
+            reply_to_message_id = reply_id,
+            parse_mode = telegram.constants.PARSEMODE_HTML,
+            disable_web_page_preview = disable_web_page_preview)
+        tgm_id = tg_message['message_id']
+    except:
+        tgm_id = None
 
-    return tg_message['message_id']
+    return tgm_id
 
 def tg_wait(tg_vars):
     now = datetime.now()
