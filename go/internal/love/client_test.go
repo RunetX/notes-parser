@@ -47,7 +47,7 @@ func TestFetchNotesRetriesOn500(t *testing.T) {
 	if calls != 3 {
 		t.Errorf("ожидалось 3 запроса (2 ретрая), было %d", calls)
 	}
-	if len(notes) != 2 {
+	if len(notes) != 5 {
 		t.Errorf("заметок: %d", len(notes))
 	}
 }

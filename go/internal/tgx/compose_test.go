@@ -28,22 +28,18 @@ func TestComposeNoteMessageAnonymous(t *testing.T) {
 
 func TestComposeCommentCaptionTruncates(t *testing.T) {
 	c := store.Comment{
-		AuthorName: "Имя", AuthorAge: "30",
-		AuthorLink: "https://love.ngs.ru/anketa1/",
+		AuthorName: "Имя", AuthorAge: "30 лет",
+		AuthorLink: "https://love.ngs.ru/profile/1/",
 		Text:       strings.Repeat("ы", 3000),
 	}
 	got := ComposeCommentCaption(c)
-	// Видимый текст (без тегов) должен влезать в лимит 1024.
-	visible := []rune("Имя,30:\n" + strings.Repeat("ы", 3000))
-	_ = visible
-	stripped := got
-	for _, tag := range []string{`<b>`, `</b>`, `</a>`} {
-		stripped = strings.ReplaceAll(stripped, tag, "")
+	// Видимая часть (шапка + текст без тегов) должна влезать в лимит 1024.
+	head := "Имя, 30 лет:\n"
+	if !strings.Contains(got, ">"+"Имя, 30 лет:"+"</a>") {
+		t.Errorf("шапка с пробелом после запятой не найдена: %.80s", got)
 	}
-	if i := strings.Index(stripped, `">`); i >= 0 {
-		stripped = stripped[strings.Index(stripped, `">`)+2:]
-	}
-	if n := len([]rune("Имя,30:\n")) + len([]rune(strings.TrimPrefix(stripped, "Имя,30:\n"))); n > 1024 {
+	body := got[strings.Index(got, "</b>\n")+len("</b>\n"):]
+	if n := len([]rune(head)) + len([]rune(body)); n > 1024 {
 		t.Errorf("видимая длина %d > 1024", n)
 	}
 	if !strings.HasSuffix(got, "…") {

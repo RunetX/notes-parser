@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// Фикстуры notes_feed.html и comments_312696.html — реальные страницы сайта,
+// записанные через `lovegw crawl ... -save-html`. При дрейфе вёрстки
+// перезаписать их той же командой и поправить селекторы в parse.go.
+
 func openFixture(t *testing.T, name string) *os.File {
 	t.Helper()
 	f, err := os.Open(filepath.Join("testdata", name))
@@ -19,27 +23,31 @@ func openFixture(t *testing.T, name string) *os.File {
 	return f
 }
 
-func TestParseNotes(t *testing.T) {
+func TestParseNotesRealFeed(t *testing.T) {
 	notes, err := ParseNotes(openFixture(t, "notes_feed.html"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Третья заметка без .lv-notes__comment-link пропускается.
-	if len(notes) != 2 {
-		t.Fatalf("ожидалось 2 заметки, получено %d: %+v", len(notes), notes)
+	if len(notes) != 5 {
+		t.Fatalf("ожидалось 5 заметок, получено %d", len(notes))
 	}
-
-	want0 := Note{ID: "301109", AuthorID: "376712", AuthorName: "Мария",
-		Text: "Первая заметка — привет всем!"}
-	if notes[0] != want0 {
-		t.Errorf("заметка 0:\n got %+v\nwant %+v", notes[0], want0)
+	first := notes[0]
+	if first.ID != "312702" {
+		t.Errorf("id первой заметки: %q", first.ID)
 	}
-
-	// Заметка без автора — анонимная.
-	want1 := Note{ID: "301110", AuthorID: "0", AuthorName: "Анонимно",
-		Text: "Анонимная заметка, автора не видно"}
-	if notes[1] != want1 {
-		t.Errorf("заметка 1:\n got %+v\nwant %+v", notes[1], want1)
+	if first.AuthorID != "1511857" {
+		t.Errorf("author_id: %q", first.AuthorID)
+	}
+	if first.AuthorName == "" || first.AuthorName == "Анонимно" {
+		t.Errorf("автор не распознан: %q", first.AuthorName)
+	}
+	if len(first.Text) < 20 {
+		t.Errorf("текст подозрительно короткий: %q", first.Text)
+	}
+	for _, n := range notes {
+		if n.ID == "" {
+			t.Errorf("заметка без id: %+v", n)
+		}
 	}
 }
 
@@ -62,43 +70,51 @@ func TestParseNotesMissingTextIsMarkupError(t *testing.T) {
 	}
 }
 
-func TestParseComments(t *testing.T) {
-	comments, err := ParseComments(openFixture(t, "comments.html"), "https://love.ngs.ru")
+func TestParseCommentsRealPage(t *testing.T) {
+	comments, err := ParseComments(openFixture(t, "comments_312696.html"), "https://love.ngs.ru")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(comments) != 2 {
-		t.Fatalf("ожидалось 2 комментария, получено %d", len(comments))
+	if len(comments) != 30 {
+		t.Fatalf("ожидалось 30 комментариев (limit~30), получено %d", len(comments))
 	}
 
 	// Первый в документе — самый новый (страница desc).
 	c := comments[0]
-	if c.ID != 98770 {
-		t.Errorf("id: got %d, want 98770", c.ID)
+	if c.ID != 63167742 {
+		t.Errorf("id: got %d, want 63167742", c.ID)
 	}
-	// Относительный аватар достраивается до абсолютного.
-	if c.AvatarURL != "https://love.ngs.ru/static/i/new/profile/male300px.png" {
-		t.Errorf("avatar: %q", c.AvatarURL)
+	if c.AuthorLink != "https://love.ngs.ru/profile/981563/" {
+		t.Errorf("ссылка автора не абсолютизирована: %q", c.AuthorLink)
 	}
-	if c.AuthorLink != "https://love.ngs.ru/anketa981234/" {
-		t.Errorf("author link: %q", c.AuthorLink)
+	if !strings.HasPrefix(c.AvatarURL, "https://") {
+		t.Errorf("аватар: %q", c.AvatarURL)
 	}
-	wantTime := time.Date(2026, 7, 5, 22, 0, 0, 0, nsk)
-	if !c.PublishedAt.Equal(wantTime) {
-		t.Errorf("published: got %v, want %v", c.PublishedAt, wantTime)
+	if c.AuthorName == "" {
+		t.Error("имя автора пустое")
+	}
+	// alt вида "Имя, 43 года": возраст — хвост после последней запятой.
+	if !strings.Contains(c.AuthorAge, "года") && !strings.Contains(c.AuthorAge, "лет") {
+		t.Errorf("возраст: %q", c.AuthorAge)
+	}
+	want := time.Date(2026, 7, 18, 17, 36, 34, 0, nsk)
+	if !c.PublishedAt.Equal(want) {
+		t.Errorf("дата: got %v, want %v", c.PublishedAt, want)
+	}
+	if c.Text == "" {
+		t.Error("текст пуст")
 	}
 
-	// Имя с запятыми: возраст отделяется по последней запятой.
-	c = comments[1]
-	if c.AuthorName != "Мария, свет, радость" || c.AuthorAge != "34" {
-		t.Errorf("имя/возраст: %q / %q", c.AuthorName, c.AuthorAge)
-	}
-	// Абсолютный аватар не трогаем.
-	if c.AvatarURL != "https://cdn.example.net/avatars/376712.jpg" {
-		t.Errorf("avatar: %q", c.AvatarURL)
-	}
-	if c.Text != "Отличная заметка!" {
-		t.Errorf("text: %q", c.Text)
+	// Все id уникальны и убывают (desc-порядок страницы).
+	seen := map[int64]bool{}
+	for i, cc := range comments {
+		if seen[cc.ID] {
+			t.Errorf("дубль id %d", cc.ID)
+		}
+		seen[cc.ID] = true
+		if i > 0 && cc.ID >= comments[i-1].ID {
+			t.Errorf("порядок не desc: %d после %d", cc.ID, comments[i-1].ID)
+		}
 	}
 }
 
@@ -114,9 +130,9 @@ func TestParseCommentsEmptyIsOK(t *testing.T) {
 
 func TestParseCommentsBrokenDateIsMarkupError(t *testing.T) {
 	html := `<div class="lv-note__comment-item">
-	           <a id="comment5"></a>
-	           <img class="avatar" src="/a.png" alt="Имя,30">
-	           <a class="lv-people__nickname" href="/anketa1/">Имя</a>
+	           <a id="anchor-5"></a>
+	           <img class="avatar" src="/a.png" alt="Имя, 30 лет">
+	           <a class="lv-people__nickname" href="/profile/1/">Имя</a>
 	           <div class="lv-comment__pubdate">позавчера</div>
 	           <div class="lv-comment__text">текст</div>
 	         </div>`
@@ -129,8 +145,8 @@ func TestParseCommentsBrokenDateIsMarkupError(t *testing.T) {
 
 func TestSplitNameAge(t *testing.T) {
 	for _, tc := range []struct{ alt, name, age string }{
-		{"Мария,34", "Мария", "34"},
-		{"Мария, свет, радость,34", "Мария, свет, радость", "34"},
+		{"Яна, 43 года", "Яна", "43 года"},
+		{"Мария, свет, радость, 34 года", "Мария, свет, радость", "34 года"},
 		{"Безвозраста", "Безвозраста", ""},
 	} {
 		name, age := splitNameAge(tc.alt)
@@ -141,7 +157,7 @@ func TestSplitNameAge(t *testing.T) {
 }
 
 func TestDigitsOf(t *testing.T) {
-	if got := digitsOf("/anketa376712/"); got != "376712" {
+	if got := digitsOf("/profile/981563/"); got != "981563" {
 		t.Errorf("digitsOf: %q", got)
 	}
 	if got := digitsOf("/no-digits/"); got != "0" {

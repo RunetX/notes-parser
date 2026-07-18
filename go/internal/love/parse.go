@@ -18,11 +18,15 @@ const (
 	selNickname    = ".lv-people__nickname"
 	selNoteText    = ".lv-notes__note-text"
 	selCommentItem = ".lv-note__comment-item"
-	selCommentID   = "a[id^=comment]" // id вида comment12345
-	selAvatar      = ".avatar"        // src; alt = "Имя,Возраст"
+	selCommentID   = "a[id^=anchor-]" // id вида anchor-63167742; в Python это же
+	                                  // резал магический [7:] — len("anchor-") == 7
+	selAvatar      = ".avatar"        // src; alt = "Имя, N лет"
 	selCommentDate = ".lv-comment__pubdate"
 	selCommentText = ".lv-comment__text"
 )
+
+// commentAnchorPrefix — префикс id якоря комментария.
+const commentAnchorPrefix = "anchor-"
 
 // dateLayout — формат даты комментария, время новосибирское.
 const dateLayout = "02.01.2006, 15:04:05"
@@ -97,7 +101,7 @@ func ParseComments(r io.Reader, baseURL string) ([]Comment, error) {
 			parseErr = &MarkupError{Selector: selCommentID, Context: ctx}
 			return false
 		}
-		id, err := strconv.ParseInt(strings.TrimPrefix(idAttr, "comment"), 10, 64)
+		id, err := strconv.ParseInt(strings.TrimPrefix(idAttr, commentAnchorPrefix), 10, 64)
 		if err != nil {
 			parseErr = &MarkupError{Selector: selCommentID, Context: ctx + ": id=" + idAttr}
 			return false

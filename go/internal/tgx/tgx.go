@@ -258,14 +258,14 @@ const captionLimit = 1024
 // по границе руны так, чтобы видимая часть уложилась в лимит (Python резал
 // сырой HTML по 1024 байтам и мог сломать разметку — сообщение терялось).
 func ComposeCommentCaption(c store.Comment) string {
-	visibleHead := fmt.Sprintf("%s,%s:\n", c.AuthorName, c.AuthorAge)
+	visibleHead := fmt.Sprintf("%s, %s:\n", c.AuthorName, c.AuthorAge)
 	// Запас на случай расхождения рун и UTF-16 (эмодзи считаются за два).
 	budget := captionLimit - len([]rune(visibleHead)) - 8
 	text := c.Text
 	if r := []rune(text); len(r) > budget {
 		text = string(r[:budget]) + "…"
 	}
-	return fmt.Sprintf(`<b><a href="%s">%s,%s:</a></b>%s%s`,
+	return fmt.Sprintf(`<b><a href="%s">%s, %s:</a></b>%s%s`,
 		c.AuthorLink, html.EscapeString(c.AuthorName), html.EscapeString(c.AuthorAge),
 		"\n", html.EscapeString(text))
 }
