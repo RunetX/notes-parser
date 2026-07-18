@@ -17,5 +17,6 @@
   "admin_tg_user_id": 0,
   "feed_interval_s": 60,
   "db_path": "data/lovegw.db",
-  "log_level": "info"
+  "log_level": "info",
+  "telegram_proxy": ""
 }

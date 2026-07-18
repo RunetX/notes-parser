@@ -116,13 +116,17 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
 
+	tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
+	if err != nil {
+		return err
+	}
+
 	// ЛС-бот РюмкинЪ (опционален): без него мост не сможет уведомлять
 	// пользователей о протухшей сессии, но зеркалирование работает.
 	var dm *dmbot.Bot
 	var notify bridge.Notify
 	if cfg.DMBot.Token != "" {
-		var err error
-		if dm, err = dmbot.New(cfg.DMBot.Token, st, client, log); err != nil {
+		if dm, err = dmbot.New(cfg.DMBot.Token, st, client, tgClient, log); err != nil {
 			return err
 		}
 		notify = dm.Notify
@@ -130,8 +134,14 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	handler := bridge.New(st, client, notify,
 		cfg.MirrorBot.ChannelID, cfg.MirrorBot.DiscussionChatID, log)
-	tg, err := tgx.NewMirror(cfg.MirrorBot.Token, cfg.MirrorBot.ChannelID,
-		cfg.MirrorBot.DiscussionChatID, cfg.Signature, cfg.Site.BaseURL, log, handler.Handle)
+	tg, err := tgx.NewMirror(tgx.Params{
+		Token:            cfg.MirrorBot.Token,
+		ChannelID:        cfg.MirrorBot.ChannelID,
+		DiscussionChatID: cfg.MirrorBot.DiscussionChatID,
+		Signature:        cfg.Signature,
+		BaseURL:          cfg.Site.BaseURL,
+		HTTPClient:       tgClient,
+	}, log, handler.Handle)
 	if err != nil {
 		return err
 	}

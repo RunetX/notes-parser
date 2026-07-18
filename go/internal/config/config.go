@@ -37,6 +37,9 @@ type Config struct {
 	FeedIntervalS int       `json:"feed_interval_s"`
 	DBPath        string    `json:"db_path"`
 	LogLevel      string    `json:"log_level"`
+	// TelegramProxy — прокси для Bot API (http/https/socks5), если Telegram
+	// недоступен напрямую. Сайт при этом идёт мимо прокси. Пусто — напрямую.
+	TelegramProxy string `json:"telegram_proxy"`
 }
 
 // Load читает конфиг, накладывает значения по умолчанию и env-переопределения:
@@ -70,6 +73,9 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("LOVEGW_DB_PATH"); v != "" {
 		cfg.DBPath = v
+	}
+	if v := os.Getenv("LOVEGW_TG_PROXY"); v != "" {
+		cfg.TelegramProxy = v
 	}
 
 	if cfg.Site.BaseURL == "" {

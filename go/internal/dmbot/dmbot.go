@@ -39,16 +39,23 @@ type Bot struct {
 	log  *slog.Logger
 }
 
-func New(token string, st *store.Store, site SiteAuth, log *slog.Logger) (*Bot, error) {
+// New создаёт ЛС-бота. httpClient (может быть nil) задаёт соединение с
+// Bot API через прокси.
+func New(token string, st *store.Store, site SiteAuth, httpClient *http.Client, log *slog.Logger) (*Bot, error) {
 	if log == nil {
 		log = slog.Default()
 	}
 	d := &Bot{st: st, site: site, log: log}
-	b, err := bot.New(token,
+	opts := []bot.Option{
 		bot.WithSkipGetMe(),
 		bot.WithDefaultHandler(func(ctx context.Context, _ *bot.Bot, u *models.Update) {
 			d.handle(ctx, u)
-		}))
+		}),
+	}
+	if httpClient != nil {
+		opts = append(opts, bot.WithHTTPClient(30*time.Second, httpClient))
+	}
+	b, err := bot.New(token, opts...)
 	if err != nil {
 		return nil, err
 	}

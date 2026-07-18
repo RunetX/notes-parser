@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -67,10 +68,19 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		ok("сайт", cfg.Site.BaseURL)
 	}
 
+	tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
+	if err != nil {
+		fail("прокси telegram", err)
+		return errors.New("диагностика прервана")
+	}
+	if cfg.TelegramProxy != "" {
+		ok("прокси telegram", cfg.TelegramProxy)
+	}
+
 	mirrorOK := false
 	if cfg.MirrorBot.Token == "" {
 		warn("постер-бот", "токен не задан")
-	} else if me, err := tgx.CheckToken(ctx, cfg.MirrorBot.Token); err != nil {
+	} else if me, err := tgx.CheckToken(ctx, cfg.MirrorBot.Token, tgClient); err != nil {
 		fail("постер-бот", err)
 	} else {
 		ok("постер-бот", "@"+me.Username)
@@ -79,7 +89,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 
 	if cfg.DMBot.Token == "" {
 		warn("ЛС-бот", "токен не задан")
-	} else if me, err := tgx.CheckToken(ctx, cfg.DMBot.Token); err != nil {
+	} else if me, err := tgx.CheckToken(ctx, cfg.DMBot.Token, tgClient); err != nil {
 		fail("ЛС-бот", err)
 	} else {
 		ok("ЛС-бот", "@"+me.Username)
@@ -87,7 +97,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 
 	queueEmpty := false
 	if mirrorOK {
-		switch n, err := tgx.ProbePendingUpdates(ctx, cfg.MirrorBot.Token); {
+		switch n, err := tgx.ProbePendingUpdates(ctx, cfg.MirrorBot.Token, tgClient); {
 		case errors.Is(err, tgx.ErrPollingConflict):
 			warn("очередь обновлений", "409: бота слушает другой процесс (старый poster.py ещё работает?)")
 		case err != nil:
@@ -111,12 +121,12 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		warn("post-test", "пропущен: очередь обновлений не пуста или занята другим процессом")
 		return nil
 	}
-	return runPostTest(ctx, cfg, ok, fail)
+	return runPostTest(ctx, cfg, tgClient, ok, fail)
 }
 
 // runPostTest: тихий пост в канал → ожидание автофорварда → удаление
 // форварда и поста. Проверяет права бота и механику тредов end-to-end.
-func runPostTest(ctx context.Context, cfg *config.Config,
+func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 	ok func(string, string), fail func(string, error)) error {
 
 	var postedID atomic.Int64
@@ -136,8 +146,14 @@ func runPostTest(ctx context.Context, cfg *config.Config,
 		}
 	}
 
-	tg, err := tgx.NewMirror(cfg.MirrorBot.Token, cfg.MirrorBot.ChannelID,
-		cfg.MirrorBot.DiscussionChatID, cfg.Signature, cfg.Site.BaseURL, nil, handler)
+	tg, err := tgx.NewMirror(tgx.Params{
+		Token:            cfg.MirrorBot.Token,
+		ChannelID:        cfg.MirrorBot.ChannelID,
+		DiscussionChatID: cfg.MirrorBot.DiscussionChatID,
+		Signature:        cfg.Signature,
+		BaseURL:          cfg.Site.BaseURL,
+		HTTPClient:       tgClient,
+	}, nil, handler)
 	if err != nil {
 		fail("post-test", err)
 		return err

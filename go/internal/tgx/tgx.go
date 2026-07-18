@@ -44,27 +44,45 @@ type Mirror struct {
 	limiters map[int64]*rate.Limiter
 }
 
+// Params — параметры постер-бота. HTTPClient (может быть nil) задаёт
+// соединение с Bot API через прокси; nil — прямое соединение.
+type Params struct {
+	Token            string
+	ChannelID        int64
+	DiscussionChatID int64
+	Signature        string
+	BaseURL          string
+	HTTPClient       *http.Client
+}
+
+// pollTimeout — таймаут long polling обновлений.
+const pollTimeout = 30 * time.Second
+
 // NewMirror создаёт бота. onUpdate вызывается для каждого входящего
 // обновления (захват автофорварда, мост ответов).
-func NewMirror(token string, channelID, discussionChatID int64, signature, baseURL string,
-	log *slog.Logger, onUpdate func(ctx context.Context, u *models.Update)) (*Mirror, error) {
+func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u *models.Update)) (*Mirror, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	b, err := bot.New(token,
+	opts := []bot.Option{
 		bot.WithSkipGetMe(),
 		bot.WithDefaultHandler(func(ctx context.Context, _ *bot.Bot, u *models.Update) {
 			onUpdate(ctx, u)
-		}))
+		}),
+	}
+	if p.HTTPClient != nil {
+		opts = append(opts, bot.WithHTTPClient(pollTimeout, p.HTTPClient))
+	}
+	b, err := bot.New(p.Token, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("создание бота: %w", err)
 	}
 	return &Mirror{
 		b:                b,
-		channelID:        channelID,
-		discussionChatID: discussionChatID,
-		signature:        signature,
-		baseURL:          strings.TrimSuffix(baseURL, "/"),
+		channelID:        p.ChannelID,
+		discussionChatID: p.DiscussionChatID,
+		signature:        p.Signature,
+		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
 		log:              log,
 		limiters:         make(map[int64]*rate.Limiter),
 	}, nil
@@ -130,14 +148,19 @@ var ErrPollingConflict = errors.New("бота уже слушает другой
 
 // ProbePendingUpdates возвращает число неподтверждённых обновлений, не
 // подтверждая их (offset не передаётся — очередь не трогается). Библиотека
-// не экспортирует getUpdates, поэтому прямой вызов Bot API.
-func ProbePendingUpdates(ctx context.Context, token string) (int, error) {
+// не экспортирует getUpdates, поэтому прямой вызов Bot API. httpClient
+// может быть nil (прямое соединение).
+func ProbePendingUpdates(ctx context.Context, token string, httpClient *http.Client) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://api.telegram.org/bot"+token+"/getUpdates?timeout=0", nil)
 	if err != nil {
 		return 0, err
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	client := httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -159,8 +182,13 @@ func ProbePendingUpdates(ctx context.Context, token string) (int, error) {
 }
 
 // CheckToken проверяет валидность токена бота через getMe.
-func CheckToken(ctx context.Context, token string) (*models.User, error) {
-	b, err := bot.New(token, bot.WithSkipGetMe())
+// httpClient может быть nil (прямое соединение).
+func CheckToken(ctx context.Context, token string, httpClient *http.Client) (*models.User, error) {
+	opts := []bot.Option{bot.WithSkipGetMe()}
+	if httpClient != nil {
+		opts = append(opts, bot.WithHTTPClient(pollTimeout, httpClient))
+	}
+	b, err := bot.New(token, opts...)
 	if err != nil {
 		return nil, err
 	}
