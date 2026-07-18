@@ -1,0 +1,135 @@
+package store
+
+// Методы, обслуживающие зеркалирование (mirror) и захват автофорварда.
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
+var ErrNotFound = errors.New("запись не найдена")
+
+// NoteByID возвращает заметку по id сайта.
+func (s *Store) NoteByID(ctx context.Context, id string) (Note, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, author_id, author_name, text, status,
+		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at
+		FROM notes WHERE id = ?`, id)
+	if err != nil {
+		return Note{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Note{}, fmt.Errorf("заметка %s: %w", id, ErrNotFound)
+	}
+	return scanNote(rows)
+}
+
+// SetNotePosted помечает заметку запощенной и сохраняет id поста в канале.
+func (s *Store) SetNotePosted(ctx context.Context, id string, tgMessageID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE notes SET status = ?, tg_message_id = ? WHERE id = ?`,
+		StatusPosted, tgMessageID, id)
+	return err
+}
+
+// SetNoteThreadIDByMessageID записывает id корня треда (автофорварда),
+// найдя заметку по id её поста в канале. Возвращает id заметки.
+func (s *Store) SetNoteThreadIDByMessageID(ctx context.Context, tgMessageID, threadID int64) (string, bool, error) {
+	var noteID string
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE notes SET tg_thread_id = ?
+		WHERE tg_message_id = ? AND tg_thread_id IS NULL
+		RETURNING id`, threadID, tgMessageID).Scan(&noteID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return noteID, true, nil
+}
+
+// SetNoteArchived переводит заметку в архив: воркер комментариев завершается.
+func (s *Store) SetNoteArchived(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE notes SET status = ?, archived_at = ? WHERE id = ?`,
+		StatusArchived, fmtTime(at), id)
+	return err
+}
+
+// SetNoteLastCommentAt обновляет время последнего комментария (для
+// адаптивного интервала опроса).
+func (s *Store) SetNoteLastCommentAt(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE notes SET last_comment_at = ? WHERE id = ?`, fmtTime(at), id)
+	return err
+}
+
+// SetCommentTGMessageID сохраняет id сообщения комментария в группе.
+func (s *Store) SetCommentTGMessageID(ctx context.Context, commentID, tgMessageID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE comments SET tg_message_id = ? WHERE id = ?`, tgMessageID, commentID)
+	return err
+}
+
+// UnsentComments возвращает комментарии заметки, ещё не отправленные в
+// Telegram (включая застрявшие: тред мог быть не пойман в прошлый цикл).
+func (s *Store) UnsentComments(ctx context.Context, noteID string) ([]Comment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, note_id, author_name, author_age, author_link, avatar_url,
+		       published_at, text, tg_message_id, created_at
+		FROM comments
+		WHERE note_id = ? AND tg_message_id IS NULL
+		ORDER BY id`, noteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var comments []Comment
+	for rows.Next() {
+		var c Comment
+		var published, createdAt sql.NullString
+		var tgMsg sql.NullInt64
+		if err := rows.Scan(&c.ID, &c.NoteID, &c.AuthorName, &c.AuthorAge,
+			&c.AuthorLink, &c.AvatarURL, &published, &c.Text, &tgMsg, &createdAt); err != nil {
+			return nil, err
+		}
+		if published.Valid {
+			c.PublishedAt = parseTime(published.String)
+		}
+		if createdAt.Valid {
+			c.CreatedAt = parseTime(createdAt.String)
+		}
+		c.TGMessageID = tgMsg.Int64
+		comments = append(comments, c)
+	}
+	return comments, rows.Err()
+}
+
+// Subscription — подписка на ключевое слово.
+type Subscription struct {
+	Keyword  string
+	TGUserID int64
+}
+
+// Subscriptions возвращает все подписки.
+func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT keyword, tg_user_id FROM subscriptions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subs []Subscription
+	for rows.Next() {
+		var sub Subscription
+		if err := rows.Scan(&sub.Keyword, &sub.TGUserID); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}

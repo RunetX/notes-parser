@@ -133,6 +133,9 @@ dmypy.json
 sessions_export.json
 # SQLite-база lovegw
 data/
+# Собранный бинарник lovegw
+lovegw.exe
+lovegw
 # Конфиги с токенами ботов (шаблоны: *.example.json)
 config.json
 ryumkin.json

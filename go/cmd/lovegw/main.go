@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -23,10 +24,15 @@ import (
 
 	_ "time/tzdata" // тайзоны в бинарнике: нужны в scratch/distroless-образе
 
+	"golang.org/x/sync/errgroup"
+
+	"lovegw/internal/bridge"
 	"lovegw/internal/config"
 	"lovegw/internal/legacy"
 	"lovegw/internal/love"
+	"lovegw/internal/mirror"
 	"lovegw/internal/store"
+	"lovegw/internal/tgx"
 )
 
 func main() {
@@ -44,7 +50,9 @@ func main() {
 	case "import":
 		err = cmdImport(ctx, os.Args[2:])
 	case "run":
-		err = fmt.Errorf("run: ещё не реализовано (этап M3)")
+		err = cmdRun(ctx, os.Args[2:])
+	case "doctor":
+		err = cmdDoctor(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -60,7 +68,56 @@ func usage() {
   lovegw crawl [-config config.json] [-save-html dir] notes
   lovegw crawl [-config config.json] [-save-html dir] comments <note_id>
   lovegw import [-config config.json] [-notes notes.json] [-sessions sessions_export.json] [-subscribers subscribers.json]
-  lovegw run          (M3)`)
+  lovegw run    [-config config.json] [-seed]
+  lovegw doctor [-config config.json] [-post-test]`)
+}
+
+// cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
+func cmdRun(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.json", "путь к конфигу")
+	seed := fs.Bool("seed", false, "первый обход ленты: запомнить заметки без постинга")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if cfg.MirrorBot.Token == "" || cfg.MirrorBot.ChannelID == 0 || cfg.MirrorBot.DiscussionChatID == 0 {
+		return fmt.Errorf("run: не заданы mirror_bot.token / channel_id / discussion_chat_id")
+	}
+	log := newLogger(cfg.LogLevel)
+
+	st, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
+		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	handler := bridge.New(st, cfg.MirrorBot.ChannelID, cfg.MirrorBot.DiscussionChatID, log)
+	tg, err := tgx.NewMirror(cfg.MirrorBot.Token, cfg.MirrorBot.ChannelID,
+		cfg.MirrorBot.DiscussionChatID, cfg.Signature, cfg.Site.BaseURL, log, handler.Handle)
+	if err != nil {
+		return err
+	}
+	mir := mirror.New(st, client, tg, cfg.NotesLimit,
+		time.Duration(cfg.FeedIntervalS)*time.Second, *seed, log)
+
+	log.Info("lovegw запущен", "seed", *seed, "db", cfg.DBPath)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		tg.Start(gctx) // блокируется до отмены контекста
+		return nil
+	})
+	g.Go(func() error { return mir.Run(gctx) })
+	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	log.Info("lovegw остановлен")
+	return nil
 }
 
 // cmdImport переносит состояние старой Python-версии в SQLite.

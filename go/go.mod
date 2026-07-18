@@ -4,6 +4,8 @@ go 1.26
 
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
+	github.com/go-telegram/bot v1.22.0
+	golang.org/x/sync v0.21.0
 	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.54.0
 )
