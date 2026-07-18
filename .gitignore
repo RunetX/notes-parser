@@ -133,9 +133,10 @@ dmypy.json
 sessions_export.json
 # SQLite-база lovegw
 data/
-# Собранный бинарник lovegw
-lovegw.exe
-lovegw
+# Собранный бинарник lovegw (якорные пути: паттерн без слэша матчил бы
+# и каталог go/cmd/lovegw с исходниками)
+/go/lovegw.exe
+/go/lovegw
 # Конфиги с токенами ботов (шаблоны: *.example.json)
 config.json
 ryumkin.json

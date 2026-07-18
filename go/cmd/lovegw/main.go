@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,7 +78,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.json", "путь к конфигу")
 	seed := fs.Bool("seed", false, "первый обход ленты: запомнить заметки без постинга")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true})); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)
@@ -128,7 +129,9 @@ func cmdImport(ctx context.Context, args []string) error {
 	notesPath := fs.String("notes", "", "notes.json старой версии")
 	sessionsPath := fs.String("sessions", "", "sessions_export.json (из tools/export_sessions.py)")
 	subscribersPath := fs.String("subscribers", "", "subscribers.json старой версии")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args, map[string]bool{
+		"config": true, "notes": true, "sessions": true, "subscribers": true,
+	})); err != nil {
 		return err
 	}
 	if *notesPath == "" && *sessionsPath == "" && *subscribersPath == "" {
@@ -192,11 +195,33 @@ func cmdImport(ctx context.Context, args []string) error {
 	return nil
 }
 
+// reorderArgs переносит флаги перед позиционными аргументами: стандартный
+// flag прекращает разбор на первом позиционном, а команды вида
+// `crawl notes -save-html dir` естественно писать флагами после.
+// valueFlags — имена флагов, ожидающих значение следующим токеном.
+func reorderArgs(args []string, valueFlags map[string]bool) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if valueFlags[name] && !strings.Contains(a, "=") && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...)
+}
+
 func cmdCrawl(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.json", "путь к конфигу")
 	saveHTML := fs.String("save-html", "", "каталог для сохранения сырого HTML (фикстуры)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true, "save-html": true})); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
