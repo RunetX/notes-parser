@@ -23,7 +23,7 @@ import (
 
 func cmdDoctor(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "путь к конфигу")
+	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	postTest := fs.Bool("post-test", false, "тестовый пост в канал с проверкой автофорварда (сообщение удаляется)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true})); err != nil {
 		return err

@@ -173,6 +173,15 @@ func (m *Mirror) DeleteMessage(ctx context.Context, chatID int64, messageID int)
 	return err
 }
 
+// SendText шлёт обычное сообщение (с уведомлением) через лимитер чата.
+// Используется для алертов админу.
+func (m *Mirror) SendText(ctx context.Context, chatID int64, text string) error {
+	_, err := send(ctx, m, chatID, func(ctx context.Context) (*models.Message, error) {
+		return m.b.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text})
+	})
+	return err
+}
+
 // SendSilent шлёт тихое сообщение без уведомления подписчиков (doctor).
 func (m *Mirror) SendSilent(ctx context.Context, chatID int64, text string) (int, error) {
 	msg, err := send(ctx, m, chatID, func(ctx context.Context) (*models.Message, error) {

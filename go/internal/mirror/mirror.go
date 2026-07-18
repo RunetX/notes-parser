@@ -6,6 +6,7 @@ package mirror
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -34,6 +35,7 @@ type Mirror struct {
 	site         SiteClient
 	sink         Sink
 	log          *slog.Logger
+	alert        *alerter
 	notesLimit   int
 	feedInterval time.Duration
 	seedFirst    bool
@@ -41,8 +43,16 @@ type Mirror struct {
 	events chan string // id заметок для запуска воркеров
 }
 
-func New(st *store.Store, site SiteClient, sink Sink, notesLimit int,
-	feedInterval time.Duration, seedFirst bool, log *slog.Logger) *Mirror {
+// Config — параметры зеркала. AlertSend (может быть nil) шлёт админу
+// уведомления о дрейфе вёрстки и блокировке сайта.
+type Config struct {
+	NotesLimit   int
+	FeedInterval time.Duration
+	SeedFirst    bool
+	AlertSend    func(ctx context.Context, text string)
+}
+
+func New(st *store.Store, site SiteClient, sink Sink, cfg Config, log *slog.Logger) *Mirror {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -51,10 +61,24 @@ func New(st *store.Store, site SiteClient, sink Sink, notesLimit int,
 		site:         site,
 		sink:         sink,
 		log:          log,
-		notesLimit:   notesLimit,
-		feedInterval: feedInterval,
-		seedFirst:    seedFirst,
+		alert:        newAlerter(cfg.AlertSend, alertThreshold),
+		notesLimit:   cfg.NotesLimit,
+		feedInterval: cfg.FeedInterval,
+		seedFirst:    cfg.SeedFirst,
 		events:       make(chan string, 16),
+	}
+}
+
+// reportSiteError классифицирует ошибку загрузки и при необходимости
+// беспокоит админа: дрейф вёрстки (MarkupError) или блокировка (403).
+// driftKey — ключ дрейфа для конкретного источника (лента/комментарии).
+func (m *Mirror) reportSiteError(ctx context.Context, driftKey string, err error) {
+	var me *love.MarkupError
+	switch {
+	case errors.As(err, &me):
+		m.alert.fail(ctx, driftKey, "селектор «"+me.Selector+"» — "+me.Context)
+	case errors.Is(err, love.ErrForbidden):
+		m.alert.fail(ctx, keyForbidden, "сайт вернул 403 (геоблок или бан IP)")
 	}
 }
 
@@ -100,8 +124,11 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 	notes, err := m.site.FetchNotes(ctx)
 	if err != nil {
 		m.log.Warn("лента недоступна", "err", err)
+		m.reportSiteError(ctx, keyFeedDrift, err)
 		return false
 	}
+	m.alert.ok(ctx, keyFeedDrift)
+	m.alert.ok(ctx, keyForbidden)
 	if len(notes) > m.notesLimit {
 		notes = notes[:m.notesLimit]
 	}
@@ -262,8 +289,11 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 	comments, err := m.site.FetchComments(ctx, n.ID)
 	if err != nil {
 		m.log.Warn("комментарии недоступны", "note", n.ID, "err", err)
+		m.reportSiteError(ctx, keyCommentsDrift, err)
 		return
 	}
+	m.alert.ok(ctx, keyCommentsDrift)
+	m.alert.ok(ctx, keyForbidden)
 	known, err := m.st.CommentIDs(ctx, n.ID)
 	if err != nil {
 		m.log.Error("чтение известных комментариев", "note", n.ID, "err", err)

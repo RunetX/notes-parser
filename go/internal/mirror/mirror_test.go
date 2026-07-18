@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,10 +17,11 @@ import (
 
 type fakeSite struct {
 	notes    []love.Note
+	notesErr error
 	comments map[string][]love.Comment
 }
 
-func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, nil }
+func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
 func (f *fakeSite) FetchComments(_ context.Context, id string) ([]love.Comment, error) {
 	return f.comments[id], nil
 }
@@ -53,13 +56,23 @@ func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, n store.Not
 }
 
 func newTestMirror(t *testing.T, site *fakeSite, sink *fakeSink, seed bool) (*Mirror, *store.Store) {
+	return newTestMirrorAlert(t, site, sink, seed, nil)
+}
+
+func newTestMirrorAlert(t *testing.T, site *fakeSite, sink *fakeSink, seed bool,
+	alertSend func(ctx context.Context, text string)) (*Mirror, *store.Store) {
 	t.Helper()
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "t.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	m := New(st, site, sink, 5, time.Minute, seed, slog.Default())
+	m := New(st, site, sink, Config{
+		NotesLimit:   5,
+		FeedInterval: time.Minute,
+		SeedFirst:    seed,
+		AlertSend:    alertSend,
+	}, slog.Default())
 	return m, st
 }
 
@@ -192,6 +205,40 @@ func TestNotifySubscribersOnKeyword(t *testing.T) {
 	}
 	if len(notified) != 1 || notified[0] != 42 {
 		t.Errorf("уведомления: %v", notified)
+	}
+}
+
+func TestFeedDriftAlertsAdminOnce(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notesErr: &love.MarkupError{Selector: ".lv-notes__note-item", Context: "лента заметок"}}
+	sink := &fakeSink{}
+
+	var mu sync.Mutex
+	var alerts []string
+	send := func(_ context.Context, text string) {
+		mu.Lock()
+		alerts = append(alerts, text)
+		mu.Unlock()
+	}
+	m, _ := newTestMirrorAlert(t, site, sink, false, send)
+
+	// Порог алерта — 3 подряд; первые два цикла молчат.
+	for i := 0; i < alertThreshold+2; i++ {
+		m.feedCycle(ctx, false)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("ожидался ровно один алерт о дрейфе, получено %d: %v", len(alerts), alerts)
+	}
+	if !strings.Contains(alerts[0], keyFeedDrift) {
+		t.Errorf("текст алерта: %q", alerts[0])
+	}
+
+	// Вёрстка «починилась» — лента снова парсится: приходит «восстановилось».
+	site.notesErr = nil
+	site.notes = []love.Note{{ID: "n1", Text: "т"}}
+	m.feedCycle(ctx, false)
+	if len(alerts) != 2 || !strings.Contains(alerts[1], "восстановилось") {
+		t.Errorf("ожидалось уведомление о восстановлении, получено: %v", alerts)
 	}
 }
 

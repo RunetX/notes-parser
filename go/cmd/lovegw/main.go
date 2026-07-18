@@ -37,6 +37,11 @@ import (
 	"lovegw/internal/tgx"
 )
 
+const (
+	defaultConfigPath = "config.json"
+	configFlagUsage   = "путь к конфигу"
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -77,7 +82,7 @@ func usage() {
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
 func cmdRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "путь к конфигу")
+	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	seed := fs.Bool("seed", false, "первый обход ленты: запомнить заметки без постинга")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true})); err != nil {
 		return err
@@ -97,6 +102,17 @@ func cmdRun(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
+	if !*seed {
+		if ids, err := st.KnownNoteIDs(ctx); err == nil && len(ids) == 0 {
+			log.Warn("БД пуста и запуск без -seed: текущие заметки с ленты будут опубликованы; " +
+				"для перехода с Python сначала выполните import, затем запуск с -seed")
+		}
+	}
+	return runDaemon(ctx, cfg, st, *seed, log)
+}
+
+// runDaemon собирает компоненты и крутит их под общим errgroup.
+func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bool, log *slog.Logger) error {
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
 
@@ -105,8 +121,8 @@ func cmdRun(ctx context.Context, args []string) error {
 	var dm *dmbot.Bot
 	var notify bridge.Notify
 	if cfg.DMBot.Token != "" {
-		dm, err = dmbot.New(cfg.DMBot.Token, st, client, log)
-		if err != nil {
+		var err error
+		if dm, err = dmbot.New(cfg.DMBot.Token, st, client, log); err != nil {
 			return err
 		}
 		notify = dm.Notify
@@ -119,10 +135,15 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	mir := mirror.New(st, client, tg, cfg.NotesLimit,
-		time.Duration(cfg.FeedIntervalS)*time.Second, *seed, log)
 
-	log.Info("lovegw запущен", "seed", *seed, "db", cfg.DBPath, "dm_bot", dm != nil)
+	mir := mirror.New(st, client, tg, mirror.Config{
+		NotesLimit:   cfg.NotesLimit,
+		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
+		SeedFirst:    seed,
+		AlertSend:    adminAlerter(tg, cfg.AdminTGUserID, log),
+	}, log)
+
+	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath, "dm_bot", dm != nil)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		tg.Start(gctx) // блокируется до отмены контекста
@@ -142,11 +163,23 @@ func cmdRun(ctx context.Context, args []string) error {
 	return nil
 }
 
+// adminAlerter возвращает функцию алертов админу (nil, если admin id не задан).
+func adminAlerter(tg *tgx.Mirror, adminID int64, log *slog.Logger) func(ctx context.Context, text string) {
+	if adminID == 0 {
+		return nil
+	}
+	return func(ctx context.Context, text string) {
+		if err := tg.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
+			log.Warn("не удалось отправить алерт админу", "err", err)
+		}
+	}
+}
+
 // cmdImport переносит состояние старой Python-версии в SQLite.
 // Импорт идемпотентен: повторный запуск ничего не дублирует.
 func cmdImport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "путь к конфигу")
+	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	notesPath := fs.String("notes", "", "notes.json старой версии")
 	sessionsPath := fs.String("sessions", "", "sessions_export.json (из tools/export_sessions.py)")
 	subscribersPath := fs.String("subscribers", "", "subscribers.json старой версии")
@@ -240,7 +273,7 @@ func reorderArgs(args []string, valueFlags map[string]bool) []string {
 
 func cmdCrawl(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.json", "путь к конфигу")
+	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	saveHTML := fs.String("save-html", "", "каталог для сохранения сырого HTML (фикстуры)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true, "save-html": true})); err != nil {
 		return err
