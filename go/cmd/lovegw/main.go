@@ -29,6 +29,7 @@ import (
 
 	"lovegw/internal/bridge"
 	"lovegw/internal/config"
+	"lovegw/internal/dmbot"
 	"lovegw/internal/legacy"
 	"lovegw/internal/love"
 	"lovegw/internal/mirror"
@@ -98,7 +99,21 @@ func cmdRun(ctx context.Context, args []string) error {
 
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
-	handler := bridge.New(st, cfg.MirrorBot.ChannelID, cfg.MirrorBot.DiscussionChatID, log)
+
+	// ЛС-бот РюмкинЪ (опционален): без него мост не сможет уведомлять
+	// пользователей о протухшей сессии, но зеркалирование работает.
+	var dm *dmbot.Bot
+	var notify bridge.Notify
+	if cfg.DMBot.Token != "" {
+		dm, err = dmbot.New(cfg.DMBot.Token, st, client, log)
+		if err != nil {
+			return err
+		}
+		notify = dm.Notify
+	}
+
+	handler := bridge.New(st, client, notify,
+		cfg.MirrorBot.ChannelID, cfg.MirrorBot.DiscussionChatID, log)
 	tg, err := tgx.NewMirror(cfg.MirrorBot.Token, cfg.MirrorBot.ChannelID,
 		cfg.MirrorBot.DiscussionChatID, cfg.Signature, cfg.Site.BaseURL, log, handler.Handle)
 	if err != nil {
@@ -107,13 +122,19 @@ func cmdRun(ctx context.Context, args []string) error {
 	mir := mirror.New(st, client, tg, cfg.NotesLimit,
 		time.Duration(cfg.FeedIntervalS)*time.Second, *seed, log)
 
-	log.Info("lovegw запущен", "seed", *seed, "db", cfg.DBPath)
+	log.Info("lovegw запущен", "seed", *seed, "db", cfg.DBPath, "dm_bot", dm != nil)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		tg.Start(gctx) // блокируется до отмены контекста
 		return nil
 	})
 	g.Go(func() error { return mir.Run(gctx) })
+	if dm != nil {
+		g.Go(func() error {
+			dm.Start(gctx)
+			return nil
+		})
+	}
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"lovegw/internal/love"
 	"lovegw/internal/store"
 )
 
@@ -143,16 +144,9 @@ func ImportNotes(ctx context.Context, st *store.Store, r io.Reader, now time.Tim
 	return stats, nil
 }
 
-// Cookie — нормализованный формат куки в sessions_export.json
-// (см. tools/export_sessions.py).
-type Cookie struct {
-	Name    string  `json:"name"`
-	Value   string  `json:"value"`
-	Domain  string  `json:"domain"`
-	Path    string  `json:"path"`
-	Expires float64 `json:"expires"` // unix, 0/null — сессионная
-	Secure  bool    `json:"secure"`
-}
+// Cookie — формат куки в sessions_export.json (см. tools/export_sessions.py).
+// Совпадает с форматом хранения в БД.
+type Cookie = love.SessionCookie
 
 // ImportSessions переносит куки пользователей из sessions_export.json.
 func ImportSessions(ctx context.Context, st *store.Store, r io.Reader, now time.Time) (Stats, error) {

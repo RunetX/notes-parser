@@ -1,0 +1,203 @@
+package bridge
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/go-telegram/bot/models"
+
+	"lovegw/internal/love"
+	"lovegw/internal/store"
+)
+
+const (
+	channelID    = -1001000000000
+	discussionID = -1002000000000
+	userID       = 555
+)
+
+// fakeSite фиксирует отправленные на сайт комментарии.
+type fakeSite struct {
+	mu    sync.Mutex
+	posts []sitePost
+	err   error
+}
+
+type sitePost struct {
+	noteID   string
+	comAPIID string
+	text     string
+	cookies  int
+}
+
+func (f *fakeSite) PostComment(_ context.Context, cookies []*http.Cookie, noteID, comAPIID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.posts = append(f.posts, sitePost{noteID, comAPIID, text, len(cookies)})
+	return nil
+}
+
+func setup(t *testing.T) (*store.Store, *fakeSite, *Handler, []string) {
+	t.Helper()
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	var mu sync.Mutex
+	var notifications []string
+	notify := func(_ context.Context, uid int64, text string) {
+		mu.Lock()
+		notifications = append(notifications, text)
+		mu.Unlock()
+	}
+	site := &fakeSite{}
+	h := New(st, site, notify, channelID, discussionID, slog.Default())
+	return st, site, h, notifications
+}
+
+// seedUserSession кладёт валидную сессию с одной живой кукой.
+func seedUserSession(t *testing.T, st *store.Store, uid int64) {
+	t.Helper()
+	cookies := []*http.Cookie{{Name: "sid", Value: "live"}}
+	j, err := love.CookiesToJSON(cookies, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertSession(context.Background(), uid, j, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func replyUpdate(replyToID, msgID int, text string) *models.Update {
+	return &models.Update{Message: &models.Message{
+		ID:             msgID,
+		Chat:           models.Chat{ID: discussionID, Type: models.ChatTypeGroup},
+		From:           &models.User{ID: userID, IsBot: false},
+		Text:           text,
+		ReplyToMessage: &models.Message{ID: replyToID},
+	}}
+}
+
+func TestReplyToThreadRootPostsComment(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	// Заметка с пойманным тредом (корень = 900).
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+
+	h.Handle(ctx, replyUpdate(900, 5, "мой ответ"))
+
+	if len(site.posts) != 1 {
+		t.Fatalf("постов на сайт: %d", len(site.posts))
+	}
+	p := site.posts[0]
+	if p.noteID != "n1" || p.comAPIID != "" || p.text != "мой ответ" || p.cookies != 1 {
+		t.Errorf("ответ в корень заметки разобран неверно: %+v", p)
+	}
+}
+
+func TestReplyToCommentPrefixesAuthor(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	// Комментарий бота с tg_message_id=800 от автора «Мария».
+	st.InsertComment(ctx, store.Comment{ID: 42, NoteID: "n1", AuthorName: "Мария",
+		Text: "привет", CreatedAt: time.Now()})
+	st.SetCommentTGMessageID(ctx, 42, 800)
+
+	h.Handle(ctx, replyUpdate(800, 6, "и тебе привет"))
+
+	if len(site.posts) != 1 {
+		t.Fatalf("постов: %d", len(site.posts))
+	}
+	p := site.posts[0]
+	if p.noteID != "n1" || p.comAPIID != "42" || p.text != "Мария, и тебе привет" {
+		t.Errorf("ответ на комментарий разобран неверно: %+v", p)
+	}
+}
+
+func TestReplyProcessedOnce(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+
+	// Одно и то же обновление доставлено дважды (рестарт getUpdates).
+	upd := replyUpdate(900, 5, "ответ")
+	h.Handle(ctx, upd)
+	h.Handle(ctx, upd)
+
+	if len(site.posts) != 1 {
+		t.Errorf("повторная доставка задвоила комментарий: %d", len(site.posts))
+	}
+}
+
+func TestReplyWithoutSessionNotifies(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	// Сессию НЕ создаём.
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+
+	// notify пишет в общий срез — проверяем, что был вызов.
+	var notified bool
+	h.notify = func(context.Context, int64, string) { notified = true }
+	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
+
+	if len(site.posts) != 0 {
+		t.Errorf("без сессии на сайт постить нельзя: %d", len(site.posts))
+	}
+	if !notified {
+		t.Error("пользователь должен получить подсказку про /login")
+	}
+}
+
+func TestReplyToUnknownMessageIgnored(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+
+	// Ответ на чужое сообщение (не корень треда и не наш комментарий).
+	h.Handle(ctx, replyUpdate(12345, 5, "ответ в никуда"))
+
+	if len(site.posts) != 0 {
+		t.Errorf("ответ на неизвестное сообщение не должен постить: %d", len(site.posts))
+	}
+}
+
+func TestBotReplyIgnored(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+
+	upd := replyUpdate(900, 5, "я бот")
+	upd.Message.From.IsBot = true
+	h.Handle(ctx, upd)
+
+	if len(site.posts) != 0 {
+		t.Errorf("ответы ботов игнорируются: %d", len(site.posts))
+	}
+}
