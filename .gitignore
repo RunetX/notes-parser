@@ -127,3 +127,25 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# --- Проект: секреты, состояние, legacy ---
+# Конфиги с токенами ботов (шаблоны: *.example.json)
+config.json
+ryumkin.json
+# Состояние и данные пользователей
+notes.json
+subscribers.json
+users.json
+sessions/
+*.cookie
+db.sqlite
+db.sqlite-journal
+output/
+yesterday/
+.vscode/
+.claude/
+# Legacy-код, хранится только локально (main.py содержит токен)
+main.py
+poster_db.py
+session_get.py
+messages.py

@@ -230,11 +230,9 @@ def crawl_comments(bot, notes, cfg, tg_vars, sbscrbs):
                 send_comment2tg(bot, comment_obj, note['tg_discussion_id'], tg_vars, cfg['tg_channel_comments'])
                 note['comments'].append(comment_obj)
                 check_sbscrbs(bot, note['tg_discussion_id'], comment_obj, sbscrbs, cfg['tg_channel_comments'])
-
 #Конец области
 
 #Область Telegram
-
 def send_tg_photo(bot, tg_channel, photo, caption, reply_id = None):
     if photo == None:
         photo = 'https://play-lh.googleusercontent.com/9sO4wJVf_QTx3MRGDCNBIrXVUrhmA9_lV17Z3OLFX4UKVz4_7Q7_EXz39OJUyMEpTCU'
