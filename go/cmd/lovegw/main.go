@@ -228,6 +228,9 @@ func cmdCrawl(ctx context.Context, args []string) error {
 func crawlNotes(ctx context.Context, client *love.Client, saveDir string) error {
 	raw, err := client.RawNotes(ctx)
 	if err != nil {
+		if saveDir != "" {
+			return fmt.Errorf("%w — страница не получена, HTML НЕ сохранён", err)
+		}
 		return err
 	}
 	if err := saveRaw(saveDir, "notes_feed.html", raw); err != nil {
@@ -243,6 +246,9 @@ func crawlNotes(ctx context.Context, client *love.Client, saveDir string) error 
 func crawlComments(ctx context.Context, client *love.Client, baseURL, noteID, saveDir string) error {
 	raw, err := client.RawComments(ctx, noteID)
 	if err != nil {
+		if saveDir != "" {
+			return fmt.Errorf("%w — страница не получена, HTML НЕ сохранён", err)
+		}
 		return err
 	}
 	if err := saveRaw(saveDir, "comments_"+noteID+".html", raw); err != nil {
