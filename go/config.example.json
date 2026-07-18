@@ -1,0 +1,21 @@
+{
+  "site": {
+    "base_url": "https://love.ngs.ru",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "request_interval_ms": 2000
+  },
+  "mirror_bot": {
+    "token": "<токен постер-бота или env LOVEGW_MIRROR_TOKEN>",
+    "channel_id": -1001234567890,
+    "discussion_chat_id": -1009876543210
+  },
+  "dm_bot": {
+    "token": "<токен ЛС-бота или env LOVEGW_DM_TOKEN>"
+  },
+  "notes_limit": 5,
+  "signature": "@your_channel",
+  "admin_tg_user_id": 0,
+  "feed_interval_s": 60,
+  "db_path": "data/lovegw.db",
+  "log_level": "info"
+}

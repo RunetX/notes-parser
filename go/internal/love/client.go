@@ -1,0 +1,154 @@
+package love
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"math/rand/v2"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"golang.org/x/time/rate"
+)
+
+const (
+	notesPath       = "/notes/limit~5/"
+	commentsPathFmt = "/notes/comments/%s/desc/limit~30/?view=linear"
+
+	requestTimeout = 15 * time.Second
+	getRetries     = 3
+)
+
+// ErrForbidden — сайт ответил 403: геоблок DDoS-Guard или бан.
+// Ретраи бессмысленны, нужен разрешённый (российский) IP.
+var ErrForbidden = errors.New("сайт вернул 403 (геоблок/бан IP)")
+
+// Client — HTTP-клиент сайта с общим лимитером запросов: сколько бы
+// воркеров ни работало, к сайту уходит не больше одного запроса за интервал.
+type Client struct {
+	baseURL string
+	ua      string
+	hc      *http.Client
+	limiter *rate.Limiter
+	log     *slog.Logger
+}
+
+func New(baseURL, userAgent string, requestInterval time.Duration, log *slog.Logger) *Client {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Client{
+		baseURL: strings.TrimSuffix(baseURL, "/"),
+		ua:      userAgent,
+		hc:      &http.Client{Timeout: requestTimeout},
+		limiter: rate.NewLimiter(rate.Every(requestInterval), 2),
+		log:     log,
+	}
+}
+
+// FetchNotes скачивает и разбирает ленту заметок.
+func (c *Client) FetchNotes(ctx context.Context) ([]Note, error) {
+	body, err := c.RawNotes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ParseNotes(strings.NewReader(string(body)))
+}
+
+// FetchComments скачивает и разбирает комментарии заметки.
+func (c *Client) FetchComments(ctx context.Context, noteID string) ([]Comment, error) {
+	body, err := c.RawComments(ctx, noteID)
+	if err != nil {
+		return nil, err
+	}
+	return ParseComments(strings.NewReader(string(body)), c.baseURL)
+}
+
+// RawNotes возвращает сырой HTML ленты (для crawl --save-html и фикстур).
+func (c *Client) RawNotes(ctx context.Context) ([]byte, error) {
+	return c.get(ctx, notesPath)
+}
+
+// RawComments возвращает сырой HTML страницы комментариев.
+func (c *Client) RawComments(ctx context.Context, noteID string) ([]byte, error) {
+	return c.get(ctx, fmt.Sprintf(commentsPathFmt, noteID))
+}
+
+// get выполняет GET с ретраями (сеть/5xx) и экспоненциальным backoff.
+// 4xx не ретраится: это не временный сбой.
+func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < getRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			backoff += time.Duration(rand.Int64N(int64(backoff / 2)))
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		body, retriable, err := c.getOnce(ctx, path)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !retriable {
+			return nil, err
+		}
+		c.log.Warn("повтор запроса к сайту", "path", path, "attempt", attempt+1, "err", err)
+	}
+	return nil, fmt.Errorf("GET %s: попытки исчерпаны: %w", path, lastErr)
+}
+
+func (c *Client) getOnce(ctx context.Context, path string) (body []byte, retriable bool, err error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, false, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("User-Agent", c.ua)
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, true, err
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		b, err := io.ReadAll(resp.Body)
+		return b, true, err
+	case resp.StatusCode == http.StatusForbidden:
+		return nil, false, fmt.Errorf("GET %s: %w", path, ErrForbidden)
+	case resp.StatusCode >= 500:
+		return nil, true, fmt.Errorf("GET %s: статус %d", path, resp.StatusCode)
+	default:
+		return nil, false, fmt.Errorf("GET %s: статус %d", path, resp.StatusCode)
+	}
+}
+
+// postForm выполняет POST формы, при необходимости с куками пользователя.
+// Без ретраев: повтор POST может задвоить комментарий или заметку.
+func (c *Client) postForm(ctx context.Context, path string, form url.Values, cookies []*http.Cookie) (*http.Response, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+path, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", c.ua)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, ck := range cookies {
+		req.AddCookie(ck)
+	}
+	return c.hc.Do(req)
+}

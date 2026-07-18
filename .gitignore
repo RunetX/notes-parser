@@ -129,6 +129,10 @@ dmypy.json
 .pyre/
 
 # --- Проект: секреты, состояние, legacy ---
+# Вывод tools/export_sessions.py — живые куки пользователей
+sessions_export.json
+# SQLite-база lovegw
+data/
 # Конфиги с токенами ботов (шаблоны: *.example.json)
 config.json
 ryumkin.json

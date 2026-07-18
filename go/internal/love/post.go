@@ -1,0 +1,64 @@
+package love
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+)
+
+// Пути и поля форм сайта. Точный паритет с Python-версией
+// (poster.py: love_comment_data, ryumkin.py: love_note_data).
+const (
+	commentPostPathFmt = "/notes/comments/%s"
+	notePostPath       = "/notes/add/"
+)
+
+// PostComment отправляет комментарий к заметке от имени пользователя.
+// comAPIID — id комментария, на который отвечаем; пустая строка —
+// ответ в корень заметки.
+func (c *Client) PostComment(ctx context.Context, cookies []*http.Cookie, noteID, comAPIID, text string) error {
+	form := url.Values{
+		"noteId":   {noteID},
+		"comId":    {"0"},
+		"comApiId": {comAPIID},
+		"reason":   {""},
+		"content":  {text},
+	}
+	resp, err := c.postForm(ctx, fmt.Sprintf(commentPostPathFmt, noteID), form, cookies)
+	if err != nil {
+		return fmt.Errorf("отправка комментария к заметке %s: %w", noteID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("отправка комментария к заметке %s: статус %d", noteID, resp.StatusCode)
+	}
+	return nil
+}
+
+// PostNote публикует новую заметку от имени пользователя.
+func (c *Client) PostNote(ctx context.Context, cookies []*http.Cookie, text string, anonymous bool) error {
+	hideMe := "0"
+	if anonymous {
+		hideMe = "1"
+	}
+	form := url.Values{
+		"action_note[lid]":    {"0"},
+		"action_note[href]":   {""},
+		"action_note[hideme]": {hideMe},
+		"action_note[nocom]":  {"0"},
+		"action_note[rules]":  {"1"},
+		"id":                  {""},
+		"category_note":       {"0"},
+		"letter":              {text},
+	}
+	resp, err := c.postForm(ctx, notePostPath, form, cookies)
+	if err != nil {
+		return fmt.Errorf("публикация заметки: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("публикация заметки: статус %d", resp.StatusCode)
+	}
+	return nil
+}

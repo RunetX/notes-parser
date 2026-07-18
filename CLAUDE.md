@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository layout: two generations
+
+The project is being rewritten in Go (working name `lovegw`, lives in `go/`); the Python version below is the running legacy reference. Rewrite status: M1 (site client + parsers) and M2 (SQLite store + legacy importer) are done; mirroring daemon, reply bridge, DM bot, and deploy (M3–M7) are pending — see the roadmap in the git history / plan discussion.
+
+### Go version (go/)
+
+- Build/test: `cd go && go build ./... && go vet ./... && go test ./...` (`-race` needs cgo, run it on Linux/CI).
+- Debug crawl: `go run ./cmd/lovegw crawl notes` / `crawl comments <note_id>`; `-save-html <dir>` records real pages as parser fixtures into `internal/love/testdata/` (current fixtures are synthetic — replace them with recorded ones when a non-blocked IP is available; the site is behind DDoS-Guard geoblocking, non-RU IPs get 403).
+- Import legacy state: `python tools/export_sessions.py` (on the old Python env; output `sessions_export.json` is gitignored — live cookies), then `go run ./cmd/lovegw import -notes ../notes.json -sessions sessions_export.json -subscribers ../subscribers.json`. Import is idempotent.
+- Storage is SQLite (`modernc.org/sqlite`, CGo-free) — schema in `internal/store/schema.sql`, versioned via `PRAGMA user_version`. All site markup selectors live in one const block in `internal/love/parse.go`; a required selector that matches nothing returns a typed `MarkupError` (markup-drift detection), while an empty comments page is legitimately empty.
+- Conventions: identifiers in English, comments and user-facing strings in Russian. Config `go/config.json` (gitignored, template `go/config.example.json`); tokens can come from env `LOVEGW_MIRROR_TOKEN` / `LOVEGW_DM_TOKEN` / `LOVEGW_DB_PATH`.
+
 ## What this project is
 
 A Telegram bot that mirrors the "notes" (заметки) section of the dating site love.ngs.ru into Telegram channels, and bridges interaction back: logged-in Telegram users can reply in Telegram and the bot posts their reply as a comment on the site using their saved cookie session. Scraping is done with `requests` + BeautifulSoup against the site's HTML (CSS selectors like `.lv-notes__note-item`, `.lv-note__comment-item`).
