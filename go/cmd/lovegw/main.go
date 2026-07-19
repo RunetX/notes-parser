@@ -149,11 +149,22 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		return err
 	}
 
+	// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
+	// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
+	var subNotify func(ctx context.Context, userID int64, n store.Note, c store.Comment)
+	if dm != nil {
+		subNotify = func(ctx context.Context, userID int64, n store.Note, c store.Comment) {
+			link := tgx.DeepLink(cfg.MirrorBot.DiscussionChatID, c.TGMessageID, n.TGThreadID)
+			dm.Notify(ctx, userID, "🔔 Новый комментарий по вашему ключевому слову:\n"+link)
+		}
+	}
+
 	mir := mirror.New(st, client, tg, mirror.Config{
 		NotesLimit:   cfg.NotesLimit,
 		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
 		SeedFirst:    seed,
 		AlertSend:    adminAlerter(tg, cfg.AdminTGUserID, log),
+		SubNotify:    subNotify,
 	}, log)
 
 	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath, "dm_bot", dm != nil)

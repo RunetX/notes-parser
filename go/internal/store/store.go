@@ -190,6 +190,38 @@ func (s *Store) AddSubscription(ctx context.Context, keyword string, tgUserID in
 	return affected > 0, nil
 }
 
+// RemoveSubscription убирает подписку пользователя на ключевое слово.
+// Возвращает true, если строка действительно была удалена.
+func (s *Store) RemoveSubscription(ctx context.Context, keyword string, tgUserID int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM subscriptions WHERE keyword = ? AND tg_user_id = ?`,
+		keyword, tgUserID)
+	if err != nil {
+		return false, fmt.Errorf("delete subscription: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	return affected > 0, nil
+}
+
+// SubscriptionsByUser возвращает ключевые слова, на которые подписан пользователь.
+func (s *Store) SubscriptionsByUser(ctx context.Context, tgUserID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT keyword FROM subscriptions WHERE tg_user_id = ? ORDER BY keyword`, tgUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keywords []string
+	for rows.Next() {
+		var kw string
+		if err := rows.Scan(&kw); err != nil {
+			return nil, err
+		}
+		keywords = append(keywords, kw)
+	}
+	return keywords, rows.Err()
+}
+
 // KnownNoteIDs возвращает id всех известных заметок (для фильтра ленты).
 func (s *Store) KnownNoteIDs(ctx context.Context) (map[string]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM notes`)

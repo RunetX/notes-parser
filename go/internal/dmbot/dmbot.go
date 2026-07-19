@@ -118,9 +118,69 @@ func (d *Bot) handleCommand(ctx context.Context, chatID int64, cmd string, msg *
 		d.send(ctx, chatID, "Отправьте текст анонимной заметки")
 	case "/status":
 		d.handleStatus(ctx, chatID)
+	case "/subscribe":
+		d.handleSubscribe(ctx, chatID, commandArg(msg.Text))
+	case "/unsubscribe":
+		d.handleUnsubscribe(ctx, chatID, commandArg(msg.Text))
+	case "/mysubs":
+		d.handleMySubs(ctx, chatID)
 	default:
 		d.send(ctx, chatID, "Неизвестная команда. Наберите /start")
 	}
+}
+
+// handleSubscribe подписывает пользователя на ключевое слово: как только в
+// новом комментарии встретится это слово, придёт уведомление со ссылкой.
+func (d *Bot) handleSubscribe(ctx context.Context, chatID int64, keyword string) {
+	if keyword == "" {
+		d.send(ctx, chatID, "Укажите слово: /subscribe <ключевое слово>")
+		return
+	}
+	added, err := d.st.AddSubscription(ctx, keyword, chatID)
+	if err != nil {
+		d.log.Error("подписка", "user", chatID, "err", err)
+		d.send(ctx, chatID, msgInternalError)
+		return
+	}
+	if added {
+		d.send(ctx, chatID, "Подписал на «"+keyword+"». Уведомлю, когда слово встретится в комментарии.")
+	} else {
+		d.send(ctx, chatID, "Вы уже подписаны на «"+keyword+"».")
+	}
+}
+
+// handleUnsubscribe снимает подписку на ключевое слово.
+func (d *Bot) handleUnsubscribe(ctx context.Context, chatID int64, keyword string) {
+	if keyword == "" {
+		d.send(ctx, chatID, "Укажите слово: /unsubscribe <ключевое слово>")
+		return
+	}
+	removed, err := d.st.RemoveSubscription(ctx, keyword, chatID)
+	if err != nil {
+		d.log.Error("отписка", "user", chatID, "err", err)
+		d.send(ctx, chatID, msgInternalError)
+		return
+	}
+	if removed {
+		d.send(ctx, chatID, "Отписал от «"+keyword+"».")
+	} else {
+		d.send(ctx, chatID, "Такой подписки не было.")
+	}
+}
+
+// handleMySubs показывает список ключевых слов пользователя.
+func (d *Bot) handleMySubs(ctx context.Context, chatID int64) {
+	keywords, err := d.st.SubscriptionsByUser(ctx, chatID)
+	if err != nil {
+		d.log.Error("список подписок", "user", chatID, "err", err)
+		d.send(ctx, chatID, msgInternalError)
+		return
+	}
+	if len(keywords) == 0 {
+		d.send(ctx, chatID, "У вас нет подписок. Добавить: /subscribe <слово>")
+		return
+	}
+	d.send(ctx, chatID, "Ваши подписки:\n• "+strings.Join(keywords, "\n• "))
 }
 
 func (d *Bot) handleStateInput(ctx context.Context, chatID int64, state string, msg *models.Message) {
@@ -245,8 +305,21 @@ func command(text string) string {
 	return cmd
 }
 
+// commandArg возвращает аргумент команды — всё, что идёт после первого слова
+// (ключевое слово подписки может содержать пробелы).
+func commandArg(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexAny(text, " \t\n"); i >= 0 {
+		return strings.TrimSpace(text[i+1:])
+	}
+	return ""
+}
+
 const startMessage = `Привет! Меня зовут РюмкинЪ. Я умею:
 /login — войти на сайт НГС.Лав
 /add_note — добавить заметку
 /add_anonymous_note — добавить анонимную заметку
-/status — проверить сессию сайта`
+/status — проверить сессию сайта
+/subscribe <слово> — уведомлять о комментариях с этим словом
+/unsubscribe <слово> — отписаться от слова
+/mysubs — мои подписки`

@@ -42,17 +42,22 @@ type Mirror struct {
 	notesLimit   int
 	feedInterval time.Duration
 	seedFirst    bool
+	subNotify    func(ctx context.Context, userID int64, n store.Note, c store.Comment)
 
 	events chan string // id заметок для запуска воркеров
 }
 
 // Config — параметры зеркала. AlertSend (может быть nil) шлёт админу
-// уведомления о дрейфе вёрстки и блокировке сайта.
+// уведомления о дрейфе вёрстки и блокировке сайта. SubNotify (может быть nil)
+// уведомляет подписчика о комментарии с ключевым словом — если задан, идёт
+// вместо Sink.NotifySubscriber (чтобы слать через ЛС-бота, которого
+// пользователь точно запускал).
 type Config struct {
 	NotesLimit   int
 	FeedInterval time.Duration
 	SeedFirst    bool
 	AlertSend    func(ctx context.Context, text string)
+	SubNotify    func(ctx context.Context, userID int64, n store.Note, c store.Comment)
 }
 
 func New(st *store.Store, site SiteClient, sink Sink, cfg Config, log *slog.Logger) *Mirror {
@@ -68,6 +73,7 @@ func New(st *store.Store, site SiteClient, sink Sink, cfg Config, log *slog.Logg
 		notesLimit:   cfg.NotesLimit,
 		feedInterval: cfg.FeedInterval,
 		seedFirst:    cfg.SeedFirst,
+		subNotify:    cfg.SubNotify,
 		events:       make(chan string, 16),
 	}
 }
@@ -452,10 +458,15 @@ func isRealAvatar(url string) bool {
 }
 
 // notifySubscribers шлёт ЛС подписчикам, чьё ключевое слово встретилось
-// в тексте комментария.
+// в тексте комментария. Если задан subNotify (ЛС-бот) — шлём через него,
+// иначе — через основной sink (постер-бот).
 func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscription, n store.Note, c store.Comment) {
 	for _, sub := range subs {
 		if !strings.Contains(c.Text, sub.Keyword) {
+			continue
+		}
+		if m.subNotify != nil {
+			m.subNotify(ctx, sub.TGUserID, n, c)
 			continue
 		}
 		if err := m.sink.NotifySubscriber(ctx, sub.TGUserID, n, c); err != nil {

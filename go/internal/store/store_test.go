@@ -118,6 +118,48 @@ func TestDeleteNoteCascade(t *testing.T) {
 	}
 }
 
+func TestSubscriptionsAddListRemove(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+
+	added, err := st.AddSubscription(ctx, "Граф", 42)
+	if err != nil || !added {
+		t.Fatalf("первая подписка: added=%v err=%v", added, err)
+	}
+	added, _ = st.AddSubscription(ctx, "Граф", 42)
+	if added {
+		t.Error("дубль подписки должен игнорироваться")
+	}
+	if _, err := st.AddSubscription(ctx, "Барон", 42); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddSubscription(ctx, "Граф", 99); err != nil {
+		t.Fatal(err)
+	}
+
+	kws, err := st.SubscriptionsByUser(ctx, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kws) != 2 || kws[0] != "Барон" || kws[1] != "Граф" { // ORDER BY keyword
+		t.Errorf("подписки пользователя 42: %v", kws)
+	}
+
+	removed, err := st.RemoveSubscription(ctx, "Граф", 42)
+	if err != nil || !removed {
+		t.Fatalf("удаление: removed=%v err=%v", removed, err)
+	}
+	removed, _ = st.RemoveSubscription(ctx, "Граф", 42)
+	if removed {
+		t.Error("повторное удаление должно вернуть false")
+	}
+	// Подписка другого пользователя на «Граф» не затронута.
+	kws, _ = st.SubscriptionsByUser(ctx, 99)
+	if len(kws) != 1 || kws[0] != "Граф" {
+		t.Errorf("подписки пользователя 99: %v", kws)
+	}
+}
+
 func TestUpsertSessionOverwrites(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)

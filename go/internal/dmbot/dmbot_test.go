@@ -17,3 +17,18 @@ func TestCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandArg(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"/subscribe Граф", "Граф"},
+		{"/subscribe Граф M.N.", "Граф M.N."}, // ключевое слово может быть с пробелами
+		{"/subscribe   слово  ", "слово"},
+		{"/mysubs", ""},
+		{"/subscribe", ""},
+		{"", ""},
+	} {
+		if got := commandArg(tc.in); got != tc.want {
+			t.Errorf("commandArg(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
