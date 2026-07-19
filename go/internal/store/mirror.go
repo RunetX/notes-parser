@@ -110,6 +110,56 @@ func (s *Store) UnsentComments(ctx context.Context, noteID string) ([]Comment, e
 	return comments, rows.Err()
 }
 
+// SentCommentTGMessageIDs — id отправленных в Telegram сообщений комментариев
+// заметки (для удаления при перепосте).
+func (s *Store) SentCommentTGMessageIDs(ctx context.Context, noteID string) ([]int64, error) {
+	return s.collectIDs(ctx,
+		`SELECT tg_message_id FROM comments WHERE note_id = ? AND tg_message_id IS NOT NULL`, noteID)
+}
+
+// SentNoteImageTGMessageIDs — id отправленных в Telegram иллюстраций заметки.
+func (s *Store) SentNoteImageTGMessageIDs(ctx context.Context, noteID string) ([]int64, error) {
+	return s.collectIDs(ctx,
+		`SELECT tg_message_id FROM note_images WHERE note_id = ? AND tg_message_id IS NOT NULL`, noteID)
+}
+
+func (s *Store) collectIDs(ctx context.Context, query, noteID string) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, query, noteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// DeleteNote удаляет заметку со всем содержимым (иллюстрации, комментарии).
+// После этого демон при обходе ленты перепостит её как новую.
+func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, q := range []string{
+		`DELETE FROM note_images WHERE note_id = ?`,
+		`DELETE FROM comments WHERE note_id = ?`,
+		`DELETE FROM notes WHERE id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, noteID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // Subscription — подписка на ключевое слово.
 type Subscription struct {
 	Keyword  string

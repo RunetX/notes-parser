@@ -60,6 +60,8 @@ func main() {
 		err = cmdRun(ctx, os.Args[2:])
 	case "doctor":
 		err = cmdDoctor(ctx, os.Args[2:])
+	case "repost":
+		err = cmdRepost(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -76,7 +78,8 @@ func usage() {
   lovegw crawl [-config config.json] [-save-html dir] comments <note_id>
   lovegw import [-config config.json] [-notes notes.json] [-sessions sessions_export.json] [-subscribers subscribers.json]
   lovegw run    [-config config.json] [-seed]
-  lovegw doctor [-config config.json] [-post-test]`)
+  lovegw doctor [-config config.json] [-post-test]
+  lovegw repost [-config config.json] <note_id> [<note_id> ...]`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.

@@ -90,6 +90,34 @@ func TestNoteImagesUnsentAndMark(t *testing.T) {
 	}
 }
 
+func TestDeleteNoteCascade(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	if _, err := st.InsertNote(ctx, Note{ID: "n1", Text: "т", Status: StatusPosted, FirstSeenAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InsertComment(ctx, Comment{ID: 1, NoteID: "n1", AuthorName: "А", Text: "к", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertNoteImage(ctx, "n1", 0, "https://cdn/a.jpg"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.DeleteNote(ctx, "n1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.NoteByID(ctx, "n1"); err == nil {
+		t.Error("заметка должна быть удалена")
+	}
+	if imgs, _ := st.UnsentNoteImages(ctx, "n1"); len(imgs) != 0 {
+		t.Errorf("иллюстрации должны быть удалены: %+v", imgs)
+	}
+	ids, _ := st.CommentIDs(ctx, "n1")
+	if len(ids) != 0 {
+		t.Errorf("комментарии должны быть удалены: %v", ids)
+	}
+}
+
 func TestUpsertSessionOverwrites(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)
