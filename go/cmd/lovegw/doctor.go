@@ -99,7 +99,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	if mirrorOK {
 		switch n, err := tgx.ProbePendingUpdates(ctx, cfg.MirrorBot.Token, tgClient); {
 		case errors.Is(err, tgx.ErrPollingConflict):
-			warn("очередь обновлений", "409: бота слушает другой процесс (старый poster.py ещё работает?)")
+			warn("очередь обновлений", "409: апдейты бота слушает другой процесс (второй экземпляр lovegw?)")
 		case err != nil:
 			fail("очередь обновлений", err)
 		case n > 0:

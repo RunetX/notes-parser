@@ -205,7 +205,7 @@ func cmdImport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	notesPath := fs.String("notes", "", "notes.json старой версии")
-	sessionsPath := fs.String("sessions", "", "sessions_export.json (из tools/export_sessions.py)")
+	sessionsPath := fs.String("sessions", "", "JSON с экспортированными куки пользователей старой версии")
 	subscribersPath := fs.String("subscribers", "", "subscribers.json старой версии")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"config": true, "notes": true, "sessions": true, "subscribers": true,

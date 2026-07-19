@@ -1,9 +1,0 @@
-{
- "basic_url": "https://love.ngs.ru",
- "default_tg_userid_session": "<telegram_user_id>",
- "tg_bot_name": "@your_bot",
- "tg_token": "<bot_token>",
- "tg_channel_posts": "<channel_id_or_@username>",
- "tg_channel_comments": "<channel_id_or_@username>",
- "tg_discussion_chat_id": "<discussion_chat_id>"
-}
