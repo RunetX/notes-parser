@@ -223,6 +223,47 @@ func TestNoteImagePostedBeforeComments(t *testing.T) {
 	}
 }
 
+func TestWorkerArchivesClosedNote(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes: []love.Note{{ID: "n1", Text: "т", CommentsClosed: true}},
+		comments: map[string][]love.Comment{
+			"n1": {{ID: 1, AuthorName: "А", Text: "последний"}},
+		},
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false) // постит n1 и помечает её comments_closed
+
+	n, _ := st.NoteByID(ctx, "n1")
+	if !n.CommentsClosed {
+		t.Fatal("обход ленты должен пометить заметку закрытой")
+	}
+	// Ловим тред, чтобы финальный дозабор комментариев прошёл.
+	st.SetNoteThreadIDByMessageID(ctx, n.TGMessageID, 777)
+
+	// Закрытая заметка архивируется на первой же итерации (без сна), поэтому
+	// pollNote завершается быстро; таймаут — страховка от зависания при регрессе.
+	done, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	m.pollNote(done, "n1")
+
+	n, _ = st.NoteByID(ctx, "n1")
+	if n.Status != store.StatusArchived {
+		t.Fatalf("закрытая заметка должна уйти в архив, статус %q", n.Status)
+	}
+	// Последний комментарий всё же отправлен перед архивацией.
+	sent := false
+	for _, c := range sink.calls {
+		if c.kind == "comment" && c.comID == 1 {
+			sent = true
+		}
+	}
+	if !sent {
+		t.Errorf("последний комментарий должен уйти до архивации: %+v", sink.calls)
+	}
+}
+
 func TestNotifySubscribersOnKeyword(t *testing.T) {
 	ctx := context.Background()
 	site := &fakeSite{

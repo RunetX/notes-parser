@@ -155,36 +155,15 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 		if known[n.ID] {
 			continue
 		}
-		rec := store.Note{
-			ID:              n.ID,
-			AuthorID:        n.AuthorID,
-			AuthorName:      n.AuthorName,
-			Text:            n.Text,
-			AuthorAvatarURL: n.AuthorAvatarURL,
-			Status:          store.StatusPending,
-			FirstSeenAt:     time.Now(),
-		}
-		if seed {
-			rec.Status = store.StatusSeeded
-			if _, err := m.st.InsertNote(ctx, rec); err != nil {
-				m.log.Error("seed заметки", "note", n.ID, "err", err)
-				continue
-			}
-			m.storeNoteImages(ctx, n)
+		switch m.ingestNewNote(ctx, n, seed) {
+		case ingestSeeded:
 			seeded++
-			continue
-		}
-		added, err := m.st.InsertNote(ctx, rec)
-		if err != nil || !added {
-			if err != nil {
-				m.log.Error("сохранение заметки", "note", n.ID, "err", err)
-			}
-			continue
-		}
-		m.storeNoteImages(ctx, n)
-		if m.postNote(ctx, rec) {
+		case ingestPosted:
 			posted++
 		}
+	}
+	if !seed {
+		m.markClosedNotes(ctx, notes)
 	}
 	if seed {
 		m.log.Info("seed-обход ленты завершён", "seeded", seeded, "posted", 0)
@@ -192,6 +171,71 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 		m.log.Info("обход ленты", "новых", posted)
 	}
 	return true
+}
+
+// ingestResult — итог обработки одной новой заметки из ленты.
+type ingestResult int
+
+const (
+	ingestSkipped ingestResult = iota // не сохранили/не запостили (ошибка или гонка)
+	ingestSeeded                      // зафиксировали без постинга (seed-режим)
+	ingestPosted                      // запостили в канал
+)
+
+// ingestNewNote сохраняет новую заметку и, вне seed-режима, постит её в канал
+// (с иллюстрациями). В seed-режиме заметка только фиксируется как seeded.
+func (m *Mirror) ingestNewNote(ctx context.Context, n love.Note, seed bool) ingestResult {
+	rec := store.Note{
+		ID:              n.ID,
+		AuthorID:        n.AuthorID,
+		AuthorName:      n.AuthorName,
+		Text:            n.Text,
+		AuthorAvatarURL: n.AuthorAvatarURL,
+		Status:          store.StatusPending,
+		FirstSeenAt:     time.Now(),
+	}
+	if seed {
+		rec.Status = store.StatusSeeded
+		if _, err := m.st.InsertNote(ctx, rec); err != nil {
+			m.log.Error("seed заметки", "note", n.ID, "err", err)
+			return ingestSkipped
+		}
+		m.storeNoteImages(ctx, n)
+		return ingestSeeded
+	}
+	added, err := m.st.InsertNote(ctx, rec)
+	if err != nil || !added {
+		if err != nil {
+			m.log.Error("сохранение заметки", "note", n.ID, "err", err)
+		}
+		return ingestSkipped
+	}
+	m.storeNoteImages(ctx, n)
+	if m.postNote(ctx, rec) {
+		return ingestPosted
+	}
+	return ingestSkipped
+}
+
+// markClosedNotes помечает в БД заметки, которые сайт закрыл для новых
+// комментариев («не актуальна» в ленте). Отслеживаемую заметку это уводит в
+// архив (после финального дозабора комментариев) — незачем опрашивать
+// замороженную до недельного таймаута. Заметку, ушедшую из окна ленты до
+// заморозки, досрочно не поймаем — её подхватит недельное правило архивации.
+func (m *Mirror) markClosedNotes(ctx context.Context, notes []love.Note) {
+	for _, n := range notes {
+		if !n.CommentsClosed {
+			continue
+		}
+		changed, err := m.st.MarkNoteCommentsClosed(ctx, n.ID)
+		if err != nil {
+			m.log.Error("отметка «не актуальна»", "note", n.ID, "err", err)
+			continue
+		}
+		if changed {
+			m.log.Info("заметка закрыта для комментариев на сайте", "note", n.ID)
+		}
+	}
 }
 
 // retryPending допощивает заметки, застрявшие в pending после сбоя.
@@ -281,14 +325,19 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 		}
 		now := time.Now()
 		if ShouldArchive(now, n.FirstSeenAt, n.LastCommentAt) {
-			if err := m.st.SetNoteArchived(ctx, noteID, now); err != nil {
-				m.log.Error("архивирование", "note", noteID, "err", err)
-			}
-			m.log.Info("заметка ушла в архив", "note", noteID)
+			m.archiveNote(ctx, noteID, now, "заметка ушла в архив")
 			return
 		}
 
 		m.pollComments(ctx, n)
+
+		// Сайт закрыл заметку для комментариев («не актуальна»): pollComments
+		// выше сделал финальный дозабор, дальше опрашивать нечего — в архив.
+		// Ждём пойманного треда, иначе застрявшим комментариям некуда уходить.
+		if n.CommentsClosed && n.TGThreadID != 0 {
+			m.archiveNote(ctx, noteID, now, "заметка «не актуальна» — снята с отслеживания")
+			return
+		}
 
 		select {
 		case <-time.After(PollInterval(now, n.FirstSeenAt, n.LastCommentAt)):
@@ -296,6 +345,14 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 			return
 		}
 	}
+}
+
+// archiveNote переводит заметку в архив и логирует причину; воркер завершается.
+func (m *Mirror) archiveNote(ctx context.Context, noteID string, now time.Time, reason string) {
+	if err := m.st.SetNoteArchived(ctx, noteID, now); err != nil {
+		m.log.Error("архивирование", "note", noteID, "err", err)
+	}
+	m.log.Info(reason, "note", noteID)
 }
 
 // pollComments — один цикл опроса комментариев заметки.

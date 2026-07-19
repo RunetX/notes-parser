@@ -16,7 +16,7 @@ var ErrNotFound = errors.New("запись не найдена")
 func (s *Store) NoteByID(ctx context.Context, id string) (Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, author_id, author_name, text, author_avatar_url, status,
-		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at
+		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at, comments_closed
 		FROM notes WHERE id = ?`, id)
 	if err != nil {
 		return Note{}, err
@@ -59,6 +59,20 @@ func (s *Store) SetNoteArchived(ctx context.Context, id string, at time.Time) er
 		UPDATE notes SET status = ?, archived_at = ? WHERE id = ?`,
 		StatusArchived, fmtTime(at), id)
 	return err
+}
+
+// MarkNoteCommentsClosed помечает заметку закрытой для новых комментариев
+// (сайт пометил её «не актуальна» в ленте). Возвращает true при первом
+// переходе — чтобы залогировать событие один раз, а не каждый обход ленты.
+func (s *Store) MarkNoteCommentsClosed(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE notes SET comments_closed = 1
+		WHERE id = ? AND comments_closed = 0`, id)
+	if err != nil {
+		return false, fmt.Errorf("mark comments closed %s: %w", id, err)
+	}
+	affected, _ := res.RowsAffected()
+	return affected > 0, nil
 }
 
 // SetNoteLastCommentAt обновляет время последнего комментария (для

@@ -160,6 +160,32 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	}
 }
 
+func TestMarkNoteCommentsClosed(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	if _, err := st.InsertNote(ctx, Note{ID: "n1", Text: "т", Status: StatusPosted, FirstSeenAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// Новая заметка открыта для комментариев.
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil || n.CommentsClosed {
+		t.Fatalf("новая заметка не должна быть закрыта: closed=%v err=%v", n.CommentsClosed, err)
+	}
+	changed, err := st.MarkNoteCommentsClosed(ctx, "n1")
+	if err != nil || !changed {
+		t.Fatalf("первая отметка должна сработать: changed=%v err=%v", changed, err)
+	}
+	// Повторная отметка идемпотентна и не логируется повторно.
+	changed, _ = st.MarkNoteCommentsClosed(ctx, "n1")
+	if changed {
+		t.Error("повторная отметка должна вернуть false (уже закрыта)")
+	}
+	n, err = st.NoteByID(ctx, "n1")
+	if err != nil || !n.CommentsClosed {
+		t.Fatalf("после отметки заметка закрыта: closed=%v err=%v", n.CommentsClosed, err)
+	}
+}
+
 func TestUpsertSessionOverwrites(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)

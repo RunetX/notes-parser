@@ -15,6 +15,7 @@ type Note struct {
 	Text            string   `json:"text"`
 	AuthorAvatarURL string   `json:"author_avatar_url"` // src аватара автора (может быть плейсхолдером)
 	Images          []string `json:"images"`            // URL иллюстраций заметки
+	CommentsClosed  bool     `json:"comments_closed"`   // сайт пометил заметку «не актуальна»: новые комментарии закрыты
 }
 
 // Comment — комментарий к заметке. Страница отдаёт их от новых к старым

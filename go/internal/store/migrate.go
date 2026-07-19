@@ -25,25 +25,36 @@ CREATE TABLE note_images (
 CREATE INDEX idx_note_images_note ON note_images(note_id);
 `
 
-// migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version.
+// migrateV3SQL — флаг «комментарии закрыты»: сайт пометил заметку неактуальной
+// («не актуальна» в ленте), новые комментарии на ней невозможны. Воркер такой
+// заметки после финального дозабора комментариев уходит в архив досрочно, не
+// дожидаясь недельного таймаута.
+const migrateV3SQL = `
+ALTER TABLE notes ADD COLUMN comments_closed INTEGER NOT NULL DEFAULT 0;
+`
+
+// migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
+// migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
+	migrations := []string{
+		schemaSQL,    // v1 — базовая схема
+		migrateV2SQL, // v2 — аватар автора заметки и иллюстрации
+		migrateV3SQL, // v3 — флаг «комментарии закрыты»
+	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("чтение user_version: %w", err)
 	}
-	if version < 1 {
-		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
-			return fmt.Errorf("миграция v1: %w", err)
+	for i, migration := range migrations {
+		target := i + 1
+		if version >= target {
+			continue
 		}
-		if _, err := s.db.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
-			return err
+		if _, err := s.db.ExecContext(ctx, migration); err != nil {
+			return fmt.Errorf("миграция v%d: %w", target, err)
 		}
-	}
-	if version < 2 {
-		if _, err := s.db.ExecContext(ctx, migrateV2SQL); err != nil {
-			return fmt.Errorf("миграция v2: %w", err)
-		}
-		if _, err := s.db.ExecContext(ctx, "PRAGMA user_version = 2"); err != nil {
+		// PRAGMA не биндит параметры; target — наш внутренний int, не ввод.
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", target)); err != nil {
 			return err
 		}
 	}

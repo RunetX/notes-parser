@@ -33,6 +33,7 @@ type Note struct {
 	TGThreadID      int64 // 0 — автофорвард ещё не пойман
 	FirstSeenAt     time.Time
 	LastCommentAt   time.Time // zero — комментариев не было
+	CommentsClosed  bool      // сайт пометил заметку «не актуальна»: комментарии закрыты
 }
 
 // NoteImage — иллюстрация заметки, публикуемая первым сообщением в треде.
@@ -244,7 +245,7 @@ func (s *Store) KnownNoteIDs(ctx context.Context) (map[string]bool, error) {
 func (s *Store) NotesByStatus(ctx context.Context, status string) ([]Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, author_id, author_name, text, author_avatar_url, status,
-		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at
+		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at, comments_closed
 		FROM notes WHERE status = ? ORDER BY id`, status)
 	if err != nil {
 		return nil, err
@@ -284,8 +285,9 @@ func scanNote(rows *sql.Rows) (Note, error) {
 	var tgMsg, tgThread sql.NullInt64
 	var firstSeen string
 	var lastComment sql.NullString
+	var commentsClosed int
 	if err := rows.Scan(&n.ID, &n.AuthorID, &n.AuthorName, &n.Text, &n.AuthorAvatarURL,
-		&n.Status, &tgMsg, &tgThread, &firstSeen, &lastComment); err != nil {
+		&n.Status, &tgMsg, &tgThread, &firstSeen, &lastComment, &commentsClosed); err != nil {
 		return n, err
 	}
 	n.TGMessageID = tgMsg.Int64
@@ -294,6 +296,7 @@ func scanNote(rows *sql.Rows) (Note, error) {
 	if lastComment.Valid {
 		n.LastCommentAt = parseTime(lastComment.String)
 	}
+	n.CommentsClosed = commentsClosed == 1
 	return n, nil
 }
 

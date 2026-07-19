@@ -30,6 +30,15 @@ const (
 // commentAnchorPrefix — префикс id якоря комментария.
 const commentAnchorPrefix = "anchor-"
 
+// commentsClosedMarker — текст, которым сайт помечает заметку, закрытую для
+// новых комментариев («не актуальна»), в ссылке-счётчике ленты вместо обычного
+// «Комментарии». Это единственный признак заморозки в серверном HTML: на самой
+// странице комментариев (и в ленте по классам/атрибутам) состояние не отражено
+// — баннер и форма ответа рисуются на клиенте JS, а мы скрапим сырой HTML.
+// Признак живёт в одном месте; сменят формулировку — заметка просто не
+// архивируется досрочно и уйдёт в архив по недельному правилу (мягкая деградация).
+const commentsClosedMarker = "не актуальна"
+
 // dateLayout — формат даты комментария, время новосибирское.
 const dateLayout = "02.01.2006, 15:04:05"
 
@@ -76,11 +85,15 @@ func ParseNotes(r io.Reader) ([]Note, error) {
 // parseFeedNote разбирает один элемент ленты. Второй результат false —
 // заметку без id пропускаем (паритет с Python-версией), это не ошибка.
 func parseFeedNote(s *goquery.Selection) (Note, bool, error) {
-	id, ok := s.Find(selCommentLink).First().Attr("name")
+	link := s.Find(selCommentLink).First()
+	id, ok := link.Attr("name")
 	if !ok || id == "" {
 		return Note{}, false, nil
 	}
-	n := Note{ID: id, AuthorID: "0", AuthorName: "Анонимно"}
+	n := Note{
+		ID: id, AuthorID: "0", AuthorName: "Анонимно",
+		CommentsClosed: strings.Contains(link.Text(), commentsClosedMarker),
+	}
 	if nick := s.Find(selNickname).First(); nick.Length() > 0 {
 		if href, ok := nick.Attr("href"); ok {
 			n.AuthorID = digitsOf(href)

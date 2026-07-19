@@ -75,6 +75,27 @@ func TestParseNotesAvatarAndImages(t *testing.T) {
 	}
 }
 
+func TestParseNotesCommentsClosed(t *testing.T) {
+	notes, err := ParseNotes(openFixture(t, "notes_feed.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// В фикстуре верхняя заметка ленты открыта (ссылка «Комментарии»),
+	// остальные помечены сайтом «не актуальна» — комментарии закрыты.
+	if notes[0].ID != "312702" || notes[0].CommentsClosed {
+		t.Errorf("первая заметка должна быть открыта: id=%q closed=%v", notes[0].ID, notes[0].CommentsClosed)
+	}
+	closed := 0
+	for _, n := range notes[1:] {
+		if n.CommentsClosed {
+			closed++
+		}
+	}
+	if closed != len(notes)-1 {
+		t.Errorf("все заметки кроме первой должны быть закрыты; закрыто %d из %d", closed, len(notes)-1)
+	}
+}
+
 func TestParseNotesEmptyFeedIsMarkupError(t *testing.T) {
 	_, err := ParseNotes(strings.NewReader("<html><body><p>ничего</p></body></html>"))
 	var me *MarkupError

@@ -15,7 +15,7 @@ import (
 func (s *Store) NoteByThreadID(ctx context.Context, threadID int64) (Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, author_id, author_name, text, author_avatar_url, status,
-		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at
+		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at, comments_closed
 		FROM notes WHERE tg_thread_id = ?`, threadID)
 	if err != nil {
 		return Note{}, err
