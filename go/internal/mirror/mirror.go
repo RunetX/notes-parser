@@ -21,14 +21,15 @@ import (
 type SiteClient interface {
 	FetchNotes(ctx context.Context) ([]love.Note, error)
 	FetchComments(ctx context.Context, noteID string) ([]love.Comment, error)
-	FetchAvatar(ctx context.Context, url string) ([]byte, error)
+	FetchMedia(ctx context.Context, url string) ([]byte, error)
 }
 
-// Sink — мессенджер-приёмник событий зеркала. avatar — уже скачанные байты
-// аватара (могут быть nil: тогда комментарий уходит текстом без картинки).
+// Sink — мессенджер-приёмник событий зеркала. avatar/image — уже скачанные
+// байты медиа (могут быть nil: тогда заметка/комментарий уходит текстом).
 type Sink interface {
-	PostNote(ctx context.Context, n store.Note) (int64, error)
+	PostNote(ctx context.Context, n store.Note, avatar []byte) (int64, error)
 	PostComment(ctx context.Context, n store.Note, c store.Comment, avatar []byte) (int64, error)
+	PostNoteImage(ctx context.Context, threadRootID int64, imageURL string, image []byte) (int64, error)
 	NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment) error
 }
 
@@ -149,12 +150,13 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 			continue
 		}
 		rec := store.Note{
-			ID:          n.ID,
-			AuthorID:    n.AuthorID,
-			AuthorName:  n.AuthorName,
-			Text:        n.Text,
-			Status:      store.StatusPending,
-			FirstSeenAt: time.Now(),
+			ID:              n.ID,
+			AuthorID:        n.AuthorID,
+			AuthorName:      n.AuthorName,
+			Text:            n.Text,
+			AuthorAvatarURL: n.AuthorAvatarURL,
+			Status:          store.StatusPending,
+			FirstSeenAt:     time.Now(),
 		}
 		if seed {
 			rec.Status = store.StatusSeeded
@@ -162,6 +164,7 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 				m.log.Error("seed заметки", "note", n.ID, "err", err)
 				continue
 			}
+			m.storeNoteImages(ctx, n)
 			seeded++
 			continue
 		}
@@ -172,6 +175,7 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 			}
 			continue
 		}
+		m.storeNoteImages(ctx, n)
 		if m.postNote(ctx, rec) {
 			posted++
 		}
@@ -196,9 +200,11 @@ func (m *Mirror) retryPending(ctx context.Context) {
 	}
 }
 
-// postNote отправляет заметку в канал и помечает её posted.
+// postNote отправляет заметку в канал (с аватаром живого автора, если есть)
+// и помечает её posted.
 func (m *Mirror) postNote(ctx context.Context, n store.Note) bool {
-	tgID, err := m.sink.PostNote(ctx, n)
+	avatar := m.fetchRealAvatar(ctx, n.AuthorAvatarURL)
+	tgID, err := m.sink.PostNote(ctx, n, avatar)
 	if err != nil {
 		m.log.Warn("пост заметки не удался, останется pending", "note", n.ID, "err", err)
 		return false
@@ -342,8 +348,12 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 	m.sendUnsent(ctx, n)
 }
 
-// sendUnsent отправляет все неотправленные комментарии заметки.
+// sendUnsent отправляет неотправленное содержимое заметки в тред: сперва
+// иллюстрации (они должны быть раньше комментариев), затем комментарии.
 func (m *Mirror) sendUnsent(ctx context.Context, n store.Note) {
+	if !m.sendUnsentImages(ctx, n) {
+		return // иллюстрацию не отправили — комментарии подождут (порядок)
+	}
 	unsent, err := m.st.UnsentComments(ctx, n.ID)
 	if err != nil {
 		m.log.Error("чтение неотправленных комментариев", "note", n.ID, "err", err)
@@ -357,7 +367,7 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note) {
 		m.log.Error("чтение подписок", "err", err)
 	}
 	for _, c := range unsent {
-		avatar := m.fetchAvatar(ctx, c.AvatarURL)
+		avatar := m.fetchMedia(ctx, c.AvatarURL, "аватар комментария")
 		tgID, err := m.sink.PostComment(ctx, n, c, avatar)
 		if err != nil {
 			// Порядок важен: не перескакиваем через неотправленный.
@@ -373,19 +383,72 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note) {
 	}
 }
 
-// fetchAvatar качает аватар автора с RU-IP. При ошибке — nil: комментарий
-// уйдёт текстом без картинки, что лучше, чем потерять его целиком (Telegram
-// не может забрать медиа love.ngs.ru со своих серверов).
-func (m *Mirror) fetchAvatar(ctx context.Context, url string) []byte {
+// sendUnsentImages шлёт неотправленные иллюстрации заметки в тред. Возвращает
+// false, если отправка сорвалась (Telegram/фиксация) — цикл прерывается, чтобы
+// иллюстрация ушла раньше комментариев. Нескачавшуюся картинку пропускаем,
+// чтобы битый URL не блокировал комментарии навсегда.
+func (m *Mirror) sendUnsentImages(ctx context.Context, n store.Note) bool {
+	imgs, err := m.st.UnsentNoteImages(ctx, n.ID)
+	if err != nil {
+		m.log.Error("чтение иллюстраций", "note", n.ID, "err", err)
+		return true
+	}
+	for _, img := range imgs {
+		data, err := m.site.FetchMedia(ctx, img.URL)
+		if err != nil {
+			m.log.Warn("иллюстрация не скачана, пропускаем", "note", n.ID, "url", img.URL, "err", err)
+			continue
+		}
+		tgID, err := m.sink.PostNoteImage(ctx, n.TGThreadID, img.URL, data)
+		if err != nil {
+			m.log.Warn("иллюстрация не отправлена в тред", "note", n.ID, "err", err)
+			return false
+		}
+		if err := m.st.SetNoteImageTGMessageID(ctx, img.ID, tgID); err != nil {
+			m.log.Error("фиксация иллюстрации", "note", n.ID, "err", err)
+			return false
+		}
+		m.log.Info("иллюстрация отправлена в тред", "note", n.ID, "tg_message_id", tgID)
+	}
+	return true
+}
+
+// storeNoteImages идемпотентно сохраняет иллюстрации заметки.
+func (m *Mirror) storeNoteImages(ctx context.Context, n love.Note) {
+	for i, url := range n.Images {
+		if err := m.st.InsertNoteImage(ctx, n.ID, i, url); err != nil {
+			m.log.Error("сохранение иллюстрации", "note", n.ID, "url", url, "err", err)
+		}
+	}
+}
+
+// fetchMedia качает медиа с RU-IP. При ошибке — nil: сообщение уйдёт без
+// картинки (Telegram не может забрать медиа love.ngs.ru со своих серверов).
+func (m *Mirror) fetchMedia(ctx context.Context, url, what string) []byte {
 	if url == "" {
 		return nil
 	}
-	b, err := m.site.FetchAvatar(ctx, url)
+	b, err := m.site.FetchMedia(ctx, url)
 	if err != nil {
-		m.log.Warn("аватар не скачан, комментарий уйдёт текстом", "url", url, "err", err)
+		m.log.Warn(what+" не скачан", "url", url, "err", err)
 		return nil
 	}
 	return b
+}
+
+// fetchRealAvatar качает аватар автора заметки только если это фото живого
+// человека; для дефолтного силуэта — nil (заметка уходит без аватара).
+func (m *Mirror) fetchRealAvatar(ctx context.Context, url string) []byte {
+	if !isRealAvatar(url) {
+		return nil
+	}
+	return m.fetchMedia(ctx, url, "аватар автора")
+}
+
+// isRealAvatar отличает загруженное фото от дефолтного силуэта: плейсхолдеры
+// лежат в /static/ на самом сайте, реальные фото — на CDN (абсолютный URL).
+func isRealAvatar(url string) bool {
+	return strings.HasPrefix(url, "http") && !strings.Contains(url, "/static/")
 }
 
 // notifySubscribers шлёт ЛС подписчикам, чьё ключевое слово встретилось

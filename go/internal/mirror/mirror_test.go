@@ -26,7 +26,7 @@ func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.n
 func (f *fakeSite) FetchComments(_ context.Context, id string) ([]love.Comment, error) {
 	return f.comments[id], nil
 }
-func (f *fakeSite) FetchAvatar(context.Context, string) ([]byte, error) { return f.avatar, nil }
+func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
 
 type sinkCall struct {
 	kind   string
@@ -40,7 +40,7 @@ type fakeSink struct {
 	nextID int64
 }
 
-func (f *fakeSink) PostNote(_ context.Context, n store.Note) (int64, error) {
+func (f *fakeSink) PostNote(_ context.Context, n store.Note, _ []byte) (int64, error) {
 	f.nextID++
 	f.calls = append(f.calls, sinkCall{kind: "note", noteID: n.ID})
 	return f.nextID, nil
@@ -49,6 +49,12 @@ func (f *fakeSink) PostNote(_ context.Context, n store.Note) (int64, error) {
 func (f *fakeSink) PostComment(_ context.Context, n store.Note, c store.Comment, _ []byte) (int64, error) {
 	f.nextID++
 	f.calls = append(f.calls, sinkCall{kind: "comment", noteID: n.ID, comID: c.ID})
+	return f.nextID, nil
+}
+
+func (f *fakeSink) PostNoteImage(_ context.Context, _ int64, imageURL string, _ []byte) (int64, error) {
+	f.nextID++
+	f.calls = append(f.calls, sinkCall{kind: "image", noteID: imageURL})
 	return f.nextID, nil
 }
 
@@ -179,6 +185,41 @@ func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 	m.pollComments(ctx, n)
 	if len(sink.calls) != before {
 		t.Errorf("повторная отправка: %v", sink.calls[before:])
+	}
+}
+
+func TestNoteImagePostedBeforeComments(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes: []love.Note{{ID: "n1", Text: "т", Images: []string{"https://cdn/illustration.jpg"}}},
+		comments: map[string][]love.Comment{
+			"n1": {{ID: 1, AuthorName: "А", Text: "первый"}},
+		},
+		avatar: []byte("media-bytes"), // FetchMedia отдаёт байты и для иллюстрации, и для аватара
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false) // постит n1 и сохраняет её иллюстрацию
+
+	n, _ := st.NoteByID(ctx, "n1")
+	st.SetNoteThreadIDByMessageID(ctx, n.TGMessageID, 777)
+	n, _ = st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+
+	firstImage, firstComment := -1, -1
+	for i, c := range sink.calls {
+		if c.kind == "image" && firstImage == -1 {
+			firstImage = i
+		}
+		if c.kind == "comment" && firstComment == -1 {
+			firstComment = i
+		}
+	}
+	if firstImage == -1 {
+		t.Fatalf("иллюстрация не отправлена: %+v", sink.calls)
+	}
+	if firstComment == -1 || firstImage > firstComment {
+		t.Errorf("иллюстрация должна быть раньше комментариев: %+v", sink.calls)
 	}
 }
 

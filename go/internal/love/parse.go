@@ -13,10 +13,12 @@ import (
 // Все селекторы вёрстки сайта — в одном месте: при дрейфе вёрстки
 // правки локализуются здесь и в testdata-фикстурах.
 const (
-	selNoteItem    = ".lv-notes__note-item"
-	selCommentLink = ".lv-notes__comment-link" // attr name = id заметки
-	selNickname    = ".lv-people__nickname"
-	selNoteText    = ".lv-notes__note-text"
+	selNoteItem        = ".lv-notes__note-item"
+	selCommentLink     = ".lv-notes__comment-link"       // attr name = id заметки
+	selNickname        = ".lv-people__nickname"
+	selNoteText        = ".lv-notes__note-text"
+	selNoteAuthorPic   = ".lv-notes__note-author .avatar" // src аватара автора заметки
+	selNoteImage       = ".note_images a"                 // href — полноразмерная иллюстрация
 	selCommentItem = ".lv-note__comment-item"
 	selCommentID   = "a[id^=anchor-]" // id вида anchor-63167742; в Python это же
 	                                  // резал магический [7:] — len("anchor-") == 7
@@ -55,32 +57,53 @@ func ParseNotes(r io.Reader) ([]Note, error) {
 	var notes []Note
 	var parseErr error
 	items.EachWithBreak(func(i int, s *goquery.Selection) bool {
-		// Заметка без ссылки на комментарии не имеет id — пропускаем
-		// (паритет с Python-версией).
-		id, ok := s.Find(selCommentLink).First().Attr("name")
-		if !ok || id == "" {
-			return true
-		}
-		n := Note{ID: id, AuthorID: "0", AuthorName: "Анонимно"}
-		if nick := s.Find(selNickname).First(); nick.Length() > 0 {
-			if href, ok := nick.Attr("href"); ok {
-				n.AuthorID = digitsOf(href)
-				n.AuthorName = strings.TrimSpace(nick.Text())
-			}
-		}
-		text := s.Find(selNoteText).First()
-		if text.Length() == 0 {
-			parseErr = &MarkupError{Selector: selNoteText, Context: "заметка " + id}
+		n, ok, err := parseFeedNote(s)
+		if err != nil {
+			parseErr = err
 			return false
 		}
-		n.Text = strings.TrimSpace(text.Text())
-		notes = append(notes, n)
+		if ok {
+			notes = append(notes, n)
+		}
 		return true
 	})
 	if parseErr != nil {
 		return nil, parseErr
 	}
 	return notes, nil
+}
+
+// parseFeedNote разбирает один элемент ленты. Второй результат false —
+// заметку без id пропускаем (паритет с Python-версией), это не ошибка.
+func parseFeedNote(s *goquery.Selection) (Note, bool, error) {
+	id, ok := s.Find(selCommentLink).First().Attr("name")
+	if !ok || id == "" {
+		return Note{}, false, nil
+	}
+	n := Note{ID: id, AuthorID: "0", AuthorName: "Анонимно"}
+	if nick := s.Find(selNickname).First(); nick.Length() > 0 {
+		if href, ok := nick.Attr("href"); ok {
+			n.AuthorID = digitsOf(href)
+			n.AuthorName = strings.TrimSpace(nick.Text())
+		}
+	}
+	text := s.Find(selNoteText).First()
+	if text.Length() == 0 {
+		return Note{}, false, &MarkupError{Selector: selNoteText, Context: "заметка " + id}
+	}
+	n.Text = strings.TrimSpace(text.Text())
+
+	if src, ok := s.Find(selNoteAuthorPic).First().Attr("src"); ok {
+		n.AuthorAvatarURL = strings.TrimSpace(src)
+	}
+	s.Find(selNoteImage).Each(func(_ int, a *goquery.Selection) {
+		if href, ok := a.Attr("href"); ok {
+			if href = strings.TrimSpace(href); href != "" {
+				n.Images = append(n.Images, href)
+			}
+		}
+	})
+	return n, true, nil
 }
 
 // ParseComments разбирает страницу комментариев заметки. Ноль комментариев —

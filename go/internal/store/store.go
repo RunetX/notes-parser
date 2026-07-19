@@ -23,15 +23,25 @@ const (
 )
 
 type Note struct {
-	ID            string
-	AuthorID      string
-	AuthorName    string
-	Text          string
-	Status        string
-	TGMessageID   int64 // 0 — не запощена
-	TGThreadID    int64 // 0 — автофорвард ещё не пойман
-	FirstSeenAt   time.Time
-	LastCommentAt time.Time // zero — комментариев не было
+	ID              string
+	AuthorID        string
+	AuthorName      string
+	Text            string
+	AuthorAvatarURL string // аватар автора; пусто/плейсхолдер — не показываем
+	Status          string
+	TGMessageID     int64 // 0 — не запощена
+	TGThreadID      int64 // 0 — автофорвард ещё не пойман
+	FirstSeenAt     time.Time
+	LastCommentAt   time.Time // zero — комментариев не было
+}
+
+// NoteImage — иллюстрация заметки, публикуемая первым сообщением в треде.
+type NoteImage struct {
+	ID          int64
+	NoteID      string
+	Position    int
+	URL         string
+	TGMessageID int64 // 0 — ещё не отправлена в тред
 }
 
 type Comment struct {
@@ -83,10 +93,10 @@ func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) InsertNote(ctx context.Context, n Note) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO notes
-			(id, author_id, author_name, text, status,
+			(id, author_id, author_name, text, author_avatar_url, status,
 			 tg_message_id, tg_thread_id, first_seen_at, last_comment_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ID, n.AuthorID, n.AuthorName, n.Text, n.Status,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ID, n.AuthorID, n.AuthorName, n.Text, n.AuthorAvatarURL, n.Status,
 		nullID(n.TGMessageID), nullID(n.TGThreadID),
 		fmtTime(n.FirstSeenAt), nullTime(n.LastCommentAt))
 	if err != nil {
@@ -94,6 +104,48 @@ func (s *Store) InsertNote(ctx context.Context, n Note) (bool, error) {
 	}
 	affected, _ := res.RowsAffected()
 	return affected > 0, nil
+}
+
+// InsertNoteImage добавляет иллюстрацию заметки, если её ещё нет.
+func (s *Store) InsertNoteImage(ctx context.Context, noteID string, position int, url string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO note_images (note_id, position, url)
+		VALUES (?, ?, ?)`, noteID, position, url)
+	if err != nil {
+		return fmt.Errorf("insert note image %s: %w", noteID, err)
+	}
+	return nil
+}
+
+// UnsentNoteImages возвращает иллюстрации заметки, ещё не отправленные в тред.
+func (s *Store) UnsentNoteImages(ctx context.Context, noteID string) ([]NoteImage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, note_id, position, url, tg_message_id
+		FROM note_images
+		WHERE note_id = ? AND tg_message_id IS NULL
+		ORDER BY position, id`, noteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var imgs []NoteImage
+	for rows.Next() {
+		var img NoteImage
+		var tgMsg sql.NullInt64
+		if err := rows.Scan(&img.ID, &img.NoteID, &img.Position, &img.URL, &tgMsg); err != nil {
+			return nil, err
+		}
+		img.TGMessageID = tgMsg.Int64
+		imgs = append(imgs, img)
+	}
+	return imgs, rows.Err()
+}
+
+// SetNoteImageTGMessageID помечает иллюстрацию отправленной в тред.
+func (s *Store) SetNoteImageTGMessageID(ctx context.Context, imageID, tgMessageID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE note_images SET tg_message_id = ? WHERE id = ?`, tgMessageID, imageID)
+	return err
 }
 
 // InsertComment добавляет комментарий, если его ещё нет.
@@ -159,7 +211,7 @@ func (s *Store) KnownNoteIDs(ctx context.Context) (map[string]bool, error) {
 // NotesByStatus возвращает заметки в заданном статусе.
 func (s *Store) NotesByStatus(ctx context.Context, status string) ([]Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, author_id, author_name, text, status,
+		SELECT id, author_id, author_name, text, author_avatar_url, status,
 		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at
 		FROM notes WHERE status = ? ORDER BY id`, status)
 	if err != nil {
@@ -200,8 +252,8 @@ func scanNote(rows *sql.Rows) (Note, error) {
 	var tgMsg, tgThread sql.NullInt64
 	var firstSeen string
 	var lastComment sql.NullString
-	if err := rows.Scan(&n.ID, &n.AuthorID, &n.AuthorName, &n.Text, &n.Status,
-		&tgMsg, &tgThread, &firstSeen, &lastComment); err != nil {
+	if err := rows.Scan(&n.ID, &n.AuthorID, &n.AuthorName, &n.Text, &n.AuthorAvatarURL,
+		&n.Status, &tgMsg, &tgThread, &firstSeen, &lastComment); err != nil {
 		return n, err
 	}
 	n.TGMessageID = tgMsg.Int64

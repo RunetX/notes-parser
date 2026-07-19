@@ -43,6 +43,11 @@ type Mirror struct {
 
 	mu       sync.Mutex
 	limiters map[int64]*rate.Limiter
+
+	// mediaCache: URL медиа → Telegram file_id. Одинаковые аватары (один автор
+	// комментирует много раз) грузим в Telegram один раз, дальше — по file_id.
+	cmu        sync.Mutex
+	mediaCache map[string]string
 }
 
 // Params — параметры постер-бота. HTTPClient (может быть nil) задаёт
@@ -86,6 +91,7 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
 		log:              log,
 		limiters:         make(map[int64]*rate.Limiter),
+		mediaCache:       make(map[string]string),
 	}, nil
 }
 
@@ -95,12 +101,33 @@ func (m *Mirror) Start(ctx context.Context) { m.b.Start(ctx) }
 // Me возвращает данные бота (диагностика).
 func (m *Mirror) Me(ctx context.Context) (*models.User, error) { return m.b.GetMe(ctx) }
 
-// PostNote постит заметку в канал, возвращает id сообщения.
-func (m *Mirror) PostNote(ctx context.Context, n store.Note) (int64, error) {
+// PostNote постит заметку в канал, возвращает id сообщения. avatar — байты
+// аватара живого автора (nil для анонимов/силуэтов). Если аватар есть и весь
+// текст влезает в подпись к фото — постим фото с подписью; иначе полным
+// текстом без аватара. Контент заметки не режем ни при каких условиях.
+func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (int64, error) {
+	text := ComposeNoteMessage(m.baseURL, m.signature, n)
+
+	if len(avatar) > 0 && visibleNoteLen(m.signature, n) <= captionLimit {
+		msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
+			return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
+				ChatID:    m.channelID,
+				Photo:     m.mediaInput(n.AuthorAvatarURL, avatar, "avatar.jpg"),
+				Caption:   text,
+				ParseMode: models.ParseModeHTML,
+			})
+		})
+		if err == nil {
+			m.rememberFileID(n.AuthorAvatarURL, photoFileID(msg))
+			return int64(msg.ID), nil
+		}
+		m.log.Warn("заметка с фото не отправлена, шлём текстом", "note", n.ID, "err", err)
+	}
+
 	msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
 		return m.b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:             m.channelID,
-			Text:               ComposeNoteMessage(m.baseURL, m.signature, n),
+			Text:               text,
 			ParseMode:          models.ParseModeHTML,
 			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
 		})
@@ -124,13 +151,16 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment,
 		msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendDocument(ctx, &bot.SendDocumentParams{
 				ChatID:          m.discussionChatID,
-				Document:        &models.InputFileUpload{Filename: "avatar.jpg", Data: bytes.NewReader(avatar)},
+				Document:        m.mediaInput(c.AvatarURL, avatar, "avatar.jpg"),
 				Caption:         caption,
 				ParseMode:       models.ParseModeHTML,
 				ReplyParameters: reply,
 			})
 		})
 		if err == nil {
+			if msg.Document != nil {
+				m.rememberFileID(c.AvatarURL, msg.Document.FileID)
+			}
 			return int64(msg.ID), nil
 		}
 		m.log.Warn("аватар-документ не отправлен, шлём комментарий текстом", "comment", c.ID, "err", err)
@@ -149,6 +179,76 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment,
 		return 0, fmt.Errorf("пост комментария %d в тред: %w", c.ID, err)
 	}
 	return int64(msg.ID), nil
+}
+
+// PostNoteImage постит иллюстрацию заметки первым сообщением в треде. Пробуем
+// как фото; если Telegram отверг (крупный размер/пропорции) — как документ,
+// чтобы иллюстрация всё же дошла.
+func (m *Mirror) PostNoteImage(ctx context.Context, threadRootID int64, imageURL string, image []byte) (int64, error) {
+	reply := &models.ReplyParameters{MessageID: int(threadRootID)}
+
+	msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
+		return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
+			ChatID:          m.discussionChatID,
+			Photo:           m.mediaInput(imageURL, image, "image.jpg"),
+			ReplyParameters: reply,
+		})
+	})
+	if err == nil {
+		m.rememberFileID(imageURL, photoFileID(msg))
+		return int64(msg.ID), nil
+	}
+	m.log.Warn("иллюстрация как фото не отправлена, пробуем документом", "err", err)
+
+	msg, err = send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
+		return m.b.SendDocument(ctx, &bot.SendDocumentParams{
+			ChatID:          m.discussionChatID,
+			Document:        m.mediaInput(imageURL, image, "image.jpg"),
+			ReplyParameters: reply,
+		})
+	})
+	if err != nil {
+		return 0, fmt.Errorf("пост иллюстрации в тред: %w", err)
+	}
+	if msg.Document != nil {
+		m.rememberFileID(imageURL, msg.Document.FileID)
+	}
+	return int64(msg.ID), nil
+}
+
+// mediaInput отдаёт готовый file_id, если этот URL уже грузили в Telegram,
+// иначе — байты на загрузку. Так одинаковые аватары не грузятся повторно.
+func (m *Mirror) mediaInput(url string, data []byte, filename string) models.InputFile {
+	if fid := m.cachedFileID(url); fid != "" {
+		return &models.InputFileString{Data: fid}
+	}
+	return &models.InputFileUpload{Filename: filename, Data: bytes.NewReader(data)}
+}
+
+func (m *Mirror) cachedFileID(url string) string {
+	if url == "" {
+		return ""
+	}
+	m.cmu.Lock()
+	defer m.cmu.Unlock()
+	return m.mediaCache[url]
+}
+
+func (m *Mirror) rememberFileID(url, fileID string) {
+	if url == "" || fileID == "" {
+		return
+	}
+	m.cmu.Lock()
+	defer m.cmu.Unlock()
+	m.mediaCache[url] = fileID
+}
+
+// photoFileID — file_id самого крупного варианта отправленного фото.
+func photoFileID(msg *models.Message) string {
+	if n := len(msg.Photo); n > 0 {
+		return msg.Photo[n-1].FileID
+	}
+	return ""
 }
 
 // NotifySubscriber шлёт подписчику ЛС с deep-link на комментарий.
@@ -309,6 +409,17 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 		b.WriteString(signature)
 	}
 	return b.String()
+}
+
+// visibleNoteLen — длина видимого текста поста заметки (без HTML-тегов), по
+// которой решаем, влезает ли он в подпись к фото (лимит Telegram captionLimit).
+// Ссылки/теги в лимит не считаются, поэтому оцениваем по именам и тексту.
+func visibleNoteLen(signature string, n store.Note) int {
+	l := len([]rune(n.AuthorName)) + len(":\n") + len([]rune(n.Text))
+	if signature != "" {
+		l += len("\n\n") + len([]rune(signature))
+	}
+	return l
 }
 
 // captionLimit — лимит Telegram на подпись к документу (видимый текст).

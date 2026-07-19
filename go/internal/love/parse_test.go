@@ -51,6 +51,30 @@ func TestParseNotesRealFeed(t *testing.T) {
 	}
 }
 
+func TestParseNotesAvatarAndImages(t *testing.T) {
+	notes, err := ParseNotes(openFixture(t, "notes_feed.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Аватар автора первой заметки — дефолтный силуэт (/static/...).
+	if !strings.Contains(notes[0].AuthorAvatarURL, "/static/") {
+		t.Errorf("аватар автора не разобран: %q", notes[0].AuthorAvatarURL)
+	}
+	// Хотя бы у одной заметки в фикстуре есть иллюстрация с CDN.
+	withImages := 0
+	for _, n := range notes {
+		for _, img := range n.Images {
+			withImages++
+			if !strings.HasPrefix(img, "http") {
+				t.Errorf("URL иллюстрации не абсолютный: %q", img)
+			}
+		}
+	}
+	if withImages == 0 {
+		t.Error("ни у одной заметки не разобрана иллюстрация, ожидалась хотя бы одна")
+	}
+}
+
 func TestParseNotesEmptyFeedIsMarkupError(t *testing.T) {
 	_, err := ParseNotes(strings.NewReader("<html><body><p>ничего</p></body></html>"))
 	var me *MarkupError

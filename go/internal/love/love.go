@@ -9,10 +9,12 @@ import (
 
 // Note — заметка из ленты /notes/.
 type Note struct {
-	ID         string `json:"id"`
-	AuthorID   string `json:"author_id"` // "0" — аноним
-	AuthorName string `json:"author_name"`
-	Text       string `json:"text"`
+	ID              string   `json:"id"`
+	AuthorID        string   `json:"author_id"` // "0" — аноним
+	AuthorName      string   `json:"author_name"`
+	Text            string   `json:"text"`
+	AuthorAvatarURL string   `json:"author_avatar_url"` // src аватара автора (может быть плейсхолдером)
+	Images          []string `json:"images"`            // URL иллюстраций заметки
 }
 
 // Comment — комментарий к заметке. Страница отдаёт их от новых к старым
