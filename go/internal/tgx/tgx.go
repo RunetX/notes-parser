@@ -138,21 +138,20 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (int
 	return int64(msg.ID), nil
 }
 
-// PostComment постит комментарий в тред группы обсуждения — как документ
-// с аватаром и HTML-подписью. avatar — уже скачанные байты аватара (грузим
-// их сами, потому что Telegram не может забрать медиа love.ngs.ru по URL со
-// своих зарубежных серверов). Если аватара нет или его отправка не удалась,
-// комментарий уходит текстом в тот же тред — не теряется.
+// PostComment постит комментарий в тред группы обсуждения. Короткий (влезает
+// в подпись, ≤1024) и с аватаром — документом с аватаром и HTML-подписью.
+// Длинный — обычным текстовым сообщением (до 4096), чтобы не резать текст:
+// подпись к медиа ограничена 1024, а на сайте комментарий целиком. avatar —
+// уже скачанные байты (Telegram не может забрать медиа love.ngs.ru по URL).
 func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment, avatar []byte) (int64, error) {
-	caption := ComposeCommentCaption(c)
 	reply := &models.ReplyParameters{MessageID: int(n.TGThreadID)}
 
-	if len(avatar) > 0 {
+	if len(avatar) > 0 && commentVisibleLen(c) <= captionLimit {
 		msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendDocument(ctx, &bot.SendDocumentParams{
 				ChatID:          m.discussionChatID,
 				Document:        m.mediaInput(c.AvatarURL, avatar, "avatar.jpg"),
-				Caption:         caption,
+				Caption:         ComposeCommentCaption(c),
 				ParseMode:       models.ParseModeHTML,
 				ReplyParameters: reply,
 			})
@@ -169,7 +168,7 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment,
 	msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 		return m.b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID:             m.discussionChatID,
-			Text:               caption,
+			Text:               composeComment(c, messageLimit),
 			ParseMode:          models.ParseModeHTML,
 			ReplyParameters:    reply,
 			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
@@ -422,16 +421,28 @@ func visibleNoteLen(signature string, n store.Note) int {
 	return l
 }
 
-// captionLimit — лимит Telegram на подпись к документу (видимый текст).
-const captionLimit = 1024
+// Лимиты Telegram на видимый текст: подпись к медиа и обычное сообщение.
+const (
+	captionLimit = 1024
+	messageLimit = 4096
+)
 
-// ComposeCommentCaption собирает HTML-подпись комментария, обрезая текст
-// по границе руны так, чтобы видимая часть уложилась в лимит (Python резал
-// сырой HTML по 1024 байтам и мог сломать разметку — сообщение терялось).
-func ComposeCommentCaption(c store.Comment) string {
-	visibleHead := fmt.Sprintf("%s, %s:\n", c.AuthorName, c.AuthorAge)
+// commentVisibleLen — длина видимого текста комментария (заголовок автора +
+// текст), по ней решаем, влезает ли он в подпись к документу.
+func commentVisibleLen(c store.Comment) int {
+	return len([]rune(c.AuthorName)) + len([]rune(c.AuthorAge)) + len(", :\n") + len([]rune(c.Text))
+}
+
+// composeComment собирает HTML комментария с заголовком-ссылкой автора,
+// обрезая ТЕКСТ по границе руны под лимит видимой длины limit (Python резал
+// сырой HTML по байтам и мог сломать разметку). Заголовок в лимит заложен.
+func composeComment(c store.Comment, limit int) string {
+	visibleHead := len([]rune(c.AuthorName)) + len([]rune(c.AuthorAge)) + len(", :\n")
 	// Запас на случай расхождения рун и UTF-16 (эмодзи считаются за два).
-	budget := captionLimit - len([]rune(visibleHead)) - 8
+	budget := limit - visibleHead - 8
+	if budget < 0 {
+		budget = 0
+	}
 	text := c.Text
 	if r := []rune(text); len(r) > budget {
 		text = string(r[:budget]) + "…"
@@ -440,6 +451,9 @@ func ComposeCommentCaption(c store.Comment) string {
 		c.AuthorLink, html.EscapeString(c.AuthorName), html.EscapeString(c.AuthorAge),
 		"\n", html.EscapeString(text))
 }
+
+// ComposeCommentCaption — подпись к документу-аватару (лимит подписи).
+func ComposeCommentCaption(c store.Comment) string { return composeComment(c, captionLimit) }
 
 // DeepLink строит ссылку t.me/c/... на комментарий в треде группы обсуждения.
 // Внутренний id чата выводится из полного id отбрасыванием префикса -100

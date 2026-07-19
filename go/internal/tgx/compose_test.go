@@ -47,6 +47,28 @@ func TestComposeCommentCaptionTruncates(t *testing.T) {
 	}
 }
 
+// Длинный комментарий в текстовом сообщении (лимит 4096) не режется, а в
+// подписи к документу (1024) — режется. Так длинный комментарий уходит в TG
+// целиком, а не усечённым.
+func TestComposeCommentMessageKeepsLongText(t *testing.T) {
+	c := store.Comment{
+		AuthorName: "Имя", AuthorAge: "30 лет",
+		AuthorLink: "https://love.ngs.ru/profile/1/",
+		Text:       strings.Repeat("ы", 3000), // > 1024, но < 4096
+	}
+	msg := composeComment(c, messageLimit)
+	if strings.HasSuffix(msg, "…") {
+		t.Error("текст 3000 < 4096 не должен обрезаться в сообщении")
+	}
+	body := msg[strings.Index(msg, "</b>\n")+len("</b>\n"):]
+	if n := len([]rune(body)); n < 3000 {
+		t.Errorf("тело обрезано: %d рун вместо 3000", n)
+	}
+	if cap := composeComment(c, captionLimit); !strings.HasSuffix(cap, "…") {
+		t.Error("в подписи 1024 длинный текст должен обрезаться")
+	}
+}
+
 func TestComposeCommentCaptionEscapes(t *testing.T) {
 	c := store.Comment{AuthorName: "A<b>", AuthorAge: "3&3",
 		AuthorLink: "https://x/", Text: "x<y"}
