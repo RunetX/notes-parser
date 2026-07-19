@@ -137,6 +137,10 @@ data/
 # и каталог go/cmd/lovegw с исходниками)
 /go/lovegw.exe
 /go/lovegw
+# Артефакт сборки: Go оставляет его, если пересобрать при запущенном демоне
+/go/lovegw.exe~
+# Лог демона
+/go/run.log
 # Конфиги с токенами ботов (шаблоны: *.example.json)
 config.json
 ryumkin.json
