@@ -19,12 +19,14 @@ type fakeSite struct {
 	notes    []love.Note
 	notesErr error
 	comments map[string][]love.Comment
+	avatar   []byte
 }
 
 func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
 func (f *fakeSite) FetchComments(_ context.Context, id string) ([]love.Comment, error) {
 	return f.comments[id], nil
 }
+func (f *fakeSite) FetchAvatar(context.Context, string) ([]byte, error) { return f.avatar, nil }
 
 type sinkCall struct {
 	kind   string
@@ -44,7 +46,7 @@ func (f *fakeSink) PostNote(_ context.Context, n store.Note) (int64, error) {
 	return f.nextID, nil
 }
 
-func (f *fakeSink) PostComment(_ context.Context, n store.Note, c store.Comment) (int64, error) {
+func (f *fakeSink) PostComment(_ context.Context, n store.Note, c store.Comment, _ []byte) (int64, error) {
 	f.nextID++
 	f.calls = append(f.calls, sinkCall{kind: "comment", noteID: n.ID, comID: c.ID})
 	return f.nextID, nil

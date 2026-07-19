@@ -3,6 +3,7 @@
 package tgx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -111,15 +112,37 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note) (int64, error) {
 }
 
 // PostComment постит комментарий в тред группы обсуждения — как документ
-// с аватаром и HTML-подписью (паритет с Python-версией).
-func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment) (int64, error) {
+// с аватаром и HTML-подписью. avatar — уже скачанные байты аватара (грузим
+// их сами, потому что Telegram не может забрать медиа love.ngs.ru по URL со
+// своих зарубежных серверов). Если аватара нет или его отправка не удалась,
+// комментарий уходит текстом в тот же тред — не теряется.
+func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment, avatar []byte) (int64, error) {
+	caption := ComposeCommentCaption(c)
+	reply := &models.ReplyParameters{MessageID: int(n.TGThreadID)}
+
+	if len(avatar) > 0 {
+		msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
+			return m.b.SendDocument(ctx, &bot.SendDocumentParams{
+				ChatID:          m.discussionChatID,
+				Document:        &models.InputFileUpload{Filename: "avatar.jpg", Data: bytes.NewReader(avatar)},
+				Caption:         caption,
+				ParseMode:       models.ParseModeHTML,
+				ReplyParameters: reply,
+			})
+		})
+		if err == nil {
+			return int64(msg.ID), nil
+		}
+		m.log.Warn("аватар-документ не отправлен, шлём комментарий текстом", "comment", c.ID, "err", err)
+	}
+
 	msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
-		return m.b.SendDocument(ctx, &bot.SendDocumentParams{
-			ChatID:          m.discussionChatID,
-			Document:        &models.InputFileString{Data: c.AvatarURL},
-			Caption:         ComposeCommentCaption(c),
-			ParseMode:       models.ParseModeHTML,
-			ReplyParameters: &models.ReplyParameters{MessageID: int(n.TGThreadID)},
+		return m.b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:             m.discussionChatID,
+			Text:               caption,
+			ParseMode:          models.ParseModeHTML,
+			ReplyParameters:    reply,
+			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
 		})
 	})
 	if err != nil {

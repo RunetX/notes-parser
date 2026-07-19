@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,41 +70,56 @@ func TestFetchNotes403FailsFast(t *testing.T) {
 	}
 }
 
-func TestLoginSuccessCapturesCookies(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
+// loginSite — фейк сайта с флоу входа (паритет с Python): прогрев /notes/
+// (ставит куки DDoS-Guard) → POST проверки учётных данных, который при успехе
+// ставит сессионную куку и возвращает result:true.
+func loginSite(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/notes/": // прогрев
+			http.SetCookie(w, &http.Cookie{Name: "__ddg1_", Value: "guard", Path: "/"})
+			w.Write([]byte("<html>ok</html>"))
+		case r.URL.Path == "/ajax" && r.URL.Query().Get("request") == "login":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.PostForm.Get("login") != "user@mail.ru" || r.PostForm.Get("password") != "secret" {
+				w.Write([]byte(`{"login":{"result":false,"errors":"Неверный пароль"}}`))
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: "ngs_ttq", Value: "SESSION", Path: "/"})
+			w.Write([]byte(`{"login":{"result":true,"errors":[]}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		if r.PostForm.Get("login") != "user@mail.ru" || r.PostForm.Get("password") != "secret" {
-			t.Errorf("форма логина: %v", r.PostForm)
-		}
-		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "abc123", Path: "/"})
-		w.Write([]byte(`{"login":{"result":true,"errors":""}}`))
 	}))
+}
+
+// Успешный вход возвращает весь набор кук (прогрев + сессионная).
+func TestLoginCapturesAllCookies(t *testing.T) {
+	srv := loginSite(t)
 	defer srv.Close()
 
 	cookies, err := testClient(t, srv).Login(context.Background(), "user@mail.ru", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found bool
-	for _, c := range cookies {
-		if c.Name == "sid" && c.Value == "abc123" {
-			found = true
-		}
+	names := make([]string, 0, len(cookies))
+	for _, ck := range cookies {
+		names = append(names, ck.Name)
 	}
-	if !found {
-		t.Errorf("кука сессии не захвачена: %v", cookies)
+	joined := strings.Join(names, ",")
+	if !strings.Contains(joined, "ngs_ttq") || !strings.Contains(joined, "__ddg1_") {
+		t.Errorf("ожидались куки прогрева и сессии, получено: %s", joined)
 	}
 }
 
 func TestLoginFailureReturnsLoginError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"login":{"result":false,"errors":"Неверный пароль"}}`))
-	}))
+	srv := loginSite(t)
 	defer srv.Close()
 
-	_, err := testClient(t, srv).Login(context.Background(), "u", "p")
+	_, err := testClient(t, srv).Login(context.Background(), "u", "wrong")
 	var le *LoginError
 	if !errors.As(err, &le) {
 		t.Fatalf("ожидалась LoginError, получено: %v", err)

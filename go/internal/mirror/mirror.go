@@ -21,12 +21,14 @@ import (
 type SiteClient interface {
 	FetchNotes(ctx context.Context) ([]love.Note, error)
 	FetchComments(ctx context.Context, noteID string) ([]love.Comment, error)
+	FetchAvatar(ctx context.Context, url string) ([]byte, error)
 }
 
-// Sink — мессенджер-приёмник событий зеркала.
+// Sink — мессенджер-приёмник событий зеркала. avatar — уже скачанные байты
+// аватара (могут быть nil: тогда комментарий уходит текстом без картинки).
 type Sink interface {
 	PostNote(ctx context.Context, n store.Note) (int64, error)
-	PostComment(ctx context.Context, n store.Note, c store.Comment) (int64, error)
+	PostComment(ctx context.Context, n store.Note, c store.Comment, avatar []byte) (int64, error)
 	NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment) error
 }
 
@@ -355,7 +357,8 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note) {
 		m.log.Error("чтение подписок", "err", err)
 	}
 	for _, c := range unsent {
-		tgID, err := m.sink.PostComment(ctx, n, c)
+		avatar := m.fetchAvatar(ctx, c.AvatarURL)
+		tgID, err := m.sink.PostComment(ctx, n, c, avatar)
 		if err != nil {
 			// Порядок важен: не перескакиваем через неотправленный.
 			m.log.Warn("пост комментария не удался", "comment", c.ID, "err", err)
@@ -368,6 +371,21 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note) {
 		c.TGMessageID = tgID
 		m.notifySubscribers(ctx, subs, n, c)
 	}
+}
+
+// fetchAvatar качает аватар автора с RU-IP. При ошибке — nil: комментарий
+// уйдёт текстом без картинки, что лучше, чем потерять его целиком (Telegram
+// не может забрать медиа love.ngs.ru со своих серверов).
+func (m *Mirror) fetchAvatar(ctx context.Context, url string) []byte {
+	if url == "" {
+		return nil
+	}
+	b, err := m.site.FetchAvatar(ctx, url)
+	if err != nil {
+		m.log.Warn("аватар не скачан, комментарий уйдёт текстом", "url", url, "err", err)
+		return nil
+	}
+	return b
 }
 
 // notifySubscribers шлёт ЛС подписчикам, чьё ключевое слово встретилось

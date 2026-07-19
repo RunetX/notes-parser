@@ -48,7 +48,7 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Site: Site{
 			BaseURL:           "https://love.ngs.ru",
-			UserAgent:         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+			UserAgent:         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
 			RequestIntervalMS: 2000,
 		},
 		NotesLimit:    5,

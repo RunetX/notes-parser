@@ -3,6 +3,7 @@ package love
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 )
@@ -29,9 +30,8 @@ func (c *Client) PostComment(ctx context.Context, cookies []*http.Cookie, noteID
 	if err != nil {
 		return fmt.Errorf("отправка комментария к заметке %s: %w", noteID, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("отправка комментария к заметке %s: статус %d", noteID, resp.StatusCode)
+	if err := drainOK(resp); err != nil {
+		return fmt.Errorf("отправка комментария к заметке %s: %w", noteID, err)
 	}
 	return nil
 }
@@ -56,9 +56,20 @@ func (c *Client) PostNote(ctx context.Context, cookies []*http.Cookie, text stri
 	if err != nil {
 		return fmt.Errorf("публикация заметки: %w", err)
 	}
+	if err := drainOK(resp); err != nil {
+		return fmt.Errorf("публикация заметки: %w", err)
+	}
+	return nil
+}
+
+// drainOK вычитывает и закрывает тело ответа (для переиспользования
+// соединения) и проверяет статус. Паритет с Python: сайт отвечает 200 и
+// HTML-страницей и на успех, и требует авторизацию через куки сессии.
+func drainOK(resp *http.Response) error {
 	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("публикация заметки: статус %d", resp.StatusCode)
+		return fmt.Errorf("статус %d", resp.StatusCode)
 	}
 	return nil
 }

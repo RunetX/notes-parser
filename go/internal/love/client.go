@@ -78,6 +78,34 @@ func (c *Client) RawComments(ctx context.Context, noteID string) ([]byte, error)
 	return c.get(ctx, fmt.Sprintf(commentsPathFmt, noteID))
 }
 
+// avatarSizeLimit — предел размера скачиваемого аватара.
+const avatarSizeLimit = 5 << 20
+
+// FetchAvatar скачивает медиа автора по абсолютному URL напрямую (с RU-IP).
+// Нужно потому, что Telegram забирает медиа по URL со своих зарубежных
+// серверов, а инфраструктура love.ngs.ru (включая CDN hsmedia.ru) отдаёт им
+// не картинку — отсюда «wrong type of the web page content». Байты качаем
+// сами и грузим в Telegram как файл.
+func (c *Client) FetchAvatar(ctx context.Context, rawURL string) ([]byte, error) {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(headerUserAgent, c.ua)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("аватар %s: статус %d", rawURL, resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, avatarSizeLimit))
+}
+
 // get выполняет GET с ретраями (сеть/5xx) и экспоненциальным backoff.
 // 4xx не ретраится: это не временный сбой.
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
