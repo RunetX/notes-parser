@@ -29,6 +29,22 @@ go run ./cmd/lovegw doctor    # диагностика конфига/БД/са�
 API из России недоступен: для раздельной сети задайте `telegram_proxy` в
 конфиге — проксируется только Bot API, а сайт идёт напрямую.
 
+## Развёртывание (Docker)
+
+Боевой запуск — в контейнере (образ ~23 МБ, distroless/static). Артефакты и
+пошаговая инструкция — в [`deploy/`](deploy/) (подробно — [deploy/README.md](deploy/README.md)):
+multi-stage [`go/Dockerfile`](go/Dockerfile), `docker-compose.yml`, systemd-юнит,
+шаблон секретов.
+
+```sh
+cd deploy
+docker compose up -d --build
+```
+
+Хост нужен с **российским IP** (иначе сайт отдаёт 403); Telegram Bot API идёт
+через SOCKS5-прокси (`telegram_proxy` / `LOVEGW_TG_PROXY`). Конфиг и БД
+(`data/lovegw.db`) в репозиторий не входят — переносятся на хост отдельно.
+
 ## Разработка
 
 ```sh

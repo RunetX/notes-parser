@@ -37,8 +37,15 @@ messages, and all user-facing bot strings are in Russian.
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
   the daemon (write-through SQLite is crash-safe, so a hard kill is fine).
+- Deploy: container image via `go/Dockerfile` (multi-stage, `CGO_ENABLED=0` →
+  `distroless/static`, ~23 MB; tzdata baked in via `time/tzdata`). `deploy/` has
+  `docker-compose.yml` + systemd unit + runbook; config mounts as `/config.json`,
+  DB in the `/data` volume, secrets via env
+  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`).
 - The site is behind DDoS-Guard geoblocking — non-RU IPs get 403, so crawl/run
-  must run from a Russian IP (the prod box).
+  (and the deployed daemon) must run from a Russian IP. Telegram Bot API, blocked
+  from inside Russia, is routed through a SOCKS5 proxy (`telegram_proxy`); the
+  site stays direct.
 
 ## Architecture
 
