@@ -1,0 +1,27 @@
+# systemd-юнит для хостов без docker compose: запускает готовый образ
+# lovegw:latest как контейнер под systemd. Разместить в
+# /etc/systemd/system/lovegw.service, затем:
+#   systemctl daemon-reload && systemctl enable --now lovegw
+# Предварительно: собрать/загрузить образ lovegw:latest, положить
+#   /etc/lovegw/config.json, /etc/lovegw/secrets.env (chmod 600),
+#   создать /var/lib/lovegw/data (chown 65532:65532).
+
+[Unit]
+Description=lovegw — шлюз заметок love.ngs.ru в Telegram
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f lovegw
+ExecStart=/usr/bin/docker run --rm --name lovegw \
+  --env-file /etc/lovegw/secrets.env \
+  -v /var/lib/lovegw/data:/data \
+  -v /etc/lovegw/config.json:/config.json:ro \
+  lovegw:latest
+ExecStop=/usr/bin/docker stop lovegw
+
+[Install]
+WantedBy=multi-user.target

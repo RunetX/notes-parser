@@ -1,0 +1,13 @@
+# Состояние и секреты — не должны попадать в контекст сборки/образ.
+data/
+config.json
+*.db
+*.db-journal
+*.db-wal
+# Артефакты сборки под хост.
+lovegw
+lovegw.exe
+lovegw.exe~
+run.log
+# Windows-батники не нужны в образе.
+*.bat

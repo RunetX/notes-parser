@@ -1,0 +1,17 @@
+# Развёртывание lovegw одним сервисом. Запускать из каталога deploy/.
+# Хост-требование: российский IP (сайт love.ngs.ru отдаёт 403 c не-RU IP).
+# Telegram при этом идёт через SOCKS5-прокси (см. telegram_proxy / LOVEGW_TG_PROXY).
+
+services:
+  lovegw:
+    build:
+      context: ../go
+    image: lovegw:latest
+    container_name: lovegw
+    restart: unless-stopped
+    volumes:
+      - ./data:/data                  # БД SQLite и состояние (том должен быть записываем uid 65532)
+      - ./config.json:/config.json:ro # конфиг: каналы, подпись, прокси; токены можно вынести в env
+    # Секреты можно держать не в config.json, а в env (перебивают конфиг):
+    # env_file:
+    #   - ./secrets.env
