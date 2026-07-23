@@ -151,6 +151,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV4SQL, // v4 — перцептивные хэши аватаров (avatar_hashes)
 		migrateV5SQL, // v5 — стилометрические профили (style_profiles)
 		migrateV6SQL, // v6 — persona-aware граф (v_identity/v_persona_activity/v_persona_reply_edges)
+		migrateV7SQL, // v7 — реальные даты активности из comments.published_at
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

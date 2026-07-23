@@ -51,6 +51,40 @@ WHERE c.parent_id != 0
 GROUP BY fi.identity, ti.identity;
 `
 
+// migrateV7SQL — реальные даты активности из comments.published_at вместо
+// first/last_seen (время выгрузки: весь бэкофилл шёл одним днём, спан был
+// вырожден). Пересоздаёт v_user_activity (добавляя active_from/active_to) и
+// v_persona_activity (её first_seen/last_seen теперь = реальный спан активности).
+// Порядок DROP важен: v_persona_activity зависит от v_user_activity.
+const migrateV7SQL = `
+DROP VIEW IF EXISTS v_persona_activity;
+DROP VIEW IF EXISTS v_user_activity;
+
+CREATE VIEW v_user_activity AS
+SELECT u.id, u.name, u.age,
+       COUNT(c.id) AS comments,
+       COUNT(DISTINCT c.note_id) AS notes,
+       u.first_seen, u.last_seen, u.profile_url, u.avatar_url,
+       MIN(c.published_at) AS active_from,  -- реальная активность (NULL — 0 комм.)
+       MAX(c.published_at) AS active_to
+FROM users u
+LEFT JOIN comments c ON c.author_id = u.id
+GROUP BY u.id;
+
+CREATE VIEW v_persona_activity AS
+SELECT i.identity,
+       MAX(i.is_persona) AS is_persona,
+       MAX(i.label)      AS label,
+       COUNT(*)          AS accounts,
+       SUM(a.comments)   AS comments,
+       SUM(a.notes)      AS notes,
+       COALESCE(MIN(a.active_from), '') AS first_seen,  -- = реальный спан активности
+       COALESCE(MAX(a.active_to), '')   AS last_seen
+FROM v_identity i
+JOIN v_user_activity a ON a.id = i.user_id
+GROUP BY i.identity;
+`
+
 // GraphNode — узел соцграфа (личность или одиночная анкета).
 type GraphNode struct {
 	Identity  string

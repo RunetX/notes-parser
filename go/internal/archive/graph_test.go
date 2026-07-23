@@ -3,7 +3,9 @@ package archive
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 // Строим маленький тред и сливаем две анкеты (1,2) в личность, затем проверяем
@@ -13,11 +15,13 @@ func TestPersonaGraphAndPortrait(t *testing.T) {
 	s := openTemp(t)
 
 	users := []User{{ID: 1, Name: "A"}, {ID: 2, Name: "B"}, {ID: 3, Name: "C"}}
+	// Даты публикации разнесены во времени — проверим реальный спан активности.
+	pub := func(y int) time.Time { return time.Date(y, 6, 15, 12, 0, 0, 0, time.UTC) }
 	comments := []Comment{
-		{ID: 100, NoteID: 1, ParentID: 0, AuthorID: 3, Text: "корень C"},
-		{ID: 101, NoteID: 1, ParentID: 100, AuthorID: 1, Text: "A→C"},
-		{ID: 102, NoteID: 1, ParentID: 100, AuthorID: 2, Text: "B→C"},
-		{ID: 103, NoteID: 1, ParentID: 101, AuthorID: 3, Text: "C→A"},
+		{ID: 100, NoteID: 1, ParentID: 0, AuthorID: 3, Text: "корень C", PublishedAt: pub(2014)},
+		{ID: 101, NoteID: 1, ParentID: 100, AuthorID: 1, Text: "A→C", PublishedAt: pub(2015)},
+		{ID: 102, NoteID: 1, ParentID: 100, AuthorID: 2, Text: "B→C", PublishedAt: pub(2016)},
+		{ID: 103, NoteID: 1, ParentID: 101, AuthorID: 3, Text: "C→A", PublishedAt: pub(2017)},
 	}
 	if _, err := s.SaveGrab(ctx, Note{ID: 1, AuthorID: 3, Text: "n"}, comments, users, testNow); err != nil {
 		t.Fatal(err)
@@ -76,6 +80,12 @@ func TestPersonaGraphAndPortrait(t *testing.T) {
 	}
 	if len(p.RepliedBy) != 1 || p.RepliedBy[0].Identity != "u3" || p.RepliedBy[0].Replies != 1 {
 		t.Errorf("кто отвечает ему: %+v (want u3 ×1)", p.RepliedBy)
+	}
+
+	// Реальный спан активности личности = MIN/MAX published_at её анкет
+	// (c101 в 2015, c102 в 2016), а НЕ время выгрузки (testNow=2026).
+	if !strings.HasPrefix(p.FirstSeen, "2015-") || !strings.HasPrefix(p.LastSeen, "2016-") {
+		t.Errorf("спан активности: %s … %s (want 2015 … 2016 из published_at)", p.FirstSeen, p.LastSeen)
 	}
 
 	// drop-self исключает само-петли (у нас их нет → столько же рёбер).
