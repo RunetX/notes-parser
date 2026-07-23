@@ -40,6 +40,7 @@ var defaultDisclosurePatterns = []string{
 //	link        — импортировать извлечённые связи (links.json) в alias_candidates
 //	cluster     — склеить связные компоненты в personas (порог -min-score) + отчёт
 //	set <id> <confirmed|rejected|pending> — проставить статус личности после ревью
+//	diag <id> <id> …                      — ground-truth диагностика набора анкет (стиль/собеседники/время)
 func cmdPersonas(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("personas", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -106,8 +107,10 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasGraph(ctx, ar, *outDir, *minReplies, *dropSelf)
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
+	case "diag":
+		return personasDiag(ctx, ar, fs.Args()[1:])
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|graph|portrait)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|graph|portrait|diag)", action)
 	}
 }
 
