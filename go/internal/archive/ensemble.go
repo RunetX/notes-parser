@@ -178,40 +178,47 @@ func ensembleScore(rank int, cos float64, temporal string, gap int, oc float64, 
 }
 
 func styleRankScore(rank int, cos float64) float64 {
-	base := 0.22
+	base := 0.24
 	switch {
 	case rank == 1:
-		base = 0.45
+		base = 0.48
 	case rank <= 3:
-		base = 0.38
+		base = 0.40
 	case rank <= 10:
-		base = 0.30
+		base = 0.32
 	}
-	bonus := 0.05 * clamp01((cos-0.5)/0.4) // +0..0.05 за абсолютную близость
+	bonus := 0.06 * clamp01((cos-0.5)/0.4) // +0..0.06 за абсолютную близость
 	return base + bonus
 }
 
+// temporalScore намеренно СЛАБЫЙ и почти не различает «встык» и «одновременно».
+// Проверка на ground truth показала: человек спокойно ведёт несколько анкет
+// ПАРАЛЛЕЛЬНО, поэтому отсутствие пересечения спанов — не признак одного лица, а
+// его наличие — не признак разных. Раньше handoff весил вдвое больше перекрытия
+// и метод систематически пропускал параллельные альты. Решают стиль и круг.
 func temporalScore(rel string, gap, handoffDays int) float64 {
 	switch rel {
-	case "handoff": // старый замолк → новый начал: миграция на альт
+	case "handoff": // старая замолкла → новая началась
 		if gap <= handoffDays {
-			return 0.25
+			return 0.14
 		}
-		return 0.15 // разрыв шире окна «эстафеты», но спаны смежны
+		return 0.10 // разрыв шире окна — связь слабее
 	case "overlap":
-		return 0.12 // одновременные анкеты — слабее
+		return 0.12 // анкеты жили одновременно — столь же обычно
+	case "disjoint":
+		return 0.04 // спаны разнесены на годы — почти ничего не говорит
 	}
-	return 0 // disjoint/unknown
+	return 0 // unknown
 }
 
 func overlapScore(oc float64) float64 {
 	switch {
 	case oc >= 0.5:
-		return 0.25
+		return 0.30
 	case oc >= 0.3:
-		return 0.15
+		return 0.20
 	case oc >= 0.15:
-		return 0.08
+		return 0.10
 	}
 	return 0
 }

@@ -30,6 +30,7 @@ const enumMaxPages = 5000
 type backfillParams struct {
 	fromID, toID   int64
 	workers, limit int
+	startPage      int // с какой страницы ленты начинать обход (1 — с самой свежей)
 }
 
 // cmdBackfill — массовая выгрузка заметок диапазона в archive.db. Перечисляет
@@ -49,9 +50,10 @@ func cmdBackfill(ctx context.Context, args []string) error {
 	toID := fs.Int64("to", 0, "верхняя граница id (0 — от самой свежей)")
 	refresh := fs.Bool("refresh", false, "пере-обходить уже загруженные заметки")
 	limit := fs.Int("limit", 0, "ограничить число заметок в прогоне (0 — все; для теста)")
+	startPage := fs.Int("start-page", 1, "начать обход ленты с этой страницы (id≈240866 ≈ стр. 1500; экономит тысячи страниц на старом диапазоне)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"config": true, "db": true, "workers": true, "interval-ms": true,
-		"from": true, "to": true, "limit": true,
+		"from": true, "to": true, "limit": true, "start-page": true,
 	})); err != nil {
 		return err
 	}
@@ -89,10 +91,11 @@ func cmdBackfill(ctx context.Context, args []string) error {
 		}
 	}
 	log.Info("старт backfill", "from", *fromID, "to", *toID, "воркеров", *workers,
-		"уже_в_архиве", len(known), "proxy", *useProxy)
+		"стартовая_страница", *startPage, "уже_в_архиве", len(known), "proxy", *useProxy)
 
 	return runBackfill(ctx, client, ar, cfg.Site.BaseURL,
-		backfillParams{fromID: *fromID, toID: *toID, workers: *workers, limit: *limit}, known, log)
+		backfillParams{fromID: *fromID, toID: *toID, workers: *workers, limit: *limit,
+			startPage: *startPage}, known, log)
 }
 
 // runBackfill запускает пул воркеров и в этой же горутине идёт продюсером:
@@ -183,7 +186,14 @@ func backfillOne(ctx context.Context, client *love.Client, ar *archive.Store, ba
 // опускается ниже from, достигнут limit, контекст отменён или сайт вернул 403.
 func feedFromListing(ctx context.Context, client *love.Client, jobs chan<- int64, p backfillParams, known map[int64]bool, discovered *atomic.Int64, log *slog.Logger) error {
 	seen := map[int64]bool{}
-	for page := 1; page <= enumMaxPages; page++ {
+	start := p.startPage
+	if start < 1 {
+		start = 1
+	}
+	// Лента идёт новые→старые, а -from/-to лишь фильтруют найденное, поэтому без
+	// -start-page обход старого диапазона тратит тысячи страниц на уже собранное
+	// (id ≈ 240866 лежит около страницы 1500).
+	for page := start; page <= enumMaxPages; page++ {
 		raw, err := client.RawNotesPage(ctx, page)
 		if err != nil {
 			if errors.Is(err, love.ErrForbidden) || errors.Is(err, context.Canceled) {

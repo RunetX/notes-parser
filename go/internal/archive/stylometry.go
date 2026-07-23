@@ -78,20 +78,36 @@ func (s *Store) BuildStyleProfiles(ctx context.Context, minChars, dims int, now 
 	return st, nil
 }
 
-// accumulateStyle читает все комментарии одним потоком и копит вектор 3-грамм на
-// автора в памяти (≈16k авторов × dims float32 — десятки МБ).
+// accumulateStyle копит вектор 3-грамм на автора по ВСЕМУ его тексту —
+// и комментариям, и заметкам (≈16k авторов × dims float32 — десятки МБ).
+// Заметки обязательны: их текст такой же авторский, а анкета, писавшая только
+// заметки без комментариев, иначе вообще не получила бы профиля стиля.
 func (s *Store) accumulateStyle(ctx context.Context, dims int) (map[int64]*styleAcc, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT author_id, text FROM comments WHERE author_id != 0`)
+	acc := map[int64]*styleAcc{}
+	sources := []string{
+		`SELECT author_id, text FROM comments WHERE author_id != 0`,
+		`SELECT author_id, text FROM notes WHERE author_id IS NOT NULL AND author_id != 0`,
+	}
+	for _, q := range sources {
+		if err := s.accumulateStyleFrom(ctx, q, dims, acc); err != nil {
+			return nil, err
+		}
+	}
+	return acc, nil
+}
+
+// accumulateStyleFrom добавляет в аккумулятор текст одного источника.
+func (s *Store) accumulateStyleFrom(ctx context.Context, query string, dims int, acc map[int64]*styleAcc) error {
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	acc := map[int64]*styleAcc{}
 	for rows.Next() {
 		var aid int64
 		var text string
 		if err := rows.Scan(&aid, &text); err != nil {
-			return nil, err
+			return err
 		}
 		norm := normalizeStyle(text)
 		if norm == "" {
@@ -105,7 +121,7 @@ func (s *Store) accumulateStyle(ctx context.Context, dims int) (map[int64]*style
 		p.ngrams += addCharTrigrams(p.vec, norm, dims)
 		p.chars += len([]rune(norm))
 	}
-	return acc, rows.Err()
+	return rows.Err()
 }
 
 // StylePair — пара авторов с центрированной косинусной похожестью стиля.

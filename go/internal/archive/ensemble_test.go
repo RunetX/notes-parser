@@ -21,6 +21,20 @@ func TestEnsembleScore(t *testing.T) {
 	}
 }
 
+// Человек ведёт анкеты и параллельно, поэтому пара с ПЕРЕСЕКАЮЩИМИСЯ спанами не
+// должна заметно проигрывать «встык» при равных стиле и круге — иначе метод
+// систематически пропускает параллельные альтер-эго.
+func TestParallelAccountsNotPenalized(t *testing.T) {
+	seq := ensembleScore(1, 0.80, "handoff", 30, 0.60, 120)
+	par := ensembleScore(1, 0.80, "overlap", 0, 0.60, 120)
+	if diff := seq - par; diff > 0.05 {
+		t.Errorf("параллельные анкеты штрафуются на %.3f (seq=%.3f par=%.3f), допустимо ≤0.05", diff, seq, par)
+	}
+	if par < 0.7 {
+		t.Errorf("параллельная пара со стилем #1 и кругом 0.6 должна проходить порог: %.3f", par)
+	}
+}
+
 func TestOverlapCoeff(t *testing.T) {
 	ca := map[int64]bool{10: true, 20: true, 30: true, 2: true} // 2 — сама пара, игнор
 	cb := map[int64]bool{20: true, 30: true, 40: true, 1: true} // 1 — сама пара, игнор

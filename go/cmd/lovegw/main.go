@@ -98,7 +98,7 @@ func usage() {
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
   lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
   lovegw export [-db archive.db] [-out dir] <note_id>
-  lovegw backfill [-config config.json] [-db archive.db] [-proxy] [-workers N] [-interval-ms MS] [-from ID] [-to ID] [-refresh] [-limit N]
+  lovegw backfill [-config config.json] [-db archive.db] [-proxy] [-workers N] [-interval-ms MS] [-from ID] [-to ID] [-start-page N] [-refresh] [-limit N]
   lovegw personas [-db archive.db] [-out dir] flag [-patterns file]
   lovegw personas [-db archive.db] [-out dir] candidates [-limit N]
   lovegw personas [-db archive.db] [-out dir] [-in links.json] link
