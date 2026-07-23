@@ -413,6 +413,15 @@ type aliasCand struct {
 	evidence string
 }
 
+// UserName — имя пользователя по id (для отчётов). false — пользователя нет.
+func (s *Store) UserName(ctx context.Context, id int64) (string, bool) {
+	var name string
+	if err := s.db.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, id).Scan(&name); err != nil {
+		return "", false
+	}
+	return name, true
+}
+
 // upsertAliasCandidate заносит/обновляет парную связь с заданным сигналом.
 // Общий для всех источников; UNIQUE(user_a,user_b,signal) → повтор = update.
 func upsertAliasCandidate(ctx context.Context, tx *sql.Tx, c aliasCand, nowStr string) error {

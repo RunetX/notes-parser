@@ -55,9 +55,15 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	refresh := fs.Bool("refresh", false, "пере-скачать уже хэшированные аватары (avatars fetch)")
 	maxDist := fs.Int("max-dist", 4, "макс. Hamming dHash для склейки (avatars cluster)")
 	genericMax := fs.Int("generic-max", 4, "exact-группа аватаров больше — generic, пропуск (avatars cluster)")
+	minChars := fs.Int("min-chars", 1000, "мин. суммарного текста автора для профиля (stylometry build)")
+	dims := fs.Int("dims", 512, "размерность хэш-вектора стиля (stylometry build)")
+	minCosine := fs.Float64("min-cosine", 0.5, "порог центр-косинуса стиля (stylometry cluster)")
+	topK := fs.Int("top-k", 2, "сколько ближайших по стилю на автора (stylometry cluster)")
+	maxPairs := fs.Int("max-pairs", 500, "предел числа пар стиля (stylometry cluster)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
+		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
 	})); err != nil {
 		return err
 	}
@@ -88,8 +94,12 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			cfgPath: *cfgPath, proxy: *useProxy, workers: *workers, intervalMS: *intervalMS,
 			refresh: *refresh, limit: *limit, maxDist: *maxDist, genericMax: *genericMax,
 		})
+	case "stylometry":
+		return personasStylometry(ctx, ar, fs.Args()[1:], styloOpts{
+			minChars: *minChars, dims: *dims, minCosine: *minCosine, topK: *topK, maxPairs: *maxPairs,
+		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry)", action)
 	}
 }
 
