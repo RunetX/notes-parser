@@ -154,6 +154,10 @@ db.sqlite
 db.sqlite-journal
 output/
 yesterday/
+# Дампы грабера заметок (grab -out / -save-html): исследовательские выгрузки
+# JSON и сырой HTML. Архив archive.db уже покрыт правилом data/ выше.
+# ВНИМАНИЕ: testdata НЕ игнорируем — там реальные фикстуры под тесты.
+dump/
 .vscode/
 .claude/
 # Legacy-код, хранится только локально (main.py содержит токен)

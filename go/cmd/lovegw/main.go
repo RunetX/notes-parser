@@ -4,6 +4,10 @@
 //
 //	crawl  — отладочный обход сайта: разобрать ленту или комментарии и
 //	         напечатать JSON; --save-html пишет сырой HTML для фикстур
+//	grab   — разовая выгрузка одной заметки со всеми комментариями в
+//	         древовидном виде, нормализованная в archive.db (типажи в отдельной
+//	         таблице users, дерево ответов через parent_id); -json — снимок в файл
+//	export — офлайн-выгрузка заметки из archive.db во вложенное JSON-дерево
 //	import — импорт состояния старой Python-версии (M2)
 //	run    — основной демон (M3+)
 package main
@@ -62,6 +66,10 @@ func main() {
 		err = cmdDoctor(ctx, os.Args[2:])
 	case "repost":
 		err = cmdRepost(ctx, os.Args[2:])
+	case "grab":
+		err = cmdGrab(ctx, os.Args[2:])
+	case "export":
+		err = cmdExport(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -79,7 +87,9 @@ func usage() {
   lovegw import [-config config.json] [-notes notes.json] [-sessions sessions_export.json] [-subscribers subscribers.json]
   lovegw run    [-config config.json] [-seed]
   lovegw doctor [-config config.json] [-post-test]
-  lovegw repost [-config config.json] <note_id> [<note_id> ...]`)
+  lovegw repost [-config config.json] <note_id> [<note_id> ...]
+  lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
+  lovegw export [-db archive.db] [-out dir] <note_id>`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
