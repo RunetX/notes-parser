@@ -108,7 +108,7 @@ func usage() {
   lovegw personas [-db archive.db] [-max-dist D] [-generic-max N] avatars cluster
   lovegw personas [-db archive.db] [-min-chars N] [-dims N] stylometry build
   lovegw personas [-db archive.db] [-min-cosine F] [-top-k N] [-max-pairs N] stylometry cluster
-  lovegw personas [-db archive.db] [-out dir] [-min-replies N] [-drop-self] graph
+  lovegw personas [-db archive.db] [-out dir] [-min-replies N] [-drop-self] [-top-nodes N] [-edges-per-node N] graph
   lovegw personas [-db archive.db] [-out dir] [-top N] portrait <p<id>|u<id>|user_id>
   lovegw personas [-db archive.db] diag <id> <id> …
   lovegw personas [-db archive.db] [-out dir] [-ens-top-k N] [-handoff-days D] [-ens-floor F] ensemble`)

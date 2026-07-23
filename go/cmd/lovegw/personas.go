@@ -64,6 +64,8 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	maxPairs := fs.Int("max-pairs", 500, "предел числа пар стиля (stylometry cluster)")
 	minReplies := fs.Int("min-replies", 3, "мин. вес ребра для экспорта (graph)")
 	dropSelf := fs.Bool("drop-self", false, "убрать само-петли — ответы между альтами (graph)")
+	topNodes := fs.Int("top-nodes", 0, "оставить N самых активных личностей, рёбра только между ними (graph; 0 — все)")
+	edgesPerNode := fs.Int("edges-per-node", 0, "костяк: оставить у узла N сильнейших связей (graph; 0 — все)")
 	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait)")
 	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
 	handoffDays := fs.Int("handoff-days", 120, "макс. разрыв спанов для полного веса handoff (ensemble)")
@@ -73,6 +75,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
 		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
 		"min-replies": true, "top": true, "ens-top-k": true, "handoff-days": true, "ens-floor": true,
+		"top-nodes": true, "edges-per-node": true,
 	})); err != nil {
 		return err
 	}
@@ -108,7 +111,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			minChars: *minChars, dims: *dims, minCosine: *minCosine, topK: *topK, maxPairs: *maxPairs,
 		})
 	case "graph":
-		return personasGraph(ctx, ar, *outDir, *minReplies, *dropSelf)
+		return personasGraph(ctx, ar, *outDir, *minReplies, *dropSelf, *topNodes, *edgesPerNode)
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
 	case "diag":

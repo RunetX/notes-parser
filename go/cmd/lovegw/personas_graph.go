@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	"lovegw/internal/archive"
@@ -15,8 +16,9 @@ import (
 // (личности/анкеты с активностью) + edges.csv (ответы с весом). Узлы —
 // только те, что участвуют в отфильтрованных рёбрах (без изолятов). Граф уже
 // «по людям»: альты подтверждённых/предложенных личностей слиты в один узел.
-func personasGraph(ctx context.Context, ar *archive.Store, outDir string, minReplies int, dropSelf bool) error {
-	fmt.Fprintf(os.Stderr, "graph: строю рёбра (min-replies=%d, drop-self=%v)…\n", minReplies, dropSelf)
+func personasGraph(ctx context.Context, ar *archive.Store, outDir string, minReplies int, dropSelf bool, topNodes, edgesPerNode int) error {
+	fmt.Fprintf(os.Stderr, "graph: строю рёбра (min-replies=%d, drop-self=%v, top-nodes=%d, edges-per-node=%d)…\n",
+		minReplies, dropSelf, topNodes, edgesPerNode)
 	edges, err := ar.GraphEdges(ctx, minReplies, dropSelf)
 	if err != nil {
 		return err
@@ -25,6 +27,14 @@ func personasGraph(ctx context.Context, ar *archive.Store, outDir string, minRep
 	if err != nil {
 		return err
 	}
+	// Плотное сообщество даёт «хайрбол»: без отсечки по ядру граф нечитаем и
+	// подписи слипаются. top-nodes оставляет N самых активных личностей и рёбра
+	// только между ними.
+	if topNodes > 0 {
+		keep := topActiveIdentities(nodes, topNodes)
+		edges = keepEdgesWithin(edges, keep)
+	}
+	edges = keepTopEdgesPerNode(edges, edgesPerNode)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
@@ -46,6 +56,68 @@ func personasGraph(ctx context.Context, ar *archive.Store, outDir string, minRep
 	}
 	fmt.Fprintf(os.Stderr, "graph: узлов %d, рёбер %d → %s, %s\n", nUsed, len(edges), nodesPath, edgesPath)
 	return nil
+}
+
+// topActiveIdentities — n самых активных личностей (по числу комментариев).
+func topActiveIdentities(nodes map[string]archive.GraphNode, n int) map[string]bool {
+	list := make([]archive.GraphNode, 0, len(nodes))
+	for _, nd := range nodes {
+		list = append(list, nd)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Comments != list[j].Comments {
+			return list[i].Comments > list[j].Comments
+		}
+		return list[i].Identity < list[j].Identity
+	})
+	if n > len(list) {
+		n = len(list)
+	}
+	keep := make(map[string]bool, n)
+	for _, nd := range list[:n] {
+		keep[nd.Identity] = true
+	}
+	return keep
+}
+
+// keepTopEdgesPerNode — «костяк» плотного графа: у каждого узла остаются только
+// n самых весомых исходящих рёбер. Ядро этого сообщества близко к клике (топ-120
+// личностей при пороге 100 ответов дают плотность ~30%), поэтому отсечка по весу
+// хайрбол не лечит — а костяк показывает, кто кому ближе всех.
+func keepTopEdgesPerNode(edges []archive.GraphEdge, n int) []archive.GraphEdge {
+	if n <= 0 {
+		return edges
+	}
+	byFrom := map[string][]archive.GraphEdge{}
+	for _, e := range edges {
+		byFrom[e.From] = append(byFrom[e.From], e)
+	}
+	out := make([]archive.GraphEdge, 0, len(edges))
+	for _, list := range byFrom {
+		sort.Slice(list, func(i, j int) bool { return list[i].Replies > list[j].Replies })
+		if len(list) > n {
+			list = list[:n]
+		}
+		out = append(out, list...)
+	}
+	sort.Slice(out, func(i, j int) bool { // стабильный порядок вывода
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		return out[i].Replies > out[j].Replies
+	})
+	return out
+}
+
+// keepEdgesWithin оставляет рёбра, у которых оба конца в наборе.
+func keepEdgesWithin(edges []archive.GraphEdge, keep map[string]bool) []archive.GraphEdge {
+	out := make([]archive.GraphEdge, 0, len(edges))
+	for _, e := range edges {
+		if keep[e.From] && keep[e.To] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func writeNodesCSV(path string, nodes map[string]archive.GraphNode, used map[string]bool) (int, error) {
