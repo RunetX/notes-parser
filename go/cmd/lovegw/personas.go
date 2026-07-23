@@ -41,6 +41,7 @@ var defaultDisclosurePatterns = []string{
 //	cluster     — склеить связные компоненты в personas (порог -min-score) + отчёт
 //	set <id> <confirmed|rejected|pending> — проставить статус личности после ревью
 //	diag <id> <id> …                      — ground-truth диагностика набора анкет (стиль/собеседники/время)
+//	ensemble    — направленный стиль + handoff + пересечение круга → alias_candidates(ensemble)
 func cmdPersonas(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("personas", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -64,11 +65,14 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	minReplies := fs.Int("min-replies", 3, "мин. вес ребра для экспорта (graph)")
 	dropSelf := fs.Bool("drop-self", false, "убрать само-петли — ответы между альтами (graph)")
 	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait)")
+	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
+	handoffDays := fs.Int("handoff-days", 120, "макс. разрыв спанов для полного веса handoff (ensemble)")
+	ensFloor := fs.Float64("ens-floor", 0.5, "мин. композитный вес для записи кандидата (ensemble)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
 		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
-		"min-replies": true, "top": true,
+		"min-replies": true, "top": true, "ens-top-k": true, "handoff-days": true, "ens-floor": true,
 	})); err != nil {
 		return err
 	}
@@ -109,8 +113,13 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
 	case "diag":
 		return personasDiag(ctx, ar, fs.Args()[1:])
+	case "ensemble":
+		return personasEnsemble(ctx, ar, archive.EnsembleParams{
+			MinCosine: *minCosine, TopK: *ensTopK, HandoffDays: *handoffDays,
+			Floor: *ensFloor, MaxPairs: *maxPairs,
+		}, *outDir)
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|graph|portrait|diag)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|graph|portrait|diag|ensemble)", action)
 	}
 }
 
