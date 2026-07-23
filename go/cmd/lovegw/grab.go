@@ -176,8 +176,11 @@ func grabNote(ctx context.Context, client *love.Client, opt grabOptions, log *sl
 			added++
 		}
 		log.Info("страница комментариев разобрана", "note", opt.noteID, "page", page, "new", added, "total", len(res.Comments))
-		if added == 0 {
-			break // новых комментариев нет — тред кончился (или tree не пагинируется)
+		// Пейджер сайта помечает следующую страницу <link rel="next">. Его
+		// отсутствие — конец треда: для древовидного вида (весь тред на одной
+		// странице) это 1 запрос на заметку, без лишнего добора пустой страницы.
+		if added == 0 || !bytes.Contains(raw, []byte(`rel="next"`)) {
+			break
 		}
 	}
 

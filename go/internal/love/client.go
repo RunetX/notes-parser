@@ -45,13 +45,24 @@ type Client struct {
 }
 
 func New(baseURL, userAgent string, requestInterval time.Duration, log *slog.Logger) *Client {
+	return NewWithClient(baseURL, userAgent, requestInterval, nil, log)
+}
+
+// NewWithClient — как New, но с заданным *http.Client (например, маршрутизирующим
+// сайт через прокси). hc == nil → клиент по умолчанию с таймаутом requestTimeout.
+// Прокси для сайта нужен при массовой выгрузке, чтобы поберечь основной IP от
+// блока при параллельном чтении: запросы уходят с IP прокси-хоста.
+func NewWithClient(baseURL, userAgent string, requestInterval time.Duration, hc *http.Client, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
+	}
+	if hc == nil {
+		hc = &http.Client{Timeout: requestTimeout}
 	}
 	return &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		ua:      userAgent,
-		hc:      &http.Client{Timeout: requestTimeout},
+		hc:      hc,
 		limiter: rate.NewLimiter(rate.Every(requestInterval), 2),
 		log:     log,
 	}
@@ -92,12 +103,33 @@ func (c *Client) RawComments(ctx context.Context, noteID string) ([]byte, error)
 // него страница вернулась бы линейной — потерялось бы дерево ответов.
 func (c *Client) RawCommentsView(ctx context.Context, noteID string, page int, view string) ([]byte, error) {
 	var path string
-	if page <= 1 {
-		path = fmt.Sprintf("/notes/comments/%s/desc/limit~30/?view=%s", noteID, view)
-	} else {
-		path = fmt.Sprintf("/notes/comments/%s/page~%d/limit~30/?view=%s", noteID, page, view)
+	switch {
+	case view == ViewTree:
+		// Древовидный отдаёт весь тред одной страницей; каноничный URL без
+		// desc/limit~30 не даёт 302-редиректа (лишний хоп на каждый запрос при
+		// массовой выгрузке).
+		if page <= 1 {
+			path = fmt.Sprintf("/notes/comments/%s/?view=tree", noteID)
+		} else {
+			path = fmt.Sprintf("/notes/comments/%s/page~%d/?view=tree", noteID, page)
+		}
+	default:
+		if page <= 1 {
+			path = fmt.Sprintf("/notes/comments/%s/desc/limit~30/?view=%s", noteID, view)
+		} else {
+			path = fmt.Sprintf("/notes/comments/%s/page~%d/limit~30/?view=%s", noteID, page, view)
+		}
 	}
 	return c.get(ctx, path)
+}
+
+// RawNotesPage возвращает сырой HTML страницы ленты (30 заметок) для перечисления
+// живых id при массовой выгрузке. page 1 — /notes/limit~30/, дальше page~N.
+func (c *Client) RawNotesPage(ctx context.Context, page int) ([]byte, error) {
+	if page <= 1 {
+		return c.get(ctx, "/notes/limit~30/")
+	}
+	return c.get(ctx, fmt.Sprintf("/notes/page~%d/limit~30/", page))
 }
 
 // mediaSizeLimit — предел размера скачиваемого медиа (аватар/иллюстрация).

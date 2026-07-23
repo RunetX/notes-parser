@@ -8,6 +8,8 @@
 //	         древовидном виде, нормализованная в archive.db (типажи в отдельной
 //	         таблице users, дерево ответов через parent_id); -json — снимок в файл
 //	export — офлайн-выгрузка заметки из archive.db во вложенное JSON-дерево
+//	backfill — массовая выгрузка диапазона заметок в archive.db (перечисление
+//	         живых id по ленте, пул воркеров, резюм, -proxy для сайта)
 //	import — импорт состояния старой Python-версии (M2)
 //	run    — основной демон (M3+)
 package main
@@ -70,6 +72,8 @@ func main() {
 		err = cmdGrab(ctx, os.Args[2:])
 	case "export":
 		err = cmdExport(ctx, os.Args[2:])
+	case "backfill":
+		err = cmdBackfill(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -89,7 +93,8 @@ func usage() {
   lovegw doctor [-config config.json] [-post-test]
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
   lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
-  lovegw export [-db archive.db] [-out dir] <note_id>`)
+  lovegw export [-db archive.db] [-out dir] <note_id>
+  lovegw backfill [-config config.json] [-db archive.db] [-proxy] [-workers N] [-interval-ms MS] [-from ID] [-to ID] [-refresh] [-limit N]`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.

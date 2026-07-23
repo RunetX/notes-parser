@@ -309,6 +309,25 @@ func (s *Store) LoadNote(ctx context.Context, id int64) (StoredNote, bool, error
 	return n, true, nil
 }
 
+// KnownNoteIDs возвращает id всех уже сохранённых заметок — для пропуска при
+// массовой выгрузке (резюм после остановки/блока).
+func (s *Store) KnownNoteIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM notes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
 // LoadComments читает комментарии заметки (плоско, по возрастанию id) с авторами.
 func (s *Store) LoadComments(ctx context.Context, noteID int64) ([]StoredComment, error) {
 	rows, err := s.db.QueryContext(ctx, `
