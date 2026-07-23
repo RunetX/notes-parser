@@ -10,6 +10,8 @@
 //	export — офлайн-выгрузка заметки из archive.db во вложенное JSON-дерево
 //	backfill — массовая выгрузка диапазона заметок в archive.db (перечисление
 //	         живых id по ленте, пул воркеров, резюм, -proxy для сайта)
+//	personas — распознавание личностей поверх archive.db: склейка альт-анкет
+//	         одного человека (flag → candidates → link → cluster → set)
 //	import — импорт состояния старой Python-версии (M2)
 //	run    — основной демон (M3+)
 package main
@@ -74,6 +76,8 @@ func main() {
 		err = cmdExport(ctx, os.Args[2:])
 	case "backfill":
 		err = cmdBackfill(ctx, os.Args[2:])
+	case "personas":
+		err = cmdPersonas(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -94,7 +98,12 @@ func usage() {
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
   lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
   lovegw export [-db archive.db] [-out dir] <note_id>
-  lovegw backfill [-config config.json] [-db archive.db] [-proxy] [-workers N] [-interval-ms MS] [-from ID] [-to ID] [-refresh] [-limit N]`)
+  lovegw backfill [-config config.json] [-db archive.db] [-proxy] [-workers N] [-interval-ms MS] [-from ID] [-to ID] [-refresh] [-limit N]
+  lovegw personas [-db archive.db] [-out dir] flag [-patterns file]
+  lovegw personas [-db archive.db] [-out dir] candidates [-limit N]
+  lovegw personas [-db archive.db] [-out dir] [-in links.json] link
+  lovegw personas [-db archive.db] [-out dir] [-min-score F] cluster
+  lovegw personas [-db archive.db] set <persona_id> <confirmed|rejected|pending>`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
