@@ -60,10 +60,14 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	minCosine := fs.Float64("min-cosine", 0.5, "порог центр-косинуса стиля (stylometry cluster)")
 	topK := fs.Int("top-k", 2, "сколько ближайших по стилю на автора (stylometry cluster)")
 	maxPairs := fs.Int("max-pairs", 500, "предел числа пар стиля (stylometry cluster)")
+	minReplies := fs.Int("min-replies", 3, "мин. вес ребра для экспорта (graph)")
+	dropSelf := fs.Bool("drop-self", false, "убрать само-петли — ответы между альтами (graph)")
+	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
 		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
+		"min-replies": true, "top": true,
 	})); err != nil {
 		return err
 	}
@@ -98,8 +102,12 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasStylometry(ctx, ar, fs.Args()[1:], styloOpts{
 			minChars: *minChars, dims: *dims, minCosine: *minCosine, topK: *topK, maxPairs: *maxPairs,
 		})
+	case "graph":
+		return personasGraph(ctx, ar, *outDir, *minReplies, *dropSelf)
+	case "portrait":
+		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|graph|portrait)", action)
 	}
 }
 
