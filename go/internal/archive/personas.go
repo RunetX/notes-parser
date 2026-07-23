@@ -379,12 +379,8 @@ func (s *Store) ImportAliasLinks(ctx context.Context, links []AliasLink, resolve
 			st.Skipped++
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO alias_candidates (user_a, user_b, signal, score, evidence, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT(user_a, user_b, signal) DO UPDATE SET
-				score = excluded.score, evidence = excluded.evidence`,
-			a, b, SignalDisclosure, l.Score, l.Evidence, nowStr); err != nil {
+		if err := upsertAliasCandidate(ctx, tx,
+			aliasCand{a: a, b: b, signal: SignalDisclosure, score: l.Score, evidence: l.Evidence}, nowStr); err != nil {
 			return st, fmt.Errorf("связь %d↔%d: %w", a, b, err)
 		}
 		st.Links++
@@ -407,6 +403,26 @@ func (s *Store) ImportAliasLinks(ctx context.Context, links []AliasLink, resolve
 		return st, err
 	}
 	return st, nil
+}
+
+// aliasCand — парная связь-кандидат для upsert (a<b нормализуется вызывающим).
+type aliasCand struct {
+	a, b     int64
+	signal   string // disclosure|avatar_phash|…
+	score    float64
+	evidence string
+}
+
+// upsertAliasCandidate заносит/обновляет парную связь с заданным сигналом.
+// Общий для всех источников; UNIQUE(user_a,user_b,signal) → повтор = update.
+func upsertAliasCandidate(ctx context.Context, tx *sql.Tx, c aliasCand, nowStr string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO alias_candidates (user_a, user_b, signal, score, evidence, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_a, user_b, signal) DO UPDATE SET
+			score = excluded.score, evidence = excluded.evidence`,
+		c.a, c.b, c.signal, c.score, c.evidence, nowStr)
+	return err
 }
 
 // usersExist — оба id есть в users.

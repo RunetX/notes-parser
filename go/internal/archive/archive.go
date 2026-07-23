@@ -148,6 +148,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		schemaSQL,    // v1 — базовая схема (users/notes/comments)
 		migrateV2SQL, // v2 — типовые VIEW (дерево, граф, активность, сводка)
 		migrateV3SQL, // v3 — слой распознавания личностей (disclosure/alias/personas)
+		migrateV4SQL, // v4 — перцептивные хэши аватаров (avatar_hashes)
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

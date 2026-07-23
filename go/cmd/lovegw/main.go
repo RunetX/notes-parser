@@ -103,7 +103,9 @@ func usage() {
   lovegw personas [-db archive.db] [-out dir] candidates [-limit N]
   lovegw personas [-db archive.db] [-out dir] [-in links.json] link
   lovegw personas [-db archive.db] [-out dir] [-min-score F] cluster
-  lovegw personas [-db archive.db] set <persona_id> <confirmed|rejected|pending>`)
+  lovegw personas [-db archive.db] set <persona_id> <confirmed|rejected|pending>
+  lovegw personas [-db archive.db] [-config config.json] [-proxy] [-workers N] [-limit N] avatars fetch
+  lovegw personas [-db archive.db] [-max-dist D] [-generic-max N] avatars cluster`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.

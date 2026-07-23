@@ -45,17 +45,25 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
 	outDir := fs.String("out", "dump", "каталог выгрузок (candidates/cluster)")
 	inPath := fs.String("in", "", "входной JSON для link (по умолчанию <out>/links.json)")
-	limit := fs.Int("limit", 200, "предел числа кандидатов (candidates; 0 — все)")
+	limit := fs.Int("limit", 200, "предел выборки (candidates; avatars fetch; 0 — все)")
 	minScore := fs.Float64("min-score", 0.7, "порог веса ребра для склейки (cluster)")
 	patternsPath := fs.String("patterns", "", "файл LIKE-шаблонов (flag; по строке, # — коммент; иначе встроенный набор)")
+	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
+	useProxy := fs.Bool("proxy", false, "качать аватары через telegram_proxy (avatars fetch)")
+	workers := fs.Int("workers", 6, "воркеров загрузки (avatars fetch)")
+	intervalMS := fs.Int("interval-ms", 150, "интервал запросов, мс (avatars fetch)")
+	refresh := fs.Bool("refresh", false, "пере-скачать уже хэшированные аватары (avatars fetch)")
+	maxDist := fs.Int("max-dist", 4, "макс. Hamming dHash для склейки (avatars cluster)")
+	genericMax := fs.Int("generic-max", 4, "exact-группа аватаров больше — generic, пропуск (avatars cluster)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
+		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
 	})); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
 		usage()
-		return fmt.Errorf("personas: не указано действие (flag|candidates|link|cluster|set)")
+		return fmt.Errorf("personas: не указано действие (flag|candidates|link|cluster|set|avatars)")
 	}
 
 	ar, err := archive.Open(ctx, *dbPath)
@@ -75,8 +83,13 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasCluster(ctx, ar, *minScore, *outDir)
 	case "set":
 		return personasSet(ctx, ar, fs.Args()[1:])
+	case "avatars":
+		return personasAvatars(ctx, ar, fs.Args()[1:], avatarOpts{
+			cfgPath: *cfgPath, proxy: *useProxy, workers: *workers, intervalMS: *intervalMS,
+			refresh: *refresh, limit: *limit, maxDist: *maxDist, genericMax: *genericMax,
+		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars)", action)
 	}
 }
 
