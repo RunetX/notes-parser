@@ -23,6 +23,13 @@ const (
 	getRetries     = 3
 )
 
+// Виды отображения комментариев на сайте. Древовидный проставляет числовой
+// data-parent-comment-id у каждого комментария (родитель), линейный — нет.
+const (
+	ViewTree   = "tree"
+	ViewLinear = "linear"
+)
+
 // ErrForbidden — сайт ответил 403: геоблок DDoS-Guard или бан.
 // Ретраи бессмысленны, нужен разрешённый (российский) IP.
 var ErrForbidden = errors.New("сайт вернул 403 (геоблок/бан IP)")
@@ -76,6 +83,21 @@ func (c *Client) RawNotes(ctx context.Context) ([]byte, error) {
 // RawComments возвращает сырой HTML страницы комментариев.
 func (c *Client) RawComments(ctx context.Context, noteID string) ([]byte, error) {
 	return c.get(ctx, fmt.Sprintf(commentsPathFmt, noteID))
+}
+
+// RawCommentsView возвращает сырой HTML страницы комментариев в заданном виде
+// (ViewTree/ViewLinear) и с заданным номером страницы (page ≥ 1). Используется
+// разовым граббером для полного обхода треда в древовидном виде. view форсится
+// в каждом запросе намеренно: пейджер сайта отдаёт next-ссылку без ?view, и без
+// него страница вернулась бы линейной — потерялось бы дерево ответов.
+func (c *Client) RawCommentsView(ctx context.Context, noteID string, page int, view string) ([]byte, error) {
+	var path string
+	if page <= 1 {
+		path = fmt.Sprintf("/notes/comments/%s/desc/limit~30/?view=%s", noteID, view)
+	} else {
+		path = fmt.Sprintf("/notes/comments/%s/page~%d/limit~30/?view=%s", noteID, page, view)
+	}
+	return c.get(ctx, path)
 }
 
 // mediaSizeLimit — предел размера скачиваемого медиа (аватар/иллюстрация).

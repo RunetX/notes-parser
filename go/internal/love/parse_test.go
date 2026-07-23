@@ -163,6 +163,133 @@ func TestParseCommentsRealPage(t *testing.T) {
 	}
 }
 
+func TestParseCommentsAuthorIDAndLinearParent(t *testing.T) {
+	comments, err := ParseComments(openFixture(t, "comments_312696.html"), "https://love.ngs.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comments[0].AuthorID != "981563" {
+		t.Errorf("author_id первого комментария: got %q, want 981563", comments[0].AuthorID)
+	}
+	for _, c := range comments {
+		if c.AuthorID == "" || c.AuthorID == "0" {
+			t.Errorf("комментарий %d без числового author_id", c.ID)
+		}
+		// Фикстура записана в линейном виде: data-parent-comment-id всегда
+		// пуст, значит parent_id обязан быть 0 (корень).
+		if c.ParentID != 0 {
+			t.Errorf("линейный вид: parent_id должен быть 0, у %d = %d", c.ID, c.ParentID)
+		}
+	}
+}
+
+// В древовидном виде сайт проставляет data-parent-comment-id — фикстуры такого
+// вида пока нет, поэтому дерево проверяем на синтетической разметке.
+func TestParseCommentsTreeParent(t *testing.T) {
+	html := `<div class="lv-note__comment-item">
+	           <a id="anchor-100" data-parent-comment-id="63167742"></a>
+	           <img class="avatar" src="/a.png" alt="Имя, 30 лет">
+	           <a class="lv-people__nickname" href="/profile/555/">Имя</a>
+	           <div class="lv-comment__pubdate">18.07.2026, 17:00:00</div>
+	           <div class="lv-comment__text">ответ</div>
+	         </div>`
+	comments, err := ParseComments(strings.NewReader(html), "https://love.ngs.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("ожидался 1 комментарий, получено %d", len(comments))
+	}
+	if comments[0].ParentID != 63167742 {
+		t.Errorf("parent_id: got %d, want 63167742", comments[0].ParentID)
+	}
+	if comments[0].AuthorID != "555" {
+		t.Errorf("author_id: got %q, want 555", comments[0].AuthorID)
+	}
+}
+
+// comments_tree_312696.html — реальная древовидная страница (?view=tree),
+// обрезанная до шапки заметки и первых 15 комментариев. В отличие от линейной
+// фикстуры здесь data-parent-comment-id заполнен — на нём и держится дерево.
+func TestParseCommentsTreeRealPage(t *testing.T) {
+	comments, err := ParseComments(openFixture(t, "comments_tree_312696.html"), "https://love.ngs.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 15 {
+		t.Fatalf("ожидалось 15 комментариев в обрезанной фикстуре, получено %d", len(comments))
+	}
+
+	byID := map[int64]Comment{}
+	roots, replies := 0, 0
+	for _, c := range comments {
+		byID[c.ID] = c
+		if c.ParentID == 0 {
+			roots++
+		} else {
+			replies++
+		}
+		if c.AuthorID == "" || c.AuthorID == "0" {
+			t.Errorf("комментарий %d без author_id", c.ID)
+		}
+	}
+	// В обрезанной фикстуре 11 непустых data-parent-comment-id.
+	if replies != 11 {
+		t.Errorf("ответов (parent_id != 0): got %d, want 11", replies)
+	}
+	if roots != 4 {
+		t.Errorf("корней (parent_id == 0): got %d, want 4", roots)
+	}
+
+	// Конкретное ребро дерева из реальной разметки: 63167045 → 63167023.
+	if c, ok := byID[63167045]; !ok {
+		t.Error("комментарий 63167045 не разобран")
+	} else if c.ParentID != 63167023 {
+		t.Errorf("parent_id 63167045: got %d, want 63167023", c.ParentID)
+	}
+	// Каждый parent_id указывает на комментарий, присутствующий на странице
+	// (в этой обрезке — самодостаточное дерево, висячих ссылок нет).
+	for _, c := range comments {
+		if c.ParentID != 0 {
+			if _, ok := byID[c.ParentID]; !ok {
+				t.Errorf("висячий parent_id %d у комментария %d", c.ParentID, c.ID)
+			}
+		}
+	}
+}
+
+func TestParseNoteFromCommentsPage(t *testing.T) {
+	note, err := ParseNoteFromCommentsPage(openFixture(t, "comments_312696.html"), "https://love.ngs.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note.AuthorID != "1472546" {
+		t.Errorf("author_id заметки: got %q, want 1472546", note.AuthorID)
+	}
+	if note.AuthorName != "Рантье" {
+		t.Errorf("author_name заметки: got %q, want Рантье", note.AuthorName)
+	}
+	if !strings.Contains(note.Text, "доход с капитала") {
+		t.Errorf("текст заметки не разобран: %q", note.Text)
+	}
+	want := time.Date(2026, 7, 18, 13, 1, 12, 0, nsk)
+	if !note.PublishedAt.Equal(want) {
+		t.Errorf("дата заметки: got %v, want %v", note.PublishedAt, want)
+	}
+	// В фикстуре заметка помечена «Комментарии запрещены».
+	if !note.CommentsClosed {
+		t.Error("ожидался CommentsClosed=true для заметки 312696")
+	}
+}
+
+func TestParseNoteFromCommentsPageMissingIsMarkupError(t *testing.T) {
+	_, err := ParseNoteFromCommentsPage(strings.NewReader("<html><body><p>ничего</p></body></html>"), "https://love.ngs.ru")
+	var me *MarkupError
+	if !errors.As(err, &me) {
+		t.Fatalf("ожидалась MarkupError, получено: %v", err)
+	}
+}
+
 func TestParseCommentsEmptyIsOK(t *testing.T) {
 	comments, err := ParseComments(openFixture(t, "comments_empty.html"), "https://love.ngs.ru")
 	if err != nil {

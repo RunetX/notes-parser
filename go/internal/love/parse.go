@@ -13,18 +13,31 @@ import (
 // Все селекторы вёрстки сайта — в одном месте: при дрейфе вёрстки
 // правки локализуются здесь и в testdata-фикстурах.
 const (
-	selNoteItem        = ".lv-notes__note-item"
-	selCommentLink     = ".lv-notes__comment-link"       // attr name = id заметки
-	selNickname        = ".lv-people__nickname"
-	selNoteText        = ".lv-notes__note-text"
-	selNoteAuthorPic   = ".lv-notes__note-author .avatar" // src аватара автора заметки
-	selNoteImage       = ".note_images a"                 // href — полноразмерная иллюстрация
-	selCommentItem = ".lv-note__comment-item"
-	selCommentID   = "a[id^=anchor-]" // id вида anchor-63167742; в Python это же
-	                                  // резал магический [7:] — len("anchor-") == 7
-	selAvatar      = ".avatar"        // src; alt = "Имя, N лет"
+	selNoteItem      = ".lv-notes__note-item"
+	selCommentLink   = ".lv-notes__comment-link" // attr name = id заметки
+	selNickname      = ".lv-people__nickname"
+	selNoteText      = ".lv-notes__note-text"
+	selNoteAuthorPic = ".lv-notes__note-author .avatar" // src аватара автора заметки
+	selNoteImage     = ".note_images a"                 // href — полноразмерная иллюстрация
+	selCommentItem   = ".lv-note__comment-item"
+	selCommentID     = "a[id^=anchor-]" // id вида anchor-63167742; в Python это же
+	// резал магический [7:] — len("anchor-") == 7
+	selAvatar      = ".avatar" // src; alt = "Имя, N лет"
 	selCommentDate = ".lv-comment__pubdate"
 	selCommentText = ".lv-comment__text"
+
+	// Шапка заметки на её же странице комментариев (/notes/comments/<id>/).
+	// Классы отличаются от ленты — lv-note__ вместо lv-notes__. Это
+	// единственный источник текста/автора для старых заметок, выпавших из
+	// ленты (limit~5).
+	selNotePageItem = ".lv-note__note-item"
+	selNotePageText = ".lv-note__note-text"
+	selNotePageDate = ".lv-notes__note-date"
+	selNoteComments = ".lv-note__comments" // блок списка комментариев (для признака заморозки)
+
+	// attrParentComment — id родительского комментария; непусто только в
+	// древовидном виде (?view=tree), в линейном всегда "".
+	attrParentComment = "data-parent-comment-id"
 )
 
 // commentAnchorPrefix — префикс id якоря комментария.
@@ -38,6 +51,11 @@ const commentAnchorPrefix = "anchor-"
 // Признак живёт в одном месте; сменят формулировку — заметка просто не
 // архивируется досрочно и уйдёт в архив по недельному правилу (мягкая деградация).
 const commentsClosedMarker = "не актуальна"
+
+// commentsForbiddenMarker — текст на самой странице комментариев для заметки,
+// закрытой для новых ответов. В ленте тот же смысл несёт commentsClosedMarker
+// («не актуальна»), но на странице комментариев формулировка другая.
+const commentsForbiddenMarker = "Комментарии запрещены"
 
 // dateLayout — формат даты комментария, время новосибирское.
 const dateLayout = "02.01.2006, 15:04:05"
@@ -132,7 +150,8 @@ func ParseComments(r io.Reader, baseURL string) ([]Comment, error) {
 	doc.Find(selCommentItem).EachWithBreak(func(i int, s *goquery.Selection) bool {
 		ctx := fmt.Sprintf("комментарий #%d на странице", i)
 
-		idAttr, ok := s.Find(selCommentID).First().Attr("id")
+		anchor := s.Find(selCommentID).First()
+		idAttr, ok := anchor.Attr("id")
 		if !ok {
 			parseErr = &MarkupError{Selector: selCommentID, Context: ctx}
 			return false
@@ -143,6 +162,15 @@ func ParseComments(r io.Reader, baseURL string) ([]Comment, error) {
 			return false
 		}
 		ctx = fmt.Sprintf("комментарий %d", id)
+
+		// parent_id есть только в древовидном виде; пустой/непарсибельный —
+		// корень заметки (0), это не ошибка вёрстки.
+		var parentID int64
+		if p, ok := anchor.Attr(attrParentComment); ok {
+			if p = strings.TrimSpace(p); p != "" {
+				parentID, _ = strconv.ParseInt(p, 10, 64)
+			}
+		}
 
 		href, ok := s.Find(selNickname).First().Attr("href")
 		if !ok {
@@ -174,6 +202,8 @@ func ParseComments(r io.Reader, baseURL string) ([]Comment, error) {
 
 		comments = append(comments, Comment{
 			ID:          id,
+			ParentID:    parentID,
+			AuthorID:    digitsOf(href),
 			AuthorName:  name,
 			AuthorAge:   age,
 			AuthorLink:  absolutize(baseURL, href),
@@ -187,6 +217,69 @@ func ParseComments(r io.Reader, baseURL string) ([]Comment, error) {
 		return nil, parseErr
 	}
 	return comments, nil
+}
+
+// ParseNoteFromCommentsPage разбирает шапку самой заметки на её странице
+// комментариев. В отличие от ленты (limit~5), эта страница доступна и для
+// старых заметок, выпавших из ленты, — единственный способ получить их текст,
+// автора и дату. Поле ID не заполняется (id знает вызывающий — это аргумент
+// граббера); картинки абсолютизируются. Отсутствие блока/текста — дрейф вёрстки.
+func ParseNoteFromCommentsPage(r io.Reader, baseURL string) (Note, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return Note{}, fmt.Errorf("разбор HTML комментариев: %w", err)
+	}
+	item := doc.Find(selNotePageItem).First()
+	if item.Length() == 0 {
+		return Note{}, &MarkupError{Selector: selNotePageItem, Context: "шапка заметки на странице комментариев"}
+	}
+
+	n := Note{AuthorID: "0", AuthorName: "Анонимно"}
+	if nick := item.Find(selNickname).First(); nick.Length() > 0 {
+		n.AuthorName = strings.TrimSpace(nick.Text())
+		if href, ok := nick.Attr("href"); ok {
+			n.AuthorID = digitsOf(href)
+		}
+	}
+
+	text := item.Find(selNotePageText).First()
+	if text.Length() == 0 {
+		return Note{}, &MarkupError{Selector: selNotePageText, Context: "текст заметки на странице комментариев"}
+	}
+	n.Text = strings.TrimSpace(text.Text())
+
+	if src, ok := item.Find(selNoteAuthorPic).First().Attr("src"); ok {
+		n.AuthorAvatarURL = strings.TrimSpace(src)
+	}
+	item.Find(selNoteImage).Each(func(_ int, a *goquery.Selection) {
+		if href, ok := a.Attr("href"); ok {
+			if href = strings.TrimSpace(href); href != "" {
+				n.Images = append(n.Images, absolutize(baseURL, href))
+			}
+		}
+	})
+	if dateText := strings.TrimSpace(item.Find(selNotePageDate).First().Text()); dateText != "" {
+		if t, err := time.ParseInLocation(dateLayout, dateText, nsk); err == nil {
+			n.PublishedAt = t
+		}
+	}
+	// «Комментарии запрещены» — прямой текстовый узел блока списка (не внутри
+	// самих комментариев), поэтому берём только собственный текст контейнера,
+	// чтобы не поймать эту фразу в чьём-то комментарии.
+	n.CommentsClosed = strings.Contains(ownText(doc.Find(selNoteComments).First()), commentsForbiddenMarker)
+	return n, nil
+}
+
+// ownText возвращает только прямые текстовые узлы выборки, без текста вложенных
+// элементов.
+func ownText(s *goquery.Selection) string {
+	var b strings.Builder
+	s.Contents().Each(func(_ int, c *goquery.Selection) {
+		if goquery.NodeName(c) == "#text" {
+			b.WriteString(c.Text())
+		}
+	})
+	return b.String()
 }
 
 // digitsOf выбирает из строки все цифры: "/anketa376712/" -> "376712".
