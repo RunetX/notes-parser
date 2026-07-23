@@ -40,7 +40,7 @@ type EnsembleResult struct {
 type EnsembleStats struct {
 	StyleCandidates int              // пар-кандидатов из стиля (до фильтра по Floor)
 	Written         int              // записано в alias_candidates
-	Top             []EnsembleResult // топ для отчёта (≤20)
+	Pairs           []EnsembleResult // все записанные пары, по убыванию скора (для отчёта)
 }
 
 // styleCand — пара по стилю с лучшим направленным рангом.
@@ -87,13 +87,7 @@ func (s *Store) ClusterEnsemble(ctx context.Context, p EnsembleParams, now time.
 		return EnsembleStats{}, err
 	}
 
-	st := EnsembleStats{StyleCandidates: len(cands), Written: len(results)}
-	if len(results) > 20 {
-		st.Top = results[:20]
-	} else {
-		st.Top = results
-	}
-	return st, nil
+	return EnsembleStats{StyleCandidates: len(cands), Written: len(results), Pairs: results}, nil
 }
 
 // candidateAuthors — уникальные id из пар-кандидатов (для батч-запросов).

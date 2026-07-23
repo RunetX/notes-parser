@@ -22,13 +22,13 @@ func personasEnsemble(ctx context.Context, ar *archive.Store, p archive.Ensemble
 		return err
 	}
 	reportPath := filepath.Join(outDir, "ensemble.json")
-	if err := writeJSONFile(reportPath, st.Top); err != nil {
+	if err := writeJSONFile(reportPath, st.Pairs); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "ensemble: стиль-кандидатов %d, записано %d (floor %.2f) → %s\n",
 		st.StyleCandidates, st.Written, p.Floor, reportPath)
-	for i, r := range st.Top {
+	for i, r := range st.Pairs {
 		if i >= 15 {
 			break
 		}
