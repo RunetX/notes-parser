@@ -46,7 +46,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("personas", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
 	outDir := fs.String("out", "dump", "каталог выгрузок (candidates/cluster)")
-	inPath := fs.String("in", "", "входной JSON: link — <out>/links.json, facts import — <out>/facts_llm.json, relations import — <out>/relations_llm.json")
+	inPath := fs.String("in", "", "входной файл: link — <out>/links.json, facts import — <out>/facts_llm.json, relations import — <out>/relations_llm.json, attribute — текст запроса")
 	limit := fs.Int("limit", 200, "предел выборки (candidates; avatars fetch; 0 — все)")
 	minScore := fs.Float64("min-score", 0.7, "порог веса ребра для склейки (cluster)")
 	patternsPath := fs.String("patterns", "", "файл LIKE-шаблонов (flag; по строке, # — коммент; иначе встроенный набор)")
@@ -62,7 +62,15 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	minCosine := fs.Float64("min-cosine", 0.5, "порог центр-косинуса стиля (stylometry cluster)")
 	topK := fs.Int("top-k", 2, "сколько ближайших по стилю на автора (stylometry cluster)")
 	maxPairs := fs.Int("max-pairs", 500, "предел числа пар стиля (stylometry cluster)")
-	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait)")
+	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait) / кандидатов (attribute)")
+	noteID := fs.Int64("note", 0, "id заметки архива как текст запроса (attribute; авторская — режим валидации)")
+	lexWeight := fs.Float64("lex-weight", 0.5, "вес лексики в комбинированном скоре [0..1] (attribute)")
+	authorIdent := fs.String("author", "", "пакетный режим: прогнать все заметки личности p<id>|u<id>|user_id (attribute)")
+	notesList := fs.String("notes", "", "id заметок через запятую — калибровка отпечатка автора (calibrate)")
+	suspect := fs.String("suspect", "", "подозреваемый p<id>|u<id>|user_id для проверки авторства (verify)")
+	nullN := fs.Int("null", 200, "размер выборки чужих текстов для калибровки порога (verify)")
+	lexMinTokens := fs.Int("lex-min-tokens", 200, "мин. слов автора для лексического профиля (lexis build)")
+	lexDims := fs.Int("lex-dims", 4096, "размерность хэш-вектора слов (lexis build)")
 	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
 	handoffDays := fs.Int("handoff-days", 120, "макс. разрыв спанов для полного веса handoff (ensemble)")
 	ensFloor := fs.Float64("ens-floor", 0.5, "мин. композитный вес для записи кандидата (ensemble)")
@@ -89,7 +97,9 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"max-persona": true, "min-density": true,
 		"topics": true, "min-hits": true, "min-notes": true, "evidence": true,
 		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
-		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true,
+		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
+		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
+		"suspect": true, "null": true,
 	})); err != nil {
 		return err
 	}
@@ -126,6 +136,23 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasStylometry(ctx, ar, fs.Args()[1:], styloOpts{
 			minChars: *minChars, dims: *dims, minCosine: *minCosine, topK: *topK, maxPairs: *maxPairs,
 		})
+	case "attribute":
+		return personasAttribute(ctx, ar, fs.Args()[1:], attrOpts{
+			top: *top, inPath: *inPath, noteID: *noteID, lexWeight: *lexWeight, author: *authorIdent,
+		})
+	case "lexis":
+		return personasLexis(ctx, ar, fs.Args()[1:], lexisOpts{
+			minTokens: *lexMinTokens, dims: *lexDims,
+		})
+	case "calibrate":
+		return personasCalibrate(ctx, ar, calibOpts{
+			notes: *notesList, author: *authorIdent, lexWeight: *lexWeight, top: *top,
+		})
+	case "verify":
+		return personasVerify(ctx, ar, fs.Args()[1:], verifyOpts{
+			suspect: *suspect, inPath: *inPath, noteID: *noteID, notes: *notesList,
+			lexWeight: *lexWeight, nullN: *nullN,
+		})
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
 	case "diag":
@@ -153,7 +180,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			reportTop: *reportTop, limit: *limit,
 		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|portrait|diag|ensemble|facts|relations|report|gender)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|report|gender)", action)
 	}
 }
 

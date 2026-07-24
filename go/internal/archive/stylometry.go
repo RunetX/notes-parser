@@ -305,11 +305,18 @@ func insertTop(top []neighbor, n neighbor, k int) []neighbor {
 // centerAndNormalize вычитает средний профиль из каждого вектора и заново
 // L2-нормирует — так косинус меряет отклонение стиля от «среднего автора».
 func centerAndNormalize(vecs [][]float32) {
-	if len(vecs) == 0 {
-		return
+	mean := meanVec(vecs)
+	for _, v := range vecs {
+		centerVec(v, mean)
 	}
-	dims := len(vecs[0])
-	mean := make([]float64, dims)
+}
+
+// meanVec — средний профиль набора векторов (nil для пустого набора).
+func meanVec(vecs [][]float32) []float64 {
+	if len(vecs) == 0 {
+		return nil
+	}
+	mean := make([]float64, len(vecs[0]))
 	for _, v := range vecs {
 		for k, x := range v {
 			mean[k] += float64(x)
@@ -318,12 +325,15 @@ func centerAndNormalize(vecs [][]float32) {
 	for k := range mean {
 		mean[k] /= float64(len(vecs))
 	}
-	for _, v := range vecs {
-		for k := range v {
-			v[k] -= float32(mean[k])
-		}
-		l2Normalize(v)
+	return mean
+}
+
+// centerVec вычитает средний профиль из вектора и заново L2-нормирует.
+func centerVec(v []float32, mean []float64) {
+	for k := range v {
+		v[k] -= float32(mean[k])
 	}
+	l2Normalize(v)
 }
 
 // styloScore переводит центр-косинус в вес [0.4,0.65]. Намеренно НИЖЕ дефолтного

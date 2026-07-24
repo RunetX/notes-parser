@@ -134,6 +134,7 @@ lovegw personas avatars fetch  [-proxy] [-workers N] [-limit N] [-refresh]   # �
 lovegw personas avatars cluster [-max-dist D] [-generic-max N]               # пары по похожести аватаров
 lovegw personas stylometry build   [-min-chars N] [-dims N]                  # стилевые профили авторов
 lovegw personas stylometry cluster [-min-cosine F] [-top-k N] [-max-pairs N] # пары по близости стиля
+lovegw personas lexis build        [-lex-min-tokens N] [-lex-dims N]         # лексические TF-IDF-профили (2-й сигнал атрибуции)
 lovegw personas ensemble [-ens-top-k N] [-handoff-days D] [-ens-floor F]     # композит: стиль + handoff + круг общения
 ```
 
@@ -142,6 +143,12 @@ lovegw personas ensemble [-ens-top-k N] [-handoff-days D] [-ens-floor F]     # �
 ```sh
 lovegw personas portrait [-top N] <p<id>|u<id>|user_id>   # портрет личности/анкеты: стиль, собеседники
 lovegw personas diag <id> <id> …                          # ground-truth сверка набора анкет (стиль/собеседники/время)
+lovegw personas attribute [-top N] [-note id] [-in text.txt] [-lex-weight F] [текст …]
+                                                          # скоринг авторства: чьё письмо ближе к анонимному тексту (стиль + лексика)
+lovegw personas attribute [-author p<id>] [-lex-weight F]  # пакет: все заметки личности + сводка попаданий
+lovegw personas calibrate -notes id,id,… [-author p<id>]  # leave-one-out: предсказуемость отпечатка (не подгонка)
+lovegw personas verify -suspect p<id> [-in txt|-notes ids|-note id] [-null N]
+                                                          # «это он? да/нет» с калиброванным порогом (FPR 5%/1%)
 ```
 
 Факты (интересы) и отношения — тот же паттерн «scan/score → candidates →

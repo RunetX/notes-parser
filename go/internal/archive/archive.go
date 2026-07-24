@@ -158,6 +158,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV11SQL, // v11 — покрывающий idx_comments_author (all-time итоги когорты без random-reads)
 		migrateV12SQL, // v12 — покрывающие published-индексы (author_id): недельный срез без random-reads
 		migrateV13SQL, // v13 — пол анкеты (users.gender), обходом профилей под сессией
+		migrateV14SQL, // v14 — лексические TF-IDF-профили (lexis_profiles/lexis_meta) для атрибуции
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
