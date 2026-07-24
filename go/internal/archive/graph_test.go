@@ -96,4 +96,25 @@ func TestPersonaGraphAndPortrait(t *testing.T) {
 	if len(noSelf) != len(edges) {
 		t.Errorf("само-петель не было, но drop-self изменил число рёбер: %d vs %d", len(noSelf), len(edges))
 	}
+
+	// CohortNodes (быстрый путь отчёта) должен давать для запрошенных личностей
+	// РОВНО те же числа, что полная GraphNodes — иначе оптимизация меняет отчёт.
+	cohort, err := s.CohortNodes(ctx, []string{pid, "u3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cohort) != 2 {
+		t.Errorf("CohortNodes вернул %d узлов, want 2 (посторонних быть не должно)", len(cohort))
+	}
+	for _, id := range []string{pid, "u3"} {
+		g, c := nodes[id], cohort[id]
+		if g.Comments != c.Comments || g.Notes != c.Notes || g.Accounts != c.Accounts ||
+			g.IsPersona != c.IsPersona || g.FirstSeen != c.FirstSeen || g.LastSeen != c.LastSeen {
+			t.Errorf("паритет CohortNodes[%s]: %+v != GraphNodes %+v", id, c, g)
+		}
+	}
+	// Пустой список — пустая карта, без обращения к БД.
+	if empty, err := s.CohortNodes(ctx, nil); err != nil || len(empty) != 0 {
+		t.Errorf("CohortNodes(nil): map=%v err=%v (want пусто)", empty, err)
+	}
 }

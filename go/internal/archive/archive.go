@@ -152,6 +152,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV5SQL, // v5 — стилометрические профили (style_profiles)
 		migrateV6SQL, // v6 — persona-aware граф (v_identity/v_persona_activity/v_persona_reply_edges)
 		migrateV7SQL, // v7 — реальные даты активности из comments.published_at
+		migrateV8SQL,  // v8 — факты о личностях: интересы из текстов (identity_facts)
+		migrateV9SQL,  // v9 — отношения личностей: тон + LLM-разметка (relation_edges/v_relations)
+		migrateV10SQL, // v10 — индексы по published_at (быстрый временной срез отчёта)
+		migrateV11SQL, // v11 — покрывающий idx_comments_author (all-time итоги когорты без random-reads)
+		migrateV12SQL, // v12 — покрывающие published-индексы (author_id): недельный срез без random-reads
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

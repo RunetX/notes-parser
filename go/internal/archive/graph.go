@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -85,6 +86,46 @@ JOIN v_user_activity a ON a.id = i.user_id
 GROUP BY i.identity;
 `
 
+// migrateV10SQL — индексы по дате публикации. Без них любой временной срез
+// (MaxPublishedAt, ActiveCountsSince, недельная когорта отчёта) — полный скан
+// ~10.7 млн комментариев (~2с). Индекс превращает срез в диапазонный поиск.
+// archive.db наполняется батч-граббером разово, так что разовая сборка индекса
+// при первой миграции и лёгкое замедление вставок несущественны.
+const migrateV10SQL = `
+CREATE INDEX IF NOT EXISTS idx_comments_published ON comments(published_at);
+CREATE INDEX IF NOT EXISTS idx_notes_published    ON notes(published_at);
+`
+
+// migrateV11SQL — расширяет idx_comments_author до покрывающего
+// (author_id, note_id, published_at). CohortNodes агрегирует по автору
+// COUNT(*)/COUNT(DISTINCT note_id)/MIN/MAX(published_at); при узком индексе
+// (author_id) note_id и published_at читаются из основной таблицы построчно —
+// для «тяжёлых» авторов это сотни тысяч случайных чтений по rowid (на холодном
+// кэше — минуты). Покрывающий индекс отдаёт все три поля прямо из среза автора,
+// превращая случайные чтения в последовательный скан. author_id остаётся
+// префиксом, поэтому все прежние запросы по автору работают как раньше. На
+// пустой БД (свежая миграция до наполнения) пересоздание мгновенно.
+const migrateV11SQL = `
+DROP INDEX IF EXISTS idx_comments_author;
+CREATE INDEX idx_comments_author ON comments(author_id, note_id, published_at);
+`
+
+// migrateV12SQL — расширяет published-индексы до (published_at, author_id).
+// ActiveCountsSince сканирует окно (published_at >= ?) и группирует по личности,
+// а личность выводится из author_id; при узком индексе (published_at) author_id
+// на каждый комментарий окна читается из основной таблицы по rowid — десятки
+// тысяч случайных чтений (холодно — минуты). С author_id прямо в индексе скан
+// окна становится покрывающим (обращение к comments/notes уходит), остаются
+// лишь join'ы в малые users/personas. published_at остаётся префиксом — срез по
+// диапазону и MaxPublishedAt работают как раньше. На пустой БД пересоздание
+// мгновенно.
+const migrateV12SQL = `
+DROP INDEX IF EXISTS idx_comments_published;
+CREATE INDEX idx_comments_published ON comments(published_at, author_id);
+DROP INDEX IF EXISTS idx_notes_published;
+CREATE INDEX idx_notes_published ON notes(published_at, author_id);
+`
+
 // GraphNode — узел соцграфа (личность или одиночная анкета).
 type GraphNode struct {
 	Identity  string
@@ -123,6 +164,125 @@ func (s *Store) GraphNodes(ctx context.Context) (map[string]GraphNode, error) {
 		}
 		n.IsPersona = isP == 1
 		out[n.Identity] = n
+	}
+	return out, rows.Err()
+}
+
+// CohortNodes собирает узлы (all-time итоги) ТОЛЬКО для перечисленных личностей —
+// напрямую по comments через индекс author_id, минуя полный проход
+// v_persona_activity (та агрегирует все ~22 тыс. личностей ≈25с, а отчёту нужны
+// десятки активных за окно). Семантика полей совпадает с v_persona_activity:
+// notes = число РАЗНЫХ заметок, где личность комментировала (COUNT DISTINCT
+// note_id), спан first/last_seen — по published_at её комментариев.
+func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[string]GraphNode, error) {
+	out := map[string]GraphNode{}
+	if len(identities) == 0 {
+		return out, nil
+	}
+	// 1) личность → её анкеты (user_id) + метка/признак персоны.
+	idArgs := make([]any, len(identities))
+	for i, id := range identities {
+		idArgs[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT identity, user_id, label, is_persona
+		FROM v_identity WHERE identity IN (`+placeholders(len(identities))+`)`, idArgs...)
+	if err != nil {
+		return nil, err
+	}
+	uid2ident := map[int64]string{}
+	var uids []int64
+	for rows.Next() {
+		var ident, label string
+		var uid int64
+		var isP int
+		if err := rows.Scan(&ident, &uid, &label, &isP); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		n := out[ident]
+		n.Identity = ident
+		n.Label = label
+		n.IsPersona = isP == 1
+		n.Accounts++
+		out[ident] = n
+		uid2ident[uid] = ident
+		uids = append(uids, uid)
+	}
+	cerr := rows.Err()
+	rows.Close()
+	if cerr != nil {
+		return nil, cerr
+	}
+	if len(uids) == 0 {
+		return out, nil
+	}
+	// 2) all-time итоги только по этим анкетам — индексный проход author_id.
+	arows, err := s.db.QueryContext(ctx, `
+		SELECT author_id, COUNT(*), COUNT(DISTINCT note_id),
+		       COALESCE(MIN(published_at), ''), COALESCE(MAX(published_at), '')
+		FROM comments WHERE author_id IN (`+intList(uids)+`) GROUP BY author_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer arows.Close()
+	for arows.Next() {
+		var uid int64
+		var comments, notes int
+		var first, last string
+		if err := arows.Scan(&uid, &comments, &notes, &first, &last); err != nil {
+			return nil, err
+		}
+		ident := uid2ident[uid]
+		n := out[ident]
+		n.Comments += comments
+		n.Notes += notes
+		n.FirstSeen = minNonEmpty(n.FirstSeen, first)
+		n.LastSeen = maxStr(n.LastSeen, last)
+		out[ident] = n
+	}
+	return out, arows.Err()
+}
+
+// MaxPublishedAt возвращает самую свежую дату публикации комментария (ISO-8601
+// UTC) — конец окна для отбора недавней активности. Пусто — комментариев нет.
+// Скан без индекса по published_at (минуты на полном corpus).
+func (s *Store) MaxPublishedAt(ctx context.Context) (string, error) {
+	var mx sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(published_at) FROM comments`).Scan(&mx); err != nil {
+		return "", err
+	}
+	return mx.String, nil
+}
+
+// ActiveCountsSince возвращает по каждой identity число комментариев и заметок
+// с published_at >= since (ISO-8601) — мера недавней активности для отбора и
+// ранжирования когорты. Скан без индекса по published_at — минуты на полном
+// corpus, разово для отчёта.
+func (s *Store) ActiveCountsSince(ctx context.Context, since string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT identity, SUM(cnt) FROM (
+			SELECT i.identity AS identity, COUNT(*) AS cnt
+			FROM comments c JOIN v_identity i ON i.user_id = c.author_id
+			WHERE c.published_at >= ? GROUP BY i.identity
+			UNION ALL
+			SELECT i.identity AS identity, COUNT(*) AS cnt
+			FROM notes n JOIN v_identity i ON i.user_id = n.author_id
+			WHERE n.author_id IS NOT NULL AND n.published_at >= ? GROUP BY i.identity
+		) GROUP BY identity`, since, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var ident string
+		var cnt int
+		if err := rows.Scan(&ident, &cnt); err != nil {
+			return nil, err
+		}
+		out[ident] = cnt
 	}
 	return out, rows.Err()
 }
@@ -166,7 +326,8 @@ type PortraitEdge struct {
 	Replies  int    `json:"replies"`
 }
 
-// Portrait — досье личности: слитые анкеты, активность, ключевые собеседники.
+// Portrait — досье личности: слитые анкеты, активность, ключевые собеседники,
+// интересы (identity_facts) и отношения (v_relations).
 type Portrait struct {
 	Identity  string            `json:"identity"`
 	Label     string            `json:"label"`
@@ -178,6 +339,8 @@ type Portrait struct {
 	LastSeen  string            `json:"last_seen,omitempty"`
 	RepliesTo []PortraitEdge    `json:"replies_to"` // кому отвечает чаще всего
 	RepliedBy []PortraitEdge    `json:"replied_by"` // кто чаще всего отвечает ему
+	Facts     []IdentityFact    `json:"facts,omitempty"`
+	Relations []RelationRow     `json:"relations,omitempty"`
 }
 
 // Portrait собирает досье по идентификатору узла ('p<id>' | 'u<id>'; можно и
@@ -206,6 +369,12 @@ func (s *Store) Portrait(ctx context.Context, token string, top int) (Portrait, 
 		return Portrait{}, err
 	}
 	if p.RepliedBy, err = s.portraitEdges(ctx, accIDs, identity, top, false); err != nil {
+		return Portrait{}, err
+	}
+	if p.Facts, err = s.IdentityFacts(ctx, identity); err != nil {
+		return Portrait{}, err
+	}
+	if p.Relations, err = s.IdentityRelations(ctx, identity, top); err != nil {
 		return Portrait{}, err
 	}
 	return p, nil
@@ -307,4 +476,33 @@ func intList(ids []int64) string {
 		parts[i] = strconv.FormatInt(id, 10)
 	}
 	return strings.Join(parts, ",")
+}
+
+// placeholders — "?,?,?" из n знаков для IN (...) с параметрами.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", n-1) + "?"
+}
+
+// minNonEmpty — лексикографически меньшая непустая строка (min по датам ISO-8601,
+// где пустая = «нет данных»).
+func minNonEmpty(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "" || a < b:
+		return a
+	default:
+		return b
+	}
+}
+
+// maxStr — лексикографически большая строка (max по датам ISO-8601).
+func maxStr(a, b string) string {
+	if b > a {
+		return b
+	}
+	return a
 }

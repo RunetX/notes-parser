@@ -108,10 +108,16 @@ func usage() {
   lovegw personas [-db archive.db] [-max-dist D] [-generic-max N] avatars cluster
   lovegw personas [-db archive.db] [-min-chars N] [-dims N] stylometry build
   lovegw personas [-db archive.db] [-min-cosine F] [-top-k N] [-max-pairs N] stylometry cluster
-  lovegw personas [-db archive.db] [-out dir] [-min-replies N] [-drop-self] [-top-nodes N] [-edges-per-node N] graph
   lovegw personas [-db archive.db] [-out dir] [-top N] portrait <p<id>|u<id>|user_id>
   lovegw personas [-db archive.db] diag <id> <id> …
-  lovegw personas [-db archive.db] [-out dir] [-ens-top-k N] [-handoff-days D] [-ens-floor F] ensemble`)
+  lovegw personas [-db archive.db] [-out dir] [-ens-top-k N] [-handoff-days D] [-ens-floor F] ensemble
+  lovegw personas [-db archive.db] [-topics file] [-min-hits N] [-min-notes N] [-evidence N] facts scan
+  lovegw personas [-db archive.db] [-out dir] [-min-hits N] [-min-notes N] facts candidates
+  lovegw personas [-db archive.db] [-out dir] [-in facts_llm.json] facts import
+  lovegw personas [-db archive.db] [-rel-min-replies N] relations score
+  lovegw personas [-db archive.db] [-out dir] [-cand-replies N] [-band-min N] [-band-top N] [-exchanges N] relations candidates
+  lovegw personas [-db archive.db] [-out dir] [-in relations_llm.json] relations import
+  lovegw personas [-db archive.db] [-out dir] [-report-top N] [-active-days N] report`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.

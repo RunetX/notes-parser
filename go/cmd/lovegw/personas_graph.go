@@ -2,175 +2,15 @@ package main
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 
 	"lovegw/internal/archive"
 )
 
-// personasGraph экспортирует persona-aware соцграф в CSV для Gephi: nodes.csv
-// (личности/анкеты с активностью) + edges.csv (ответы с весом). Узлы —
-// только те, что участвуют в отфильтрованных рёбрах (без изолятов). Граф уже
-// «по людям»: альты подтверждённых/предложенных личностей слиты в один узел.
-func personasGraph(ctx context.Context, ar *archive.Store, outDir string, minReplies int, dropSelf bool, topNodes, edgesPerNode int) error {
-	fmt.Fprintf(os.Stderr, "graph: строю рёбра (min-replies=%d, drop-self=%v, top-nodes=%d, edges-per-node=%d)…\n",
-		minReplies, dropSelf, topNodes, edgesPerNode)
-	edges, err := ar.GraphEdges(ctx, minReplies, dropSelf)
-	if err != nil {
-		return err
-	}
-	nodes, err := ar.GraphNodes(ctx)
-	if err != nil {
-		return err
-	}
-	// Плотное сообщество даёт «хайрбол»: без отсечки по ядру граф нечитаем и
-	// подписи слипаются. top-nodes оставляет N самых активных личностей и рёбра
-	// только между ними.
-	if topNodes > 0 {
-		keep := topActiveIdentities(nodes, topNodes)
-		edges = keepEdgesWithin(edges, keep)
-	}
-	edges = keepTopEdgesPerNode(edges, edgesPerNode)
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
-	}
-
-	// Оставляем только узлы, участвующие в рёбрах.
-	used := map[string]bool{}
-	for _, e := range edges {
-		used[e.From] = true
-		used[e.To] = true
-	}
-	nodesPath := filepath.Join(outDir, "nodes.csv")
-	nUsed, err := writeNodesCSV(nodesPath, nodes, used)
-	if err != nil {
-		return err
-	}
-	edgesPath := filepath.Join(outDir, "edges.csv")
-	if err := writeEdgesCSV(edgesPath, edges); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "graph: узлов %d, рёбер %d → %s, %s\n", nUsed, len(edges), nodesPath, edgesPath)
-	return nil
-}
-
-// topActiveIdentities — n самых активных личностей (по числу комментариев).
-func topActiveIdentities(nodes map[string]archive.GraphNode, n int) map[string]bool {
-	list := make([]archive.GraphNode, 0, len(nodes))
-	for _, nd := range nodes {
-		list = append(list, nd)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].Comments != list[j].Comments {
-			return list[i].Comments > list[j].Comments
-		}
-		return list[i].Identity < list[j].Identity
-	})
-	if n > len(list) {
-		n = len(list)
-	}
-	keep := make(map[string]bool, n)
-	for _, nd := range list[:n] {
-		keep[nd.Identity] = true
-	}
-	return keep
-}
-
-// keepTopEdgesPerNode — «костяк» плотного графа: у каждого узла остаются только
-// n самых весомых исходящих рёбер. Ядро этого сообщества близко к клике (топ-120
-// личностей при пороге 100 ответов дают плотность ~30%), поэтому отсечка по весу
-// хайрбол не лечит — а костяк показывает, кто кому ближе всех.
-func keepTopEdgesPerNode(edges []archive.GraphEdge, n int) []archive.GraphEdge {
-	if n <= 0 {
-		return edges
-	}
-	byFrom := map[string][]archive.GraphEdge{}
-	for _, e := range edges {
-		byFrom[e.From] = append(byFrom[e.From], e)
-	}
-	out := make([]archive.GraphEdge, 0, len(edges))
-	for _, list := range byFrom {
-		sort.Slice(list, func(i, j int) bool { return list[i].Replies > list[j].Replies })
-		if len(list) > n {
-			list = list[:n]
-		}
-		out = append(out, list...)
-	}
-	sort.Slice(out, func(i, j int) bool { // стабильный порядок вывода
-		if out[i].From != out[j].From {
-			return out[i].From < out[j].From
-		}
-		return out[i].Replies > out[j].Replies
-	})
-	return out
-}
-
-// keepEdgesWithin оставляет рёбра, у которых оба конца в наборе.
-func keepEdgesWithin(edges []archive.GraphEdge, keep map[string]bool) []archive.GraphEdge {
-	out := make([]archive.GraphEdge, 0, len(edges))
-	for _, e := range edges {
-		if keep[e.From] && keep[e.To] {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func writeNodesCSV(path string, nodes map[string]archive.GraphNode, used map[string]bool) (int, error) {
-	f, err := os.Create(path)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	// Gephi: столбец Id обязателен; Label — подпись.
-	if err := w.Write([]string{"Id", "Label", "is_persona", "accounts", "comments", "notes", "first_seen", "last_seen"}); err != nil {
-		return 0, err
-	}
-	n := 0
-	for id := range used {
-		nd, ok := nodes[id]
-		if !ok {
-			continue
-		}
-		if err := w.Write([]string{
-			nd.Identity, nd.Label, boolStr(nd.IsPersona),
-			strconv.Itoa(nd.Accounts), strconv.Itoa(nd.Comments), strconv.Itoa(nd.Notes),
-			nd.FirstSeen, nd.LastSeen,
-		}); err != nil {
-			return n, err
-		}
-		n++
-	}
-	w.Flush()
-	return n, w.Error()
-}
-
-func writeEdgesCSV(path string, edges []archive.GraphEdge) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := csv.NewWriter(f)
-	// Gephi: Source/Target/Weight, Type=Directed.
-	if err := w.Write([]string{"Source", "Target", "Weight", "Type"}); err != nil {
-		return err
-	}
-	for _, e := range edges {
-		if err := w.Write([]string{e.From, e.To, strconv.Itoa(e.Replies), "Directed"}); err != nil {
-			return err
-		}
-	}
-	w.Flush()
-	return w.Error()
-}
-
-// personasPortrait печатает досье личности (и пишет <identity>.json).
+// personasPortrait печатает досье личности (и пишет <identity>.json): слитые
+// анкеты, активность, ключевые собеседники, интересы и отношения.
 func personasPortrait(ctx context.Context, ar *archive.Store, args []string, outDir string, top int) error {
 	if len(args) < 1 {
 		return fmt.Errorf("personas portrait: нужен идентификатор (p<id> | u<id> | <user_id>)")
@@ -195,6 +35,8 @@ func personasPortrait(ctx context.Context, ar *archive.Store, args []string, out
 	}
 	printEdges("Чаще всего отвечает:", p.RepliesTo)
 	printEdges("Чаще всего отвечают ему:", p.RepliedBy)
+	printFacts(p.Facts)
+	printRelations(p.Relations)
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -217,11 +59,60 @@ func printEdges(title string, edges []archive.PortraitEdge) {
 	}
 }
 
-func boolStr(b bool) string {
-	if b {
-		return "1"
+// polarityRu — русская подпись полярности факта.
+func polarityRu(p string) string {
+	switch p {
+	case archive.PolarityLikes:
+		return "любит"
+	case archive.PolarityDislikes:
+		return "не любит"
+	case archive.PolarityOwns:
+		return "у него/неё это есть"
+	default:
+		return "упоминает"
 	}
-	return "0"
+}
+
+// kindRu — русская подпись типа отношений.
+func kindRu(k string) string {
+	switch k {
+	case archive.KindFriendship:
+		return "дружба"
+	case archive.KindConflict:
+		return "конфликт"
+	case archive.KindFlirt:
+		return "флирт"
+	case archive.KindNeutral:
+		return "нейтрально"
+	default:
+		return k
+	}
+}
+
+func printFacts(facts []archive.IdentityFact) {
+	if len(facts) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Интересы:")
+	for _, f := range facts {
+		fmt.Fprintf(os.Stderr, "  • %s — %s (%d упоминаний в %d заметках, %s)\n",
+			f.Topic, polarityRu(f.Polarity), f.Hits, f.NotesCount, f.Source)
+	}
+}
+
+func printRelations(rels []archive.RelationRow) {
+	if len(rels) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Отношения:")
+	for _, r := range rels {
+		mark := fmt.Sprintf("тон %+.2f (+%d/−%d)", r.Tone, r.Pos, r.Neg)
+		if r.Kind != archive.KindTone {
+			mark = fmt.Sprintf("%s (conf %.2f), тон %+.2f", kindRu(r.Kind), r.Score, r.Tone)
+		}
+		fmt.Fprintf(os.Stderr, "  ↔ %s (%s) ×%d, взаимность %.2f — %s\n",
+			r.Label, r.To, r.Replies, r.Reciprocity, mark)
+	}
 }
 
 // shortDate — YYYY-MM-DD из RFC3339 (или как есть, если короче).

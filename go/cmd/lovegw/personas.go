@@ -46,7 +46,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("personas", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
 	outDir := fs.String("out", "dump", "каталог выгрузок (candidates/cluster)")
-	inPath := fs.String("in", "", "входной JSON для link (по умолчанию <out>/links.json)")
+	inPath := fs.String("in", "", "входной JSON: link — <out>/links.json, facts import — <out>/facts_llm.json, relations import — <out>/relations_llm.json")
 	limit := fs.Int("limit", 200, "предел выборки (candidates; avatars fetch; 0 — все)")
 	minScore := fs.Float64("min-score", 0.7, "порог веса ребра для склейки (cluster)")
 	patternsPath := fs.String("patterns", "", "файл LIKE-шаблонов (flag; по строке, # — коммент; иначе встроенный набор)")
@@ -62,22 +62,32 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	minCosine := fs.Float64("min-cosine", 0.5, "порог центр-косинуса стиля (stylometry cluster)")
 	topK := fs.Int("top-k", 2, "сколько ближайших по стилю на автора (stylometry cluster)")
 	maxPairs := fs.Int("max-pairs", 500, "предел числа пар стиля (stylometry cluster)")
-	minReplies := fs.Int("min-replies", 3, "мин. вес ребра для экспорта (graph)")
-	dropSelf := fs.Bool("drop-self", false, "убрать само-петли — ответы между альтами (graph)")
-	topNodes := fs.Int("top-nodes", 0, "оставить N самых активных личностей, рёбра только между ними (graph; 0 — все)")
-	edgesPerNode := fs.Int("edges-per-node", 0, "костяк: оставить у узла N сильнейших связей (graph; 0 — все)")
 	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait)")
 	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
 	handoffDays := fs.Int("handoff-days", 120, "макс. разрыв спанов для полного веса handoff (ensemble)")
 	ensFloor := fs.Float64("ens-floor", 0.5, "мин. композитный вес для записи кандидата (ensemble)")
 	maxPersona := fs.Int("max-persona", 20, "гард: компонент крупнее — переклейка, не склеивать (cluster; 0 — без лимита)")
 	minDensity := fs.Float64("min-density", 0.30, "гард: для компонент >4 анкет мин. плотность рёбер (cluster; 0 — без проверки)")
+	topicsPath := fs.String("topics", "", "JSON с темами лексикона (facts; иначе встроенный набор)")
+	minHits := fs.Int("min-hits", 3, "мин. упоминаний темы для факта (facts)")
+	minNotes := fs.Int("min-notes", 2, "мин. разных заметок с темой (facts)")
+	evidencePer := fs.Int("evidence", 5, "сколько цитат хранить на факт (facts scan)")
+	relMinReplies := fs.Int("rel-min-replies", 20, "мин. реплик направленной пары для тона (relations score)")
+	candReplies := fs.Int("cand-replies", 500, "ядро кандидатов: сумма реплик пары ≥ (relations candidates)")
+	bandMin := fs.Int("band-min", 100, "нижняя граница полосы добора пар (relations candidates)")
+	bandTop := fs.Int("band-top", 2000, "поляризованных пар из полосы (relations candidates; 0 — не добирать)")
+	exchanges := fs.Int("exchanges", 30, "обменов реплик на пару (relations candidates)")
+	reportTop := fs.Int("report-top", 50, "личностей в отчёте «персонажи» (report)")
+	activeDays := fs.Int("active-days", 0, "отчёт только по активным за последние N суток (report; 0 — все)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
 		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
-		"min-replies": true, "top": true, "ens-top-k": true, "handoff-days": true, "ens-floor": true,
-		"top-nodes": true, "edges-per-node": true, "max-persona": true, "min-density": true,
+		"top": true, "ens-top-k": true, "handoff-days": true, "ens-floor": true,
+		"max-persona": true, "min-density": true,
+		"topics": true, "min-hits": true, "min-notes": true, "evidence": true,
+		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
+		"exchanges": true, "report-top": true, "active-days": true,
 	})); err != nil {
 		return err
 	}
@@ -114,8 +124,6 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasStylometry(ctx, ar, fs.Args()[1:], styloOpts{
 			minChars: *minChars, dims: *dims, minCosine: *minCosine, topK: *topK, maxPairs: *maxPairs,
 		})
-	case "graph":
-		return personasGraph(ctx, ar, *outDir, *minReplies, *dropSelf, *topNodes, *edgesPerNode)
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
 	case "diag":
@@ -125,8 +133,20 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			MinCosine: *minCosine, TopK: *ensTopK, HandoffDays: *handoffDays,
 			Floor: *ensFloor, MaxPairs: *maxPairs,
 		}, *outDir)
+	case "facts":
+		return personasFacts(ctx, ar, fs.Args()[1:], factOpts{
+			outDir: *outDir, inPath: *inPath, topicsPath: *topicsPath,
+			minHits: *minHits, minNotes: *minNotes, evidencePer: *evidencePer,
+		})
+	case "relations":
+		return personasRelations(ctx, ar, fs.Args()[1:], relOpts{
+			outDir: *outDir, inPath: *inPath, minReplies: *relMinReplies,
+			candReplies: *candReplies, bandMin: *bandMin, bandTop: *bandTop, exchanges: *exchanges,
+		})
+	case "report":
+		return personasReport(ctx, ar, *outDir, *reportTop, *activeDays)
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|graph|portrait|diag|ensemble)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|portrait|diag|ensemble|facts|relations|report)", action)
 	}
 }
 
