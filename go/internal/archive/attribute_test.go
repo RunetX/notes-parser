@@ -23,7 +23,7 @@ func TestAttributeText(t *testing.T) {
 	}
 
 	// Без лексического слоя — только стиль.
-	at, err := s.AttributeText(ctx, "снова виджет и фробникатор в блёстках", 2, 0, 0.5)
+	at, err := s.AttributeText(ctx, "снова виджет и фробникатор в блёстках", 2, 0, 0.5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestAttributeText(t *testing.T) {
 	}
 
 	// Режим валидации: позиция известного автора.
-	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 2, 0.5)
+	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 2, 0.5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestAttributeText(t *testing.T) {
 	}
 
 	// Автор без профиля → Want остаётся пустым, ошибки нет.
-	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 999, 0.5)
+	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 999, 0.5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestAttributeText(t *testing.T) {
 		t.Errorf("want для анкеты без профиля: got %+v, want nil", at.Want)
 	}
 
-	if _, err := s.AttributeText(ctx, "   ", 5, 0, 0.5); err == nil {
+	if _, err := s.AttributeText(ctx, "   ", 5, 0, 0.5, 0); err == nil {
 		t.Error("пустой текст должен вернуть ошибку")
 	}
 }
@@ -102,7 +102,7 @@ func TestAttributeWithLexis(t *testing.T) {
 	}
 
 	// Текст со словами автора B → он на первом месте, с лексическим сигналом.
-	at, err := s.AttributeText(ctx, "квантовый реактор плазма турбина конденсатор энергия поток", 3, 0, 0.5)
+	at, err := s.AttributeText(ctx, "квантовый реактор плазма турбина конденсатор энергия поток", 3, 0, 0.5, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

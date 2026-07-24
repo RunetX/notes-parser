@@ -13,11 +13,12 @@ import (
 
 // attrOpts — параметры действия attribute (из флагов cmdPersonas).
 type attrOpts struct {
-	top       int
-	inPath    string
-	noteID    int64
-	lexWeight float64
-	author    string // непусто — пакетный режим по заметкам личности
+	top        int
+	inPath     string
+	noteID     int64
+	lexWeight  float64
+	author     string // непусто — пакетный режим по заметкам личности
+	activeDays int    // рецент-фильтр: отсеять анкеты без активности за N сут (0 — все)
 }
 
 // shortQueryNgrams — ниже этого объёма запроса ранжирование заметно шумит.
@@ -37,7 +38,7 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 	if err != nil {
 		return err
 	}
-	at, err := ar.AttributeText(ctx, text, opt.top, wantID, opt.lexWeight)
+	at, err := ar.AttributeText(ctx, text, opt.top, wantID, opt.lexWeight, opt.activeDays)
 	if err != nil {
 		return err
 	}
@@ -52,6 +53,10 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 		fmt.Fprintf(os.Stderr,
 			"attribute: стиль-профилей %d, в запросе 3-грамм %d (фон cos %.4f±%.4f); лексика не построена (`personas lexis build`)\n",
 			at.StyleProfiles, at.QueryNgrams, at.StyleCosMean, at.StyleCosStd)
+	}
+	if at.ActiveDays > 0 {
+		fmt.Fprintf(os.Stderr, "  рецент-фильтр: активных за %d сут %d из %d (мёртвые анкеты убраны из выдачи)\n",
+			at.ActiveDays, at.ActiveProfiles, at.StyleProfiles)
 	}
 	if at.QueryNgrams < shortQueryNgrams {
 		fmt.Fprintf(os.Stderr, "  ⚠ короткий текст (<%d 3-грамм): ранжирование ненадёжно, топ — только подсказка\n",

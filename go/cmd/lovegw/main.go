@@ -109,9 +109,9 @@ func usage() {
   lovegw personas [-db archive.db] [-min-chars N] [-dims N] stylometry build
   lovegw personas [-db archive.db] [-min-cosine F] [-top-k N] [-max-pairs N] stylometry cluster
   lovegw personas [-db archive.db] [-lex-min-tokens N] [-lex-dims N] lexis build
-  lovegw personas [-db archive.db] [-top N] [-note id] [-in text.txt] [-lex-weight F] attribute [текст …]
+  lovegw personas [-db archive.db] [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] attribute [текст …]
   lovegw personas [-db archive.db] [-author p<id>|u<id>|user_id] [-lex-weight F] attribute   # пакет: все заметки личности
-  lovegw personas [-db archive.db] -notes id,id,… [-author p<id>] [-lex-weight F] calibrate  # leave-one-out калибровка отпечатка
+  lovegw personas [-db archive.db] -notes id,id,… [-author p<id>] [-active-days N] calibrate # leave-one-out калибровка отпечатка
   lovegw personas [-db archive.db] -suspect p<id> [-in text.txt] [-note id] [-null N] verify   # «это он? да/нет» с калиброванным порогом
   lovegw personas [-db archive.db] [-out dir] [-top N] portrait <p<id>|u<id>|user_id>
   lovegw personas [-db archive.db] diag <id> <id> …

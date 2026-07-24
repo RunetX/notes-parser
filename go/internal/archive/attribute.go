@@ -40,6 +40,8 @@ type Attribution struct {
 	LexCosMean    float64 // фон косинуса лексики
 	LexCosStd     float64
 	LexWeight     float64 // вес лексики в комбинированном скоре [0..1]
+	ActiveDays    int     // окно рецент-фильтра в сутках (0 — выкл)
+	ActiveProfiles int    // кандидатов осталось после отсева «мёртвых» анкет
 	Candidates    []AttributionCandidate
 	Want          *AttributionCandidate // позиция автора wantID (валидация); nil — нет профиля
 }
@@ -51,7 +53,7 @@ type Attribution struct {
 // сопоставимы независимо от объёма запроса. Комбинированный Z = lexWeight·LexZ +
 // (1-lexWeight)·StyleZ; у кого лексики нет — только StyleZ. wantID != 0 — вернуть
 // также позицию этого автора (валидация на заметке с известным автором).
-func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID int64, lexWeight float64) (Attribution, error) {
+func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID int64, lexWeight float64, activeDays int) (Attribution, error) {
 	norm := normalizeStyle(text)
 	if norm == "" {
 		return Attribution{}, fmt.Errorf("attribute: пустой текст")
@@ -76,6 +78,10 @@ func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID
 	}
 
 	order := s.rankAttribution(sIDs, sCos, lexCos, &at)
+	order, err = s.filterActive(ctx, order, sIDs, activeDays, &at)
+	if err != nil {
+		return at, err
+	}
 	if topN <= 0 || topN > len(order) {
 		topN = len(order)
 	}
@@ -109,6 +115,25 @@ func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID
 		at.Want = &w
 	}
 	return at, nil
+}
+
+// filterActive при activeDays>0 выкидывает из рейтинга «мёртвые» анкеты (не
+// активные в окне): давно не появлявшийся автор не мог написать свежий текст.
+// Порядок сохраняется; заполняет at.ActiveDays/ActiveProfiles.
+func (s *Store) filterActive(ctx context.Context, order []int, ids []int64, activeDays int, at *Attribution) ([]int, error) {
+	la, cutoff, err := s.recencyCutoff(ctx, activeDays)
+	if err != nil || cutoff == "" {
+		return order, err
+	}
+	at.ActiveDays = activeDays
+	kept := make([]int, 0, len(order))
+	for _, oi := range order {
+		if la[ids[oi]] >= cutoff {
+			kept = append(kept, oi)
+		}
+	}
+	at.ActiveProfiles = len(kept)
+	return kept, nil
 }
 
 // styleQueryCosines строит центрированный вектор запроса (char-3-граммы) и

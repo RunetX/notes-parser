@@ -139,6 +139,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "attribute":
 		return personasAttribute(ctx, ar, fs.Args()[1:], attrOpts{
 			top: *top, inPath: *inPath, noteID: *noteID, lexWeight: *lexWeight, author: *authorIdent,
+			activeDays: *activeDays,
 		})
 	case "lexis":
 		return personasLexis(ctx, ar, fs.Args()[1:], lexisOpts{
@@ -147,6 +148,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "calibrate":
 		return personasCalibrate(ctx, ar, calibOpts{
 			notes: *notesList, author: *authorIdent, lexWeight: *lexWeight, top: *top,
+			activeDays: *activeDays,
 		})
 	case "verify":
 		return personasVerify(ctx, ar, fs.Args()[1:], verifyOpts{
