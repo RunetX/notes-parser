@@ -74,6 +74,10 @@ CREATE INDEX idx_user_personas_persona ON user_personas(persona_id);
 // SignalDisclosure — сигнал связи по самораскрытию в тексте (единственный в v1).
 const SignalDisclosure = "disclosure"
 
+// SignalConfirmed — must-link ребро из ручного подтверждения: держит группу вместе
+// при любом пороге и не подчиняется гарду плотности.
+const SignalConfirmed = "confirmed"
+
 // candidateParticipantCap — предел числа участников заметки в одном кандидате,
 // чтобы обсуждаемая заметка не раздувала выгрузку (для разрешения ников хватает
 // активного ядра; остальных добираем из глобального users_index).
@@ -461,71 +465,164 @@ type PersonaCluster struct {
 	Evidence   []string        `json:"evidence,omitempty"`
 }
 
+// ClusterParams — настройки склейки: порог веса ребра и защита от переклейки.
+type ClusterParams struct {
+	MinScore   float64
+	MaxSize    int     // компонент больше стольких анкет — переклейка через хаб, не материализуем (0 — без лимита)
+	MinDensity float64 // для компонент >4 анкет: доля рёбер от полного графа ниже — цепочка, отклоняем (0 — без проверки)
+}
+
+// DroppedComponent — компонент, отклонённый гардом (для отчёта).
+type DroppedComponent struct {
+	Size    int
+	Edges   int
+	Density float64
+	Sample  []int64 // несколько id для лога
+}
+
 // ClusterPersonas строит личности как связные компоненты графа alias_candidates
-// с score>=minScore (объединение рёбер: A–B, B–C ⇒ {A,B,C}). Идемпотентно —
+// с score>=MinScore (объединение рёбер: A–B, B–C ⇒ {A,B,C}). Идемпотентно —
 // пересчёт с нуля (прежние personas/user_personas удаляются, поэтому ручные
-// статусы set сбрасываются: прогонять cluster до финального ревью). Кластеры
-// из одного участника не материализуются. confidence = минимальный вес ребра,
-// label = ник самого активного участника. Возвращает отчёт-ревью.
-func (s *Store) ClusterPersonas(ctx context.Context, minScore float64, now time.Time) ([]PersonaCluster, error) {
-	edges, err := s.loadAliasEdges(ctx, minScore)
+// статусы set сбрасываются: прогонять cluster до финального ревью). Гард против
+// транзитивной переклейки: компонент крупнее MaxSize или рыхлее MinDensity
+// (цепочка через хаб, а не почти-клика) не материализуется — его анкеты остаются
+// сами по себе; компоненты с must-link ребром (ручное подтверждение) от гарда
+// освобождены. confidence = минимальный вес ребра, label = ник самого активного.
+// Возвращает отчёт-ревью и список отклонённых компонент.
+func (s *Store) ClusterPersonas(ctx context.Context, p ClusterParams, now time.Time) ([]PersonaCluster, []DroppedComponent, error) {
+	edges, err := s.loadAliasEdges(ctx, p.MinScore)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	activity, err := s.commentCounts(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return s.materializePersonas(ctx, aggregateComponents(edges), activity, now)
+	kept, dropped := aggregateComponents(edges, p.MaxSize, p.MinDensity)
+	clusters, err := s.materializePersonas(ctx, kept, activity, now)
+	return clusters, dropped, err
 }
 
 // personaComponent — связная компонента графа alias_candidates: состав,
-// слабейшее ребро (→ confidence) и цитаты-обоснования.
+// слабейшее ребро (→ confidence), цитаты, число уникальных рёбер и метка
+// «есть ручное подтверждение».
 type personaComponent struct {
-	root     int64
-	members  []int64
-	minScore float64
-	evidence []string
+	root         int64
+	members      []int64
+	minScore     float64
+	evidence     []string
+	edges        int
+	hasConfirmed bool
 }
 
-// aggregateComponents объединяет рёбра (union-find) в компоненты и по каждой
-// собирает уникальный состав, минимальный вес ребра и цитаты. Возвращает только
-// склейки (≥2 участника) в стабильном порядке — для воспроизводимого отчёта.
-func aggregateComponents(edges []aliasEdge) []personaComponent {
+// aggregateComponents объединяет рёбра (union-find) в компоненты, по каждой
+// собирает состав/вес/цитаты/плотность и делит на принятые и отклонённые гардом.
+func aggregateComponents(edges []aliasEdge, maxSize int, minDensity float64) ([]personaComponent, []DroppedComponent) {
 	uf := newUnionFind()
 	for _, e := range edges {
 		uf.union(e.a, e.b)
 	}
+	comps := collectComponents(uf, edges)
+	return splitByGuard(comps, maxSize, minDensity)
+}
+
+// collectComponents накапливает по каждому корню состав, уникальные рёбра,
+// слабейший вес, цитаты и признак ручного подтверждения.
+func collectComponents(uf *unionFind, edges []aliasEdge) []*personaComponent {
 	byRoot := map[int64]*personaComponent{}
-	seen := map[string]bool{}
+	seenMember := map[string]bool{}
+	seenPair := map[[2]int64]bool{}
+	order := []int64{}
 	for _, e := range edges {
 		r := uf.find(e.a)
 		c := byRoot[r]
 		if c == nil {
 			c = &personaComponent{root: r, minScore: e.score}
 			byRoot[r] = c
+			order = append(order, r)
 		}
-		for _, id := range [2]int64{e.a, e.b} {
-			if k := key2(r, id); !seen[k] {
-				seen[k] = true
-				c.members = append(c.members, id)
-			}
-		}
-		if e.score < c.minScore {
-			c.minScore = e.score
-		}
-		if e.evidence != "" {
-			c.evidence = append(c.evidence, e.evidence)
-		}
+		c.absorb(e, seenMember, seenPair)
 	}
-	out := make([]personaComponent, 0, len(byRoot))
-	for _, c := range byRoot {
-		if len(c.members) >= 2 {
-			out = append(out, *c)
-		}
+	out := make([]*personaComponent, 0, len(order))
+	for _, r := range order {
+		out = append(out, byRoot[r])
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].root < out[j].root })
 	return out
+}
+
+// absorb добавляет ребро в компоненту: новых участников, уникальную пару (число
+// рёбер для плотности), слабейший вес, цитату и признак ручного подтверждения.
+func (c *personaComponent) absorb(e aliasEdge, seenMember map[string]bool, seenPair map[[2]int64]bool) {
+	for _, id := range [2]int64{e.a, e.b} {
+		if k := key2(c.root, id); !seenMember[k] {
+			seenMember[k] = true
+			c.members = append(c.members, id)
+		}
+	}
+	if pk := orderedPair(e.a, e.b); !seenPair[pk] { // одна пара — несколько сигналов: считаем раз
+		seenPair[pk] = true
+		c.edges++
+	}
+	c.hasConfirmed = c.hasConfirmed || e.confirmed
+	if e.score < c.minScore {
+		c.minScore = e.score
+	}
+	if e.evidence != "" {
+		c.evidence = append(c.evidence, e.evidence)
+	}
+}
+
+// splitByGuard делит компоненты на принятые и отклонённые (переклейка через хаб).
+func splitByGuard(comps []*personaComponent, maxSize int, minDensity float64) ([]personaComponent, []DroppedComponent) {
+	var kept []personaComponent
+	var dropped []DroppedComponent
+	for _, c := range comps {
+		if len(c.members) < 2 {
+			continue
+		}
+		if !c.hasConfirmed && tooLoose(len(c.members), c.edges, maxSize, minDensity) {
+			dropped = append(dropped, DroppedComponent{
+				Size: len(c.members), Edges: c.edges,
+				Density: density(len(c.members), c.edges), Sample: sampleIDs(c.members),
+			})
+			continue
+		}
+		kept = append(kept, *c)
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].root < kept[j].root })
+	sort.Slice(dropped, func(i, j int) bool { return dropped[i].Size > dropped[j].Size })
+	return kept, dropped
+}
+
+func orderedPair(a, b int64) [2]int64 {
+	if a > b {
+		return [2]int64{b, a}
+	}
+	return [2]int64{a, b}
+}
+
+// density — доля реальных рёбер от полного графа компоненты (клика = 1).
+func density(n, e int) float64 {
+	if n < 2 {
+		return 1
+	}
+	return float64(e) / (float64(n) * float64(n-1) / 2)
+}
+
+// tooLoose — компонент похож на переклейку: слишком большой или (при >4 анкетах)
+// слишком рыхлый (цепочка через хаб, а не почти-клика родственных анкет).
+func tooLoose(n, e, maxSize int, minDensity float64) bool {
+	if maxSize > 0 && n > maxSize {
+		return true
+	}
+	return minDensity > 0 && n > 4 && density(n, e) < minDensity
+}
+
+func sampleIDs(ids []int64) []int64 {
+	if len(ids) > 6 {
+		return append([]int64(nil), ids[:6]...)
+	}
+	return append([]int64(nil), ids...)
 }
 
 // materializePersonas перезаписывает personas/user_personas по компонентам
@@ -597,14 +694,15 @@ func insertPersona(ctx context.Context, tx *sql.Tx, c personaComponent, activity
 }
 
 type aliasEdge struct {
-	a, b     int64
-	score    float64
-	evidence string
+	a, b      int64
+	score     float64
+	evidence  string
+	confirmed bool // ребро из ручного подтверждения (signal=confirmed) — гард его не рвёт
 }
 
 func (s *Store) loadAliasEdges(ctx context.Context, minScore float64) ([]aliasEdge, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT user_a, user_b, score, evidence FROM alias_candidates WHERE score >= ?`, minScore)
+		`SELECT user_a, user_b, score, evidence, signal FROM alias_candidates WHERE score >= ?`, minScore)
 	if err != nil {
 		return nil, err
 	}
@@ -612,9 +710,11 @@ func (s *Store) loadAliasEdges(ctx context.Context, minScore float64) ([]aliasEd
 	var out []aliasEdge
 	for rows.Next() {
 		var e aliasEdge
-		if err := rows.Scan(&e.a, &e.b, &e.score, &e.evidence); err != nil {
+		var signal string
+		if err := rows.Scan(&e.a, &e.b, &e.score, &e.evidence, &signal); err != nil {
 			return nil, err
 		}
+		e.confirmed = signal == SignalConfirmed
 		out = append(out, e)
 	}
 	return out, rows.Err()

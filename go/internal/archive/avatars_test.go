@@ -123,7 +123,7 @@ func TestClusterAvatars(t *testing.T) {
 	}
 
 	// Склейка в личности видит avatar-рёбра: {1,2,3} → одна личность.
-	clusters, err := s.ClusterPersonas(ctx, 0.7, testNow)
+	clusters, _, err := s.ClusterPersonas(ctx, ClusterParams{MinScore: 0.7}, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

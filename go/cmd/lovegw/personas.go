@@ -70,12 +70,14 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
 	handoffDays := fs.Int("handoff-days", 120, "макс. разрыв спанов для полного веса handoff (ensemble)")
 	ensFloor := fs.Float64("ens-floor", 0.5, "мин. композитный вес для записи кандидата (ensemble)")
+	maxPersona := fs.Int("max-persona", 20, "гард: компонент крупнее — переклейка, не склеивать (cluster; 0 — без лимита)")
+	minDensity := fs.Float64("min-density", 0.30, "гард: для компонент >4 анкет мин. плотность рёбер (cluster; 0 — без проверки)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
 		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
 		"min-replies": true, "top": true, "ens-top-k": true, "handoff-days": true, "ens-floor": true,
-		"top-nodes": true, "edges-per-node": true,
+		"top-nodes": true, "edges-per-node": true, "max-persona": true, "min-density": true,
 	})); err != nil {
 		return err
 	}
@@ -98,7 +100,9 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "link":
 		return personasLink(ctx, ar, linkInputPath(*inPath, *outDir))
 	case "cluster":
-		return personasCluster(ctx, ar, *minScore, *outDir)
+		return personasCluster(ctx, ar, archive.ClusterParams{
+			MinScore: *minScore, MaxSize: *maxPersona, MinDensity: *minDensity,
+		}, *outDir)
 	case "set":
 		return personasSet(ctx, ar, fs.Args()[1:])
 	case "avatars":
@@ -205,8 +209,8 @@ func personasLink(ctx context.Context, ar *archive.Store, inPath string) error {
 }
 
 // personasCluster склеивает личности и печатает отчёт-ревью.
-func personasCluster(ctx context.Context, ar *archive.Store, minScore float64, outDir string) error {
-	clusters, err := ar.ClusterPersonas(ctx, minScore, time.Now())
+func personasCluster(ctx context.Context, ar *archive.Store, p archive.ClusterParams, outDir string) error {
+	clusters, dropped, err := ar.ClusterPersonas(ctx, p, time.Now())
 	if err != nil {
 		return err
 	}
@@ -223,7 +227,17 @@ func personasCluster(ctx context.Context, ar *archive.Store, minScore float64, o
 		members += len(c.Members)
 	}
 	fmt.Fprintf(os.Stderr, "cluster: личностей %d (участников %d, порог %.2f) → %s\n",
-		len(clusters), members, minScore, reportPath)
+		len(clusters), members, p.MinScore, reportPath)
+	if len(dropped) > 0 {
+		fmt.Fprintf(os.Stderr, "гард: отклонено компонент %d (переклейка через хаб; анкеты остаются раздельными):\n", len(dropped))
+		for i, d := range dropped {
+			if i >= 5 {
+				fmt.Fprintf(os.Stderr, "  … ещё %d\n", len(dropped)-5)
+				break
+			}
+			fmt.Fprintf(os.Stderr, "  %d анкет, плотность %.2f (рёбер %d)\n", d.Size, d.Density, d.Edges)
+		}
+	}
 	for i, c := range clusters {
 		if i >= 10 {
 			fmt.Fprintf(os.Stderr, "  … ещё %d\n", len(clusters)-10)

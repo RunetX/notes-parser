@@ -35,6 +35,48 @@ func TestParallelAccountsNotPenalized(t *testing.T) {
 	}
 }
 
+// Гард плотности: рыхлая цепочка через хаб (звезда) отклоняется, а почти-клика
+// того же размера — принимается. Ребро confirmed освобождает компонент от гарда.
+func TestClusterGuard(t *testing.T) {
+	star := func(n int) []aliasEdge { // хаб 1 связан со всеми, между листами связей нет
+		var e []aliasEdge
+		for i := 2; i <= n; i++ {
+			e = append(e, aliasEdge{a: 1, b: int64(i), score: 0.96})
+		}
+		return e
+	}
+	kept, dropped := aggregateComponents(star(10), 20, 0.30)
+	if len(kept) != 0 || len(dropped) != 1 || dropped[0].Size != 10 {
+		t.Errorf("рыхлая звезда должна быть отклонена: kept=%d dropped=%+v", len(kept), dropped)
+	}
+
+	// та же звезда, но с must-link ребром — гард её не трогает.
+	e := star(10)
+	e[0].confirmed = true
+	kept, dropped = aggregateComponents(e, 20, 0.30)
+	if len(kept) != 1 || len(dropped) != 0 {
+		t.Errorf("подтверждённый компонент гард не должен рвать: kept=%d dropped=%d", len(kept), len(dropped))
+	}
+
+	// почти-клика из 5 узлов (плотность 1.0) — принимается.
+	var clique []aliasEdge
+	for i := 1; i <= 5; i++ {
+		for j := i + 1; j <= 5; j++ {
+			clique = append(clique, aliasEdge{a: int64(i), b: int64(j), score: 0.96})
+		}
+	}
+	kept, dropped = aggregateComponents(clique, 20, 0.30)
+	if len(kept) != 1 || len(dropped) != 0 || len(kept[0].members) != 5 {
+		t.Errorf("плотная клика должна приниматься: kept=%+v dropped=%d", kept, len(dropped))
+	}
+
+	// превышение MaxSize отклоняет даже плотный компонент.
+	kept, dropped = aggregateComponents(clique, 4, 0)
+	if len(kept) != 0 || len(dropped) != 1 {
+		t.Errorf("превышение max-size должно отклонять: kept=%d dropped=%d", len(kept), len(dropped))
+	}
+}
+
 func TestOverlapCoeff(t *testing.T) {
 	ca := map[int64]bool{10: true, 20: true, 30: true, 2: true} // 2 — сама пара, игнор
 	cb := map[int64]bool{20: true, 30: true, 40: true, 1: true} // 1 — сама пара, игнор

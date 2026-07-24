@@ -30,7 +30,7 @@ func TestPersonaGraphAndPortrait(t *testing.T) {
 	if _, err := s.ImportAliasLinks(ctx, []AliasLink{{UserA: 1, UserB: 2, Score: 0.9, Evidence: "av"}}, nil, testNow); err != nil {
 		t.Fatal(err)
 	}
-	clusters, err := s.ClusterPersonas(ctx, 0.7, testNow)
+	clusters, _, err := s.ClusterPersonas(ctx, ClusterParams{MinScore: 0.7}, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

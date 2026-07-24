@@ -86,7 +86,7 @@ func TestClusterPersonasUnionFind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	clusters, err := s.ClusterPersonas(ctx, 0.7, testNow)
+	clusters, _, err := s.ClusterPersonas(ctx, ClusterParams{MinScore: 0.7}, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestClusterPersonasUnionFind(t *testing.T) {
 	}
 
 	// Идемпотентность: пересчёт даёт те же 2 кластера без накопления personas.
-	clusters2, err := s.ClusterPersonas(ctx, 0.7, testNow)
+	clusters2, _, err := s.ClusterPersonas(ctx, ClusterParams{MinScore: 0.7}, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}
