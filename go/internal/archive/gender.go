@@ -5,10 +5,11 @@ import (
 	"database/sql"
 )
 
-// migrateV13SQL — пол анкеты. Собирается обходом профилей love.ngs.ru
-// (/profile/<id>/, класс заголовка _male/_female) под сессией пользователя;
-// в БД пусто = ещё не обходили. SaveGrab колонку не трогает (upsert перечисляет
-// только name/age/avatar), так что грабинг пол не затирает.
+// migrateV13SQL — пол анкеты. Собирается обходом профилей под сессией
+// пользователя через мобильную версию (m.love.ngs.ru, sex из JSON
+// dataFromBlade.layout); в БД пусто = ещё не обходили. SaveGrab колонку не
+// трогает (upsert перечисляет только name/age/avatar), так что грабинг пол
+// не затирает.
 const migrateV13SQL = `
 ALTER TABLE users ADD COLUMN gender TEXT NOT NULL DEFAULT '';
 `

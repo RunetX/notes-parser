@@ -68,6 +68,13 @@ func NewWithClient(baseURL, userAgent string, requestInterval time.Duration, hc 
 	}
 }
 
+// StrictPacing убирает стартовый «залп» лимитера (burst 2): мгновенно уходит
+// не больше одного запроса, дальше строго по интервалу. Для массовых обходов
+// профилей — DDoS-Guard режет два подряд мгновенных запроса как бота.
+func (c *Client) StrictPacing() {
+	c.limiter.SetBurst(1)
+}
+
 // FetchNotes скачивает и разбирает ленту заметок.
 func (c *Client) FetchNotes(ctx context.Context) ([]Note, error) {
 	body, err := c.RawNotes(ctx)
