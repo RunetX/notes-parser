@@ -13,11 +13,12 @@ import (
 
 // calibOpts — параметры действия calibrate.
 type calibOpts struct {
-	notes      string // id заметок через запятую
-	author     string // личность для оценки разрыва (опционально)
-	lexWeight  float64
-	top        int
-	activeDays int // окно рецент-фильтра в сутках (0 — выкл)
+	notes          string // id заметок через запятую
+	author         string // личность для оценки разрыва (опционально)
+	lexWeight      float64
+	top            int
+	activeDays     int // окно рецент-фильтра в сутках (0 — выкл)
+	minAuthorNotes int // жанровый фильтр: кандидат ≥N заметок (0 — выкл)
 }
 
 // personasCalibrate — калибровка отпечатка автора по набору заметок: честная
@@ -31,7 +32,7 @@ func personasCalibrate(ctx context.Context, ar *archive.Store, opt calibOpts) er
 	if len(ids) < 2 {
 		return fmt.Errorf("calibrate: нужно ≥2 заметок в -notes (leave-one-out); дано %d", len(ids))
 	}
-	cal, err := ar.CalibrateNotes(ctx, ids, opt.author, opt.lexWeight, opt.top, opt.activeDays)
+	cal, err := ar.CalibrateNotes(ctx, ids, opt.author, opt.lexWeight, opt.top, opt.activeDays, opt.minAuthorNotes)
 	if err != nil {
 		return err
 	}
@@ -77,9 +78,16 @@ func personasCalibrate(ctx context.Context, ar *archive.Store, opt calibOpts) er
 		fmt.Fprintf(os.Stderr, "  твой существующий профиль %s: топ-10 в %d/%d, медиана ранга %d (out-of-sample — заметки не в профиле)\n",
 			cal.Identity, cal.IdTop10, len(cal.Loo), cal.IdMedianRank)
 	}
-	if cal.ActiveDays > 0 {
-		fmt.Fprintf(os.Stderr, "  РЕЦЕНТ-ФИЛЬТР (активны за %d сут): кандидатов %d из %d; медиана ранга %d→%d, топ-10 %d→%d\n",
-			cal.ActiveDays, cal.ActiveCandidates, cal.StyleProfiles,
+	if cal.ActiveDays > 0 || cal.MinAuthorNotes > 0 {
+		var parts []string
+		if cal.ActiveDays > 0 {
+			parts = append(parts, fmt.Sprintf("активны за %d сут", cal.ActiveDays))
+		}
+		if cal.MinAuthorNotes > 0 {
+			parts = append(parts, fmt.Sprintf("заметок ≥%d", cal.MinAuthorNotes))
+		}
+		fmt.Fprintf(os.Stderr, "  ФИЛЬТР КАНДИДАТОВ (%s): осталось %d из %d; медиана ранга %d→%d, топ-10 %d→%d\n",
+			strings.Join(parts, " + "), cal.ActiveCandidates, cal.StyleProfiles,
 			cal.IdMedianRank, cal.IdActiveMedianRank, cal.IdTop10, cal.IdActiveTop10)
 	}
 	fmt.Fprintf(os.Stderr, "  → %s\n", looVerdict(cal))

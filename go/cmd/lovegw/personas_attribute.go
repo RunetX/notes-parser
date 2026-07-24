@@ -13,12 +13,13 @@ import (
 
 // attrOpts — параметры действия attribute (из флагов cmdPersonas).
 type attrOpts struct {
-	top        int
-	inPath     string
-	noteID     int64
-	lexWeight  float64
-	author     string // непусто — пакетный режим по заметкам личности
-	activeDays int    // рецент-фильтр: отсеять анкеты без активности за N сут (0 — все)
+	top            int
+	inPath         string
+	noteID         int64
+	lexWeight      float64
+	author         string // непусто — пакетный режим по заметкам личности
+	activeDays     int    // рецент-фильтр: отсеять анкеты без активности за N сут (0 — все)
+	minAuthorNotes int    // жанровый фильтр: кандидат должен написать ≥N заметок (0 — все)
 }
 
 // shortQueryNgrams — ниже этого объёма запроса ранжирование заметно шумит.
@@ -38,7 +39,7 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 	if err != nil {
 		return err
 	}
-	at, err := ar.AttributeText(ctx, text, opt.top, wantID, opt.lexWeight, opt.activeDays)
+	at, err := ar.AttributeText(ctx, text, opt.top, wantID, opt.lexWeight, opt.activeDays, opt.minAuthorNotes)
 	if err != nil {
 		return err
 	}
@@ -54,9 +55,16 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 			"attribute: стиль-профилей %d, в запросе 3-грамм %d (фон cos %.4f±%.4f); лексика не построена (`personas lexis build`)\n",
 			at.StyleProfiles, at.QueryNgrams, at.StyleCosMean, at.StyleCosStd)
 	}
-	if at.ActiveDays > 0 {
-		fmt.Fprintf(os.Stderr, "  рецент-фильтр: активных за %d сут %d из %d (мёртвые анкеты убраны из выдачи)\n",
-			at.ActiveDays, at.ActiveProfiles, at.StyleProfiles)
+	if at.ActiveDays > 0 || at.MinAuthorNotes > 0 {
+		var parts []string
+		if at.ActiveDays > 0 {
+			parts = append(parts, fmt.Sprintf("активных за %d сут", at.ActiveDays))
+		}
+		if at.MinAuthorNotes > 0 {
+			parts = append(parts, fmt.Sprintf("писавших ≥%d заметок", at.MinAuthorNotes))
+		}
+		fmt.Fprintf(os.Stderr, "  фильтр кандидатов (%s): осталось %d из %d (неправдоподобные анкеты убраны из выдачи)\n",
+			strings.Join(parts, " + "), at.KeptProfiles, at.StyleProfiles)
 	}
 	if at.QueryNgrams < shortQueryNgrams {
 		fmt.Fprintf(os.Stderr, "  ⚠ короткий текст (<%d 3-грамм): ранжирование ненадёжно, топ — только подсказка\n",
@@ -66,12 +74,18 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 	for _, c := range at.Candidates {
 		fmt.Fprintf(os.Stderr, "  %3d. %s  %s\n", c.Rank, attrScore(c, lexActive), attrLabel(c))
 	}
+	denom := at.StyleProfiles
+	if at.KeptProfiles > 0 {
+		denom = at.KeptProfiles // при фильтре ранг считается среди правдоподобных
+	}
 	switch {
+	case wantID != 0 && at.WantFiltered:
+		fmt.Fprintf(os.Stderr, "валидация: у автора %d есть профиль, но он выбыл по фильтру кандидатов (мёртвая анкета/не пишет заметок)\n", wantID)
 	case wantID != 0 && at.Want == nil:
 		fmt.Fprintf(os.Stderr, "валидация: у автора %d нет стиль-профиля (мало текста)\n", wantID)
 	case at.Want != nil:
 		fmt.Fprintf(os.Stderr, "валидация: настоящий автор на месте %d из %d — %s  %s\n",
-			at.Want.Rank, at.StyleProfiles, attrScore(*at.Want, lexActive), attrLabel(*at.Want))
+			at.Want.Rank, denom, attrScore(*at.Want, lexActive), attrLabel(*at.Want))
 		fmt.Fprintln(os.Stderr, "  (текст авторской заметки входит в её профиль — совпадение завышено)")
 	}
 	return nil

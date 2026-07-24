@@ -39,11 +39,13 @@ type Attribution struct {
 	StyleCosStd   float64
 	LexCosMean    float64 // фон косинуса лексики
 	LexCosStd     float64
-	LexWeight     float64 // вес лексики в комбинированном скоре [0..1]
-	ActiveDays    int     // окно рецент-фильтра в сутках (0 — выкл)
-	ActiveProfiles int    // кандидатов осталось после отсева «мёртвых» анкет
-	Candidates    []AttributionCandidate
-	Want          *AttributionCandidate // позиция автора wantID (валидация); nil — нет профиля
+	LexWeight      float64 // вес лексики в комбинированном скоре [0..1]
+	ActiveDays     int     // окно рецент-фильтра в сутках (0 — выкл)
+	MinAuthorNotes int     // жанровый фильтр: кандидат ≥N заметок (0 — выкл)
+	KeptProfiles   int     // кандидатов осталось после отсева неправдоподобных анкет
+	Candidates     []AttributionCandidate
+	Want           *AttributionCandidate // позиция автора wantID (валидация); nil — нет профиля/отфильтрован
+	WantFiltered   bool                  // у wantID есть профиль, но он выбыл по фильтру (мёртвый/не пишет заметок)
 }
 
 // AttributeText ранжирует авторов архива по похожести на текст, комбинируя
@@ -53,7 +55,9 @@ type Attribution struct {
 // сопоставимы независимо от объёма запроса. Комбинированный Z = lexWeight·LexZ +
 // (1-lexWeight)·StyleZ; у кого лексики нет — только StyleZ. wantID != 0 — вернуть
 // также позицию этого автора (валидация на заметке с известным автором).
-func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID int64, lexWeight float64, activeDays int) (Attribution, error) {
+// activeDays/minAuthorNotes>0 — отсечь неправдоподобных кандидатов из выдачи
+// (рецент + жанр): «мёртвые» анкеты и чистые комментаторы заметку не писали.
+func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID int64, lexWeight float64, activeDays, minAuthorNotes int) (Attribution, error) {
 	norm := normalizeStyle(text)
 	if norm == "" {
 		return Attribution{}, fmt.Errorf("attribute: пустой текст")
@@ -78,7 +82,7 @@ func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID
 	}
 
 	order := s.rankAttribution(sIDs, sCos, lexCos, &at)
-	order, err = s.filterActive(ctx, order, sIDs, activeDays, &at)
+	order, err = s.filterCandidates(ctx, order, sIDs, activeDays, minAuthorNotes, &at)
 	if err != nil {
 		return at, err
 	}
@@ -90,15 +94,9 @@ func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID
 	for _, oi := range order[:topN] {
 		pick = append(pick, sIDs[oi])
 	}
-	wantRank := 0
-	if wantID != 0 {
-		for r, oi := range order {
-			if sIDs[oi] == wantID {
-				wantRank = r + 1
-				pick = append(pick, wantID)
-				break
-			}
-		}
+	wantRank, wantExists := resolveWant(order, sIDs, wantID)
+	if wantRank > 0 {
+		pick = append(pick, wantID)
 	}
 	meta, err := s.attributionMeta(ctx, pick)
 	if err != nil {
@@ -110,29 +108,60 @@ func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID
 	for r := 1; r <= topN; r++ {
 		at.Candidates = append(at.Candidates, build(r))
 	}
-	if wantRank > 0 {
+	switch {
+	case wantRank > 0:
 		w := build(wantRank)
 		at.Want = &w
+	case wantExists:
+		at.WantFiltered = true // профиль есть, но кандидат выбыл по фильтру
 	}
 	return at, nil
 }
 
-// filterActive при activeDays>0 выкидывает из рейтинга «мёртвые» анкеты (не
-// активные в окне): давно не появлявшийся автор не мог написать свежий текст.
-// Порядок сохраняется; заполняет at.ActiveDays/ActiveProfiles.
-func (s *Store) filterActive(ctx context.Context, order []int, ids []int64, activeDays int, at *Attribution) ([]int, error) {
-	la, cutoff, err := s.recencyCutoff(ctx, activeDays)
-	if err != nil || cutoff == "" {
+// resolveWant ищет позицию автора wantID в отфильтрованном рейтинге order.
+// rank>0 — его место (1-индекс) среди прошедших фильтр; exists — есть ли у него
+// стиль-профиль вообще (различает «нет профиля» и «выбыл по фильтру»).
+func resolveWant(order []int, ids []int64, wantID int64) (rank int, exists bool) {
+	if wantID == 0 {
+		return 0, false
+	}
+	for _, id := range ids {
+		if id == wantID {
+			exists = true
+			break
+		}
+	}
+	for r, oi := range order {
+		if ids[oi] == wantID {
+			return r + 1, exists
+		}
+	}
+	return 0, exists
+}
+
+// filterCandidates при включённых фильтрах выкидывает из рейтинга неправдоподобные
+// анкеты: «мёртвые» (рецент — не активны в окне) и чистых комментаторов без
+// заметок (жанр). Тот, кто давно не появлялся или заметок не пишет, не мог
+// написать этот текст-заметку. Порядок сохраняется; заполняет
+// at.ActiveDays/MinAuthorNotes/KeptProfiles.
+func (s *Store) filterCandidates(ctx context.Context, order []int, ids []int64, activeDays, minAuthorNotes int, at *Attribution) ([]int, error) {
+	cf, err := s.buildCandidateFilter(ctx, activeDays, minAuthorNotes)
+	if err != nil || !cf.on() {
 		return order, err
 	}
-	at.ActiveDays = activeDays
+	if cf.cutoff != "" {
+		at.ActiveDays = activeDays
+	}
+	if cf.noteWriters != nil {
+		at.MinAuthorNotes = minAuthorNotes
+	}
 	kept := make([]int, 0, len(order))
 	for _, oi := range order {
-		if la[ids[oi]] >= cutoff {
+		if cf.ok(ids[oi]) {
 			kept = append(kept, oi)
 		}
 	}
-	at.ActiveProfiles = len(kept)
+	at.KeptProfiles = len(kept)
 	return kept, nil
 }
 

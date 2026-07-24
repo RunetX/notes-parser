@@ -46,8 +46,9 @@ type Calibration struct {
 	IdTop10      int // в скольких отложенных заметках именная анкета попала в топ-10
 
 	ActiveDays         int // окно рецент-фильтра в сутках (0 — фильтр выключен)
-	ActiveCandidates   int // сколько из StyleProfiles активны в окне (остальные отсеяны как «мёртвые»)
-	IdActiveMedianRank int // медиана ранга именной анкеты среди активных (эффект рецент-фильтра)
+	MinAuthorNotes     int // жанровый фильтр: мин. заметок у кандидата (0 — выключен)
+	ActiveCandidates   int // сколько из StyleProfiles прошли фильтры (живые/пишут заметки)
+	IdActiveMedianRank int // медиана ранга именной анкеты среди прошедших фильтр (эффект фильтров)
 	IdActiveTop10      int
 
 	Pooled []AttributionCandidate // ближайшие к агрегату всех заметок (объединённый голос)
@@ -66,7 +67,7 @@ type Calibration struct {
 //     против всего корпуса на отложенном тексте — честная проверка обобщения;
 //   - пул: все заметки объединяются в один голос → топ ближайших авторов;
 //   - разрыв с identity (если задан p<id>|u<id>): где именные анкеты автора в пуле.
-func (s *Store) CalibrateNotes(ctx context.Context, noteIDs []int64, identityToken string, lexWeight float64, topN, activeDays int) (Calibration, error) {
+func (s *Store) CalibrateNotes(ctx context.Context, noteIDs []int64, identityToken string, lexWeight float64, topN, activeDays, minAuthorNotes int) (Calibration, error) {
 	notes, err := s.notesByIDs(ctx, noteIDs)
 	if err != nil {
 		return Calibration{}, err
@@ -85,7 +86,7 @@ func (s *Store) CalibrateNotes(ctx context.Context, noteIDs []int64, identityTok
 		cal.Chars += it.chars
 	}
 	env := &looEnv{sa: sa, la: la, lexWeight: lexWeight, member: s.identityMembers(ctx, identityToken)}
-	if err := s.applyRecency(ctx, env, sa.ids, activeDays, &cal); err != nil {
+	if err := s.applyFilters(ctx, env, sa.ids, activeDays, minAuthorNotes, &cal); err != nil {
 		return cal, err
 	}
 
@@ -129,14 +130,14 @@ func (s *Store) CalibrateNotes(ctx context.Context, noteIDs []int64, identityTok
 	return cal, nil
 }
 
-// looEnv — общее окружение одной leave-one-out итерации.
+// looEnv — общее окружение одной leave-one-out итерации. Встроенный
+// *candidateFilter даёт методы on()/ok() (рецент+жанр фильтр кандидатов).
 type looEnv struct {
-	sa         *styleAttributor
-	la         *lexisAttributor
-	lexWeight  float64
-	member     map[int64]bool
-	lastActive map[int64]string // author_id → последняя дата активности (для рецент-фильтра)
-	cutoff     string           // порог свежести (ISO); "" — фильтр выключен
+	sa               *styleAttributor
+	la               *lexisAttributor
+	lexWeight        float64
+	member           map[int64]bool
+	*candidateFilter
 }
 
 // recencyCutoff при activeDays>0 возвращает карту последней активности и порог
@@ -161,21 +162,45 @@ func (s *Store) recencyCutoff(ctx context.Context, activeDays int) (map[int64]st
 	return la, mx.AddDate(0, 0, -activeDays).UTC().Format(time.RFC3339), nil
 }
 
-// applyRecency при activeDays>0 наполняет env порогом свежести и считает число
-// живых кандидатов.
-func (s *Store) applyRecency(ctx context.Context, env *looEnv, ids []int64, activeDays int, cal *Calibration) error {
-	la, cutoff, err := s.recencyCutoff(ctx, activeDays)
-	if err != nil || cutoff == "" {
+// applyFilters наполняет env общим фильтром кандидатов (рецент activeDays>0 +
+// жанр minAuthorNotes>0) и считает число правдоподобных кандидатов.
+func (s *Store) applyFilters(ctx context.Context, env *looEnv, ids []int64, activeDays, minAuthorNotes int, cal *Calibration) error {
+	cf, err := s.buildCandidateFilter(ctx, activeDays, minAuthorNotes)
+	if err != nil {
 		return err
 	}
-	env.lastActive, env.cutoff = la, cutoff
-	cal.ActiveDays = activeDays
-	for _, id := range ids {
-		if la[id] >= cutoff {
-			cal.ActiveCandidates++
-		}
+	env.candidateFilter = cf
+	if cf.cutoff != "" {
+		cal.ActiveDays = activeDays
+	}
+	if cf.noteWriters != nil {
+		cal.MinAuthorNotes = minAuthorNotes
+	}
+	if cf.on() {
+		cal.ActiveCandidates = cf.count(ids)
 	}
 	return nil
+}
+
+// noteCounts — сколько заметок написала каждая анкета (для жанрового фильтра).
+func (s *Store) noteCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT author_id, COUNT(*) FROM notes
+		 WHERE author_id IS NOT NULL AND author_id != 0 GROUP BY author_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		m[id] = n
+	}
+	return m, rows.Err()
 }
 
 // noteItem — заметка с предпосчитанными векторами запроса.
@@ -256,16 +281,17 @@ func (s *Store) looOne(items []noteItem, i int, env *looEnv) (LooResult, bool) {
 	}
 	// Ранг лучшей именной анкеты автора (out-of-sample: заметка i не в её профиле).
 	lr.IdRank, lr.IdBestID = bestMemberRank(scores, sa.ids, env.member)
-	// То же среди только недавно активных анкет (рецент-фильтр).
-	if env.cutoff != "" {
-		lr.IdRankActive = activeMemberRank(scores, sa.ids, env)
+	// То же среди только правдоподобных кандидатов (рецент/жанр).
+	if env.on() {
+		lr.IdRankActive = plausibleMemberRank(scores, sa.ids, env)
 	}
 	return lr, true
 }
 
-// activeMemberRank — ранг лучшей именной анкеты среди кандидатов, активных не
-// раньше cutoff (мёртвые/удалённые анкеты не считаются конкурентами).
-func activeMemberRank(scores []float64, ids []int64, env *looEnv) int {
+// plausibleMemberRank — ранг лучшей именной анкеты среди кандидатов, проходящих
+// включённые фильтры (живые и/или пишущие заметки): неправдоподобные (мёртвые,
+// комментаторы без заметок) конкурентами не считаются.
+func plausibleMemberRank(scores []float64, ids []int64, env *looEnv) int {
 	bestScore := -1e18
 	for k, id := range ids {
 		if env.member[id] && scores[k] > bestScore {
@@ -277,7 +303,7 @@ func activeMemberRank(scores []float64, ids []int64, env *looEnv) int {
 	}
 	rank := 1
 	for k, id := range ids {
-		if scores[k] > bestScore && env.lastActive[id] >= env.cutoff {
+		if scores[k] > bestScore && env.ok(id) {
 			rank++
 		}
 	}

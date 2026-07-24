@@ -22,6 +22,11 @@ type VerifyResult struct {
 	QueryTokens int
 	LexWeight   float64
 
+	StyleProfiles  int // всего стиль-профилей (полный фон)
+	ActiveDays     int // окно рецент-фильтра фона (0 — выкл)
+	MinAuthorNotes int // жанровый фильтр фона: кандидат ≥N заметок (0 — выкл)
+	BgProfiles     int // размер фоновой популяции после фильтра (== StyleProfiles, если фильтр выкл)
+
 	Z      float64 // комбинированный z подозреваемого на запросе
 	StyleZ float64
 	LexZ   float64
@@ -39,14 +44,21 @@ type VerifyResult struct {
 // VerifyText проверяет, мог ли подозреваемый (p<id>|u<id>|user_id) написать
 // текст. Считает z подозреваемого на тексте и строит нулевое распределение по
 // nullN случайным чужим заметкам; вердикт да/нет выносится в CLI по порогу при
-// заданном FPR. lexWeight — вес лексики.
-func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWeight float64, nullN int) (VerifyResult, error) {
+// заданном FPR. lexWeight — вес лексики. activeDays/minAuthorNotes>0 сужают
+// фоновую популяцию (эталон «случайного автора») до правдоподобных кандидатов —
+// z подозреваемого меряется на фоне реальных, а не мёртвых/некомментаторских
+// анкет; нулевое распределение считается тем же фоном, поэтому FPR сохраняется.
+func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWeight float64, nullN, activeDays, minAuthorNotes int) (VerifyResult, error) {
 	member := s.identityMembers(ctx, suspectToken)
 	if member == nil {
 		return VerifyResult{}, fmt.Errorf("verify: подозреваемый %q не найден или без анкет", suspectToken)
 	}
 	identity, _ := s.canonIdentity(ctx, suspectToken)
 	sa, la, err := s.loadAttributors(ctx)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	cf, err := s.buildCandidateFilter(ctx, activeDays, minAuthorNotes)
 	if err != nil {
 		return VerifyResult{}, err
 	}
@@ -63,11 +75,21 @@ func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWe
 	res := VerifyResult{
 		Suspect: identity, SuspectAccounts: len(member),
 		QueryNgrams: qn, LexWeight: lexWeight,
+		StyleProfiles: len(sa.ids), BgProfiles: len(sa.ids),
+	}
+	if cf.cutoff != "" {
+		res.ActiveDays = activeDays
+	}
+	if cf.noteWriters != nil {
+		res.MinAuthorNotes = minAuthorNotes
+	}
+	if cf.on() {
+		res.BgProfiles = cf.count(sa.ids)
 	}
 	if la != nil && qlv != nil {
 		res.QueryTokens = len(strings.Fields(text))
 	}
-	z, sz, lz, bestID, hasLex, ok := suspectScore(sa, la, qsv, qlv, member, lexWeight)
+	z, sz, lz, bestID, hasLex, ok := suspectScore(sa, la, qsv, qlv, member, lexWeight, cf)
 	if !ok {
 		return VerifyResult{}, fmt.Errorf("verify: у подозреваемого нет стиль-профиля (мало текста)")
 	}
@@ -76,7 +98,7 @@ func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWe
 		res.SuspectBestName = names[bestID]
 	}
 
-	null, err := s.suspectNull(ctx, sa, la, member, lexWeight, nullN)
+	null, err := s.suspectNull(ctx, sa, la, member, lexWeight, nullN, cf)
 	if err != nil {
 		return res, err
 	}
@@ -101,16 +123,22 @@ func (s *Store) NoteTexts(ctx context.Context, ids []int64) ([]string, error) {
 }
 
 // suspectScore — комбинированный z подозреваемого (макс. по его анкетам) на
-// готовых векторах запроса, плюс лучшая анкета. ok=false — ни у одной анкеты
-// подозреваемого нет профиля.
+// готовых векторах запроса, плюс лучшая анкета. Фон (среднее/сигма косинуса)
+// считается по кандидатам из cf (правдоподобные авторы); выключенный cf — по
+// всем. ok=false — ни у одной анкеты подозреваемого нет профиля.
 func suspectScore(sa *styleAttributor, la *lexisAttributor, qsv, qlv []float32,
-	member map[int64]bool, lexWeight float64) (z, sz, lz float64, bestID int64, hasLex, ok bool) {
+	member map[int64]bool, lexWeight float64, cf *candidateFilter) (z, sz, lz float64, bestID int64, hasLex, ok bool) {
 	sCos := sa.cosinesOf(qsv)
 	at := &Attribution{LexWeight: lexWeight}
-	at.StyleCosMean, at.StyleCosStd = meanStd(sCos)
+	at.StyleCosMean, at.StyleCosStd = meanStdFiltered(sa.ids, sCos, cf)
 	var lexCos map[int64]float64
 	if la != nil && qlv != nil {
-		lexCos, at.LexCosMean, at.LexCosStd = la.cosinesOf(qlv)
+		var lmean, lstd float64
+		lexCos, lmean, lstd = la.cosinesOf(qlv)
+		if cf != nil && cf.on() {
+			lmean, lstd = meanStdMapFiltered(la.ids, lexCos, cf)
+		}
+		at.LexCosMean, at.LexCosStd = lmean, lstd
 	}
 	best := -1e18
 	for k, id := range sa.ids {
@@ -129,9 +157,10 @@ func suspectScore(sa *styleAttributor, la *lexisAttributor, qsv, qlv []float32,
 }
 
 // suspectNull строит нулевое распределение: z подозреваемого на nullN случайных
-// заметках ЧУЖИХ авторов (текст, который заведомо не его).
+// заметках ЧУЖИХ авторов (текст, который заведомо не его). Фон каждого z считается
+// тем же фильтром cf, что и запрос, — иначе порог FPR был бы несопоставим.
 func (s *Store) suspectNull(ctx context.Context, sa *styleAttributor, la *lexisAttributor,
-	member map[int64]bool, lexWeight float64, nullN int) ([]float64, error) {
+	member map[int64]bool, lexWeight float64, nullN int, cf *candidateFilter) ([]float64, error) {
 	exclude := make([]int64, 0, len(member))
 	for id := range member {
 		exclude = append(exclude, id)
@@ -150,7 +179,7 @@ func (s *Store) suspectNull(ctx context.Context, sa *styleAttributor, la *lexisA
 		if la != nil {
 			qlv, _, _ = la.vec(t)
 		}
-		if z, _, _, _, _, ok := suspectScore(sa, la, qsv, qlv, member, lexWeight); ok {
+		if z, _, _, _, _, ok := suspectScore(sa, la, qsv, qlv, member, lexWeight, cf); ok {
 			null = append(null, z)
 		}
 	}

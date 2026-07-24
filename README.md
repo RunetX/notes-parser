@@ -143,13 +143,15 @@ lovegw personas ensemble [-ens-top-k N] [-handoff-days D] [-ens-floor F]     # �
 ```sh
 lovegw personas portrait [-top N] <p<id>|u<id>|user_id>   # портрет личности/анкеты: стиль, собеседники
 lovegw personas diag <id> <id> …                          # ground-truth сверка набора анкет (стиль/собеседники/время)
-lovegw personas attribute [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] [текст …]
+lovegw personas attribute [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] [-min-author-notes N] [текст …]
                                                           # скоринг авторства: чьё письмо ближе к анонимному тексту (стиль + лексика);
-                                                          # -active-days N убирает из выдачи мёртвые анкеты (не активные за N сут)
+                                                          # фильтр кандидатов: -active-days N убирает мёртвые анкеты, -min-author-notes N —
+                                                          # чистых комментаторов без заметок (атрибутируем-то заметку)
 lovegw personas attribute [-author p<id>] [-lex-weight F]  # пакет: все заметки личности + сводка попаданий
-lovegw personas calibrate -notes id,id,… [-author p<id>] [-active-days N]  # leave-one-out: предсказуемость + эффект рецент-фильтра
-lovegw personas verify -suspect p<id> [-in txt|-notes ids|-note id] [-null N]
-                                                          # «это он? да/нет» с калиброванным порогом (FPR 5%/1%)
+lovegw personas calibrate -notes id,id,… [-author p<id>] [-active-days N] [-min-author-notes N]  # leave-one-out: предсказуемость + эффект фильтров
+lovegw personas verify -suspect p<id> [-in txt|-notes ids|-note id] [-null N] [-active-days N] [-min-author-notes N]
+                                                          # «это он? да/нет» с калиброванным порогом (FPR 5%/1%);
+                                                          # фильтры сужают фон до правдоподобных кандидатов
 ```
 
 Факты (интересы) и отношения — тот же паттерн «scan/score → candidates →

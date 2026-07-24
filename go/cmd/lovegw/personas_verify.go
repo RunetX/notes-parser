@@ -11,12 +11,14 @@ import (
 
 // verifyOpts — параметры действия verify.
 type verifyOpts struct {
-	suspect   string
-	inPath    string
-	noteID    int64
-	notes     string // пул нескольких известных заметок как один образец
-	lexWeight float64
-	nullN     int
+	suspect        string
+	inPath         string
+	noteID         int64
+	notes          string // пул нескольких известных заметок как один образец
+	lexWeight      float64
+	nullN          int
+	activeDays     int // рецент-фильтр фона: только анкеты активные за N сут (0 — все)
+	minAuthorNotes int // жанровый фильтр фона: только писавшие ≥N заметок (0 — все)
 }
 
 // personasVerify — калиброванная проверка авторства: «этот текст написал
@@ -30,7 +32,7 @@ func personasVerify(ctx context.Context, ar *archive.Store, args []string, opt v
 	if err != nil {
 		return err
 	}
-	res, err := ar.VerifyText(ctx, text, opt.suspect, opt.lexWeight, opt.nullN)
+	res, err := ar.VerifyText(ctx, text, opt.suspect, opt.lexWeight, opt.nullN, opt.activeDays, opt.minAuthorNotes)
 	if err != nil {
 		return err
 	}
@@ -41,6 +43,17 @@ func personasVerify(ctx context.Context, ar *archive.Store, args []string, opt v
 	}
 	fmt.Fprintf(os.Stderr, "verify: подозреваемый %s, анкет %d; запрос: 3-грамм %d, слов %d; вес лексики %.2f\n",
 		suspect, res.SuspectAccounts, res.QueryNgrams, res.QueryTokens, res.LexWeight)
+	if res.ActiveDays > 0 || res.MinAuthorNotes > 0 {
+		var parts []string
+		if res.ActiveDays > 0 {
+			parts = append(parts, fmt.Sprintf("активны за %d сут", res.ActiveDays))
+		}
+		if res.MinAuthorNotes > 0 {
+			parts = append(parts, fmt.Sprintf("заметок ≥%d", res.MinAuthorNotes))
+		}
+		fmt.Fprintf(os.Stderr, "  фон сужен до правдоподобных кандидатов (%s): %d из %d анкет\n",
+			strings.Join(parts, " + "), res.BgProfiles, res.StyleProfiles)
+	}
 	if res.QueryNgrams < shortQueryNgrams {
 		fmt.Fprintf(os.Stderr, "  ⚠ короткий текст (<%d 3-грамм): вердикт ненадёжен\n", shortQueryNgrams)
 	}

@@ -69,6 +69,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	notesList := fs.String("notes", "", "id заметок через запятую — калибровка отпечатка автора (calibrate)")
 	suspect := fs.String("suspect", "", "подозреваемый p<id>|u<id>|user_id для проверки авторства (verify)")
 	nullN := fs.Int("null", 200, "размер выборки чужих текстов для калибровки порога (verify)")
+	minAuthorNotes := fs.Int("min-author-notes", 0, "жанровый фильтр: кандидат должен написать ≥N заметок (attribute/calibrate/verify; 0 — все)")
 	lexMinTokens := fs.Int("lex-min-tokens", 200, "мин. слов автора для лексического профиля (lexis build)")
 	lexDims := fs.Int("lex-dims", 4096, "размерность хэш-вектора слов (lexis build)")
 	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
@@ -86,7 +87,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	bandTop := fs.Int("band-top", 2000, "поляризованных пар из полосы (relations candidates; 0 — не добирать)")
 	exchanges := fs.Int("exchanges", 30, "обменов реплик на пару (relations candidates)")
 	reportTop := fs.Int("report-top", 50, "личностей в отчёте «персонажи» (report)")
-	activeDays := fs.Int("active-days", 0, "отчёт только по активным за последние N суток (report; 0 — все)")
+	activeDays := fs.Int("active-days", 0, "рецент-фильтр по активности за N суток (report/attribute/calibrate/verify; 0 — все)")
 	reportHTML := fs.Bool("html", false, "дополнительно собрать красивый characters.html (report)")
 	tgUser := fs.Int64("tg-user", 0, "чья сессия сайта для обхода профилей (gender; 0 — admin_tg_user_id)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
@@ -99,7 +100,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
 		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
-		"suspect": true, "null": true,
+		"suspect": true, "null": true, "min-author-notes": true,
 	})); err != nil {
 		return err
 	}
@@ -139,7 +140,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "attribute":
 		return personasAttribute(ctx, ar, fs.Args()[1:], attrOpts{
 			top: *top, inPath: *inPath, noteID: *noteID, lexWeight: *lexWeight, author: *authorIdent,
-			activeDays: *activeDays,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
 		})
 	case "lexis":
 		return personasLexis(ctx, ar, fs.Args()[1:], lexisOpts{
@@ -148,12 +149,13 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "calibrate":
 		return personasCalibrate(ctx, ar, calibOpts{
 			notes: *notesList, author: *authorIdent, lexWeight: *lexWeight, top: *top,
-			activeDays: *activeDays,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
 		})
 	case "verify":
 		return personasVerify(ctx, ar, fs.Args()[1:], verifyOpts{
 			suspect: *suspect, inPath: *inPath, noteID: *noteID, notes: *notesList,
 			lexWeight: *lexWeight, nullN: *nullN,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
 		})
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
