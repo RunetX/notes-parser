@@ -126,7 +126,9 @@ DROP INDEX IF EXISTS idx_notes_published;
 CREATE INDEX idx_notes_published ON notes(published_at, author_id);
 `
 
-// GraphNode — узел соцграфа (личность или одиночная анкета).
+// GraphNode — узел соцграфа (личность или одиночная анкета). Gender/AvatarURL/
+// Age берутся у «главной» анкеты личности (с наибольшим числом комментариев) и
+// заполняются только быстрым путём CohortNodes.
 type GraphNode struct {
 	Identity  string
 	Label     string
@@ -136,6 +138,9 @@ type GraphNode struct {
 	Notes     int
 	FirstSeen string
 	LastSeen  string
+	Gender    string // 'male'|'female'|'' — обходом профилей
+	AvatarURL string
+	Age       string
 }
 
 // GraphEdge — ребро «отвечал» с весом.
@@ -185,18 +190,20 @@ func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[strin
 		idArgs[i] = id
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT identity, user_id, label, is_persona
-		FROM v_identity WHERE identity IN (`+placeholders(len(identities))+`)`, idArgs...)
+		SELECT i.identity, i.user_id, i.label, i.is_persona, u.avatar_url, u.gender, u.age
+		FROM v_identity i JOIN users u ON u.id = i.user_id
+		WHERE i.identity IN (`+placeholders(len(identities))+`)`, idArgs...)
 	if err != nil {
 		return nil, err
 	}
 	uid2ident := map[int64]string{}
+	acct := map[int64]acctInfo{} // анкета → аватар/пол/возраст (выбор главной — по комментариям)
 	var uids []int64
 	for rows.Next() {
-		var ident, label string
+		var ident, label, avatar, gender, age string
 		var uid int64
 		var isP int
-		if err := rows.Scan(&ident, &uid, &label, &isP); err != nil {
+		if err := rows.Scan(&ident, &uid, &label, &isP, &avatar, &gender, &age); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -205,8 +212,12 @@ func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[strin
 		n.Label = label
 		n.IsPersona = isP == 1
 		n.Accounts++
+		if n.AvatarURL == "" { // запасное значение до выбора главной анкеты
+			n.AvatarURL, n.Gender, n.Age = avatar, gender, age
+		}
 		out[ident] = n
 		uid2ident[uid] = ident
+		acct[uid] = acctInfo{avatar, gender, age}
 		uids = append(uids, uid)
 	}
 	cerr := rows.Err()
@@ -218,6 +229,8 @@ func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[strin
 		return out, nil
 	}
 	// 2) all-time итоги только по этим анкетам — индексный проход author_id.
+	// Заодно выбираем «главную» анкету личности (max комментариев) для
+	// аватара/пола/возраста.
 	arows, err := s.db.QueryContext(ctx, `
 		SELECT author_id, COUNT(*), COUNT(DISTINCT note_id),
 		       COALESCE(MIN(published_at), ''), COALESCE(MAX(published_at), '')
@@ -226,6 +239,7 @@ func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[strin
 		return nil, err
 	}
 	defer arows.Close()
+	primary := map[string]int{} // личность → комментариев у выбранной главной анкеты
 	for arows.Next() {
 		var uid int64
 		var comments, notes int
@@ -239,10 +253,18 @@ func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[strin
 		n.Notes += notes
 		n.FirstSeen = minNonEmpty(n.FirstSeen, first)
 		n.LastSeen = maxStr(n.LastSeen, last)
+		if comments >= primary[ident] { // главная анкета — самая болтливая
+			primary[ident] = comments
+			a := acct[uid]
+			n.AvatarURL, n.Gender, n.Age = a.avatar, a.gender, a.age
+		}
 		out[ident] = n
 	}
 	return out, arows.Err()
 }
+
+// acctInfo — профильные поля одной анкеты для выбора «главной» в CohortNodes.
+type acctInfo struct{ avatar, gender, age string }
 
 // MaxPublishedAt возвращает самую свежую дату публикации комментария (ISO-8601
 // UTC) — конец окна для отбора недавней активности. Пусто — комментариев нет.

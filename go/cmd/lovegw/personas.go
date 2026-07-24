@@ -79,6 +79,8 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	exchanges := fs.Int("exchanges", 30, "обменов реплик на пару (relations candidates)")
 	reportTop := fs.Int("report-top", 50, "личностей в отчёте «персонажи» (report)")
 	activeDays := fs.Int("active-days", 0, "отчёт только по активным за последние N суток (report; 0 — все)")
+	reportHTML := fs.Bool("html", false, "дополнительно собрать красивый characters.html (report)")
+	tgUser := fs.Int64("tg-user", 0, "чья сессия сайта для обхода профилей (gender; 0 — admin_tg_user_id)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
@@ -87,7 +89,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"max-persona": true, "min-density": true,
 		"topics": true, "min-hits": true, "min-notes": true, "evidence": true,
 		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
-		"exchanges": true, "report-top": true, "active-days": true,
+		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true,
 	})); err != nil {
 		return err
 	}
@@ -144,9 +146,14 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			candReplies: *candReplies, bandMin: *bandMin, bandTop: *bandTop, exchanges: *exchanges,
 		})
 	case "report":
-		return personasReport(ctx, ar, *outDir, *reportTop, *activeDays)
+		return personasReport(ctx, ar, *outDir, *reportTop, *activeDays, *reportHTML)
+	case "gender":
+		return personasGender(ctx, ar, genderOpts{
+			cfgPath: *cfgPath, tgUser: *tgUser, activeDays: *activeDays,
+			reportTop: *reportTop, limit: *limit,
+		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|portrait|diag|ensemble|facts|relations|report)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|portrait|diag|ensemble|facts|relations|report|gender)", action)
 	}
 }
 

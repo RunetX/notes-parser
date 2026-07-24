@@ -161,8 +161,9 @@ func (c *Client) FetchMedia(ctx context.Context, rawURL string) ([]byte, error) 
 }
 
 // get выполняет GET с ретраями (сеть/5xx) и экспоненциальным backoff.
-// 4xx не ретраится: это не временный сбой.
-func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
+// 4xx не ретраится: это не временный сбой. cookies (необязательно) — сессия
+// пользователя для страниц, требующих авторизации (например, обход профилей).
+func (c *Client) get(ctx context.Context, path string, cookies ...*http.Cookie) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt < getRetries; attempt++ {
 		if attempt > 0 {
@@ -174,7 +175,7 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 				return nil, ctx.Err()
 			}
 		}
-		body, retriable, err := c.getOnce(ctx, path)
+		body, retriable, err := c.getOnce(ctx, path, cookies)
 		if err == nil {
 			return body, nil
 		}
@@ -187,7 +188,7 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	return nil, fmt.Errorf("GET %s: попытки исчерпаны: %w", path, lastErr)
 }
 
-func (c *Client) getOnce(ctx context.Context, path string) (body []byte, retriable bool, err error) {
+func (c *Client) getOnce(ctx context.Context, path string, cookies []*http.Cookie) (body []byte, retriable bool, err error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, false, err
 	}
@@ -196,6 +197,9 @@ func (c *Client) getOnce(ctx context.Context, path string) (body []byte, retriab
 		return nil, false, err
 	}
 	req.Header.Set("User-Agent", c.ua)
+	for _, ck := range cookies {
+		req.AddCookie(ck)
+	}
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
