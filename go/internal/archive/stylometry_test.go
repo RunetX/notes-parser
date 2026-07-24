@@ -54,7 +54,7 @@ func TestBuildAndClusterStylometry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bst, err := s.BuildStyleProfiles(ctx, 20, 128, testNow)
+	bst, err := s.BuildStyleProfiles(ctx, 20, 128, GenreAll, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}

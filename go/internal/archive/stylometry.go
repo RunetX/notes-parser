@@ -40,12 +40,15 @@ type styleAcc struct {
 	ngrams int
 }
 
-// BuildStyleProfiles строит стилометрические профили: один проход по всем
-// комментариям, накопление хэш-вектора символьных 3-грамм на автора, и для тех,
-// у кого суммарно ≥ minChars символов, — L2-нормированный вектор в style_profiles.
-// dims — размерность (напр. 512). Идемпотентно (upsert), перестраивает с нуля.
-func (s *Store) BuildStyleProfiles(ctx context.Context, minChars, dims int, now time.Time) (StyleBuildStats, error) {
-	acc, err := s.accumulateStyle(ctx, dims)
+// BuildStyleProfiles строит стилометрические профили жанра genre (GenreAll —
+// комментарии+заметки, GenreNotes — только заметки, register-matched эталон для
+// атрибуции заметки): один проход по тексту жанра, накопление хэш-вектора
+// символьных 3-грамм на автора, и для тех, у кого суммарно ≥ minChars символов,
+// — L2-нормированный вектор в style_profiles с этим genre. dims — размерность
+// (напр. 512). Перестраивает слой жанра с нуля (DELETE genre + INSERT); слой
+// другого жанра не трогает.
+func (s *Store) BuildStyleProfiles(ctx context.Context, minChars, dims int, genre string, now time.Time) (StyleBuildStats, error) {
+	acc, err := s.accumulateStyle(ctx, dims, genre)
 	if err != nil {
 		return StyleBuildStats{}, err
 	}
@@ -57,17 +60,17 @@ func (s *Store) BuildStyleProfiles(ctx context.Context, minChars, dims int, now 
 	}
 	defer tx.Rollback() //nolint:errcheck
 	nowStr := fmtTime(now)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM style_profiles WHERE genre = ?`, genre); err != nil {
+		return st, err
+	}
 	for uid, p := range acc {
 		if p.chars < minChars || !l2Normalize(p.vec) {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO style_profiles (user_id, ngrams, dims, vec, built_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(user_id) DO UPDATE SET
-				ngrams = excluded.ngrams, dims = excluded.dims,
-				vec = excluded.vec, built_at = excluded.built_at`,
-			uid, p.ngrams, dims, encodeVec(p.vec), nowStr); err != nil {
+			INSERT INTO style_profiles (user_id, genre, ngrams, dims, vec, built_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			uid, genre, p.ngrams, dims, encodeVec(p.vec), nowStr); err != nil {
 			return st, err
 		}
 		st.Eligible++
@@ -78,17 +81,14 @@ func (s *Store) BuildStyleProfiles(ctx context.Context, minChars, dims int, now 
 	return st, nil
 }
 
-// accumulateStyle копит вектор 3-грамм на автора по ВСЕМУ его тексту —
-// и комментариям, и заметкам (≈16k авторов × dims float32 — десятки МБ).
-// Заметки обязательны: их текст такой же авторский, а анкета, писавшая только
-// заметки без комментариев, иначе вообще не получила бы профиля стиля.
-func (s *Store) accumulateStyle(ctx context.Context, dims int) (map[int64]*styleAcc, error) {
+// accumulateStyle копит вектор 3-грамм на автора по тексту жанра genre (см.
+// genreSources): GenreAll — комментарии И заметки (≈16k авторов × dims float32 —
+// десятки МБ), GenreNotes — только заметки. Заметки в all обязательны: их текст
+// такой же авторский, а анкета, писавшая только заметки без комментариев, иначе
+// вообще не получила бы профиля стиля.
+func (s *Store) accumulateStyle(ctx context.Context, dims int, genre string) (map[int64]*styleAcc, error) {
 	acc := map[int64]*styleAcc{}
-	sources := []string{
-		`SELECT author_id, text FROM comments WHERE author_id != 0`,
-		`SELECT author_id, text FROM notes WHERE author_id IS NOT NULL AND author_id != 0`,
-	}
-	for _, q := range sources {
+	for _, q := range genreSources(genre) {
 		if err := s.accumulateStyleFrom(ctx, q, dims, acc); err != nil {
 			return nil, err
 		}
@@ -143,7 +143,9 @@ type StyleClusterStats struct {
 // идиосинкразию). На автора берётся не более topK ближайших выше minCosine,
 // глобально — не более maxPairs. Скор занижен (≤0.75): стиль слабее аватара/текста.
 func (s *Store) ClusterStylometry(ctx context.Context, minCosine float64, topK, maxPairs int, now time.Time) (StyleClusterStats, error) {
-	ids, vecs, err := s.loadStyleProfiles(ctx)
+	// Склейка альтов работает по полному отпечатку (all): больше текста — сильнее
+	// сигнал идиолекта; жанр эталона тут ни при чём.
+	ids, vecs, err := s.loadStyleProfiles(ctx, GenreAll)
 	if err != nil {
 		return StyleClusterStats{}, err
 	}
@@ -192,7 +194,7 @@ func (s *Store) ClusterStylometry(ctx context.Context, minCosine float64, topK, 
 // StyleCosine возвращает центр-косинус для запрошенных пар (для валидации против
 // известных альтов). NaN — если у кого-то из пары нет профиля.
 func (s *Store) StyleCosine(ctx context.Context, want [][2]int64) ([]float64, error) {
-	ids, vecs, err := s.loadStyleProfiles(ctx)
+	ids, vecs, err := s.loadStyleProfiles(ctx, GenreAll)
 	if err != nil {
 		return nil, err
 	}
@@ -214,8 +216,8 @@ func (s *Store) StyleCosine(ctx context.Context, want [][2]int64) ([]float64, er
 	return out, nil
 }
 
-func (s *Store) loadStyleProfiles(ctx context.Context) ([]int64, [][]float32, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT user_id, dims, vec FROM style_profiles`)
+func (s *Store) loadStyleProfiles(ctx context.Context, genre string) ([]int64, [][]float32, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id, dims, vec FROM style_profiles WHERE genre = ?`, genre)
 	if err != nil {
 		return nil, nil, err
 	}

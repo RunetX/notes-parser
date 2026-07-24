@@ -142,6 +142,54 @@ LEFT JOIN comments c ON c.note_id = n.id
 GROUP BY n.id;
 `
 
+// migrateV15SQL — жанр эталона атрибуции. style_profiles/lexis_profiles/lexis_meta
+// получают колонку genre в первичном ключе: 'all' — комментарии+заметки (как
+// раньше), 'notes' — только заметки (register-matched эталон для атрибуции
+// заметки). SQLite не умеет менять первичный ключ на месте — пересоздаём таблицы,
+// перенося существующие строки как genre='all'. Слой производный (перестраивается
+// `personas stylometry build` / `lexis build`), поэтому пересоздание безопасно.
+const migrateV15SQL = `
+ALTER TABLE style_profiles RENAME TO style_profiles_old;
+CREATE TABLE style_profiles (
+    user_id  INTEGER NOT NULL REFERENCES users(id),
+    genre    TEXT NOT NULL DEFAULT 'all',
+    ngrams   INTEGER NOT NULL,   -- сколько 3-грамм учтено (~объём текста)
+    dims     INTEGER NOT NULL,   -- размерность хэш-вектора
+    vec      BLOB NOT NULL,      -- dims × float32 LE, L2-нормированный
+    built_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, genre)
+);
+INSERT INTO style_profiles (user_id, genre, ngrams, dims, vec, built_at)
+SELECT user_id, 'all', ngrams, dims, vec, built_at FROM style_profiles_old;
+DROP TABLE style_profiles_old;
+
+ALTER TABLE lexis_profiles RENAME TO lexis_profiles_old;
+CREATE TABLE lexis_profiles (
+    user_id  INTEGER NOT NULL REFERENCES users(id),
+    genre    TEXT NOT NULL DEFAULT 'all',
+    tokens   INTEGER NOT NULL,   -- сколько слов учтено (~объём текста)
+    dims     INTEGER NOT NULL,   -- размерность хэш-вектора
+    vec      BLOB NOT NULL,      -- dims × float32 LE, tf-idf, L2-нормированный
+    built_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, genre)
+);
+INSERT INTO lexis_profiles (user_id, genre, tokens, dims, vec, built_at)
+SELECT user_id, 'all', tokens, dims, vec, built_at FROM lexis_profiles_old;
+DROP TABLE lexis_profiles_old;
+
+ALTER TABLE lexis_meta RENAME TO lexis_meta_old;
+CREATE TABLE lexis_meta (
+    genre    TEXT NOT NULL PRIMARY KEY DEFAULT 'all',
+    dims     INTEGER NOT NULL,
+    docs     INTEGER NOT NULL,   -- N: авторов с профилем этого жанра (для справки)
+    idf      BLOB NOT NULL,      -- dims × float32 LE, IDF по корзинам слов ЖАНРА
+    built_at TEXT NOT NULL
+);
+INSERT INTO lexis_meta (genre, dims, docs, idf, built_at)
+SELECT 'all', dims, docs, idf, built_at FROM lexis_meta_old;
+DROP TABLE lexis_meta_old;
+`
+
 // migrate накатывает недостающие миграции по PRAGMA user_version.
 func (s *Store) migrate(ctx context.Context) error {
 	migrations := []string{
@@ -159,6 +207,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV12SQL, // v12 — покрывающие published-индексы (author_id): недельный срез без random-reads
 		migrateV13SQL, // v13 — пол анкеты (users.gender), обходом профилей под сессией
 		migrateV14SQL, // v14 — лексические TF-IDF-профили (lexis_profiles/lexis_meta) для атрибуции
+		migrateV15SQL, // v15 — жанр эталона (genre в PK профилей): note-only слой для register-matched атрибуции
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -169,14 +218,32 @@ func (s *Store) migrate(ctx context.Context) error {
 		if version >= target {
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx, migration); err != nil {
+		if err := s.applyMigration(ctx, migration, target); err != nil {
 			return fmt.Errorf("миграция v%d: %w", target, err)
-		}
-		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", target)); err != nil {
-			return err
 		}
 	}
 	return nil
+}
+
+// applyMigration накатывает одну миграцию атомарно: DDL и бамп user_version — в
+// одной транзакции (DDL в SQLite транзакционен). Без этого разрушительная
+// миграция (напр. v15 пересоздаёт таблицы профилей: RENAME→CREATE→INSERT→DROP)
+// при обрыве посреди Exec оставляла бы БД полу-мигрированной на старой версии, и
+// повторный Open падал бы навсегда (ALTER уже переименованной таблицы). Откат
+// возвращает БД в исходное консистентное состояние для чистого повтора.
+func (s *Store) applyMigration(ctx context.Context, migration string, target int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // после Commit — no-op
+	if _, err := tx.ExecContext(ctx, migration); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", target)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SaveGrab сохраняет одну выгрузку (заметка + комментарии + типажи) в одной

@@ -132,9 +132,9 @@ lovegw personas set <persona_id> <confirmed|rejected|pending>   # вердикт
 ```sh
 lovegw personas avatars fetch  [-proxy] [-workers N] [-limit N] [-refresh]   # скачать аватары, посчитать dHash
 lovegw personas avatars cluster [-max-dist D] [-generic-max N]               # пары по похожести аватаров
-lovegw personas stylometry build   [-min-chars N] [-dims N]                  # стилевые профили авторов
+lovegw personas stylometry build   [-min-chars N] [-dims N] [-genre all|notes] # стилевые профили авторов
 lovegw personas stylometry cluster [-min-cosine F] [-top-k N] [-max-pairs N] # пары по близости стиля
-lovegw personas lexis build        [-lex-min-tokens N] [-lex-dims N]         # лексические TF-IDF-профили (2-й сигнал атрибуции)
+lovegw personas lexis build        [-lex-min-tokens N] [-lex-dims N] [-genre all|notes] # лексические TF-IDF-профили (2-й сигнал атрибуции)
 lovegw personas ensemble [-ens-top-k N] [-handoff-days D] [-ens-floor F]     # композит: стиль + handoff + круг общения
 ```
 
@@ -143,16 +143,26 @@ lovegw personas ensemble [-ens-top-k N] [-handoff-days D] [-ens-floor F]     # �
 ```sh
 lovegw personas portrait [-top N] <p<id>|u<id>|user_id>   # портрет личности/анкеты: стиль, собеседники
 lovegw personas diag <id> <id> …                          # ground-truth сверка набора анкет (стиль/собеседники/время)
-lovegw personas attribute [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] [-min-author-notes N] [текст …]
+lovegw personas attribute [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] [-min-author-notes N] [-genre notes] [текст …]
                                                           # скоринг авторства: чьё письмо ближе к анонимному тексту (стиль + лексика);
                                                           # фильтр кандидатов: -active-days N убирает мёртвые анкеты, -min-author-notes N —
                                                           # чистых комментаторов без заметок (атрибутируем-то заметку)
-lovegw personas attribute [-author p<id>] [-lex-weight F]  # пакет: все заметки личности + сводка попаданий
-lovegw personas calibrate -notes id,id,… [-author p<id>] [-active-days N] [-min-author-notes N]  # leave-one-out: предсказуемость + эффект фильтров
-lovegw personas verify -suspect p<id> [-in txt|-notes ids|-note id] [-null N] [-active-days N] [-min-author-notes N]
+lovegw personas attribute [-author p<id>] [-lex-weight F] [-genre notes]  # пакет: все заметки личности + сводка попаданий
+lovegw personas calibrate -notes id,id,… [-author p<id>] [-active-days N] [-min-author-notes N] [-genre notes]  # leave-one-out: предсказуемость + эффект фильтров
+lovegw personas verify -suspect p<id> [-in txt|-notes ids|-note id] [-null N] [-active-days N] [-min-author-notes N] [-genre notes]
                                                           # «это он? да/нет» с калиброванным порогом (FPR 5%/1%);
                                                           # фильтры сужают фон до правдоподобных кандидатов
 ```
+
+Жанр эталона `-genre` (по умолчанию `all` — комментарии+заметки, обратная
+совместимость): у большинства авторов профиль на 2/3 состоит из комментариев —
+другой жанр, чем заметка-запрос (короткая реплика vs текст), это системная
+ошибка сопоставления. `-genre notes` строит и грузит эталон **только из
+заметок** (register-matched): и запрос, и профиль — один регистр. Note-слой есть
+только у писавших заметки, поэтому `-min-author-notes` для него встроен по
+построению. Порядок: сначала `stylometry build -genre notes` (+ при желании
+`lexis build -genre notes`), затем `attribute/calibrate/verify -genre notes`.
+Для `all` (комментарии) флаг не нужен — это дефолт.
 
 Факты (интересы) и отношения — тот же паттерн «scan/score → candidates →
 внешний LLM → import»:

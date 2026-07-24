@@ -81,7 +81,7 @@ func (s *Store) DiagPersonas(ctx context.Context, ids []int64) (PersonaDiag, err
 		return PersonaDiag{}, err
 	}
 
-	pids, vecs, err := s.loadStyleProfiles(ctx)
+	pids, vecs, err := s.loadStyleProfiles(ctx, GenreAll)
 	if err != nil {
 		return PersonaDiag{}, err
 	}
@@ -144,7 +144,7 @@ func (s *Store) finishAccounts(ctx context.Context, ids []int64, acc map[int64]D
 			a.HasProfile = true
 			var ng int
 			if err := s.db.QueryRowContext(ctx,
-				`SELECT ngrams FROM style_profiles WHERE user_id = ?`, id).Scan(&ng); err == nil {
+				`SELECT ngrams FROM style_profiles WHERE user_id = ? AND genre = ?`, id, GenreAll).Scan(&ng); err == nil {
 				a.Ngrams = ng
 			}
 		}

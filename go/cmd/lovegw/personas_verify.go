@@ -17,8 +17,9 @@ type verifyOpts struct {
 	notes          string // пул нескольких известных заметок как один образец
 	lexWeight      float64
 	nullN          int
-	activeDays     int // рецент-фильтр фона: только анкеты активные за N сут (0 — все)
-	minAuthorNotes int // жанровый фильтр фона: только писавшие ≥N заметок (0 — все)
+	activeDays     int    // рецент-фильтр фона: только анкеты активные за N сут (0 — все)
+	minAuthorNotes int    // жанровый фильтр фона: только писавшие ≥N заметок (0 — все)
+	genre          string // жанр эталона: all | notes (register-matched)
 }
 
 // personasVerify — калиброванная проверка авторства: «этот текст написал
@@ -32,7 +33,7 @@ func personasVerify(ctx context.Context, ar *archive.Store, args []string, opt v
 	if err != nil {
 		return err
 	}
-	res, err := ar.VerifyText(ctx, text, opt.suspect, opt.lexWeight, opt.nullN, opt.activeDays, opt.minAuthorNotes)
+	res, err := ar.VerifyText(ctx, text, opt.suspect, opt.lexWeight, opt.nullN, opt.activeDays, opt.minAuthorNotes, opt.genre)
 	if err != nil {
 		return err
 	}
@@ -41,8 +42,8 @@ func personasVerify(ctx context.Context, ar *archive.Store, args []string, opt v
 	if res.SuspectBestName != "" {
 		suspect = fmt.Sprintf("%s (%s(%d))", res.Suspect, res.SuspectBestName, res.SuspectBestID)
 	}
-	fmt.Fprintf(os.Stderr, "verify: подозреваемый %s, анкет %d; запрос: 3-грамм %d, слов %d; вес лексики %.2f\n",
-		suspect, res.SuspectAccounts, res.QueryNgrams, res.QueryTokens, res.LexWeight)
+	fmt.Fprintf(os.Stderr, "verify: подозреваемый %s, анкет %d; эталон %s (%s); запрос: 3-грамм %d, слов %d; вес лексики %.2f\n",
+		suspect, res.SuspectAccounts, res.Genre, genreLabel(res.Genre), res.QueryNgrams, res.QueryTokens, res.LexWeight)
 	if res.ActiveDays > 0 || res.MinAuthorNotes > 0 {
 		var parts []string
 		if res.ActiveDays > 0 {

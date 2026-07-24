@@ -16,6 +16,7 @@ type styloOpts struct {
 	minCosine float64
 	topK      int
 	maxPairs  int
+	genre     string // жанр эталона для build: all | notes
 }
 
 // personasStylometry — Фаза 2b: склейка альтов по стилю письма (для тех, кто
@@ -39,9 +40,10 @@ func personasStylometry(ctx context.Context, ar *archive.Store, args []string, o
 // stylometryBuild строит стилометрические профили авторов (один проход по всем
 // комментариям). Тяжёлая операция (десятки секунд — минуты на 10-млн корпусе).
 func stylometryBuild(ctx context.Context, ar *archive.Store, opt styloOpts) error {
-	fmt.Fprintf(os.Stderr, "stylometry build: строю профили (min-chars=%d, dims=%d)…\n", opt.minChars, opt.dims)
+	fmt.Fprintf(os.Stderr, "stylometry build: строю профили жанра %q — %s (min-chars=%d, dims=%d)…\n",
+		opt.genre, genreLabel(opt.genre), opt.minChars, opt.dims)
 	start := time.Now()
-	st, err := ar.BuildStyleProfiles(ctx, opt.minChars, opt.dims, time.Now())
+	st, err := ar.BuildStyleProfiles(ctx, opt.minChars, opt.dims, opt.genre, time.Now())
 	if err != nil {
 		return err
 	}

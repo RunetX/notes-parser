@@ -44,13 +44,15 @@ type lexAcc struct {
 	tokens int
 }
 
-// BuildLexisProfiles строит лексические TF-IDF-профили: проход по всему тексту
-// автора (комментарии + заметки), накопление частот слов в хэш-пространстве,
-// затем IDF по корзинам (в скольких авторах-документах встретилась корзина) и
-// сублинейный tf. У кого ≥ minTokens слов — L2-нормированный tf-idf в
-// lexis_profiles; IDF-вектор — в lexis_meta. Идемпотентно (перестраивает с нуля).
-func (s *Store) BuildLexisProfiles(ctx context.Context, minTokens, dims int, now time.Time) (LexisBuildStats, error) {
-	acc, err := s.accumulateLexis(ctx, dims)
+// BuildLexisProfiles строит лексические TF-IDF-профили жанра genre (GenreAll —
+// комментарии+заметки, GenreNotes — только заметки): проход по тексту жанра,
+// накопление частот слов в хэш-пространстве, затем IDF по корзинам (в скольких
+// авторах-документах встретилась корзина) и сублинейный tf. У кого ≥ minTokens
+// слов — L2-нормированный tf-idf в lexis_profiles с этим genre; IDF-вектор — в
+// lexis_meta(genre). IDF считается ВНУТРИ жанра (редкость слова в заметках иная,
+// чем во всём корпусе). Перестраивает слой жанра с нуля; другой жанр не трогает.
+func (s *Store) BuildLexisProfiles(ctx context.Context, minTokens, dims int, genre string, now time.Time) (LexisBuildStats, error) {
+	acc, err := s.accumulateLexis(ctx, dims, genre)
 	if err != nil {
 		return LexisBuildStats{}, err
 	}
@@ -64,7 +66,7 @@ func (s *Store) BuildLexisProfiles(ctx context.Context, minTokens, dims int, now
 	}
 	defer tx.Rollback() //nolint:errcheck
 	nowStr := fmtTime(now)
-	if _, err := tx.ExecContext(ctx, `DELETE FROM lexis_profiles`); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM lexis_profiles WHERE genre = ?`, genre); err != nil {
 		return st, err
 	}
 	for uid, p := range acc {
@@ -76,19 +78,19 @@ func (s *Store) BuildLexisProfiles(ctx context.Context, minTokens, dims int, now
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO lexis_profiles (user_id, tokens, dims, vec, built_at)
-			VALUES (?, ?, ?, ?, ?)`,
-			uid, p.tokens, dims, encodeVec(prof), nowStr); err != nil {
+			INSERT INTO lexis_profiles (user_id, genre, tokens, dims, vec, built_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			uid, genre, p.tokens, dims, encodeVec(prof), nowStr); err != nil {
 			return st, err
 		}
 		st.Eligible++
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO lexis_meta (id, dims, docs, idf, built_at) VALUES (1, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
+		INSERT INTO lexis_meta (genre, dims, docs, idf, built_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(genre) DO UPDATE SET
 			dims = excluded.dims, docs = excluded.docs,
 			idf = excluded.idf, built_at = excluded.built_at`,
-		dims, docs, encodeVec(idf), nowStr); err != nil {
+		genre, dims, docs, encodeVec(idf), nowStr); err != nil {
 		return st, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -133,15 +135,11 @@ func tfidfVec(raw, idf []float32) []float32 {
 	return v
 }
 
-// accumulateLexis копит частоты слов на автора по всему его тексту (комментарии
-// + заметки) — как accumulateStyle, но по словам, а не символьным 3-граммам.
-func (s *Store) accumulateLexis(ctx context.Context, dims int) (map[int64]*lexAcc, error) {
+// accumulateLexis копит частоты слов на автора по тексту жанра genre (см.
+// genreSources) — как accumulateStyle, но по словам, а не символьным 3-граммам.
+func (s *Store) accumulateLexis(ctx context.Context, dims int, genre string) (map[int64]*lexAcc, error) {
 	acc := map[int64]*lexAcc{}
-	sources := []string{
-		`SELECT author_id, text FROM comments WHERE author_id != 0`,
-		`SELECT author_id, text FROM notes WHERE author_id IS NOT NULL AND author_id != 0`,
-	}
-	for _, q := range sources {
+	for _, q := range genreSources(genre) {
 		if err := s.accumulateLexisFrom(ctx, q, dims, acc); err != nil {
 			return nil, err
 		}
@@ -174,12 +172,12 @@ func (s *Store) accumulateLexisFrom(ctx context.Context, query string, dims int,
 	return rows.Err()
 }
 
-// loadLexisProfiles грузит лексические профили и глобальный IDF. Если lexis-слой
-// ещё не построен (нет строки meta), возвращает пустые срезы и dims=0 — вызов
-// атрибуции трактует это как «сигнал недоступен».
-func (s *Store) loadLexisProfiles(ctx context.Context) (ids []int64, vecs [][]float32, idf []float32, dims int, err error) {
+// loadLexisProfiles грузит лексические профили и IDF жанра genre. Если lexis-слой
+// этого жанра ещё не построен (нет строки meta), возвращает пустые срезы и
+// dims=0 — вызов атрибуции трактует это как «сигнал недоступен».
+func (s *Store) loadLexisProfiles(ctx context.Context, genre string) (ids []int64, vecs [][]float32, idf []float32, dims int, err error) {
 	var idfBlob []byte
-	err = s.db.QueryRowContext(ctx, `SELECT dims, idf FROM lexis_meta WHERE id = 1`).Scan(&dims, &idfBlob)
+	err = s.db.QueryRowContext(ctx, `SELECT dims, idf FROM lexis_meta WHERE genre = ?`, genre).Scan(&dims, &idfBlob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, nil, 0, nil
 	}
@@ -188,7 +186,7 @@ func (s *Store) loadLexisProfiles(ctx context.Context) (ids []int64, vecs [][]fl
 	}
 	idf = decodeVec(idfBlob, dims)
 
-	rows, err := s.db.QueryContext(ctx, `SELECT user_id, dims, vec FROM lexis_profiles`)
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id, dims, vec FROM lexis_profiles WHERE genre = ?`, genre)
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}

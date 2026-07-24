@@ -70,6 +70,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	suspect := fs.String("suspect", "", "подозреваемый p<id>|u<id>|user_id для проверки авторства (verify)")
 	nullN := fs.Int("null", 200, "размер выборки чужих текстов для калибровки порога (verify)")
 	minAuthorNotes := fs.Int("min-author-notes", 0, "жанровый фильтр: кандидат должен написать ≥N заметок (attribute/calibrate/verify; 0 — все)")
+	genre := fs.String("genre", "", "жанр эталона: all (коммент+заметки) | notes (только заметки, register-matched); дефолт all — для note-эталона добавь -genre notes (build/attribute/calibrate/verify)")
 	lexMinTokens := fs.Int("lex-min-tokens", 200, "мин. слов автора для лексического профиля (lexis build)")
 	lexDims := fs.Int("lex-dims", 4096, "размерность хэш-вектора слов (lexis build)")
 	ensTopK := fs.Int("ens-top-k", 10, "ближайших по стилю с каждой стороны (ensemble)")
@@ -100,13 +101,23 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
 		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
-		"suspect": true, "null": true, "min-author-notes": true,
+		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
 	})); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
 		usage()
 		return fmt.Errorf("personas: не указано действие (flag|candidates|link|cluster|set|avatars)")
+	}
+
+	// Жанр эталона: дефолт all (комментарии+заметки, обратная совместимость);
+	// -genre notes — register-matched note-only слой.
+	gen := *genre
+	if gen == "" {
+		gen = archive.GenreAll
+	}
+	if !archive.ValidGenre(gen) {
+		return fmt.Errorf("personas: неизвестный -genre %q (all|notes)", *genre)
 	}
 
 	ar, err := archive.Open(ctx, *dbPath)
@@ -136,26 +147,27 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "stylometry":
 		return personasStylometry(ctx, ar, fs.Args()[1:], styloOpts{
 			minChars: *minChars, dims: *dims, minCosine: *minCosine, topK: *topK, maxPairs: *maxPairs,
+			genre: gen,
 		})
 	case "attribute":
 		return personasAttribute(ctx, ar, fs.Args()[1:], attrOpts{
 			top: *top, inPath: *inPath, noteID: *noteID, lexWeight: *lexWeight, author: *authorIdent,
-			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes, genre: gen,
 		})
 	case "lexis":
 		return personasLexis(ctx, ar, fs.Args()[1:], lexisOpts{
-			minTokens: *lexMinTokens, dims: *lexDims,
+			minTokens: *lexMinTokens, dims: *lexDims, genre: gen,
 		})
 	case "calibrate":
 		return personasCalibrate(ctx, ar, calibOpts{
 			notes: *notesList, author: *authorIdent, lexWeight: *lexWeight, top: *top,
-			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes, genre: gen,
 		})
 	case "verify":
 		return personasVerify(ctx, ar, fs.Args()[1:], verifyOpts{
 			suspect: *suspect, inPath: *inPath, noteID: *noteID, notes: *notesList,
 			lexWeight: *lexWeight, nullN: *nullN,
-			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes, genre: gen,
 		})
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
@@ -329,6 +341,14 @@ func personasSet(ctx context.Context, ar *archive.Store, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "set: личность %d → %s (участников %d)\n", pid, args[1], n)
 	return nil
+}
+
+// genreLabel — человекочитаемое описание жанра эталона для логов.
+func genreLabel(genre string) string {
+	if genre == archive.GenreNotes {
+		return "только заметки (register-matched)"
+	}
+	return "комментарии+заметки"
 }
 
 // --- ввод/вывод ---

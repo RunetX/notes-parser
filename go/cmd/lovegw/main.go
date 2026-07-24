@@ -106,13 +106,13 @@ func usage() {
   lovegw personas [-db archive.db] set <persona_id> <confirmed|rejected|pending>
   lovegw personas [-db archive.db] [-config config.json] [-proxy] [-workers N] [-limit N] avatars fetch
   lovegw personas [-db archive.db] [-max-dist D] [-generic-max N] avatars cluster
-  lovegw personas [-db archive.db] [-min-chars N] [-dims N] stylometry build
+  lovegw personas [-db archive.db] [-min-chars N] [-dims N] [-genre all|notes] stylometry build
   lovegw personas [-db archive.db] [-min-cosine F] [-top-k N] [-max-pairs N] stylometry cluster
-  lovegw personas [-db archive.db] [-lex-min-tokens N] [-lex-dims N] lexis build
-  lovegw personas [-db archive.db] [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] [-min-author-notes N] attribute [текст …]
-  lovegw personas [-db archive.db] [-author p<id>|u<id>|user_id] [-lex-weight F] attribute   # пакет: все заметки личности
-  lovegw personas [-db archive.db] -notes id,id,… [-author p<id>] [-active-days N] [-min-author-notes N] calibrate # leave-one-out калибровка отпечатка
-  lovegw personas [-db archive.db] -suspect p<id> [-in text.txt] [-note id] [-null N] [-active-days N] [-min-author-notes N] verify   # «это он? да/нет» с калиброванным порогом
+  lovegw personas [-db archive.db] [-lex-min-tokens N] [-lex-dims N] [-genre all|notes] lexis build
+  lovegw personas [-db archive.db] [-top N] [-note id] [-in text.txt] [-lex-weight F] [-active-days N] [-min-author-notes N] [-genre notes] attribute [текст …]
+  lovegw personas [-db archive.db] [-author p<id>|u<id>|user_id] [-lex-weight F] [-genre notes] attribute   # пакет: все заметки личности
+  lovegw personas [-db archive.db] -notes id,id,… [-author p<id>] [-active-days N] [-min-author-notes N] [-genre notes] calibrate # leave-one-out калибровка отпечатка
+  lovegw personas [-db archive.db] -suspect p<id> [-in text.txt] [-note id] [-null N] [-active-days N] [-min-author-notes N] [-genre notes] verify   # «это он? да/нет» с калиброванным порогом
   lovegw personas [-db archive.db] [-out dir] [-top N] portrait <p<id>|u<id>|user_id>
   lovegw personas [-db archive.db] diag <id> <id> …
   lovegw personas [-db archive.db] [-out dir] [-ens-top-k N] [-handoff-days D] [-ens-floor F] ensemble

@@ -18,6 +18,7 @@ type VerifyResult struct {
 	SuspectBestName string
 	SuspectAccounts int
 
+	Genre       string // жанр эталона: all | notes
 	QueryNgrams int
 	QueryTokens int
 	LexWeight   float64
@@ -48,13 +49,14 @@ type VerifyResult struct {
 // фоновую популяцию (эталон «случайного автора») до правдоподобных кандидатов —
 // z подозреваемого меряется на фоне реальных, а не мёртвых/некомментаторских
 // анкет; нулевое распределение считается тем же фоном, поэтому FPR сохраняется.
-func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWeight float64, nullN, activeDays, minAuthorNotes int) (VerifyResult, error) {
+// genre — жанр эталона (GenreNotes: register-matched для проверки авторства заметки).
+func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWeight float64, nullN, activeDays, minAuthorNotes int, genre string) (VerifyResult, error) {
 	member := s.identityMembers(ctx, suspectToken)
 	if member == nil {
 		return VerifyResult{}, fmt.Errorf("verify: подозреваемый %q не найден или без анкет", suspectToken)
 	}
 	identity, _ := s.canonIdentity(ctx, suspectToken)
-	sa, la, err := s.loadAttributors(ctx)
+	sa, la, err := s.loadAttributors(ctx, genre)
 	if err != nil {
 		return VerifyResult{}, err
 	}
@@ -73,7 +75,7 @@ func (s *Store) VerifyText(ctx context.Context, text, suspectToken string, lexWe
 	}
 
 	res := VerifyResult{
-		Suspect: identity, SuspectAccounts: len(member),
+		Suspect: identity, Genre: genre, SuspectAccounts: len(member),
 		QueryNgrams: qn, LexWeight: lexWeight,
 		StyleProfiles: len(sa.ids), BgProfiles: len(sa.ids),
 	}

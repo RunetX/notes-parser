@@ -13,6 +13,7 @@ import (
 type lexisOpts struct {
 	minTokens int
 	dims      int
+	genre     string // жанр эталона для build: all | notes
 }
 
 // personasLexis — лексический слой атрибуции (TF-IDF по словам). Под-действие:
@@ -33,9 +34,10 @@ func personasLexis(ctx context.Context, ar *archive.Store, args []string, opt le
 // lexisBuild строит лексические TF-IDF-профили авторов (один проход по всему
 // тексту). Тяжёлая операция (десятки секунд — минуты на большом корпусе).
 func lexisBuild(ctx context.Context, ar *archive.Store, opt lexisOpts) error {
-	fmt.Fprintf(os.Stderr, "lexis build: строю TF-IDF-профили (min-tokens=%d, lex-dims=%d)…\n", opt.minTokens, opt.dims)
+	fmt.Fprintf(os.Stderr, "lexis build: строю TF-IDF-профили жанра %q — %s (min-tokens=%d, lex-dims=%d)…\n",
+		opt.genre, genreLabel(opt.genre), opt.minTokens, opt.dims)
 	start := time.Now()
-	st, err := ar.BuildLexisProfiles(ctx, opt.minTokens, opt.dims, time.Now())
+	st, err := ar.BuildLexisProfiles(ctx, opt.minTokens, opt.dims, opt.genre, time.Now())
 	if err != nil {
 		return err
 	}

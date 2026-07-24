@@ -17,8 +17,9 @@ type calibOpts struct {
 	author         string // личность для оценки разрыва (опционально)
 	lexWeight      float64
 	top            int
-	activeDays     int // окно рецент-фильтра в сутках (0 — выкл)
-	minAuthorNotes int // жанровый фильтр: кандидат ≥N заметок (0 — выкл)
+	activeDays     int    // окно рецент-фильтра в сутках (0 — выкл)
+	minAuthorNotes int    // жанровый фильтр: кандидат ≥N заметок (0 — выкл)
+	genre          string // жанр эталона: all | notes (register-matched)
 }
 
 // personasCalibrate — калибровка отпечатка автора по набору заметок: честная
@@ -32,7 +33,7 @@ func personasCalibrate(ctx context.Context, ar *archive.Store, opt calibOpts) er
 	if len(ids) < 2 {
 		return fmt.Errorf("calibrate: нужно ≥2 заметок в -notes (leave-one-out); дано %d", len(ids))
 	}
-	cal, err := ar.CalibrateNotes(ctx, ids, opt.author, opt.lexWeight, opt.top, opt.activeDays, opt.minAuthorNotes)
+	cal, err := ar.CalibrateNotes(ctx, ids, opt.author, opt.lexWeight, opt.top, opt.activeDays, opt.minAuthorNotes, opt.genre)
 	if err != nil {
 		return err
 	}
@@ -41,8 +42,8 @@ func personasCalibrate(ctx context.Context, ar *archive.Store, opt calibOpts) er
 	if cal.LexProfiles == 0 {
 		lex = "не построена"
 	}
-	fmt.Fprintf(os.Stderr, "calibrate: заметок %d (знаков %d); стиль-профилей %d, лексика %s; вес лексики %.2f\n",
-		cal.Notes, cal.Chars, cal.StyleProfiles, lex, cal.LexWeight)
+	fmt.Fprintf(os.Stderr, "calibrate: эталон %s (%s); заметок %d (знаков %d); стиль-профилей %d, лексика %s; вес лексики %.2f\n",
+		cal.Genre, genreLabel(cal.Genre), cal.Notes, cal.Chars, cal.StyleProfiles, lex, cal.LexWeight)
 	if len(cal.Loo) == 0 {
 		fmt.Fprintln(os.Stderr, "  нет пригодных заметок (пустой текст или их нет в архиве)")
 		return nil

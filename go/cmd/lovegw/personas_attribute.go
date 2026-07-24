@@ -20,6 +20,7 @@ type attrOpts struct {
 	author         string // непусто — пакетный режим по заметкам личности
 	activeDays     int    // рецент-фильтр: отсеять анкеты без активности за N сут (0 — все)
 	minAuthorNotes int    // жанровый фильтр: кандидат должен написать ≥N заметок (0 — все)
+	genre          string // жанр эталона: all | notes (register-matched)
 }
 
 // shortQueryNgrams — ниже этого объёма запроса ранжирование заметно шумит.
@@ -39,11 +40,12 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 	if err != nil {
 		return err
 	}
-	at, err := ar.AttributeText(ctx, text, opt.top, wantID, opt.lexWeight, opt.activeDays, opt.minAuthorNotes)
+	at, err := ar.AttributeText(ctx, text, opt.top, wantID, opt.lexWeight, opt.activeDays, opt.minAuthorNotes, opt.genre)
 	if err != nil {
 		return err
 	}
 
+	fmt.Fprintf(os.Stderr, "  эталон: %s — %s\n", at.Genre, genreLabel(at.Genre))
 	if at.LexProfiles > 0 {
 		fmt.Fprintf(os.Stderr,
 			"attribute: стиль-профилей %d, лексических %d; запрос: 3-грамм %d, слов %d; вес лексики %.2f\n"+
@@ -94,7 +96,7 @@ func personasAttribute(ctx context.Context, ar *archive.Store, args []string, op
 // attributeIdentityNotes — пакетный режим: атрибуция всех заметок личности
 // (валидация «узнаёт ли система автора по его же заметке»).
 func attributeIdentityNotes(ctx context.Context, ar *archive.Store, opt attrOpts) error {
-	rep, err := ar.AttributeIdentityNotes(ctx, opt.author, opt.lexWeight)
+	rep, err := ar.AttributeIdentityNotes(ctx, opt.author, opt.lexWeight, opt.genre)
 	if err != nil {
 		return err
 	}
@@ -102,8 +104,8 @@ func attributeIdentityNotes(ctx context.Context, ar *archive.Store, opt attrOpts
 	if rep.LexProfiles == 0 {
 		lex = "не построена"
 	}
-	fmt.Fprintf(os.Stderr, "attribute %s: заметок %d (анкет %d); стиль-профилей %d, лексика %s; вес лексики %.2f\n",
-		rep.Identity, len(rep.Notes), rep.Accounts, rep.StyleProfiles, lex, rep.LexWeight)
+	fmt.Fprintf(os.Stderr, "attribute %s: эталон %s (%s); заметок %d (анкет %d); стиль-профилей %d, лексика %s; вес лексики %.2f\n",
+		rep.Identity, rep.Genre, genreLabel(rep.Genre), len(rep.Notes), rep.Accounts, rep.StyleProfiles, lex, rep.LexWeight)
 	if len(rep.Notes) == 0 {
 		fmt.Fprintln(os.Stderr, "  у личности нет заметок в архиве")
 		return nil

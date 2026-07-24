@@ -29,6 +29,7 @@ type NoteAttribution struct {
 // IdentityNotesReport — сводка атрибуции по всем заметкам личности.
 type IdentityNotesReport struct {
 	Identity      string
+	Genre         string // жанр эталона: all | notes
 	Accounts      int
 	StyleProfiles int
 	LexProfiles   int
@@ -45,8 +46,9 @@ type IdentityNotesReport struct {
 // через атрибуцию, загрузив профили ОДИН раз. Для каждой заметки — ранг реальной
 // анкеты автора среди всех и кого система назвала первым. lexWeight — вес лексики.
 // Caveat: текст заметки входит в профиль её автора (leave-one-out нарушен), поэтому
-// ранги оптимистичны; сигнал всё равно показателен относительно.
-func (s *Store) AttributeIdentityNotes(ctx context.Context, token string, lexWeight float64) (IdentityNotesReport, error) {
+// ранги оптимистичны; сигнал всё равно показателен относительно. genre — жанр
+// эталона (GenreNotes: register-matched для атрибуции заметки).
+func (s *Store) AttributeIdentityNotes(ctx context.Context, token string, lexWeight float64, genre string) (IdentityNotesReport, error) {
 	identity, err := s.canonIdentity(ctx, token)
 	if err != nil {
 		return IdentityNotesReport{}, err
@@ -55,7 +57,7 @@ func (s *Store) AttributeIdentityNotes(ctx context.Context, token string, lexWei
 	if err != nil {
 		return IdentityNotesReport{}, err
 	}
-	sa, la, err := s.loadAttributors(ctx)
+	sa, la, err := s.loadAttributors(ctx, genre)
 	if err != nil {
 		return IdentityNotesReport{}, err
 	}
@@ -69,7 +71,7 @@ func (s *Store) AttributeIdentityNotes(ctx context.Context, token string, lexWei
 	}
 
 	rep := IdentityNotesReport{
-		Identity: identity, Accounts: len(accIDs),
+		Identity: identity, Genre: genre, Accounts: len(accIDs),
 		StyleProfiles: len(sa.ids), LexWeight: lexWeight,
 	}
 	if la != nil {
@@ -156,19 +158,19 @@ func (s *Store) scoreNote(n authoredNote, sa *styleAttributor, la *lexisAttribut
 	return na
 }
 
-// loadAttributors грузит стиль- и (если построен) лексический слой в готовые к
-// серии запросов аттрибуторы.
-func (s *Store) loadAttributors(ctx context.Context) (*styleAttributor, *lexisAttributor, error) {
-	sIDs, sVecs, err := s.loadStyleProfiles(ctx)
+// loadAttributors грузит стиль- и (если построен) лексический слой жанра genre в
+// готовые к серии запросов аттрибуторы.
+func (s *Store) loadAttributors(ctx context.Context, genre string) (*styleAttributor, *lexisAttributor, error) {
+	sIDs, sVecs, err := s.loadStyleProfiles(ctx, genre)
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(sIDs) < 2 {
-		return nil, nil, errFewStyleProfiles(len(sIDs))
+		return nil, nil, errFewStyleProfiles(len(sIDs), genre)
 	}
 	sa := newStyleAttributor(sIDs, sVecs)
 
-	lIDs, lVecs, idf, dims, err := s.loadLexisProfiles(ctx)
+	lIDs, lVecs, idf, dims, err := s.loadLexisProfiles(ctx, genre)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -276,7 +278,12 @@ func (a *styleAttributor) cosines(norm string) ([]float64, int, bool) {
 	return a.cosinesOf(v), qn, true
 }
 
-// lexisAttributor — лексические профили + IDF для серии запросов.
+// lexisAttributor — лексические профили + IDF для серии запросов. НАМЕРЕННО БЕЗ
+// центрирования (в отличие от стиля): A/B-замер показал, что центрирование лексики
+// губит атрибуцию — на реальных заметках p852 медиана ранга автора 2→55. Сырой
+// tf-idf-косинус («покрытие» словаря) РЕАЛЬНО дискриминативен для авторства;
+// hub-смещение крупных профилей вредит лишь на тексте БЕЗ настоящего сигнала
+// (ИИ-генерация), где атрибуция и так невозможна. См. память personas-attribute-idea.
 type lexisAttributor struct {
 	ids  []int64
 	vecs [][]float32

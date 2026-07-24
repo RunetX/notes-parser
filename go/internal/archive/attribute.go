@@ -31,6 +31,7 @@ type AttributionCandidate struct {
 
 // Attribution — итог AttributeText.
 type Attribution struct {
+	Genre         string  // жанр эталона: all (коммент+заметки) | notes (только заметки)
 	StyleProfiles int     // стиль-профилей сравнено
 	LexProfiles   int     // лексических профилей сравнено (0 — слой не построен)
 	QueryNgrams   int     // 3-грамм в запросе (объём для стиля)
@@ -57,26 +58,27 @@ type Attribution struct {
 // также позицию этого автора (валидация на заметке с известным автором).
 // activeDays/minAuthorNotes>0 — отсечь неправдоподобных кандидатов из выдачи
 // (рецент + жанр): «мёртвые» анкеты и чистые комментаторы заметку не писали.
-func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID int64, lexWeight float64, activeDays, minAuthorNotes int) (Attribution, error) {
+// genre — жанр эталона (GenreNotes: register-matched для атрибуции заметки).
+func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID int64, lexWeight float64, activeDays, minAuthorNotes int, genre string) (Attribution, error) {
 	norm := normalizeStyle(text)
 	if norm == "" {
 		return Attribution{}, fmt.Errorf("attribute: пустой текст")
 	}
-	sIDs, sVecs, err := s.loadStyleProfiles(ctx)
+	sIDs, sVecs, err := s.loadStyleProfiles(ctx, genre)
 	if err != nil {
 		return Attribution{}, err
 	}
 	if len(sIDs) < 2 {
-		return Attribution{}, errFewStyleProfiles(len(sIDs))
+		return Attribution{}, errFewStyleProfiles(len(sIDs), genre)
 	}
 	sCos, qn, err := styleQueryCosines(norm, sVecs)
 	if err != nil {
 		return Attribution{}, err
 	}
-	at := Attribution{StyleProfiles: len(sIDs), QueryNgrams: qn, LexWeight: lexWeight}
+	at := Attribution{Genre: genre, StyleProfiles: len(sIDs), QueryNgrams: qn, LexWeight: lexWeight}
 	at.StyleCosMean, at.StyleCosStd = meanStd(sCos)
 
-	lexCos, err := s.lexisQueryCosines(ctx, text, &at)
+	lexCos, err := s.lexisQueryCosines(ctx, text, &at, genre)
 	if err != nil {
 		return at, err
 	}
@@ -98,7 +100,7 @@ func (s *Store) AttributeText(ctx context.Context, text string, topN int, wantID
 	if wantRank > 0 {
 		pick = append(pick, wantID)
 	}
-	meta, err := s.attributionMeta(ctx, pick)
+	meta, err := s.attributionMeta(ctx, pick, genre)
 	if err != nil {
 		return at, err
 	}
@@ -186,10 +188,10 @@ func styleQueryCosines(norm string, vecs [][]float32) ([]float64, int, error) {
 }
 
 // lexisQueryCosines считает косинусы tf-idf запроса со всеми лексическими
-// профилями (карта user_id→косинус) и заполняет лексические поля at. Пустая
-// карта — слой не построен или запрос без слов (сигнал недоступен).
-func (s *Store) lexisQueryCosines(ctx context.Context, text string, at *Attribution) (map[int64]float64, error) {
-	lIDs, lVecs, idf, dims, err := s.loadLexisProfiles(ctx)
+// профилями жанра genre (карта user_id→косинус) и заполняет лексические поля at.
+// Пустая карта — слой жанра не построен или запрос без слов (сигнал недоступен).
+func (s *Store) lexisQueryCosines(ctx context.Context, text string, at *Attribution, genre string) (map[int64]float64, error) {
+	lIDs, lVecs, idf, dims, err := s.loadLexisProfiles(ctx, genre)
 	if err != nil {
 		return nil, err
 	}
@@ -261,16 +263,18 @@ func (s *Store) attributionCandidate(rank int, order []int, sIDs []int64, sCos [
 	return c
 }
 
-// attributionMeta — имя/пол/личность/объём стиль-профиля отобранных кандидатов
-// одним запросом.
-func (s *Store) attributionMeta(ctx context.Context, ids []int64) (map[int64]AttributionCandidate, error) {
+// attributionMeta — имя/пол/личность/объём стиль-профиля жанра genre отобранных
+// кандидатов одним запросом. Джойн по genre важен: без него композитный PK
+// (user_id, genre) дал бы по строке на жанр (дубли и чужой Ngrams).
+func (s *Store) attributionMeta(ctx context.Context, ids []int64, genre string) (map[int64]AttributionCandidate, error) {
 	out := map[int64]AttributionCandidate{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, genre)
+	for _, id := range ids {
+		args = append(args, id)
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.id, u.name, u.gender,
@@ -278,8 +282,8 @@ func (s *Store) attributionMeta(ctx context.Context, ids []int64) (map[int64]Att
 		       COALESCE(sp.ngrams, 0)
 		FROM users u
 		LEFT JOIN v_identity i ON i.user_id = u.id
-		LEFT JOIN style_profiles sp ON sp.user_id = u.id
-		WHERE u.id IN (`+placeholders(len(args))+`)`, args...)
+		LEFT JOIN style_profiles sp ON sp.user_id = u.id AND sp.genre = ?
+		WHERE u.id IN (`+placeholders(len(ids))+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -296,9 +300,14 @@ func (s *Store) attributionMeta(ctx context.Context, ids []int64) (map[int64]Att
 	return out, rows.Err()
 }
 
-// errFewStyleProfiles — общая ошибка «профили ещё не построены».
-func errFewStyleProfiles(n int) error {
-	return fmt.Errorf("attribute: стиль-профилей %d — сначала `personas stylometry build`", n)
+// errFewStyleProfiles — общая ошибка «профили жанра ещё не построены» с подсказкой
+// команды (для note-слоя — с флагом -genre notes).
+func errFewStyleProfiles(n int, genre string) error {
+	hint := "`personas stylometry build`"
+	if genre != GenreAll {
+		hint = fmt.Sprintf("`personas stylometry build -genre %s`", genre)
+	}
+	return fmt.Errorf("attribute: стиль-профилей жанра %q %d — сначала %s", genre, n, hint)
 }
 
 // meanStd — среднее и сигма (population) значений.

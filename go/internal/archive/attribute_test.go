@@ -18,12 +18,12 @@ func TestAttributeText(t *testing.T) {
 	if _, err := s.SaveGrab(ctx, Note{ID: 1, AuthorID: 1, Text: "n"}, comments, users, testNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BuildStyleProfiles(ctx, 20, 128, testNow); err != nil {
+	if _, err := s.BuildStyleProfiles(ctx, 20, 128, GenreAll, testNow); err != nil {
 		t.Fatal(err)
 	}
 
 	// Без лексического слоя — только стиль.
-	at, err := s.AttributeText(ctx, "снова виджет и фробникатор в блёстках", 2, 0, 0.5, 0, 0)
+	at, err := s.AttributeText(ctx, "снова виджет и фробникатор в блёстках", 2, 0, 0.5, 0, 0, GenreAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestAttributeText(t *testing.T) {
 	}
 
 	// Режим валидации: позиция известного автора.
-	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 2, 0.5, 0, 0)
+	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 2, 0.5, 0, 0, GenreAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestAttributeText(t *testing.T) {
 	}
 
 	// Автор без профиля → Want остаётся пустым, ошибки нет.
-	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 999, 0.5, 0, 0)
+	at, err = s.AttributeText(ctx, "квантовый реактор и снова плазма поток", 1, 999, 0.5, 0, 0, GenreAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestAttributeText(t *testing.T) {
 		t.Errorf("want для анкеты без профиля: got %+v, want nil", at.Want)
 	}
 
-	if _, err := s.AttributeText(ctx, "   ", 5, 0, 0.5, 0, 0); err == nil {
+	if _, err := s.AttributeText(ctx, "   ", 5, 0, 0.5, 0, 0, GenreAll); err == nil {
 		t.Error("пустой текст должен вернуть ошибку")
 	}
 }
@@ -90,10 +90,10 @@ func TestAttributeWithLexis(t *testing.T) {
 	if _, err := s.SaveGrab(ctx, Note{ID: 1, AuthorID: 1, Text: "n"}, comments, users, testNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BuildStyleProfiles(ctx, 20, 128, testNow); err != nil {
+	if _, err := s.BuildStyleProfiles(ctx, 20, 128, GenreAll, testNow); err != nil {
 		t.Fatal(err)
 	}
-	lst, err := s.BuildLexisProfiles(ctx, 5, 256, testNow)
+	lst, err := s.BuildLexisProfiles(ctx, 5, 256, GenreAll, testNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestAttributeWithLexis(t *testing.T) {
 	}
 
 	// Текст со словами автора B → он на первом месте, с лексическим сигналом.
-	at, err := s.AttributeText(ctx, "квантовый реактор плазма турбина конденсатор энергия поток", 3, 0, 0.5, 0, 0)
+	at, err := s.AttributeText(ctx, "квантовый реактор плазма турбина конденсатор энергия поток", 3, 0, 0.5, 0, 0, GenreAll)
 	if err != nil {
 		t.Fatal(err)
 	}

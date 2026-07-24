@@ -31,6 +31,7 @@ type LooResult struct {
 
 // Calibration — итог CalibrateNotes.
 type Calibration struct {
+	Genre         string // жанр эталона: all | notes
 	Notes         int
 	Chars         int
 	StyleProfiles int
@@ -67,16 +68,16 @@ type Calibration struct {
 //     против всего корпуса на отложенном тексте — честная проверка обобщения;
 //   - пул: все заметки объединяются в один голос → топ ближайших авторов;
 //   - разрыв с identity (если задан p<id>|u<id>): где именные анкеты автора в пуле.
-func (s *Store) CalibrateNotes(ctx context.Context, noteIDs []int64, identityToken string, lexWeight float64, topN, activeDays, minAuthorNotes int) (Calibration, error) {
+func (s *Store) CalibrateNotes(ctx context.Context, noteIDs []int64, identityToken string, lexWeight float64, topN, activeDays, minAuthorNotes int, genre string) (Calibration, error) {
 	notes, err := s.notesByIDs(ctx, noteIDs)
 	if err != nil {
 		return Calibration{}, err
 	}
-	sa, la, err := s.loadAttributors(ctx)
+	sa, la, err := s.loadAttributors(ctx, genre)
 	if err != nil {
 		return Calibration{}, err
 	}
-	cal := Calibration{Notes: len(notes), StyleProfiles: len(sa.ids), LexWeight: lexWeight}
+	cal := Calibration{Genre: genre, Notes: len(notes), StyleProfiles: len(sa.ids), LexWeight: lexWeight}
 	if la != nil {
 		cal.LexProfiles = len(la.ids)
 	}
@@ -431,7 +432,7 @@ func (s *Store) calibPooled(ctx context.Context, items []noteItem, sa *styleAttr
 	for _, oi := range order[:n] {
 		pick = append(pick, sa.ids[oi])
 	}
-	meta, err := s.attributionMeta(ctx, pick)
+	meta, err := s.attributionMeta(ctx, pick, cal.Genre)
 	if err != nil {
 		return err
 	}

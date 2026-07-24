@@ -54,7 +54,7 @@ type styleCand struct {
 // подкрепляет каждую временем и пересечением круга собеседников, и пишет пары с
 // композитным весом ≥ Floor в alias_candidates(signal=ensemble). Идемпотентно.
 func (s *Store) ClusterEnsemble(ctx context.Context, p EnsembleParams, now time.Time) (EnsembleStats, error) {
-	pids, vecs, err := s.loadStyleProfiles(ctx)
+	pids, vecs, err := s.loadStyleProfiles(ctx, GenreAll)
 	if err != nil {
 		return EnsembleStats{}, err
 	}
