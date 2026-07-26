@@ -54,7 +54,7 @@ func personasGender(ctx context.Context, ar *archive.Store, opt genderOpts) erro
 		return fmt.Errorf("gender: открытие БД бота %s: %w", cfg.DBPath, err)
 	}
 	defer st.Close()
-	cookiesJSON, valid, err := st.SessionCookies(ctx, tgUser)
+	cookiesJSON, valid, err := st.SessionCookies(ctx, store.MessengerTelegram, tgUser)
 	if err != nil {
 		return fmt.Errorf("gender: сессия tg=%d: %w", tgUser, err)
 	}

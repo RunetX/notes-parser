@@ -165,3 +165,6 @@ main.py
 poster_db.py
 session_get.py
 messages.py
+# PEM сертификатов Минцифры для MAX: кладутся из Госуслуг перед сборкой,
+# подлинность каждый проверяет сам (см. go/internal/maxx/cacert/README.md)
+go/internal/maxx/cacert/*.pem

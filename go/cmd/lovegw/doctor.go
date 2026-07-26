@@ -18,6 +18,7 @@ import (
 
 	"lovegw/internal/config"
 	"lovegw/internal/love"
+	"lovegw/internal/maxx"
 	"lovegw/internal/store"
 	"lovegw/internal/tgx"
 )
@@ -77,27 +78,55 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		ok("прокси telegram", cfg.TelegramProxy)
 	}
 
+	tgCfg := cfg.Messengers.Telegram
 	mirrorOK := false
-	if cfg.MirrorBot.Token == "" {
-		warn("постер-бот", "токен не задан")
-	} else if me, err := tgx.CheckToken(ctx, cfg.MirrorBot.Token, tgClient); err != nil {
-		fail("постер-бот", err)
+	if !tgCfg.Enabled {
+		warn("telegram", "выключен (messengers.telegram.enabled=false) — проверки пропущены")
 	} else {
-		ok("постер-бот", "@"+me.Username)
-		mirrorOK = true
+		if tgCfg.Token == "" {
+			warn("постер-бот", "токен не задан")
+		} else if me, err := tgx.CheckToken(ctx, tgCfg.Token, tgClient); err != nil {
+			fail("постер-бот", err)
+		} else {
+			ok("постер-бот", "@"+me.Username)
+			mirrorOK = true
+		}
+
+		if tgCfg.DMToken == "" {
+			warn("ЛС-бот", "токен не задан")
+		} else if me, err := tgx.CheckToken(ctx, tgCfg.DMToken, tgClient); err != nil {
+			fail("ЛС-бот", err)
+		} else {
+			ok("ЛС-бот", "@"+me.Username)
+		}
 	}
 
-	if cfg.DMBot.Token == "" {
-		warn("ЛС-бот", "токен не задан")
-	} else if me, err := tgx.CheckToken(ctx, cfg.DMBot.Token, tgClient); err != nil {
-		fail("ЛС-бот", err)
-	} else {
-		ok("ЛС-бот", "@"+me.Username)
+	// MAX: проверка токена заодно проверяет TLS-доверие к platform-api2
+	// (цепочка Минцифры) — при не вшитом/не установленном CA здесь будет
+	// явная ошибка верификации сертификата.
+	if maxCfg := cfg.Messengers.Max; maxCfg.Enabled {
+		if maxCfg.Token == "" {
+			warn("MAX-бот", "токен не задан (messengers.max.token или LOVEGW_MAX_TOKEN)")
+		} else if mx, err := maxx.NewMirror(maxx.Params{
+			Token:      maxCfg.Token,
+			ChannelID:  maxCfg.ChannelID,
+			BaseURL:    cfg.Site.BaseURL,
+			HTTPClient: maxx.MintsifraClient(),
+		}, nil); err != nil {
+			fail("MAX-бот", err)
+		} else if info, err := mx.Me(ctx); err != nil {
+			fail("MAX-бот", err)
+		} else {
+			ok("MAX-бот", "@"+info.Username)
+			if maxCfg.ChannelID == 0 {
+				warn("MAX-канал", "chat_id не задан: снимите его из апдейта bot_added (GET /updates)")
+			}
+		}
 	}
 
 	queueEmpty := false
 	if mirrorOK {
-		switch n, err := tgx.ProbePendingUpdates(ctx, cfg.MirrorBot.Token, tgClient); {
+		switch n, err := tgx.ProbePendingUpdates(ctx, tgCfg.Token, tgClient); {
 		case errors.Is(err, tgx.ErrPollingConflict):
 			warn("очередь обновлений", "409: апдейты бота слушает другой процесс (второй экземпляр lovegw?)")
 		case err != nil:
@@ -131,6 +160,7 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 
 	var postedID atomic.Int64
 	forwardCh := make(chan int, 1)
+	tgCfg := cfg.Messengers.Telegram
 	handler := func(_ context.Context, u *models.Update) {
 		msg := u.Message
 		if msg == nil || !msg.IsAutomaticForward ||
@@ -138,7 +168,7 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 			return
 		}
 		origin := msg.ForwardOrigin.MessageOriginChannel
-		if origin.Chat.ID == cfg.MirrorBot.ChannelID && int64(origin.MessageID) == postedID.Load() {
+		if origin.Chat.ID == tgCfg.ChannelID && int64(origin.MessageID) == postedID.Load() {
 			select {
 			case forwardCh <- msg.ID:
 			default:
@@ -147,9 +177,9 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 	}
 
 	tg, err := tgx.NewMirror(tgx.Params{
-		Token:            cfg.MirrorBot.Token,
-		ChannelID:        cfg.MirrorBot.ChannelID,
-		DiscussionChatID: cfg.MirrorBot.DiscussionChatID,
+		Token:            tgCfg.Token,
+		ChannelID:        tgCfg.ChannelID,
+		DiscussionChatID: tgCfg.DiscussionChatID,
 		Signature:        cfg.Signature,
 		BaseURL:          cfg.Site.BaseURL,
 		HTTPClient:       tgClient,
@@ -163,7 +193,7 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 	defer cancel()
 	go tg.Start(pollCtx)
 
-	msgID, err := tg.SendSilent(ctx, cfg.MirrorBot.ChannelID,
+	msgID, err := tg.SendSilent(ctx, tgCfg.ChannelID,
 		"⚙️ lovegw doctor: проверка связи, сообщение сейчас будет удалено")
 	if err != nil {
 		fail("post-test: пост в канал", err)
@@ -177,7 +207,7 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 	case fwdID := <-forwardCh:
 		ok("post-test: автофорвард", fmt.Sprintf("пойман за %.1fс, thread=%d",
 			time.Since(started).Seconds(), fwdID))
-		if err := tg.DeleteMessage(ctx, cfg.MirrorBot.DiscussionChatID, fwdID); err != nil {
+		if err := tg.DeleteMessage(ctx, tgCfg.DiscussionChatID, fwdID); err != nil {
 			fail("post-test: удаление форварда", err)
 		}
 	case <-time.After(90 * time.Second):
@@ -187,7 +217,7 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 		return ctx.Err()
 	}
 
-	if err := tg.DeleteMessage(ctx, cfg.MirrorBot.ChannelID, msgID); err != nil {
+	if err := tg.DeleteMessage(ctx, tgCfg.ChannelID, msgID); err != nil {
 		fail("post-test: удаление поста", err)
 	} else {
 		ok("post-test: удаление поста", "тестовое сообщение удалено")

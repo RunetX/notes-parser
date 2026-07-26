@@ -169,7 +169,7 @@ func ImportSessions(ctx context.Context, st *store.Store, r io.Reader, now time.
 		if err != nil {
 			return stats, err
 		}
-		if err := st.UpsertSession(ctx, tgUserID, string(cookiesJSON), now); err != nil {
+		if err := st.UpsertSession(ctx, store.MessengerTelegram, tgUserID, string(cookiesJSON), now); err != nil {
 			return stats, err
 		}
 		stats.Sessions++
@@ -196,7 +196,7 @@ func ImportSubscribers(ctx context.Context, st *store.Store, r io.Reader) (Stats
 				fmt.Sprintf("подписка пропущена: key=%q value=%d", sub.Key, int64(sub.Value)))
 			continue
 		}
-		added, err := st.AddSubscription(ctx, sub.Key, int64(sub.Value))
+		added, err := st.AddSubscription(ctx, store.MessengerTelegram, sub.Key, int64(sub.Value))
 		if err != nil {
 			return stats, err
 		}

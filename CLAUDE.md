@@ -52,7 +52,10 @@ messages, and all user-facing bot strings are in Russian.
 - **Storage is SQLite** (`modernc.org/sqlite`, CGo-free) — the single source of
   truth; every write is write-through, so state survives `kill -9`. Schema in
   `internal/store/schema.sql`, versioned via `PRAGMA user_version` (migrations
-  in `internal/store/migrate.go`).
+  in `internal/store/migrate.go`). Since v4, message ids live in
+  `message_targets` keyed by `(messenger, kind, ref_id)` with TEXT ids (MAX
+  uses string mids); user tables carry a `messenger` column. Telegram values
+  are mirrored write-through into the legacy `tg_*` columns for one release.
 - **All site markup selectors live in one const block** in
   `internal/love/parse.go`; a required selector that matches nothing returns a
   typed `MarkupError` (markup-drift detection), while an empty comments page is
@@ -62,18 +65,33 @@ messages, and all user-facing bot strings are in Russian.
   - `store` — SQLite; the single source of truth.
   - `tgx` — go-telegram/bot wrapper: per-chat limiters, 429 retry, HTML compose,
     media `file_id` cache.
+  - `maxx` — MAX-side `Sink` over the official `maxbot` v2 SDK
+    (`platform-api2.max.ru`): channel posting, manual "autoforward",
+    reply-based comments, media upload with URL→token cache, per-chat limiters
+    + 429 retry. TLS to MAX needs the Russian Trusted CA chain: official PEMs
+    are `go:embed`-ded from `maxx/cacert/` when present at build time (see the
+    README there), otherwise the host trust store is used. `updates.go` runs
+    long polling (`GetUpdates(marker)`) and dispatches: discussion-chat
+    replies → `bridge.Core`, dialog messages → `dmbot.Logic` — one MAX bot
+    covers channel, chat and DMs.
   - `mirror` — feed watcher + one goroutine per active note with an adaptive
-    poll interval; consumes a `Sink` interface so it's messenger-agnostic (MAX
-    could be a second sink). A note the site marks «не актуальна» (comments
+    poll interval; consumes a list of `Sink`s (fan-out: Telegram and MAX can
+    mirror in parallel, each with its own thread per note via
+    `message_targets`). A sink implementing `ThreadStarter` opens its own
+    discussion thread (MAX has no native channel comments — the bot posts a
+    copy of the note into the discussion chat itself, retried every poll
+    cycle). A note the site marks «не актуальна» (comments
     frozen) is archived early after a final comment flush — the only signal for
     that state is the feed link text, so it's a soft optimization (falls back to
     the week-based archival on wording drift). `mirror.Config.AlertSend` DMs the
     admin after 3 consecutive markup-drift or 403 failures and again on recovery.
-  - `bridge` — auto-forward capture (linking a channel post to its discussion
-    thread) + reply→site comment, at-most-once via `processed_replies`.
-  - `dmbot` — РюмкинЪ; dialog state persisted in `dialog_states`. Commands:
-    `/login`, `/add_note`, `/add_anonymous_note`, `/status`, `/subscribe`,
-    `/unsubscribe`, `/mysubs`.
+  - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
+    via `processed_replies`, per messenger) + the Telegram handler with
+    auto-forward capture (linking a channel post to its discussion thread).
+  - `dmbot` — РюмкинЪ; messenger-agnostic dialog engine `Logic` (state in
+    `dialog_states`, transport behind an interface — Telegram wrapper here,
+    MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
+    `/add_anonymous_note`, `/status`, `/subscribe`, `/unsubscribe`, `/mysubs`.
   - `legacy` — one-shot importer of old JSON state.
 - Reply→site and note-post reuse saved cookie sessions; a 401/403 marks the
   session invalid and DMs the user to re-`/login`. Admin alerts require
@@ -83,7 +101,9 @@ messages, and all user-facing bot strings are in Russian.
 
 - Config `go/config.json` (gitignored, template `go/config.example.json`);
   tokens can come from env `LOVEGW_MIRROR_TOKEN` / `LOVEGW_DM_TOKEN` /
-  `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY`.
+  `LOVEGW_MAX_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY`. The `messengers`
+  section gates which sinks run (`max` / `telegram`, each with `enabled`);
+  legacy flat `mirror_bot`/`dm_bot` configs still load as telegram-only.
 - Network split: love.ngs.ru needs a Russian IP (403 otherwise), but Telegram's
   API is blocked from inside Russia. A box that reaches both needs nothing
   special. For split networks, `telegram_proxy` in config

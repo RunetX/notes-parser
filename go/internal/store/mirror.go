@@ -4,7 +4,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -26,31 +25,6 @@ func (s *Store) NoteByID(ctx context.Context, id string) (Note, error) {
 		return Note{}, fmt.Errorf("заметка %s: %w", id, ErrNotFound)
 	}
 	return scanNote(rows)
-}
-
-// SetNotePosted помечает заметку запощенной и сохраняет id поста в канале.
-func (s *Store) SetNotePosted(ctx context.Context, id string, tgMessageID int64) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE notes SET status = ?, tg_message_id = ? WHERE id = ?`,
-		StatusPosted, tgMessageID, id)
-	return err
-}
-
-// SetNoteThreadIDByMessageID записывает id корня треда (автофорварда),
-// найдя заметку по id её поста в канале. Возвращает id заметки.
-func (s *Store) SetNoteThreadIDByMessageID(ctx context.Context, tgMessageID, threadID int64) (string, bool, error) {
-	var noteID string
-	err := s.db.QueryRowContext(ctx, `
-		UPDATE notes SET tg_thread_id = ?
-		WHERE tg_message_id = ? AND tg_thread_id IS NULL
-		RETURNING id`, threadID, tgMessageID).Scan(&noteID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return noteID, true, nil
 }
 
 // SetNoteArchived переводит заметку в архив: воркер комментариев завершается.
@@ -83,47 +57,6 @@ func (s *Store) SetNoteLastCommentAt(ctx context.Context, id string, at time.Tim
 	return err
 }
 
-// SetCommentTGMessageID сохраняет id сообщения комментария в группе.
-func (s *Store) SetCommentTGMessageID(ctx context.Context, commentID, tgMessageID int64) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE comments SET tg_message_id = ? WHERE id = ?`, tgMessageID, commentID)
-	return err
-}
-
-// UnsentComments возвращает комментарии заметки, ещё не отправленные в
-// Telegram (включая застрявшие: тред мог быть не пойман в прошлый цикл).
-func (s *Store) UnsentComments(ctx context.Context, noteID string) ([]Comment, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, note_id, author_name, author_age, author_link, avatar_url,
-		       published_at, text, tg_message_id, created_at
-		FROM comments
-		WHERE note_id = ? AND tg_message_id IS NULL
-		ORDER BY id`, noteID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var comments []Comment
-	for rows.Next() {
-		var c Comment
-		var published, createdAt sql.NullString
-		var tgMsg sql.NullInt64
-		if err := rows.Scan(&c.ID, &c.NoteID, &c.AuthorName, &c.AuthorAge,
-			&c.AuthorLink, &c.AvatarURL, &published, &c.Text, &tgMsg, &createdAt); err != nil {
-			return nil, err
-		}
-		if published.Valid {
-			c.PublishedAt = parseTime(published.String)
-		}
-		if createdAt.Valid {
-			c.CreatedAt = parseTime(createdAt.String)
-		}
-		c.TGMessageID = tgMsg.Int64
-		comments = append(comments, c)
-	}
-	return comments, rows.Err()
-}
-
 // SentCommentTGMessageIDs — id отправленных в Telegram сообщений комментариев
 // заметки (для удаления при перепосте).
 func (s *Store) SentCommentTGMessageIDs(ctx context.Context, noteID string) ([]int64, error) {
@@ -154,8 +87,8 @@ func (s *Store) collectIDs(ctx context.Context, query, noteID string) ([]int64, 
 	return ids, rows.Err()
 }
 
-// DeleteNote удаляет заметку со всем содержимым (иллюстрации, комментарии).
-// После этого демон при обходе ленты перепостит её как новую.
+// DeleteNote удаляет заметку со всем содержимым (иллюстрации, комментарии,
+// цели сообщений). После этого демон при обходе ленты перепостит её как новую.
 func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -163,6 +96,11 @@ func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, q := range []string{
+		`DELETE FROM message_targets WHERE kind = 'comment'
+		   AND ref_id IN (SELECT CAST(id AS TEXT) FROM comments WHERE note_id = ?)`,
+		`DELETE FROM message_targets WHERE kind = 'note_image'
+		   AND ref_id IN (SELECT CAST(id AS TEXT) FROM note_images WHERE note_id = ?)`,
+		`DELETE FROM message_targets WHERE kind IN ('note_post', 'note_thread') AND ref_id = ?`,
 		`DELETE FROM note_images WHERE note_id = ?`,
 		`DELETE FROM comments WHERE note_id = ?`,
 		`DELETE FROM notes WHERE id = ?`,
@@ -174,15 +112,16 @@ func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
 	return tx.Commit()
 }
 
-// Subscription — подписка на ключевое слово.
+// Subscription — подписка на ключевое слово в конкретном мессенджере.
 type Subscription struct {
-	Keyword  string
-	TGUserID int64
+	Messenger string
+	Keyword   string
+	UserID    int64
 }
 
-// Subscriptions возвращает все подписки.
+// Subscriptions возвращает все подписки (всех мессенджеров).
 func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT keyword, tg_user_id FROM subscriptions`)
+	rows, err := s.db.QueryContext(ctx, `SELECT messenger, keyword, user_id FROM subscriptions`)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +129,7 @@ func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
 	var subs []Subscription
 	for rows.Next() {
 		var sub Subscription
-		if err := rows.Scan(&sub.Keyword, &sub.TGUserID); err != nil {
+		if err := rows.Scan(&sub.Messenger, &sub.Keyword, &sub.UserID); err != nil {
 			return nil, err
 		}
 		subs = append(subs, sub)

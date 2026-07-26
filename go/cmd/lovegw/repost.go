@@ -43,10 +43,11 @@ func cmdRepost(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	tgCfg := cfg.Messengers.Telegram
 	tg, err := tgx.NewMirror(tgx.Params{
-		Token:            cfg.MirrorBot.Token,
-		ChannelID:        cfg.MirrorBot.ChannelID,
-		DiscussionChatID: cfg.MirrorBot.DiscussionChatID,
+		Token:            tgCfg.Token,
+		ChannelID:        tgCfg.ChannelID,
+		DiscussionChatID: tgCfg.DiscussionChatID,
 		Signature:        cfg.Signature,
 		BaseURL:          cfg.Site.BaseURL,
 		HTTPClient:       tgClient,
@@ -80,14 +81,15 @@ func repostOne(ctx context.Context, st *store.Store, tg *tgx.Mirror, cfg *config
 
 	comIDs, _ := st.SentCommentTGMessageIDs(ctx, id)
 	imgIDs, _ := st.SentNoteImageTGMessageIDs(ctx, id)
+	tgCfg := cfg.Messengers.Telegram
 	for _, m := range comIDs {
-		del(cfg.MirrorBot.DiscussionChatID, m, "комментарий")
+		del(tgCfg.DiscussionChatID, m, "комментарий")
 	}
 	for _, m := range imgIDs {
-		del(cfg.MirrorBot.DiscussionChatID, m, "иллюстрация")
+		del(tgCfg.DiscussionChatID, m, "иллюстрация")
 	}
-	del(cfg.MirrorBot.DiscussionChatID, n.TGThreadID, "корень треда")
-	del(cfg.MirrorBot.ChannelID, n.TGMessageID, "пост в канале")
+	del(tgCfg.DiscussionChatID, n.TGThreadID, "корень треда")
+	del(tgCfg.ChannelID, n.TGMessageID, "пост в канале")
 
 	if err := st.DeleteNote(ctx, id); err != nil {
 		return err

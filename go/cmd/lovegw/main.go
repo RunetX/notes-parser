@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"lovegw/internal/dmbot"
 	"lovegw/internal/legacy"
 	"lovegw/internal/love"
+	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
 	"lovegw/internal/store"
 	"lovegw/internal/tgx"
@@ -138,8 +140,15 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.MirrorBot.Token == "" || cfg.MirrorBot.ChannelID == 0 || cfg.MirrorBot.DiscussionChatID == 0 {
-		return fmt.Errorf("run: не заданы mirror_bot.token / channel_id / discussion_chat_id")
+	tgCfg, maxCfg := cfg.Messengers.Telegram, cfg.Messengers.Max
+	if !tgCfg.Enabled && !maxCfg.Enabled {
+		return fmt.Errorf("run: не включён ни один мессенджер (messengers.telegram/max или mirror_bot)")
+	}
+	if tgCfg.Enabled && (tgCfg.Token == "" || tgCfg.ChannelID == 0 || tgCfg.DiscussionChatID == 0) {
+		return fmt.Errorf("run: telegram включён, но не заданы token / channel_id / discussion_chat_id")
+	}
+	if maxCfg.Enabled && (maxCfg.Token == "" || maxCfg.ChannelID == 0) {
+		return fmt.Errorf("run: max включён, но не заданы token / channel_id")
 	}
 	log := newLogger(cfg.LogLevel)
 
@@ -158,72 +167,134 @@ func cmdRun(ctx context.Context, args []string) error {
 	return runDaemon(ctx, cfg, st, *seed, log)
 }
 
-// runDaemon собирает компоненты и крутит их под общим errgroup.
+// runDaemon собирает включённые мессенджеры (гейт messengers) и крутит все
+// компоненты под общим errgroup. Telegram поднимает полный контур (зеркало,
+// мост, ЛС-бот РюмкинЪ); MAX — зеркало + мост + ЛС-диалоги, всё через
+// одного бота (long polling GetUpdates).
 func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bool, log *slog.Logger) error {
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	tgCfg, maxCfg := cfg.Messengers.Telegram, cfg.Messengers.Max
 
-	tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
-	if err != nil {
-		return err
-	}
-
-	// ЛС-бот РюмкинЪ (опционален): без него мост не сможет уведомлять
-	// пользователей о протухшей сессии, но зеркалирование работает.
+	var sinks []mirror.Sink
+	var alerters []func(ctx context.Context, text string)
+	var subNotify mirror.SubNotify
 	var dm *dmbot.Bot
-	var notify bridge.Notify
-	if cfg.DMBot.Token != "" {
-		if dm, err = dmbot.New(cfg.DMBot.Token, st, client, tgClient, log); err != nil {
+	var tg *tgx.Mirror
+
+	g, gctx := errgroup.WithContext(ctx)
+
+	if tgCfg.Enabled {
+		tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
+		if err != nil {
 			return err
 		}
-		notify = dm.Notify
-	}
 
-	handler := bridge.New(st, client, notify,
-		cfg.MirrorBot.ChannelID, cfg.MirrorBot.DiscussionChatID, log)
-	tg, err := tgx.NewMirror(tgx.Params{
-		Token:            cfg.MirrorBot.Token,
-		ChannelID:        cfg.MirrorBot.ChannelID,
-		DiscussionChatID: cfg.MirrorBot.DiscussionChatID,
-		Signature:        cfg.Signature,
-		BaseURL:          cfg.Site.BaseURL,
-		HTTPClient:       tgClient,
-	}, log, handler.Handle)
-	if err != nil {
-		return err
-	}
+		// ЛС-бот РюмкинЪ (опционален): без него мост не сможет уведомлять
+		// пользователей о протухшей сессии, но зеркалирование работает.
+		var notify bridge.Notify
+		if tgCfg.DMToken != "" {
+			if dm, err = dmbot.New(tgCfg.DMToken, st, client, tgClient, log); err != nil {
+				return err
+			}
+			notify = dm.Notify
+		}
 
-	// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
-	// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
-	var subNotify func(ctx context.Context, userID int64, n store.Note, c store.Comment)
-	if dm != nil {
-		subNotify = func(ctx context.Context, userID int64, n store.Note, c store.Comment) {
-			link := tgx.DeepLink(cfg.MirrorBot.DiscussionChatID, c.TGMessageID, n.TGThreadID)
-			dm.Notify(ctx, userID, "🔔 Новый комментарий по вашему ключевому слову:\n"+link)
+		handler := bridge.New(st, client, notify, tgCfg.ChannelID, tgCfg.DiscussionChatID, log)
+		tg, err = tgx.NewMirror(tgx.Params{
+			Token:            tgCfg.Token,
+			ChannelID:        tgCfg.ChannelID,
+			DiscussionChatID: tgCfg.DiscussionChatID,
+			Signature:        cfg.Signature,
+			BaseURL:          cfg.Site.BaseURL,
+			HTTPClient:       tgClient,
+		}, log, handler.Handle)
+		if err != nil {
+			return err
+		}
+		sinks = append(sinks, tg)
+		if tgCfg.AdminUserID != 0 {
+			adminID := tgCfg.AdminUserID
+			alerters = append(alerters, func(ctx context.Context, text string) {
+				if err := tg.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
+					log.Warn("не удалось отправить алерт админу", "sink", "telegram", "err", err)
+				}
+			})
+		}
+
+		// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
+		// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
+		if dm != nil {
+			subNotify = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
+				root, err1 := strconv.ParseInt(threadID, 10, 64)
+				msgID, err2 := strconv.ParseInt(commentMsgID, 10, 64)
+				if err1 != nil || err2 != nil {
+					log.Warn("уведомление подписчика: не телеграмные id", "thread", threadID, "msg", commentMsgID)
+					return
+				}
+				link := tgx.DeepLink(tgCfg.DiscussionChatID, msgID, root)
+				dm.Notify(ctx, userID, "🔔 Новый комментарий по вашему ключевому слову:\n"+link)
+			}
+		}
+
+		g.Go(func() error {
+			tg.Start(gctx) // блокируется до отмены контекста
+			return nil
+		})
+		if dm != nil {
+			g.Go(func() error {
+				dm.Start(gctx)
+				return nil
+			})
 		}
 	}
 
-	mir := mirror.New(st, client, tg, mirror.Config{
-		NotesLimit:   cfg.NotesLimit,
-		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
-		SeedFirst:    seed,
-		AlertSend:    adminAlerter(tg, cfg.AdminTGUserID, log),
-		SubNotify:    subNotify,
-	}, log)
+	if maxCfg.Enabled {
+		mx, err := maxx.NewMirror(maxx.Params{
+			Token:            maxCfg.Token,
+			ChannelID:        maxCfg.ChannelID,
+			DiscussionChatID: maxCfg.DiscussionChatID,
+			Signature:        cfg.Signature,
+			BaseURL:          cfg.Site.BaseURL,
+			HTTPClient:       maxx.MintsifraClient(),
+		}, log)
+		if err != nil {
+			return err
+		}
+		sinks = append(sinks, mx)
+		if maxCfg.DiscussionChatID == 0 {
+			log.Warn("MAX без discussion_chat_id: посты уйдут в канал, комментарии останутся в очереди")
+		}
+		if maxCfg.AdminUserID != 0 {
+			adminID := maxCfg.AdminUserID
+			alerters = append(alerters, func(ctx context.Context, text string) {
+				if err := mx.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
+					log.Warn("не удалось отправить алерт админу", "sink", "max", "err", err)
+				}
+			})
+		}
 
-	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath, "dm_bot", dm != nil)
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		tg.Start(gctx) // блокируется до отмены контекста
-		return nil
-	})
-	g.Go(func() error { return mir.Run(gctx) })
-	if dm != nil {
+		// Мост «ответ в чате MAX → комментарий на сайте» и ЛС-диалоги
+		// (/login, заметки, подписки) — через того же бота.
+		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
+		maxDM := dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
 		g.Go(func() error {
-			dm.Start(gctx)
+			mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
 			return nil
 		})
 	}
+
+	mir := mirror.New(st, client, sinks, mirror.Config{
+		NotesLimit:   cfg.NotesLimit,
+		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
+		SeedFirst:    seed,
+		AlertSend:    fanOutAlerts(alerters),
+		SubNotify:    subNotify,
+	}, log)
+
+	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath,
+		"telegram", tgCfg.Enabled, "max", maxCfg.Enabled, "dm_bot", dm != nil)
+	g.Go(func() error { return mir.Run(gctx) })
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
@@ -231,14 +302,15 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	return nil
 }
 
-// adminAlerter возвращает функцию алертов админу (nil, если admin id не задан).
-func adminAlerter(tg *tgx.Mirror, adminID int64, log *slog.Logger) func(ctx context.Context, text string) {
-	if adminID == 0 {
+// fanOutAlerts объединяет алертеры включённых мессенджеров (nil, если ни у
+// одного не задан admin id): алерт о дрейфе/блокировке уходит во все.
+func fanOutAlerts(alerters []func(ctx context.Context, text string)) func(ctx context.Context, text string) {
+	if len(alerters) == 0 {
 		return nil
 	}
 	return func(ctx context.Context, text string) {
-		if err := tg.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
-			log.Warn("не удалось отправить алерт админу", "err", err)
+		for _, send := range alerters {
+			send(ctx, text)
 		}
 	}
 }

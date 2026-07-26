@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,48 +27,66 @@ type SiteClient interface {
 
 // Sink — мессенджер-приёмник событий зеркала. avatar/image — уже скачанные
 // байты медиа (могут быть nil: тогда заметка/комментарий уходит текстом).
+// Id сообщений — строки: Telegram отдаёт числа (десятичной строкой), MAX —
+// mid; mirror трактует их как непрозрачные значения и хранит per-messenger
+// в message_targets. threadID — корень треда обсуждения в этом мессенджере.
 type Sink interface {
-	PostNote(ctx context.Context, n store.Note, avatar []byte) (int64, error)
-	PostComment(ctx context.Context, n store.Note, c store.Comment, avatar []byte) (int64, error)
-	PostNoteImage(ctx context.Context, threadRootID int64, imageURL string, image []byte) (int64, error)
-	NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment) error
+	Name() string // имя мессенджера: store.MessengerTelegram / store.MessengerMax
+	PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error)
+	PostComment(ctx context.Context, n store.Note, threadID string, c store.Comment, avatar []byte) (string, error)
+	PostNoteImage(ctx context.Context, threadID, imageURL string, image []byte) (string, error)
+	NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) error
+}
+
+// SubNotify уведомляет подписчика о комментарии с ключевым словом.
+// threadID/commentMsgID — id в мессенджере подписки (для deep-link).
+type SubNotify func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string)
+
+// ThreadStarter — приёмник, умеющий сам открыть тред обсуждения заметки
+// (MAX: «ручной автофорвард» — копия заметки в чат обсуждения). Если тред
+// не пойман и приёмник реализует интерфейс, mirror зовёт StartThread на
+// каждом цикле опроса до успеха. В Telegram тред ловит bridge по
+// автофорварду — там интерфейс не реализуется.
+type ThreadStarter interface {
+	StartThread(ctx context.Context, n store.Note, postMsgID string) (threadID string, err error)
 }
 
 type Mirror struct {
 	st           *store.Store
 	site         SiteClient
-	sink         Sink
+	sinks        []Sink
 	log          *slog.Logger
 	alert        *alerter
 	notesLimit   int
 	feedInterval time.Duration
 	seedFirst    bool
-	subNotify    func(ctx context.Context, userID int64, n store.Note, c store.Comment)
+	subNotify    SubNotify
 
 	events chan string // id заметок для запуска воркеров
 }
 
 // Config — параметры зеркала. AlertSend (может быть nil) шлёт админу
 // уведомления о дрейфе вёрстки и блокировке сайта. SubNotify (может быть nil)
-// уведомляет подписчика о комментарии с ключевым словом — если задан, идёт
-// вместо Sink.NotifySubscriber (чтобы слать через ЛС-бота, которого
-// пользователь точно запускал).
+// уведомляет подписчика Telegram о комментарии с ключевым словом — если
+// задан, идёт вместо Sink.NotifySubscriber (чтобы слать через ЛС-бота,
+// которого пользователь точно запускал).
 type Config struct {
 	NotesLimit   int
 	FeedInterval time.Duration
 	SeedFirst    bool
 	AlertSend    func(ctx context.Context, text string)
-	SubNotify    func(ctx context.Context, userID int64, n store.Note, c store.Comment)
+	SubNotify    SubNotify
 }
 
-func New(st *store.Store, site SiteClient, sink Sink, cfg Config, log *slog.Logger) *Mirror {
+// New создаёт зеркало, публикующее во все переданные приёмники (fan-out).
+func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.Logger) *Mirror {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Mirror{
 		st:           st,
 		site:         site,
-		sink:         sink,
+		sinks:        sinks,
 		log:          log,
 		alert:        newAlerter(cfg.AlertSend, alertThreshold),
 		notesLimit:   cfg.NotesLimit,
@@ -250,20 +269,44 @@ func (m *Mirror) retryPending(ctx context.Context) {
 	}
 }
 
-// postNote отправляет заметку в канал (с аватаром живого автора, если есть)
-// и помечает её posted.
+// postNote отправляет заметку в каналы всех приёмников (с аватаром живого
+// автора, если есть) и, когда все приёмники отработали, помечает её posted.
+// Идемпотентность per-messenger — по message_targets: приёмник, уже
+// получивший пост, при ретрае пропускается.
 func (m *Mirror) postNote(ctx context.Context, n store.Note) bool {
 	avatar := m.fetchRealAvatar(ctx, n.AuthorAvatarURL)
-	tgID, err := m.sink.PostNote(ctx, n, avatar)
-	if err != nil {
-		m.log.Warn("пост заметки не удался, останется pending", "note", n.ID, "err", err)
+	allPosted := true
+	for _, sink := range m.sinks {
+		_, _, found, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, n.ID)
+		if err != nil {
+			m.log.Error("чтение цели поста", "note", n.ID, "sink", sink.Name(), "err", err)
+			allPosted = false
+			continue
+		}
+		if found {
+			continue
+		}
+		msgID, err := sink.PostNote(ctx, n, avatar)
+		if err != nil {
+			m.log.Warn("пост заметки не удался, останется pending",
+				"note", n.ID, "sink", sink.Name(), "err", err)
+			allPosted = false
+			continue
+		}
+		if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNotePost, n.ID, msgID, ""); err != nil {
+			m.log.Error("фиксация поста заметки", "note", n.ID, "sink", sink.Name(), "err", err)
+			allPosted = false
+			continue
+		}
+		m.log.Info("заметка запощена", "note", n.ID, "sink", sink.Name(), "message_id", msgID)
+	}
+	if !allPosted {
 		return false
 	}
-	if err := m.st.SetNotePosted(ctx, n.ID, tgID); err != nil {
-		m.log.Error("фиксация поста заметки", "note", n.ID, "err", err)
+	if err := m.st.SetNoteStatusPosted(ctx, n.ID); err != nil {
+		m.log.Error("фиксация статуса posted", "note", n.ID, "err", err)
 		return false
 	}
-	m.log.Info("заметка запощена", "note", n.ID, "tg_message_id", tgID)
 	select {
 	case m.events <- n.ID:
 	default:
@@ -333,8 +376,9 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 
 		// Сайт закрыл заметку для комментариев («не актуальна»): pollComments
 		// выше сделал финальный дозабор, дальше опрашивать нечего — в архив.
-		// Ждём пойманного треда, иначе застрявшим комментариям некуда уходить.
-		if n.CommentsClosed && n.TGThreadID != 0 {
+		// Ждём пойманных тредов во всех приёмниках, иначе застрявшим
+		// комментариям некуда уходить.
+		if n.CommentsClosed && m.allThreadsCaptured(ctx, n.ID) {
 			m.archiveNote(ctx, noteID, now, "заметка «не актуальна» — снята с отслеживания")
 			return
 		}
@@ -400,60 +444,111 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 		}
 	}
 
-	if n.TGThreadID == 0 {
-		// Автофорвард ещё не пойман: комментарии сохранены и уйдут
-		// следующим циклом, когда появится корень треда.
-		if fresh > 0 {
-			m.log.Info("тред ещё не пойман, комментарии в очереди", "note", n.ID, "queued", fresh)
-		}
-		return
-	}
-	m.sendUnsent(ctx, n)
+	m.sendUnsent(ctx, n, fresh)
 }
 
-// sendUnsent отправляет неотправленное содержимое заметки в тред: сперва
-// иллюстрации (они должны быть раньше комментариев), затем комментарии.
-func (m *Mirror) sendUnsent(ctx context.Context, n store.Note) {
-	if !m.sendUnsentImages(ctx, n) {
-		return // иллюстрацию не отправили — комментарии подождут (порядок)
+// startThread просит приёмник-ThreadStarter открыть тред заметки и
+// фиксирует пойманный корень. "" — приёмник не умеет или не смог (повторим
+// следующим циклом).
+func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) string {
+	ts, ok := sink.(ThreadStarter)
+	if !ok {
+		return ""
 	}
-	unsent, err := m.st.UnsentComments(ctx, n.ID)
+	postID, _, found, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, n.ID)
+	if err != nil || !found || postID == "" {
+		return ""
+	}
+	thread, err := ts.StartThread(ctx, n, postID)
 	if err != nil {
-		m.log.Error("чтение неотправленных комментариев", "note", n.ID, "err", err)
-		return
+		m.log.Warn("тред не открыт", "note", n.ID, "sink", sink.Name(), "err", err)
+		return ""
 	}
-	if len(unsent) == 0 {
-		return
+	if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNoteThread, n.ID, "", thread); err != nil {
+		m.log.Error("фиксация треда", "note", n.ID, "sink", sink.Name(), "err", err)
+		return ""
 	}
-	subs, err := m.st.Subscriptions(ctx)
-	if err != nil {
-		m.log.Error("чтение подписок", "err", err)
+	m.log.Info("тред открыт приёмником", "note", n.ID, "sink", sink.Name(), "thread", thread)
+	return thread
+}
+
+// allThreadsCaptured — во всех приёмниках пойман корень треда заметки.
+func (m *Mirror) allThreadsCaptured(ctx context.Context, noteID string) bool {
+	for _, sink := range m.sinks {
+		_, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, noteID)
+		if err != nil || !found || thread == "" {
+			return false
+		}
 	}
-	for _, c := range unsent {
-		avatar := m.fetchMedia(ctx, c.AvatarURL, "аватар комментария")
-		tgID, err := m.sink.PostComment(ctx, n, c, avatar)
+	return true
+}
+
+// sendUnsent отправляет неотправленное содержимое заметки в тред каждого
+// приёмника: сперва иллюстрации (они должны быть раньше комментариев), затем
+// комментарии. Приёмник без пойманного треда пропускается — его содержимое
+// уйдёт следующим циклом, когда появится корень треда.
+func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
+	var subs []store.Subscription
+	subsLoaded := false
+	for _, sink := range m.sinks {
+		_, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, n.ID)
 		if err != nil {
-			// Порядок важен: не перескакиваем через неотправленный.
-			m.log.Warn("пост комментария не удался", "comment", c.ID, "err", err)
-			return
+			m.log.Error("чтение цели треда", "note", n.ID, "sink", sink.Name(), "err", err)
+			continue
 		}
-		if err := m.st.SetCommentTGMessageID(ctx, c.ID, tgID); err != nil {
-			m.log.Error("фиксация поста комментария", "comment", c.ID, "err", err)
-			return
+		if !found || thread == "" {
+			thread = m.startThread(ctx, sink, n)
+			if thread == "" {
+				if fresh > 0 {
+					m.log.Info("тред ещё не пойман, комментарии в очереди",
+						"note", n.ID, "sink", sink.Name(), "queued", fresh)
+				}
+				continue
+			}
 		}
-		c.TGMessageID = tgID
-		m.notifySubscribers(ctx, subs, n, c)
+		if !m.sendUnsentImages(ctx, sink, thread, n) {
+			continue // иллюстрацию не отправили — комментарии подождут (порядок)
+		}
+		unsent, err := m.st.UnsentCommentsFor(ctx, sink.Name(), n.ID)
+		if err != nil {
+			m.log.Error("чтение неотправленных комментариев", "note", n.ID, "sink", sink.Name(), "err", err)
+			continue
+		}
+		if len(unsent) == 0 {
+			continue
+		}
+		if !subsLoaded {
+			subsLoaded = true
+			if subs, err = m.st.Subscriptions(ctx); err != nil {
+				m.log.Error("чтение подписок", "err", err)
+			}
+		}
+		for _, c := range unsent {
+			avatar := m.fetchMedia(ctx, c.AvatarURL, "аватар комментария")
+			msgID, err := sink.PostComment(ctx, n, thread, c, avatar)
+			if err != nil {
+				// Порядок важен: не перескакиваем через неотправленный.
+				m.log.Warn("пост комментария не удался", "comment", c.ID, "sink", sink.Name(), "err", err)
+				break
+			}
+			if err := m.st.SetTarget(ctx, sink.Name(), store.TargetComment,
+				strconv.FormatInt(c.ID, 10), msgID, ""); err != nil {
+				m.log.Error("фиксация поста комментария", "comment", c.ID, "sink", sink.Name(), "err", err)
+				break
+			}
+			m.notifySubscribers(ctx, subs, sink, n, c, thread, msgID)
+		}
 	}
 }
 
-// sendUnsentImages шлёт неотправленные иллюстрации заметки в тред. Возвращает
-// false, если отправка сорвалась (Telegram/фиксация) — цикл прерывается, чтобы
-// иллюстрация ушла раньше комментариев. Нескачавшуюся картинку пропускаем,
-// чтобы битый URL не блокировал комментарии навсегда.
-func (m *Mirror) sendUnsentImages(ctx context.Context, n store.Note) bool {
-	imgs, err := m.st.UnsentNoteImages(ctx, n.ID)
+// sendUnsentImages шлёт неотправленные иллюстрации заметки в тред приёмника.
+// Возвращает false, если отправка сорвалась (мессенджер/фиксация) — цикл
+// прерывается, чтобы иллюстрация ушла раньше комментариев. Нескачавшуюся
+// картинку пропускаем, чтобы битый URL не блокировал комментарии навсегда.
+func (m *Mirror) sendUnsentImages(ctx context.Context, sink Sink, thread string, n store.Note) bool {
+	imgs, err := m.st.UnsentNoteImagesFor(ctx, sink.Name(), n.ID)
 	if err != nil {
-		m.log.Error("чтение иллюстраций", "note", n.ID, "err", err)
+		m.log.Error("чтение иллюстраций", "note", n.ID, "sink", sink.Name(), "err", err)
 		return true
 	}
 	for _, img := range imgs {
@@ -462,16 +557,17 @@ func (m *Mirror) sendUnsentImages(ctx context.Context, n store.Note) bool {
 			m.log.Warn("иллюстрация не скачана, пропускаем", "note", n.ID, "url", img.URL, "err", err)
 			continue
 		}
-		tgID, err := m.sink.PostNoteImage(ctx, n.TGThreadID, img.URL, data)
+		msgID, err := sink.PostNoteImage(ctx, thread, img.URL, data)
 		if err != nil {
-			m.log.Warn("иллюстрация не отправлена в тред", "note", n.ID, "err", err)
+			m.log.Warn("иллюстрация не отправлена в тред", "note", n.ID, "sink", sink.Name(), "err", err)
 			return false
 		}
-		if err := m.st.SetNoteImageTGMessageID(ctx, img.ID, tgID); err != nil {
-			m.log.Error("фиксация иллюстрации", "note", n.ID, "err", err)
+		if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNoteImage,
+			strconv.FormatInt(img.ID, 10), msgID, ""); err != nil {
+			m.log.Error("фиксация иллюстрации", "note", n.ID, "sink", sink.Name(), "err", err)
 			return false
 		}
-		m.log.Info("иллюстрация отправлена в тред", "note", n.ID, "tg_message_id", tgID)
+		m.log.Info("иллюстрация отправлена в тред", "note", n.ID, "sink", sink.Name(), "message_id", msgID)
 	}
 	return true
 }
@@ -514,20 +610,22 @@ func isRealAvatar(url string) bool {
 	return strings.HasPrefix(url, "http") && !strings.Contains(url, "/static/")
 }
 
-// notifySubscribers шлёт ЛС подписчикам, чьё ключевое слово встретилось
-// в тексте комментария. Если задан subNotify (ЛС-бот) — шлём через него,
-// иначе — через основной sink (постер-бот).
-func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscription, n store.Note, c store.Comment) {
+// notifySubscribers шлёт ЛС подписчикам этого мессенджера, чьё ключевое
+// слово встретилось в тексте комментария. Для Telegram при заданном
+// subNotify (ЛС-бот) — шлём через него, иначе — через сам приёмник.
+func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscription,
+	sink Sink, n store.Note, c store.Comment, threadID, commentMsgID string) {
 	for _, sub := range subs {
-		if !strings.Contains(c.Text, sub.Keyword) {
+		if sub.Messenger != sink.Name() || !strings.Contains(c.Text, sub.Keyword) {
 			continue
 		}
-		if m.subNotify != nil {
-			m.subNotify(ctx, sub.TGUserID, n, c)
+		if sink.Name() == store.MessengerTelegram && m.subNotify != nil {
+			m.subNotify(ctx, sub.UserID, n, c, threadID, commentMsgID)
 			continue
 		}
-		if err := m.sink.NotifySubscriber(ctx, sub.TGUserID, n, c); err != nil {
-			m.log.Warn("уведомление подписчика не удалось", "user", sub.TGUserID, "err", err)
+		if err := sink.NotifySubscriber(ctx, sub.UserID, n, c, threadID, commentMsgID); err != nil {
+			m.log.Warn("уведомление подписчика не удалось",
+				"user", sub.UserID, "sink", sink.Name(), "err", err)
 		}
 	}
 }

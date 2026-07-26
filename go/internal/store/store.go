@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -90,7 +91,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 // InsertNote добавляет заметку, если её ещё нет. Возвращает true, если строка
-// действительно вставлена (для идемпотентного импорта и seed).
+// действительно вставлена (для идемпотентного импорта и seed). Ненулевые
+// телеграм-id (legacy-импорт) дублируются в message_targets.
 func (s *Store) InsertNote(ctx context.Context, n Note) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO notes
@@ -104,6 +106,18 @@ func (s *Store) InsertNote(ctx context.Context, n Note) (bool, error) {
 		return false, fmt.Errorf("insert note %s: %w", n.ID, err)
 	}
 	affected, _ := res.RowsAffected()
+	if affected > 0 && n.TGMessageID != 0 {
+		if err := s.SetTarget(ctx, MessengerTelegram, TargetNotePost, n.ID,
+			strconv.FormatInt(n.TGMessageID, 10), ""); err != nil {
+			return true, err
+		}
+	}
+	if affected > 0 && n.TGThreadID != 0 {
+		if err := s.SetTarget(ctx, MessengerTelegram, TargetNoteThread, n.ID,
+			"", strconv.FormatInt(n.TGThreadID, 10)); err != nil {
+			return true, err
+		}
+	}
 	return affected > 0, nil
 }
 
@@ -118,38 +132,8 @@ func (s *Store) InsertNoteImage(ctx context.Context, noteID string, position int
 	return nil
 }
 
-// UnsentNoteImages возвращает иллюстрации заметки, ещё не отправленные в тред.
-func (s *Store) UnsentNoteImages(ctx context.Context, noteID string) ([]NoteImage, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, note_id, position, url, tg_message_id
-		FROM note_images
-		WHERE note_id = ? AND tg_message_id IS NULL
-		ORDER BY position, id`, noteID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var imgs []NoteImage
-	for rows.Next() {
-		var img NoteImage
-		var tgMsg sql.NullInt64
-		if err := rows.Scan(&img.ID, &img.NoteID, &img.Position, &img.URL, &tgMsg); err != nil {
-			return nil, err
-		}
-		img.TGMessageID = tgMsg.Int64
-		imgs = append(imgs, img)
-	}
-	return imgs, rows.Err()
-}
-
-// SetNoteImageTGMessageID помечает иллюстрацию отправленной в тред.
-func (s *Store) SetNoteImageTGMessageID(ctx context.Context, imageID, tgMessageID int64) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE note_images SET tg_message_id = ? WHERE id = ?`, tgMessageID, imageID)
-	return err
-}
-
-// InsertComment добавляет комментарий, если его ещё нет.
+// InsertComment добавляет комментарий, если его ещё нет. Ненулевой
+// телеграм-id (legacy-импорт) дублируется в message_targets.
 func (s *Store) InsertComment(ctx context.Context, c Comment) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO comments
@@ -162,28 +146,34 @@ func (s *Store) InsertComment(ctx context.Context, c Comment) (bool, error) {
 		return false, fmt.Errorf("insert comment %d: %w", c.ID, err)
 	}
 	affected, _ := res.RowsAffected()
+	if affected > 0 && c.TGMessageID != 0 {
+		if err := s.SetTarget(ctx, MessengerTelegram, TargetComment,
+			strconv.FormatInt(c.ID, 10), strconv.FormatInt(c.TGMessageID, 10), ""); err != nil {
+			return true, err
+		}
+	}
 	return affected > 0, nil
 }
 
 // UpsertSession сохраняет куки пользователя (JSON), помечая сессию валидной.
-func (s *Store) UpsertSession(ctx context.Context, tgUserID int64, cookiesJSON string, now time.Time) error {
+func (s *Store) UpsertSession(ctx context.Context, messenger string, userID int64, cookiesJSON string, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (tg_user_id, cookies, valid, updated_at)
-		VALUES (?, ?, 1, ?)
-		ON CONFLICT(tg_user_id) DO UPDATE SET
+		INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at)
+		VALUES (?, ?, ?, 1, ?)
+		ON CONFLICT(messenger, user_id) DO UPDATE SET
 			cookies = excluded.cookies, valid = 1, updated_at = excluded.updated_at`,
-		tgUserID, cookiesJSON, fmtTime(now))
+		messenger, userID, cookiesJSON, fmtTime(now))
 	if err != nil {
-		return fmt.Errorf("upsert session %d: %w", tgUserID, err)
+		return fmt.Errorf("upsert session %s/%d: %w", messenger, userID, err)
 	}
 	return nil
 }
 
 // AddSubscription добавляет подписку на ключевое слово.
-func (s *Store) AddSubscription(ctx context.Context, keyword string, tgUserID int64) (bool, error) {
+func (s *Store) AddSubscription(ctx context.Context, messenger, keyword string, userID int64) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO subscriptions (keyword, tg_user_id) VALUES (?, ?)`,
-		keyword, tgUserID)
+		INSERT OR IGNORE INTO subscriptions (messenger, keyword, user_id) VALUES (?, ?, ?)`,
+		messenger, keyword, userID)
 	if err != nil {
 		return false, fmt.Errorf("insert subscription: %w", err)
 	}
@@ -193,10 +183,10 @@ func (s *Store) AddSubscription(ctx context.Context, keyword string, tgUserID in
 
 // RemoveSubscription убирает подписку пользователя на ключевое слово.
 // Возвращает true, если строка действительно была удалена.
-func (s *Store) RemoveSubscription(ctx context.Context, keyword string, tgUserID int64) (bool, error) {
+func (s *Store) RemoveSubscription(ctx context.Context, messenger, keyword string, userID int64) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		DELETE FROM subscriptions WHERE keyword = ? AND tg_user_id = ?`,
-		keyword, tgUserID)
+		DELETE FROM subscriptions WHERE messenger = ? AND keyword = ? AND user_id = ?`,
+		messenger, keyword, userID)
 	if err != nil {
 		return false, fmt.Errorf("delete subscription: %w", err)
 	}
@@ -205,9 +195,9 @@ func (s *Store) RemoveSubscription(ctx context.Context, keyword string, tgUserID
 }
 
 // SubscriptionsByUser возвращает ключевые слова, на которые подписан пользователь.
-func (s *Store) SubscriptionsByUser(ctx context.Context, tgUserID int64) ([]string, error) {
+func (s *Store) SubscriptionsByUser(ctx context.Context, messenger string, userID int64) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT keyword FROM subscriptions WHERE tg_user_id = ? ORDER BY keyword`, tgUserID)
+		SELECT keyword FROM subscriptions WHERE messenger = ? AND user_id = ? ORDER BY keyword`, messenger, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +268,24 @@ func (s *Store) CommentIDs(ctx context.Context, noteID string) (map[int64]bool, 
 		ids[id] = true
 	}
 	return ids, rows.Err()
+}
+
+func scanComment(rows *sql.Rows) (Comment, error) {
+	var c Comment
+	var published, createdAt sql.NullString
+	var tgMsg sql.NullInt64
+	if err := rows.Scan(&c.ID, &c.NoteID, &c.AuthorName, &c.AuthorAge,
+		&c.AuthorLink, &c.AvatarURL, &published, &c.Text, &tgMsg, &createdAt); err != nil {
+		return c, err
+	}
+	if published.Valid {
+		c.PublishedAt = parseTime(published.String)
+	}
+	if createdAt.Valid {
+		c.CreatedAt = parseTime(createdAt.String)
+	}
+	c.TGMessageID = tgMsg.Int64
+	return c, nil
 }
 
 func scanNote(rows *sql.Rows) (Note, error) {

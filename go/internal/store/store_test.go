@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -71,7 +72,7 @@ func TestNoteImagesUnsentAndMark(t *testing.T) {
 	if err := st.InsertNoteImage(ctx, "n1", 0, "https://cdn/a.jpg"); err != nil {
 		t.Fatal(err)
 	}
-	imgs, err := st.UnsentNoteImages(ctx, "n1")
+	imgs, err := st.UnsentNoteImagesFor(ctx, MessengerTelegram, "n1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +82,11 @@ func TestNoteImagesUnsentAndMark(t *testing.T) {
 	if imgs[0].URL != "https://cdn/a.jpg" {
 		t.Errorf("порядок нарушен: %q", imgs[0].URL)
 	}
-	if err := st.SetNoteImageTGMessageID(ctx, imgs[0].ID, 555); err != nil {
+	if err := st.SetTarget(ctx, MessengerTelegram, TargetNoteImage,
+		strconv.FormatInt(imgs[0].ID, 10), "555", ""); err != nil {
 		t.Fatal(err)
 	}
-	imgs, _ = st.UnsentNoteImages(ctx, "n1")
+	imgs, _ = st.UnsentNoteImagesFor(ctx, MessengerTelegram, "n1")
 	if len(imgs) != 1 || imgs[0].URL != "https://cdn/b.jpg" {
 		t.Fatalf("после отметки должна остаться одна иллюстрация b, получено %+v", imgs)
 	}
@@ -109,7 +111,7 @@ func TestDeleteNoteCascade(t *testing.T) {
 	if _, err := st.NoteByID(ctx, "n1"); err == nil {
 		t.Error("заметка должна быть удалена")
 	}
-	if imgs, _ := st.UnsentNoteImages(ctx, "n1"); len(imgs) != 0 {
+	if imgs, _ := st.UnsentNoteImagesFor(ctx, MessengerTelegram, "n1"); len(imgs) != 0 {
 		t.Errorf("иллюстрации должны быть удалены: %+v", imgs)
 	}
 	ids, _ := st.CommentIDs(ctx, "n1")
@@ -122,22 +124,22 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)
 
-	added, err := st.AddSubscription(ctx, "Граф", 42)
+	added, err := st.AddSubscription(ctx, MessengerTelegram, "Граф", 42)
 	if err != nil || !added {
 		t.Fatalf("первая подписка: added=%v err=%v", added, err)
 	}
-	added, _ = st.AddSubscription(ctx, "Граф", 42)
+	added, _ = st.AddSubscription(ctx, MessengerTelegram, "Граф", 42)
 	if added {
 		t.Error("дубль подписки должен игнорироваться")
 	}
-	if _, err := st.AddSubscription(ctx, "Барон", 42); err != nil {
+	if _, err := st.AddSubscription(ctx, MessengerTelegram, "Барон", 42); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddSubscription(ctx, "Граф", 99); err != nil {
+	if _, err := st.AddSubscription(ctx, MessengerTelegram, "Граф", 99); err != nil {
 		t.Fatal(err)
 	}
 
-	kws, err := st.SubscriptionsByUser(ctx, 42)
+	kws, err := st.SubscriptionsByUser(ctx, MessengerTelegram, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,16 +147,16 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 		t.Errorf("подписки пользователя 42: %v", kws)
 	}
 
-	removed, err := st.RemoveSubscription(ctx, "Граф", 42)
+	removed, err := st.RemoveSubscription(ctx, MessengerTelegram, "Граф", 42)
 	if err != nil || !removed {
 		t.Fatalf("удаление: removed=%v err=%v", removed, err)
 	}
-	removed, _ = st.RemoveSubscription(ctx, "Граф", 42)
+	removed, _ = st.RemoveSubscription(ctx, MessengerTelegram, "Граф", 42)
 	if removed {
 		t.Error("повторное удаление должно вернуть false")
 	}
 	// Подписка другого пользователя на «Граф» не затронута.
-	kws, _ = st.SubscriptionsByUser(ctx, 99)
+	kws, _ = st.SubscriptionsByUser(ctx, MessengerTelegram, 99)
 	if len(kws) != 1 || kws[0] != "Граф" {
 		t.Errorf("подписки пользователя 99: %v", kws)
 	}
@@ -191,11 +193,11 @@ func TestUpsertSessionOverwrites(t *testing.T) {
 	st := openTest(t)
 	now := time.Now()
 
-	if err := st.UpsertSession(ctx, 42, `[{"name":"old"}]`, now); err != nil {
+	if err := st.UpsertSession(ctx, MessengerTelegram, 42, `[{"name":"old"}]`, now); err != nil {
 		t.Fatal(err)
 	}
 	// Повторный /login заменяет куки той же строкой sessions.
-	if err := st.UpsertSession(ctx, 42, `[{"name":"new"}]`, now.Add(time.Hour)); err != nil {
+	if err := st.UpsertSession(ctx, MessengerTelegram, 42, `[{"name":"new"}]`, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 }

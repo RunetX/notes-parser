@@ -98,6 +98,9 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 // Start запускает long polling; блокируется до отмены контекста.
 func (m *Mirror) Start(ctx context.Context) { m.b.Start(ctx) }
 
+// Name — имя мессенджера для message_targets.
+func (m *Mirror) Name() string { return store.MessengerTelegram }
+
 // Me возвращает данные бота (диагностика).
 func (m *Mirror) Me(ctx context.Context) (*models.User, error) { return m.b.GetMe(ctx) }
 
@@ -105,7 +108,7 @@ func (m *Mirror) Me(ctx context.Context) (*models.User, error) { return m.b.GetM
 // аватара живого автора (nil для анонимов/силуэтов). Если аватар есть и весь
 // текст влезает в подпись к фото — постим фото с подписью; иначе полным
 // текстом без аватара. Контент заметки не режем ни при каких условиях.
-func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (int64, error) {
+func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error) {
 	text := ComposeNoteMessage(m.baseURL, m.signature, n)
 
 	if len(avatar) > 0 && visibleNoteLen(m.signature, n) <= captionLimit {
@@ -119,7 +122,7 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (int
 		})
 		if err == nil {
 			m.rememberFileID(n.AuthorAvatarURL, photoFileID(msg))
-			return int64(msg.ID), nil
+			return strconv.Itoa(msg.ID), nil
 		}
 		m.log.Warn("заметка с фото не отправлена, шлём текстом", "note", n.ID, "err", err)
 	}
@@ -133,9 +136,9 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (int
 		})
 	})
 	if err != nil {
-		return 0, fmt.Errorf("пост заметки %s в канал: %w", n.ID, err)
+		return "", fmt.Errorf("пост заметки %s в канал: %w", n.ID, err)
 	}
-	return int64(msg.ID), nil
+	return strconv.Itoa(msg.ID), nil
 }
 
 // PostComment постит комментарий в тред группы обсуждения. Короткий (влезает
@@ -143,8 +146,13 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (int
 // Длинный — обычным текстовым сообщением (до 4096), чтобы не резать текст:
 // подпись к медиа ограничена 1024, а на сайте комментарий целиком. avatar —
 // уже скачанные байты (Telegram не может забрать медиа love.ngs.ru по URL).
-func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment, avatar []byte) (int64, error) {
-	reply := &models.ReplyParameters{MessageID: int(n.TGThreadID)}
+// threadID — корень треда (id автофорварда) десятичной строкой.
+func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID string, c store.Comment, avatar []byte) (string, error) {
+	root, err := parseMessageID(threadID)
+	if err != nil {
+		return "", fmt.Errorf("пост комментария %d: %w", c.ID, err)
+	}
+	reply := &models.ReplyParameters{MessageID: root}
 
 	if len(avatar) > 0 && commentVisibleLen(c) <= captionLimit {
 		msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
@@ -160,7 +168,7 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment,
 			if msg.Document != nil {
 				m.rememberFileID(c.AvatarURL, msg.Document.FileID)
 			}
-			return int64(msg.ID), nil
+			return strconv.Itoa(msg.ID), nil
 		}
 		m.log.Warn("аватар-документ не отправлен, шлём комментарий текстом", "comment", c.ID, "err", err)
 	}
@@ -175,16 +183,20 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, c store.Comment,
 		})
 	})
 	if err != nil {
-		return 0, fmt.Errorf("пост комментария %d в тред: %w", c.ID, err)
+		return "", fmt.Errorf("пост комментария %d в тред: %w", c.ID, err)
 	}
-	return int64(msg.ID), nil
+	return strconv.Itoa(msg.ID), nil
 }
 
 // PostNoteImage постит иллюстрацию заметки первым сообщением в треде. Пробуем
 // как фото; если Telegram отверг (крупный размер/пропорции) — как документ,
 // чтобы иллюстрация всё же дошла.
-func (m *Mirror) PostNoteImage(ctx context.Context, threadRootID int64, imageURL string, image []byte) (int64, error) {
-	reply := &models.ReplyParameters{MessageID: int(threadRootID)}
+func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, image []byte) (string, error) {
+	root, err := parseMessageID(threadID)
+	if err != nil {
+		return "", fmt.Errorf("пост иллюстрации: %w", err)
+	}
+	reply := &models.ReplyParameters{MessageID: root}
 
 	msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 		return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
@@ -195,7 +207,7 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadRootID int64, imageURL
 	})
 	if err == nil {
 		m.rememberFileID(imageURL, photoFileID(msg))
-		return int64(msg.ID), nil
+		return strconv.Itoa(msg.ID), nil
 	}
 	m.log.Warn("иллюстрация как фото не отправлена, пробуем документом", "err", err)
 
@@ -207,12 +219,12 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadRootID int64, imageURL
 		})
 	})
 	if err != nil {
-		return 0, fmt.Errorf("пост иллюстрации в тред: %w", err)
+		return "", fmt.Errorf("пост иллюстрации в тред: %w", err)
 	}
 	if msg.Document != nil {
 		m.rememberFileID(imageURL, msg.Document.FileID)
 	}
-	return int64(msg.ID), nil
+	return strconv.Itoa(msg.ID), nil
 }
 
 // mediaInput отдаёт готовый file_id, если этот URL уже грузили в Telegram,
@@ -251,17 +263,36 @@ func photoFileID(msg *models.Message) string {
 }
 
 // NotifySubscriber шлёт подписчику ЛС с deep-link на комментарий.
-func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment) error {
-	_, err := send(ctx, m, userID, func(ctx context.Context) (*models.Message, error) {
+// threadID/commentMsgID — id корня треда и сообщения комментария (строками).
+func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) error {
+	root, err := parseMessageID(threadID)
+	if err != nil {
+		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
+	}
+	msgID, err := parseMessageID(commentMsgID)
+	if err != nil {
+		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
+	}
+	_, err = send(ctx, m, userID, func(ctx context.Context) (*models.Message, error) {
 		return m.b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: userID,
-			Text:   DeepLink(m.discussionChatID, c.TGMessageID, n.TGThreadID),
+			Text:   DeepLink(m.discussionChatID, int64(msgID), int64(root)),
 		})
 	})
 	if err != nil {
 		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
 	}
 	return nil
+}
+
+// parseMessageID разбирает телеграмный id сообщения из строкового вида
+// message_targets (id мессенджеров хранятся непрозрачными строками).
+func parseMessageID(s string) (int, error) {
+	id, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("не телеграмный id сообщения %q: %w", s, err)
+	}
+	return id, nil
 }
 
 // ErrPollingConflict — бота уже слушает другой процесс (HTTP 409):

@@ -73,7 +73,7 @@ func seedUserSession(t *testing.T, st *store.Store, uid int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertSession(context.Background(), uid, j, time.Now()); err != nil {
+	if err := st.UpsertSession(context.Background(), store.MessengerTelegram, uid, j, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -95,7 +95,7 @@ func TestReplyToThreadRootPostsComment(t *testing.T) {
 	// Заметка с пойманным тредом (корень = 900).
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	h.Handle(ctx, replyUpdate(900, 5, "мой ответ"))
 
@@ -117,7 +117,7 @@ func TestReplyToCommentPrefixesAuthor(t *testing.T) {
 	// Комментарий бота с tg_message_id=800 от автора «Мария».
 	st.InsertComment(ctx, store.Comment{ID: 42, NoteID: "n1", AuthorName: "Мария",
 		Text: "привет", CreatedAt: time.Now()})
-	st.SetCommentTGMessageID(ctx, 42, 800)
+	st.SetTarget(ctx, store.MessengerTelegram, store.TargetComment, "42", "800", "")
 
 	h.Handle(ctx, replyUpdate(800, 6, "и тебе привет"))
 
@@ -136,7 +136,7 @@ func TestReplyProcessedOnce(t *testing.T) {
 	seedUserSession(t, st, userID)
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	// Одно и то же обновление доставлено дважды (рестарт getUpdates).
 	upd := replyUpdate(900, 5, "ответ")
@@ -154,11 +154,11 @@ func TestReplyWithoutSessionNotifies(t *testing.T) {
 	// Сессию НЕ создаём.
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	// notify пишет в общий срез — проверяем, что был вызов.
 	var notified bool
-	h.notify = func(context.Context, int64, string) { notified = true }
+	h.core.notify = func(context.Context, int64, string) { notified = true }
 	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
 
 	if len(site.posts) != 0 {
@@ -175,7 +175,7 @@ func TestReplyToUnknownMessageIgnored(t *testing.T) {
 	seedUserSession(t, st, userID)
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	// Ответ на чужое сообщение (не корень треда и не наш комментарий).
 	h.Handle(ctx, replyUpdate(12345, 5, "ответ в никуда"))
@@ -191,7 +191,7 @@ func TestBotReplyIgnored(t *testing.T) {
 	seedUserSession(t, st, userID)
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	upd := replyUpdate(900, 5, "я бот")
 	upd.Message.From.IsBot = true
@@ -199,5 +199,48 @@ func TestBotReplyIgnored(t *testing.T) {
 
 	if len(site.posts) != 0 {
 		t.Errorf("ответы ботов игнорируются: %d", len(site.posts))
+	}
+}
+
+// Ядро с messenger=max: реплаи по строковым mid, включая ответ на комментарий.
+func TestCoreMaxReplies(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	site := &fakeSite{}
+	core := NewCore(st, site, nil, store.MessengerMax, slog.Default())
+
+	cookies := []*http.Cookie{{Name: "sid", Value: "live"}}
+	j, _ := love.CookiesToJSON(cookies, time.Now())
+	if err := st.UpsertSession(ctx, store.MessengerMax, userID, j, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted, FirstSeenAt: time.Now()})
+	st.SetTarget(ctx, store.MessengerMax, store.TargetNotePost, "n1", "mid.post", "")
+	st.SetTarget(ctx, store.MessengerMax, store.TargetNoteThread, "n1", "", "mid.root")
+	st.InsertComment(ctx, store.Comment{ID: 42, NoteID: "n1", AuthorName: "Мария",
+		Text: "привет", CreatedAt: time.Now()})
+	st.SetTarget(ctx, store.MessengerMax, store.TargetComment, "42", "mid.com42", "")
+
+	// Ответ на корень треда → комментарий к заметке.
+	core.ProcessReply(ctx, "mid.r1", userID, "mid.root", "мой ответ")
+	// Ответ на комментарий → префикс автора и com_api_id.
+	core.ProcessReply(ctx, "mid.r2", userID, "mid.com42", "и тебе привет")
+	// Повторная доставка того же ответа — дедуп.
+	core.ProcessReply(ctx, "mid.r1", userID, "mid.root", "мой ответ")
+	// Ответ на чужое сообщение — игнор.
+	core.ProcessReply(ctx, "mid.r3", userID, "mid.unknown", "в никуда")
+
+	if len(site.posts) != 2 {
+		t.Fatalf("постов на сайт: %d, %+v", len(site.posts), site.posts)
+	}
+	if p := site.posts[0]; p.noteID != "n1" || p.comAPIID != "" || p.text != "мой ответ" {
+		t.Errorf("ответ в корень: %+v", p)
+	}
+	if p := site.posts[1]; p.noteID != "n1" || p.comAPIID != "42" || p.text != "Мария, и тебе привет" {
+		t.Errorf("ответ на комментарий: %+v", p)
 	}
 }
