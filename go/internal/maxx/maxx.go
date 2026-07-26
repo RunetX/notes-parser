@@ -180,7 +180,7 @@ func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, n store.Not
 	msg := maxbot.NewMessage().
 		SetUser(userID).
 		SetText("🔔 Новый комментарий по вашему ключевому слову:\n" + link)
-	if _, err := m.send(ctx, dmLimiterKey(userID), msg); err != nil {
+	if _, err := m.send(ctx, userID, msg); err != nil {
 		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
 	}
 	return nil
@@ -188,7 +188,7 @@ func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, n store.Not
 
 // SendText шлёт обычное текстовое сообщение (алерты админу, doctor).
 func (m *Mirror) SendText(ctx context.Context, userID int64, text string) error {
-	_, err := m.send(ctx, dmLimiterKey(userID), maxbot.NewMessage().SetUser(userID).SetText(text))
+	_, err := m.send(ctx, userID, maxbot.NewMessage().SetUser(userID).SetText(text))
 	return err
 }
 
@@ -246,15 +246,9 @@ func isTooManyRequests(err error) bool {
 		strings.Contains(all, "429")
 }
 
-// dmLimiterKey — ключ лимитера для ЛС (не пересекается с id чатов: у чатов
-// MAX id положительные, ЛС-ключи держим отрицательными).
-func dmLimiterKey(userID int64) int64 {
-	if userID > 0 {
-		return -userID
-	}
-	return userID
-}
-
+// limiterFor — пер-чатовый лимитер. Ключи не пересекаются: id каналов и
+// групповых чатов MAX отрицательные (снято на Ф0-спайке), id пользователей
+// для ЛС — положительные.
 func (m *Mirror) limiterFor(key int64) *rate.Limiter {
 	m.mu.Lock()
 	defer m.mu.Unlock()
