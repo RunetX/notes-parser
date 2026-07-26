@@ -42,6 +42,15 @@ type Sink interface {
 // threadID/commentMsgID — id в мессенджере подписки (для deep-link).
 type SubNotify func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string)
 
+// ThreadStarter — приёмник, умеющий сам открыть тред обсуждения заметки
+// (MAX: «ручной автофорвард» — копия заметки в чат обсуждения). Если тред
+// не пойман и приёмник реализует интерфейс, mirror зовёт StartThread на
+// каждом цикле опроса до успеха. В Telegram тред ловит bridge по
+// автофорварду — там интерфейс не реализуется.
+type ThreadStarter interface {
+	StartThread(ctx context.Context, n store.Note, postMsgID string) (threadID string, err error)
+}
+
 type Mirror struct {
 	st           *store.Store
 	site         SiteClient
@@ -438,6 +447,31 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 	m.sendUnsent(ctx, n, fresh)
 }
 
+// startThread просит приёмник-ThreadStarter открыть тред заметки и
+// фиксирует пойманный корень. "" — приёмник не умеет или не смог (повторим
+// следующим циклом).
+func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) string {
+	ts, ok := sink.(ThreadStarter)
+	if !ok {
+		return ""
+	}
+	postID, _, found, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, n.ID)
+	if err != nil || !found || postID == "" {
+		return ""
+	}
+	thread, err := ts.StartThread(ctx, n, postID)
+	if err != nil {
+		m.log.Warn("тред не открыт", "note", n.ID, "sink", sink.Name(), "err", err)
+		return ""
+	}
+	if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNoteThread, n.ID, "", thread); err != nil {
+		m.log.Error("фиксация треда", "note", n.ID, "sink", sink.Name(), "err", err)
+		return ""
+	}
+	m.log.Info("тред открыт приёмником", "note", n.ID, "sink", sink.Name(), "thread", thread)
+	return thread
+}
+
 // allThreadsCaptured — во всех приёмниках пойман корень треда заметки.
 func (m *Mirror) allThreadsCaptured(ctx context.Context, noteID string) bool {
 	for _, sink := range m.sinks {
@@ -463,11 +497,14 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 			continue
 		}
 		if !found || thread == "" {
-			if fresh > 0 {
-				m.log.Info("тред ещё не пойман, комментарии в очереди",
-					"note", n.ID, "sink", sink.Name(), "queued", fresh)
+			thread = m.startThread(ctx, sink, n)
+			if thread == "" {
+				if fresh > 0 {
+					m.log.Info("тред ещё не пойман, комментарии в очереди",
+						"note", n.ID, "sink", sink.Name(), "queued", fresh)
+				}
+				continue
 			}
-			continue
 		}
 		if !m.sendUnsentImages(ctx, sink, thread, n) {
 			continue // иллюстрацию не отправили — комментарии подождут (порядок)
