@@ -34,6 +34,11 @@ const (
 // Переменная — для подмены в тестах.
 var retryAfter = 5 * time.Second
 
+// longPollTimeout — серверное удержание GET /updates. Должно быть заметно
+// меньше клиентского HTTP-таймаута (30 c в SDK и MintsifraClient), иначе
+// пустые long-poll'ы обрываются клиентским таймаутом (видно на проде).
+const longPollTimeout = 20 * time.Second
+
 // Mirror — MAX-сторона зеркала.
 type Mirror struct {
 	api              *maxbot.Api
@@ -73,7 +78,7 @@ func NewMirror(p Params, log *slog.Logger) (*Mirror, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	var opts []maxbot.Opt
+	opts := []maxbot.Opt{maxbot.WithPollingTimeout(longPollTimeout)}
 	if p.HTTPClient != nil {
 		opts = append(opts, maxbot.WithHTTPClient(p.HTTPClient))
 	}

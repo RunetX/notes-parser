@@ -436,3 +436,47 @@ func comments(f *fakeSink) int {
 	}
 	return n
 }
+
+// Заметка, запощенная до включения второго приёмника (нет note_post-цели),
+// в его цикле не участвует: комментарии ему не очередятся, а досрочная
+// архивация «не актуальна» не ждёт его треда.
+func TestPreexistingNoteSkipsLateSink(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		comments: map[string][]love.Comment{
+			"n1": {{ID: 1, AuthorName: "А", Text: "к"}},
+		},
+	}
+	tg := &fakeSink{name: store.MessengerTelegram}
+	mx := &fakeSink{name: store.MessengerMax}
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	// Заметка из «до-MAX» эпохи: телеграмные цели есть, MAX-целей нет.
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, TGThreadID: 900, FirstSeenAt: time.Now()})
+	st.MarkNoteCommentsClosed(ctx, "n1")
+
+	m := New(st, site, []Sink{tg, mx}, Config{NotesLimit: 5, FeedInterval: time.Minute}, slog.Default())
+	n, _ := st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+
+	if comments(tg) != 1 {
+		t.Errorf("комментарий должен уйти в telegram: %v", tg.calls)
+	}
+	if len(mx.calls) != 0 {
+		t.Errorf("MAX не должен участвовать в старой заметке: %v", mx.calls)
+	}
+
+	// Досрочная архивация не блокируется отсутствием MAX-треда.
+	done, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	m.pollNote(done, "n1")
+	n, _ = st.NoteByID(ctx, "n1")
+	if n.Status != store.StatusArchived {
+		t.Fatalf("закрытая до-MAX заметка должна уйти в архив, статус %q", n.Status)
+	}
+}

@@ -472,9 +472,18 @@ func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) strin
 	return thread
 }
 
-// allThreadsCaptured — во всех приёмниках пойман корень треда заметки.
+// allThreadsCaptured — во всех приёмниках, куда заметка зеркалилась, пойман
+// корень треда. Приёмник без note_post-цели (заметка запощена до его
+// включения) не учитывается: тред там не появится никогда.
 func (m *Mirror) allThreadsCaptured(ctx context.Context, noteID string) bool {
 	for _, sink := range m.sinks {
+		_, _, posted, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, noteID)
+		if err != nil {
+			return false
+		}
+		if !posted {
+			continue
+		}
 		_, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, noteID)
 		if err != nil || !found || thread == "" {
 			return false
@@ -491,6 +500,16 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 	var subs []store.Subscription
 	subsLoaded := false
 	for _, sink := range m.sinks {
+		// Заметка, не зеркалившаяся в этот приёмник (запощена до его
+		// включения), в его цикле не участвует: комментарии не очередятся.
+		_, _, posted, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, n.ID)
+		if err != nil {
+			m.log.Error("чтение цели поста", "note", n.ID, "sink", sink.Name(), "err", err)
+			continue
+		}
+		if !posted {
+			continue
+		}
 		_, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, n.ID)
 		if err != nil {
 			m.log.Error("чтение цели треда", "note", n.ID, "sink", sink.Name(), "err", err)
