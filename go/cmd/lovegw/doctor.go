@@ -80,21 +80,25 @@ func cmdDoctor(ctx context.Context, args []string) error {
 
 	tgCfg := cfg.Messengers.Telegram
 	mirrorOK := false
-	if tgCfg.Token == "" {
-		warn("постер-бот", "токен не задан")
-	} else if me, err := tgx.CheckToken(ctx, tgCfg.Token, tgClient); err != nil {
-		fail("постер-бот", err)
+	if !tgCfg.Enabled {
+		warn("telegram", "выключен (messengers.telegram.enabled=false) — проверки пропущены")
 	} else {
-		ok("постер-бот", "@"+me.Username)
-		mirrorOK = true
-	}
+		if tgCfg.Token == "" {
+			warn("постер-бот", "токен не задан")
+		} else if me, err := tgx.CheckToken(ctx, tgCfg.Token, tgClient); err != nil {
+			fail("постер-бот", err)
+		} else {
+			ok("постер-бот", "@"+me.Username)
+			mirrorOK = true
+		}
 
-	if tgCfg.DMToken == "" {
-		warn("ЛС-бот", "токен не задан")
-	} else if me, err := tgx.CheckToken(ctx, tgCfg.DMToken, tgClient); err != nil {
-		fail("ЛС-бот", err)
-	} else {
-		ok("ЛС-бот", "@"+me.Username)
+		if tgCfg.DMToken == "" {
+			warn("ЛС-бот", "токен не задан")
+		} else if me, err := tgx.CheckToken(ctx, tgCfg.DMToken, tgClient); err != nil {
+			fail("ЛС-бот", err)
+		} else {
+			ok("ЛС-бот", "@"+me.Username)
+		}
 	}
 
 	// MAX: проверка токена заодно проверяет TLS-доверие к platform-api2
