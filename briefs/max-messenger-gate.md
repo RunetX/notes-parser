@@ -1,8 +1,8 @@
 # Бриф: гейт мессенджеров + интеграция MAX
 
-- **Дата:** 2026-07-20
-- **Статус:** к реализации (стартуем завтра)
-- **Цель:** перед M7 (Docker) ввести мессенджер-гейт. **MAX — основной**, **Telegram — резервный и выключен по умолчанию**.
+- **Дата:** 2026-07-20; актуализирован 2026-07-26 (сверка с кодом — §3.5, §9)
+- **Статус:** к реализации
+- **Цель:** ввести мессенджер-гейт. **MAX — основной**, **Telegram — резервный и выключен по умолчанию**. M7 (Docker) уже выполнен — гейт встраивается в готовый деплой (§3.5).
 
 ---
 
@@ -117,9 +117,11 @@ CREATE INDEX idx_message_targets_thread ON message_targets(messenger, thread_id)
 - Обратная совместимость: если `messengers` нет, читать плоские `mirror_bot`/`dm_bot` как `telegram` (enabled по факту наличия токена). Плавный переход конфига.
 - `runDaemon`: поднять включённые мессенджеры, собрать `[]Sink` для `mirror`, по одному bridge/DM на мессенджер, `AdminNotify` — от primary (или от всех).
 
-### 3.5 Docker / сертификат Минцифры (M7)
+### 3.5 Docker / сертификат Минцифры
 
-- **Решение:** инъектировать CA в `http.Client` (self-contained, как `tgx.ProxyClient`) — не полагаемся на cert-store образа. Встроить `russian_trusted_root_ca` + `russian_trusted_sub_ca` (PEM) в бинарник через `//go:embed`, добавить к `x509.SystemCertPool()` в TLS-конфиге MAX-клиента.
+- **M7 уже выполнен** (коммит `0bc9ba4`, до фиксации этого брифа): multi-stage `go/Dockerfile`, `CGO_ENABLED=0` → `distroless/static` (~23 МБ, tzdata вшит через `time/tzdata`); `deploy/` — docker-compose + systemd-юнит + runbook; конфиг монтируется как `/config.json`, БД в томе `/data`, секреты через env (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`).
+- **Решение по CA:** инъектировать CA в `http.Client` (self-contained, как `tgx.ProxyClient`). В `distroless/static` системного cert-store нет, так что это единственный практичный путь: встроить `russian_trusted_root_ca` + `russian_trusted_sub_ca` (PEM) в бинарник через `//go:embed`, добавить к `x509.SystemCertPool()` в TLS-конфиге MAX-клиента.
+- **Сетевая топология:** Bot API Telegram ходит через SOCKS5 (`telegram_proxy`, `internal/tgx/proxy.go`), сайт — напрямую с российского IP. MAX — российский сервис, `platform-api2.max.ru` доступен с того же IP напрямую: **прокси maxx-клиенту не нужен**, только CA.
 - Проверить `doctor`: добавить чек доступности `platform-api2.max.ru` (иначе на не-настроенном CA — молчаливый TLS-фейл).
 
 ---
@@ -134,7 +136,7 @@ CREATE INDEX idx_message_targets_thread ON message_targets(messenger, thread_id)
 | 3 | `maxx`: Sink + канал/чат-обсуждения + bridge | да | Заметка → канал+чат; ответ в MAX → комментарий на сайт |
 | 4 | Config-гейт + дуал + TG off по умолчанию | нет | Один конфиг гоняет MAX/оба; дефолт — только MAX |
 | 5 | РюмкинЪ-MAX (ЛС: /login, заметки, подписки) | да | Полный ЛС-функционал в MAX |
-| 6 | Docker + CA Минцифры + деплой (M7) | — | Образ ходит в `platform-api2` из distroless |
+| 6 | CA Минцифры в бинарник + doctor-чек (Docker/деплой уже есть, §3.5) | — | Образ ходит в `platform-api2` из distroless |
 
 **Порядок старта:** Ф1 → Ф2 (фундамент, без токена, TG не ломаем) параллельно с поднятием MAX-бота под Ф0-спайк.
 
@@ -183,8 +185,9 @@ CREATE INDEX idx_message_targets_thread ON message_targets(messenger, thread_id)
 
 ---
 
-## 9. Текущее состояние проекта (на момент брифа)
-- Проект полностью на Go (Python-легаси удалён, коммит `7401510`).
-- Демон **не запущен** (последний exe пересобран, БД на `user_version 3`).
-- Последняя фича: досрочная архивация заметок «не актуальна» (коммит `ca661e6`).
-- Рабочее дерево чистое; корень: `.git`, `.gitignore`, `.vscode`, `.claude`, `CLAUDE.md`, `README.md`, `go/`, `briefs/`.
+## 9. Текущее состояние проекта (актуализировано 2026-07-26)
+- **Ядро, на которое опирается план, с 20.07 не менялось:** `internal/mirror` (тот же `Sink`, один приёмник), `internal/store` (схема основной БД на `user_version 3` — миграция v4 из §3.1 ложится как есть), `internal/config` (плоские `mirror_bot`/`dm_bot` + `telegram_proxy` — обратная совместимость из §3.4 актуальна), `tgx`/`bridge`/`dmbot` без изменений. План §3 в силе без правок.
+- Появился офлайн-контур `internal/archive`: отдельная БД `archive.db` со **своей** схемой и миграциями + команды `grab`/`export`/`backfill`/`personas` (аналитика поверх архива). С рабочей БД демона не пересекается и на план MAX не влияет; нумерация миграций в §3.1 относится к основной БД (`internal/store`), не к архивной.
+- `internal/love` расширен парсерами (древовидный вид комментариев, шапка заметки, профили/пол через мобильную версию); интерфейс `SiteClient`, который потребляет `mirror`, не менялся.
+- M7 (Docker + артефакты деплоя) выполнен — детали в §3.5.
+- Проект полностью на Go (Python-легаси удалён, коммит `7401510`). Корень: `CLAUDE.md`, `README.md`, `briefs/`, `deploy/`, `docs/`, `go/`.
