@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +32,8 @@ type fakeMax struct {
 	chatGets  int // обращений GET /chats/<id> (ссылка чата)
 	failFirst int // столько первых /messages ответить 429
 	seq       int
+
+	markerSeen atomic.Int64 // последний маркер, переданный в GET /updates
 }
 
 type sentMessage struct {
@@ -76,6 +80,23 @@ func (f *fakeMax) server() *httptest.Server {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	srv := httptest.NewServer(mux)
+	mux.HandleFunc("GET /updates", func(w http.ResponseWriter, r *http.Request) {
+		marker, _ := strconv.ParseInt(r.URL.Query().Get("marker"), 10, 64)
+		if marker > f.markerSeen.Load() {
+			f.markerSeen.Store(marker)
+		}
+		if marker == 0 {
+			// Первый вызов: один апдейт message_created, маркер = 2.
+			_, _ = w.Write([]byte(`{"updates":[{"update_type":"message_created",` +
+				`"timestamp":1,"message":{"recipient":{"chat_id":200,"chat_type":"chat"},` +
+				`"body":{"mid":"mid.upd1","text":"привет"},` +
+				`"sender":{"user_id":1,"is_bot":false}}}],"marker":2}`))
+			return
+		}
+		// Дальше — пусто, с паузой (иначе тест закрутит горячий цикл).
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"updates":[],"marker":` + strconv.FormatInt(marker, 10) + `}`))
+	})
 	mux.HandleFunc("GET /chats/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.chatGets++

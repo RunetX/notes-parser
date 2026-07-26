@@ -70,8 +70,10 @@ messages, and all user-facing bot strings are in Russian.
     reply-based comments, media upload with URL→token cache, per-chat limiters
     + 429 retry. TLS to MAX needs the Russian Trusted CA chain: official PEMs
     are `go:embed`-ded from `maxx/cacert/` when present at build time (see the
-    README there), otherwise the host trust store is used. The MAX bridge and
-    DM bot are deferred until the live-bot spike (`briefs/max-messenger-gate.md`, Ф0).
+    README there), otherwise the host trust store is used. `updates.go` runs
+    long polling (`GetUpdates(marker)`) and dispatches: discussion-chat
+    replies → `bridge.Core`, dialog messages → `dmbot.Logic` — one MAX bot
+    covers channel, chat and DMs.
   - `mirror` — feed watcher + one goroutine per active note with an adaptive
     poll interval; consumes a list of `Sink`s (fan-out: Telegram and MAX can
     mirror in parallel, each with its own thread per note via
@@ -83,11 +85,13 @@ messages, and all user-facing bot strings are in Russian.
     that state is the feed link text, so it's a soft optimization (falls back to
     the week-based archival on wording drift). `mirror.Config.AlertSend` DMs the
     admin after 3 consecutive markup-drift or 403 failures and again on recovery.
-  - `bridge` — auto-forward capture (linking a channel post to its discussion
-    thread) + reply→site comment, at-most-once via `processed_replies`.
-  - `dmbot` — РюмкинЪ; dialog state persisted in `dialog_states`. Commands:
-    `/login`, `/add_note`, `/add_anonymous_note`, `/status`, `/subscribe`,
-    `/unsubscribe`, `/mysubs`.
+  - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
+    via `processed_replies`, per messenger) + the Telegram handler with
+    auto-forward capture (linking a channel post to its discussion thread).
+  - `dmbot` — РюмкинЪ; messenger-agnostic dialog engine `Logic` (state in
+    `dialog_states`, transport behind an interface — Telegram wrapper here,
+    MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
+    `/add_anonymous_note`, `/status`, `/subscribe`, `/unsubscribe`, `/mysubs`.
   - `legacy` — one-shot importer of old JSON state.
 - Reply→site and note-post reuse saved cookie sessions; a 401/403 marks the
   session invalid and DMs the user to re-`/login`. Admin alerts require

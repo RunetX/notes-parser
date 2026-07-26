@@ -169,8 +169,8 @@ func cmdRun(ctx context.Context, args []string) error {
 
 // runDaemon собирает включённые мессенджеры (гейт messengers) и крутит все
 // компоненты под общим errgroup. Telegram поднимает полный контур (зеркало,
-// мост, ЛС-бот); MAX в v1 — только публикацию (Sink + треды через
-// StartThread), мост и ЛС-бот MAX появятся после Ф0-спайка.
+// мост, ЛС-бот РюмкинЪ); MAX — зеркало + мост + ЛС-диалоги, всё через
+// одного бота (long polling GetUpdates).
 func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bool, log *slog.Logger) error {
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
@@ -273,6 +273,15 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				}
 			})
 		}
+
+		// Мост «ответ в чате MAX → комментарий на сайте» и ЛС-диалоги
+		// (/login, заметки, подписки) — через того же бота.
+		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
+		maxDM := dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
+		g.Go(func() error {
+			mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
+			return nil
+		})
 	}
 
 	mir := mirror.New(st, client, sinks, mirror.Config{
