@@ -82,7 +82,7 @@ func (d *Bot) handle(ctx context.Context, u *models.Update) {
 	}
 	chatID := msg.Chat.ID
 
-	state, err := d.st.DialogState(ctx, chatID)
+	state, err := d.st.DialogState(ctx, store.MessengerTelegram, chatID)
 	if err != nil {
 		d.log.Error("чтение состояния диалога", "user", chatID, "err", err)
 		return
@@ -91,7 +91,7 @@ func (d *Bot) handle(ctx context.Context, u *models.Update) {
 	// Команда прерывает любой текущий диалог.
 	if cmd := command(msg.Text); cmd != "" {
 		if state != "" {
-			_ = d.st.ClearDialogState(ctx, chatID)
+			_ = d.st.ClearDialogState(ctx, store.MessengerTelegram, chatID)
 		}
 		d.handleCommand(ctx, chatID, cmd, msg)
 		return
@@ -136,7 +136,7 @@ func (d *Bot) handleSubscribe(ctx context.Context, chatID int64, keyword string)
 		d.send(ctx, chatID, "Укажите слово: /subscribe <ключевое слово>")
 		return
 	}
-	added, err := d.st.AddSubscription(ctx, keyword, chatID)
+	added, err := d.st.AddSubscription(ctx, store.MessengerTelegram, keyword, chatID)
 	if err != nil {
 		d.log.Error("подписка", "user", chatID, "err", err)
 		d.send(ctx, chatID, msgInternalError)
@@ -155,7 +155,7 @@ func (d *Bot) handleUnsubscribe(ctx context.Context, chatID int64, keyword strin
 		d.send(ctx, chatID, "Укажите слово: /unsubscribe <ключевое слово>")
 		return
 	}
-	removed, err := d.st.RemoveSubscription(ctx, keyword, chatID)
+	removed, err := d.st.RemoveSubscription(ctx, store.MessengerTelegram, keyword, chatID)
 	if err != nil {
 		d.log.Error("отписка", "user", chatID, "err", err)
 		d.send(ctx, chatID, msgInternalError)
@@ -170,7 +170,7 @@ func (d *Bot) handleUnsubscribe(ctx context.Context, chatID int64, keyword strin
 
 // handleMySubs показывает список ключевых слов пользователя.
 func (d *Bot) handleMySubs(ctx context.Context, chatID int64) {
-	keywords, err := d.st.SubscriptionsByUser(ctx, chatID)
+	keywords, err := d.st.SubscriptionsByUser(ctx, store.MessengerTelegram, chatID)
 	if err != nil {
 		d.log.Error("список подписок", "user", chatID, "err", err)
 		d.send(ctx, chatID, msgInternalError)
@@ -189,10 +189,10 @@ func (d *Bot) handleStateInput(ctx context.Context, chatID int64, state string, 
 		d.tryLogin(ctx, chatID, msg)
 	case stateAwaitNote:
 		d.addNote(ctx, chatID, msg.Text, false)
-		_ = d.st.ClearDialogState(ctx, chatID)
+		_ = d.st.ClearDialogState(ctx, store.MessengerTelegram, chatID)
 	case stateAwaitAnonNote:
 		d.addNote(ctx, chatID, msg.Text, true)
-		_ = d.st.ClearDialogState(ctx, chatID)
+		_ = d.st.ClearDialogState(ctx, store.MessengerTelegram, chatID)
 	}
 }
 
@@ -223,17 +223,17 @@ func (d *Bot) tryLogin(ctx context.Context, chatID int64, msg *models.Message) {
 		d.send(ctx, chatID, msgInternalError)
 		return
 	}
-	if err := d.st.UpsertSession(ctx, chatID, cookiesJSON, time.Now()); err != nil {
+	if err := d.st.UpsertSession(ctx, store.MessengerTelegram, chatID, cookiesJSON, time.Now()); err != nil {
 		d.log.Error("сохранение сессии", "user", chatID, "err", err)
 		d.send(ctx, chatID, "Не удалось сохранить сессию, попробуйте позже")
 		return
 	}
-	_ = d.st.ClearDialogState(ctx, chatID)
+	_ = d.st.ClearDialogState(ctx, store.MessengerTelegram, chatID)
 	d.send(ctx, chatID, "Успешный вход. Теперь ваши ответы в обсуждениях попадут на сайт")
 }
 
 func (d *Bot) addNote(ctx context.Context, chatID int64, text string, anonymous bool) {
-	cookiesJSON, valid, err := d.st.SessionCookies(ctx, chatID)
+	cookiesJSON, valid, err := d.st.SessionCookies(ctx, store.MessengerTelegram, chatID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !valid) {
 		d.send(ctx, chatID, "Сначала войдите на сайт: /login")
 		return
@@ -245,7 +245,7 @@ func (d *Bot) addNote(ctx context.Context, chatID int64, text string, anonymous 
 	}
 	cookies, err := love.CookiesFromJSON([]byte(cookiesJSON), time.Now())
 	if err != nil || len(cookies) == 0 {
-		_ = d.st.SetSessionValid(ctx, chatID, false, time.Now())
+		_ = d.st.SetSessionValid(ctx, store.MessengerTelegram, chatID, false, time.Now())
 		d.send(ctx, chatID, "Сессия истекла. Сделайте /login ещё раз")
 		return
 	}
@@ -254,12 +254,12 @@ func (d *Bot) addNote(ctx context.Context, chatID int64, text string, anonymous 
 		d.send(ctx, chatID, "Не удалось опубликовать заметку, попробуйте позже")
 		return
 	}
-	_ = d.st.SetSessionValid(ctx, chatID, true, time.Now())
+	_ = d.st.SetSessionValid(ctx, store.MessengerTelegram, chatID, true, time.Now())
 	d.send(ctx, chatID, "Заметка отправлена на сайт")
 }
 
 func (d *Bot) handleStatus(ctx context.Context, chatID int64) {
-	_, valid, err := d.st.SessionCookies(ctx, chatID)
+	_, valid, err := d.st.SessionCookies(ctx, store.MessengerTelegram, chatID)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		d.send(ctx, chatID, "Сессия не найдена. Для отправки на сайт сделайте /login")
@@ -274,7 +274,7 @@ func (d *Bot) handleStatus(ctx context.Context, chatID int64) {
 }
 
 func (d *Bot) setState(ctx context.Context, chatID int64, state string) {
-	if err := d.st.SetDialogState(ctx, chatID, state, time.Now()); err != nil {
+	if err := d.st.SetDialogState(ctx, store.MessengerTelegram, chatID, state, time.Now()); err != nil {
 		d.log.Error("сохранение состояния диалога", "user", chatID, "err", err)
 	}
 }

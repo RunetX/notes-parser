@@ -73,7 +73,7 @@ func seedUserSession(t *testing.T, st *store.Store, uid int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertSession(context.Background(), uid, j, time.Now()); err != nil {
+	if err := st.UpsertSession(context.Background(), store.MessengerTelegram, uid, j, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -95,7 +95,7 @@ func TestReplyToThreadRootPostsComment(t *testing.T) {
 	// Заметка с пойманным тредом (корень = 900).
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	h.Handle(ctx, replyUpdate(900, 5, "мой ответ"))
 
@@ -117,7 +117,7 @@ func TestReplyToCommentPrefixesAuthor(t *testing.T) {
 	// Комментарий бота с tg_message_id=800 от автора «Мария».
 	st.InsertComment(ctx, store.Comment{ID: 42, NoteID: "n1", AuthorName: "Мария",
 		Text: "привет", CreatedAt: time.Now()})
-	st.SetCommentTGMessageID(ctx, 42, 800)
+	st.SetTarget(ctx, store.MessengerTelegram, store.TargetComment, "42", "800", "")
 
 	h.Handle(ctx, replyUpdate(800, 6, "и тебе привет"))
 
@@ -136,7 +136,7 @@ func TestReplyProcessedOnce(t *testing.T) {
 	seedUserSession(t, st, userID)
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	// Одно и то же обновление доставлено дважды (рестарт getUpdates).
 	upd := replyUpdate(900, 5, "ответ")
@@ -154,7 +154,7 @@ func TestReplyWithoutSessionNotifies(t *testing.T) {
 	// Сессию НЕ создаём.
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	// notify пишет в общий срез — проверяем, что был вызов.
 	var notified bool
@@ -175,7 +175,7 @@ func TestReplyToUnknownMessageIgnored(t *testing.T) {
 	seedUserSession(t, st, userID)
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	// Ответ на чужое сообщение (не корень треда и не наш комментарий).
 	h.Handle(ctx, replyUpdate(12345, 5, "ответ в никуда"))
@@ -191,7 +191,7 @@ func TestBotReplyIgnored(t *testing.T) {
 	seedUserSession(t, st, userID)
 	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
 		TGMessageID: 10, FirstSeenAt: time.Now()})
-	st.SetNoteThreadIDByMessageID(ctx, 10, 900)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
 
 	upd := replyUpdate(900, 5, "я бот")
 	upd.Message.From.IsBot = true

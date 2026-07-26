@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,29 +37,39 @@ type sinkCall struct {
 }
 
 type fakeSink struct {
+	name   string
 	calls  []sinkCall
 	nextID int64
 }
 
-func (f *fakeSink) PostNote(_ context.Context, n store.Note, _ []byte) (int64, error) {
+func (f *fakeSink) Name() string {
+	if f.name == "" {
+		return store.MessengerTelegram
+	}
+	return f.name
+}
+
+func (f *fakeSink) id() string { return strconv.FormatInt(f.nextID, 10) }
+
+func (f *fakeSink) PostNote(_ context.Context, n store.Note, _ []byte) (string, error) {
 	f.nextID++
 	f.calls = append(f.calls, sinkCall{kind: "note", noteID: n.ID})
-	return f.nextID, nil
+	return f.id(), nil
 }
 
-func (f *fakeSink) PostComment(_ context.Context, n store.Note, c store.Comment, _ []byte) (int64, error) {
+func (f *fakeSink) PostComment(_ context.Context, n store.Note, _ string, c store.Comment, _ []byte) (string, error) {
 	f.nextID++
 	f.calls = append(f.calls, sinkCall{kind: "comment", noteID: n.ID, comID: c.ID})
-	return f.nextID, nil
+	return f.id(), nil
 }
 
-func (f *fakeSink) PostNoteImage(_ context.Context, _ int64, imageURL string, _ []byte) (int64, error) {
+func (f *fakeSink) PostNoteImage(_ context.Context, _ string, imageURL string, _ []byte) (string, error) {
 	f.nextID++
 	f.calls = append(f.calls, sinkCall{kind: "image", noteID: imageURL})
-	return f.nextID, nil
+	return f.id(), nil
 }
 
-func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, n store.Note, c store.Comment) error {
+func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, n store.Note, c store.Comment, _, _ string) error {
 	f.calls = append(f.calls, sinkCall{kind: "notify", noteID: n.ID, comID: c.ID, userID: userID})
 	return nil
 }
@@ -75,7 +86,7 @@ func newTestMirrorAlert(t *testing.T, site *fakeSite, sink *fakeSink, seed bool,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	m := New(st, site, sink, Config{
+	m := New(st, site, []Sink{sink}, Config{
 		NotesLimit:   5,
 		FeedInterval: time.Minute,
 		SeedFirst:    seed,
@@ -163,7 +174,8 @@ func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 	}
 
 	// Автофорвард пойман — застрявшие уходят от старых к новым.
-	noteID, ok, err := st.SetNoteThreadIDByMessageID(ctx, n.TGMessageID, 777)
+	noteID, ok, err := st.CaptureNoteThread(ctx, store.MessengerTelegram,
+		strconv.FormatInt(n.TGMessageID, 10), "777")
 	if err != nil || !ok || noteID != "n1" {
 		t.Fatalf("захват треда: %q %v %v", noteID, ok, err)
 	}
@@ -202,7 +214,7 @@ func TestNoteImagePostedBeforeComments(t *testing.T) {
 	m.feedCycle(ctx, false) // постит n1 и сохраняет её иллюстрацию
 
 	n, _ := st.NoteByID(ctx, "n1")
-	st.SetNoteThreadIDByMessageID(ctx, n.TGMessageID, 777)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, strconv.FormatInt(n.TGMessageID, 10), "777")
 	n, _ = st.NoteByID(ctx, "n1")
 	m.pollComments(ctx, n)
 
@@ -240,7 +252,7 @@ func TestWorkerArchivesClosedNote(t *testing.T) {
 		t.Fatal("обход ленты должен пометить заметку закрытой")
 	}
 	// Ловим тред, чтобы финальный дозабор комментариев прошёл.
-	st.SetNoteThreadIDByMessageID(ctx, n.TGMessageID, 777)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, strconv.FormatInt(n.TGMessageID, 10), "777")
 
 	// Закрытая заметка архивируется на первой же итерации (без сна), поэтому
 	// pollNote завершается быстро; таймаут — страховка от зависания при регрессе.
@@ -275,8 +287,8 @@ func TestNotifySubscribersOnKeyword(t *testing.T) {
 	sink := &fakeSink{}
 	m, st := newTestMirror(t, site, sink, false)
 	m.feedCycle(ctx, false)
-	st.AddSubscription(ctx, "рюмк", 42)
-	st.SetNoteThreadIDByMessageID(ctx, 1, 777)
+	st.AddSubscription(ctx, store.MessengerTelegram, "рюмк", 42)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
 
 	n, _ := st.NoteByID(ctx, "n1")
 	m.pollComments(ctx, n)
@@ -361,4 +373,66 @@ func TestShouldArchive(t *testing.T) {
 	if !ShouldArchive(now, now.Add(-3*week), now.Add(-2*week)) {
 		t.Error("неделя тишины — в архив")
 	}
+}
+
+func TestFanOutDualSinks(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes: []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{
+			"n1": {{ID: 1, AuthorName: "А", Text: "первый"}},
+		},
+	}
+	tg := &fakeSink{name: store.MessengerTelegram}
+	mx := &fakeSink{name: store.MessengerMax}
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	m := New(st, site, []Sink{tg, mx}, Config{NotesLimit: 5, FeedInterval: time.Minute}, slog.Default())
+
+	m.feedCycle(ctx, false)
+	if len(tg.calls) != 1 || len(mx.calls) != 1 {
+		t.Fatalf("заметка должна уйти в оба приёмника: tg=%v max=%v", tg.calls, mx.calls)
+	}
+	// Повторный цикл идемпотентен для обоих.
+	m.feedCycle(ctx, false)
+	if len(tg.calls) != 1 || len(mx.calls) != 1 {
+		t.Fatalf("повторный цикл не должен постить: tg=%v max=%v", tg.calls, mx.calls)
+	}
+
+	// Тред пойман только в MAX — комментарий уходит только туда.
+	msgID, _, _, _ := st.Target(ctx, store.MessengerMax, store.TargetNotePost, "n1")
+	if _, ok, err := st.CaptureNoteThread(ctx, store.MessengerMax, msgID, "mid.th1"); err != nil || !ok {
+		t.Fatalf("захват треда max: %v %v", ok, err)
+	}
+	n, _ := st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+	if comments(mx) != 1 {
+		t.Errorf("комментарий должен уйти в max: %v", mx.calls)
+	}
+	if comments(tg) != 0 {
+		t.Errorf("в telegram тред не пойман — комментарий рано: %v", tg.calls)
+	}
+
+	// Догнал и telegram.
+	tgMsg, _, _, _ := st.Target(ctx, store.MessengerTelegram, store.TargetNotePost, "n1")
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, tgMsg, "777")
+	n, _ = st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+	if comments(tg) != 1 || comments(mx) != 1 {
+		t.Errorf("после захвата треда telegram комментарий доехал ровно по разу: tg=%v max=%v", tg.calls, mx.calls)
+	}
+}
+
+// comments — число comment-вызовов приёмника.
+func comments(f *fakeSink) int {
+	n := 0
+	for _, c := range f.calls {
+		if c.kind == "comment" {
+			n++
+		}
+	}
+	return n
 }

@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -195,15 +196,21 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
 	// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
-	var subNotify func(ctx context.Context, userID int64, n store.Note, c store.Comment)
+	var subNotify mirror.SubNotify
 	if dm != nil {
-		subNotify = func(ctx context.Context, userID int64, n store.Note, c store.Comment) {
-			link := tgx.DeepLink(cfg.MirrorBot.DiscussionChatID, c.TGMessageID, n.TGThreadID)
+		subNotify = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
+			root, err1 := strconv.ParseInt(threadID, 10, 64)
+			msgID, err2 := strconv.ParseInt(commentMsgID, 10, 64)
+			if err1 != nil || err2 != nil {
+				log.Warn("уведомление подписчика: не телеграмные id", "thread", threadID, "msg", commentMsgID)
+				return
+			}
+			link := tgx.DeepLink(cfg.MirrorBot.DiscussionChatID, msgID, root)
 			dm.Notify(ctx, userID, "🔔 Новый комментарий по вашему ключевому слову:\n"+link)
 		}
 	}
 
-	mir := mirror.New(st, client, tg, mirror.Config{
+	mir := mirror.New(st, client, []mirror.Sink{tg}, mirror.Config{
 		NotesLimit:   cfg.NotesLimit,
 		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
 		SeedFirst:    seed,

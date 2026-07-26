@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,7 +76,8 @@ func (h *Handler) captureForward(ctx context.Context, msg *models.Message) {
 	if origin.Chat.ID != h.channelID {
 		return
 	}
-	noteID, ok, err := h.st.SetNoteThreadIDByMessageID(ctx, int64(origin.MessageID), int64(msg.ID))
+	noteID, ok, err := h.st.CaptureNoteThread(ctx, store.MessengerTelegram,
+		strconv.Itoa(origin.MessageID), strconv.Itoa(msg.ID))
 	if err != nil {
 		h.log.Error("захват автофорварда", "channel_message", origin.MessageID, "err", err)
 		return
@@ -98,7 +100,7 @@ func (h *Handler) processReply(ctx context.Context, msg *models.Message) {
 	}
 	userID := msg.From.ID
 
-	fresh, err := h.st.TryMarkReplyProcessed(ctx, int64(msg.ID), time.Now())
+	fresh, err := h.st.TryMarkReplyProcessed(ctx, store.MessengerTelegram, strconv.Itoa(msg.ID), time.Now())
 	if err != nil {
 		h.log.Error("дедуп ответа", "message", msg.ID, "err", err)
 		return
@@ -118,7 +120,7 @@ func (h *Handler) processReply(ctx context.Context, msg *models.Message) {
 		}
 		return
 	}
-	if err := h.st.SetSessionValid(ctx, userID, true, time.Now()); err != nil {
+	if err := h.st.SetSessionValid(ctx, store.MessengerTelegram, userID, true, time.Now()); err != nil {
 		h.log.Error("отметка last_ok_at", "user", userID, "err", err)
 	}
 	h.log.Info("ответ отправлен на сайт", "note", noteID, "com_api_id", comAPIID, "user", userID)
@@ -128,16 +130,16 @@ func (h *Handler) processReply(ctx context.Context, msg *models.Message) {
 // (реплай на автофорвард) или на конкретный комментарий (реплай на
 // сообщение бота с комментарием — текст получает префикс «Автор, ...»).
 func (h *Handler) resolveTarget(ctx context.Context, msg *models.Message) (noteID, comAPIID, text string, ok bool) {
-	replyTo := int64(msg.ReplyToMessage.ID)
+	replyTo := strconv.Itoa(msg.ReplyToMessage.ID)
 
-	if n, err := h.st.NoteByThreadID(ctx, replyTo); err == nil {
+	if n, err := h.st.NoteByThread(ctx, store.MessengerTelegram, replyTo); err == nil {
 		return n.ID, "", msg.Text, true
 	} else if !errors.Is(err, store.ErrNotFound) {
 		h.log.Error("поиск заметки по треду", "thread", replyTo, "err", err)
 		return "", "", "", false
 	}
 
-	c, err := h.st.CommentByTGMessageID(ctx, replyTo)
+	c, err := h.st.CommentByTarget(ctx, store.MessengerTelegram, replyTo)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", "", "", false // ответ не на наше сообщение
 	}
@@ -152,7 +154,7 @@ func (h *Handler) resolveTarget(ctx context.Context, msg *models.Message) (noteI
 // userCookies достаёт живые куки пользователя; при их отсутствии
 // подсказывает пользователю сделать /login.
 func (h *Handler) userCookies(ctx context.Context, userID int64) ([]*http.Cookie, bool) {
-	cookiesJSON, valid, err := h.st.SessionCookies(ctx, userID)
+	cookiesJSON, valid, err := h.st.SessionCookies(ctx, store.MessengerTelegram, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		h.log.Info("ответ без сессии", "user", userID)
 		h.notify(ctx, userID, "Чтобы ваши ответы попадали на сайт, войдите: /login")
@@ -179,7 +181,7 @@ func (h *Handler) userCookies(ctx context.Context, userID int64) ([]*http.Cookie
 }
 
 func (h *Handler) invalidateSession(ctx context.Context, userID int64) {
-	if err := h.st.SetSessionValid(ctx, userID, false, time.Now()); err != nil {
+	if err := h.st.SetSessionValid(ctx, store.MessengerTelegram, userID, false, time.Now()); err != nil {
 		h.log.Error("инвалидация сессии", "user", userID, "err", err)
 	}
 	h.notify(ctx, userID, "Сессия сайта истекла. Сделайте /login ещё раз")
