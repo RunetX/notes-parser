@@ -27,6 +27,7 @@ type fakeMax struct {
 	mu        sync.Mutex
 	sent      []sentMessage
 	uploads   int
+	chatGets  int // обращений GET /chats/<id> (ссылка чата)
 	failFirst int // столько первых /messages ответить 429
 	seq       int
 }
@@ -75,6 +76,14 @@ func (f *fakeMax) server() *httptest.Server {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	srv := httptest.NewServer(mux)
+	mux.HandleFunc("GET /chats/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.chatGets++
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(model.Chat{
+			ChatID: 200, Link: "https://max.ru/join/test-chat-link",
+		})
+	})
 	mux.HandleFunc("POST /uploads", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("type") != "image" {
 			f.t.Errorf("тип загрузки: %q", r.URL.Query().Get("type"))
@@ -172,12 +181,9 @@ func TestPostNoteAvatarAttached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sent := f.last()
-	if len(sent.body.Attachments) != 1 || sent.body.Attachments[0].Type != model.AttachImage {
-		t.Fatalf("вложения: %+v", sent.body.Attachments)
-	}
-	if sent.body.Attachments[0].Payload.Token != "tok-1" {
-		t.Errorf("токен вложения: %+v", sent.body.Attachments[0].Payload)
+	img := attachmentOf(t, f.last(), model.AttachImage)
+	if img.Payload.Token != "tok-1" {
+		t.Errorf("токен вложения: %+v", img.Payload)
 	}
 
 	// Повторная отправка того же URL не грузит медиа заново (кэш токенов).
@@ -190,8 +196,54 @@ func TestPostNoteAvatarAttached(t *testing.T) {
 	if f.uploads != 1 {
 		t.Errorf("загрузок: %d, ожидалась 1 (кэш URL→токен)", f.uploads)
 	}
-	if f.last().body.Attachments[0].Payload.Token != "tok-1" {
-		t.Errorf("кэшированный токен: %+v", f.last().body.Attachments[0].Payload)
+	if attachmentOf(t, f.last(), model.AttachImage).Payload.Token != "tok-1" {
+		t.Errorf("кэшированный токен: %+v", f.last().body.Attachments)
+	}
+}
+
+// attachmentOf находит вложение нужного типа в отправленном сообщении.
+func attachmentOf(t *testing.T, sent sentMessage, at model.AttachmentType) model.Attachment {
+	t.Helper()
+	for _, a := range sent.body.Attachments {
+		if a.Type == at {
+			return a
+		}
+	}
+	t.Fatalf("вложение %s не найдено: %+v", at, sent.body.Attachments)
+	return model.Attachment{}
+}
+
+// Кнопка «Обсудить» на посте канала: ссылка чата снимается один раз (кэш).
+func TestPostNoteDiscussButton(t *testing.T) {
+	f := &fakeMax{t: t}
+	m := newTestMirror(t, f)
+
+	for _, id := range []string{"n1", "n2"} {
+		if _, err := m.PostNote(context.Background(),
+			store.Note{ID: id, AuthorName: "А", Text: "т"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kb := attachmentOf(t, f.last(), model.AttachInlineKeyboard)
+	if len(kb.Payload.Buttons) != 1 || len(kb.Payload.Buttons[0]) != 1 {
+		t.Fatalf("клавиатура: %+v", kb.Payload.Buttons)
+	}
+	btn := kb.Payload.Buttons[0][0]
+	if btn.Type != model.ButtonLink || btn.URL != "https://max.ru/join/test-chat-link" {
+		t.Errorf("кнопка: %+v", btn)
+	}
+	if f.chatGets != 1 {
+		t.Errorf("GetChat должен вызываться один раз (кэш), было %d", f.chatGets)
+	}
+	// В копии заметки в чате обсуждения кнопки нет.
+	if _, err := m.StartThread(context.Background(),
+		store.Note{ID: "n3", AuthorName: "А", Text: "т"}, "mid.post"); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range f.last().body.Attachments {
+		if a.Type == model.AttachInlineKeyboard {
+			t.Errorf("у копии в чате не должно быть кнопки: %+v", a)
+		}
 	}
 }
 

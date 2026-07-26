@@ -46,6 +46,11 @@ type Mirror struct {
 	mu       sync.Mutex
 	limiters map[int64]*rate.Limiter
 
+	// discussionLink — ссылка-приглашение чата обсуждения для кнопки
+	// «Обсудить» на постах канала; снимается через GetChat лениво (один раз).
+	lmu            sync.Mutex
+	discussionLink string
+
 	up *uploader
 }
 
@@ -109,12 +114,40 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 		SetFormat(model.FormatHTML).
 		SetDisableLinkPreview(true)
 	m.attachImage(ctx, msg, n.AuthorAvatarURL, avatar, "аватар автора")
+	m.attachDiscussButton(ctx, msg)
 
 	mid, err := m.send(ctx, m.channelID, msg)
 	if err != nil {
 		return "", fmt.Errorf("пост заметки %s в канал MAX: %w", n.ID, err)
 	}
 	return mid, nil
+}
+
+// attachDiscussButton добавляет к посту канала кнопку «Обсудить» со ссылкой
+// на чат обсуждения (замена телеграмного автофорварда как точки входа в
+// тред). Ссылка чата снимается через GetChat один раз; при ошибке пост
+// уходит без кнопки — попробуем на следующем.
+func (m *Mirror) attachDiscussButton(ctx context.Context, msg *maxbot.Message) {
+	if m.discussionChatID == 0 {
+		return
+	}
+	m.lmu.Lock()
+	link := m.discussionLink
+	m.lmu.Unlock()
+	if link == "" {
+		chat, err := m.api.Chats.GetChat(ctx, m.discussionChatID)
+		if err != nil || chat.Link == "" {
+			m.log.Warn("ссылка чата обсуждения не снята, пост без кнопки", "err", err)
+			return
+		}
+		link = chat.Link
+		m.lmu.Lock()
+		m.discussionLink = link
+		m.lmu.Unlock()
+	}
+	kb := model.NewKeyboard()
+	kb.AddRow().AddLink("💬 Обсудить", link)
+	msg.AddKeyboard(kb)
 }
 
 // StartThread — «ручной автофорвард»: копия заметки в чат обсуждения, её mid
