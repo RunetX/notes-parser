@@ -165,6 +165,19 @@ CREATE INDEX idx_message_targets_thread ON message_targets(messenger, thread_id)
 
 Артефакт спайка: заметки + (опц.) выкидной `cmd/maxspike` (не коммитим в основную ветку).
 
+### Ранбук спайка (по реализованному коду; нужен RU-IP для сайта)
+
+1. **Токен** → `LOVEGW_MAX_TOKEN` (в конфиг не коммитить). Проверка TLS+токена:
+   `curl -H "Authorization: $LOVEGW_MAX_TOKEN" https://platform-api2.max.ru/me`.
+   TLS-ошибка → положить PEM Минцифры в `go/internal/maxx/cacert/` (README там) и пересобрать, либо установить в систему.
+2. **Тестовые канал и чат обсуждения** в MAX, бот — админом в оба.
+3. **Снять id**: `curl -H "Authorization: $LOVEGW_MAX_TOKEN" "https://platform-api2.max.ru/updates"` — в апдейтах `bot_added` лежит `chat_id` (сырое поле `is_channel` различает канал/чат); свой `user_id` для алертов — из `bot_started` (написать боту в ЛС).
+4. **Тестовый конфиг**: `messengers.max{enabled, channel_id, discussion_chat_id, admin_user_id}`, `telegram.enabled=false`, **отдельный** `db_path` (например `data/max-spike.db`), `notes_limit: 2`. Затем `lovegw doctor` — все чекы ✔.
+5. **Живой прогон**: `lovegw run -config config.max-spike.json` на пустой БД — первые заметки ленты уйдут в тестовый канал (это и нужно; лимит 2 защищает от бурста). Смотреть: HTML-рендер (`<b>`, кликабельная ссылка профиля), превью выключено, аватар вложением, копия в чате = корень треда, комментарии reply'ем, иллюстрация в тред.
+6. **Замеры по рискам**: длинная заметка/комментарий → лимит длины из ответа 400 (R2); бурст → точный код 429 для `maxx.isTooManyRequests`; ссылка чата — `GET /chats/<discussion_chat_id>` → поле `link` (для будущей кнопки «Обсудить»).
+7. **Для моста**: ответить руками в чате обсуждения и снять `GET /updates` — форма `message_created` с reply-link (mid родителя).
+8. Итоги → в этот бриф (снять R2, код 429, механика кнопки), после чего открываются Ф3-остаток (мост) и Ф5.
+
 ---
 
 ## 6. Что нужно от пользователя (для MAX-фаз)
