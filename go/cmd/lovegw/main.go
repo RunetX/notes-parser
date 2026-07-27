@@ -293,7 +293,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	}, log)
 
 	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath,
-		"telegram", tgCfg.Enabled, "max", maxCfg.Enabled, "dm_bot", dm != nil)
+		"telegram", tgCfg.Enabled, "max", maxCfg.Enabled, "dm_bot", dm != nil,
+		"log_level", cfg.LogLevel)
+	log.Debug("debug-логирование включено") // видна только на уровне debug
 	g.Go(func() error { return mir.Run(gctx) })
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
