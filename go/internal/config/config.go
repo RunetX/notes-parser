@@ -40,6 +40,9 @@ type Messenger struct {
 	// мессенджера своё пространство id). Для telegram по умолчанию берётся
 	// admin_tg_user_id.
 	AdminUserID int64 `json:"admin_user_id,omitempty"`
+	// Signature — подпись под постами в ЭТОМ мессенджере (например, ссылка
+	// на свой канал). Пусто — наследуется общий signature.
+	Signature string `json:"signature,omitempty"`
 }
 
 // Messengers — гейт мессенджеров: какие приёмники включены. При включении
@@ -143,5 +146,11 @@ func (c *Config) normalizeMessengers() {
 	}
 	if tg.AdminUserID == 0 {
 		tg.AdminUserID = c.AdminTGUserID
+	}
+	if tg.Signature == "" {
+		tg.Signature = c.Signature
+	}
+	if c.Messengers.Max.Signature == "" {
+		c.Messengers.Max.Signature = c.Signature
 	}
 }

@@ -59,3 +59,23 @@ func TestLoadMessengersSection(t *testing.T) {
 		t.Errorf("telegram: %+v", tg)
 	}
 }
+
+// Подпись per-messenger: своя перекрывает общую, пустая — наследует.
+func TestLoadPerMessengerSignature(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{
+		"signature": "@common",
+		"messengers": {
+			"max": {"enabled": true, "signature": "канал в MAX"},
+			"telegram": {"enabled": true}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Messengers.Max.Signature; got != "канал в MAX" {
+		t.Errorf("подпись max: %q", got)
+	}
+	if got := cfg.Messengers.Telegram.Signature; got != "@common" {
+		t.Errorf("подпись telegram (наследование): %q", got)
+	}
+}

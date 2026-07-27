@@ -205,7 +205,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			Token:            tgCfg.Token,
 			ChannelID:        tgCfg.ChannelID,
 			DiscussionChatID: tgCfg.DiscussionChatID,
-			Signature:        cfg.Signature,
+			Signature:        tgCfg.Signature,
 			BaseURL:          cfg.Site.BaseURL,
 			HTTPClient:       tgClient,
 		}, log, handler.Handle)
@@ -254,7 +254,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			Token:            maxCfg.Token,
 			ChannelID:        maxCfg.ChannelID,
 			DiscussionChatID: maxCfg.DiscussionChatID,
-			Signature:        cfg.Signature,
+			Signature:        maxCfg.Signature,
 			BaseURL:          cfg.Site.BaseURL,
 			HTTPClient:       maxx.MintsifraClient(),
 		}, log)

@@ -48,7 +48,7 @@ func cmdRepost(ctx context.Context, args []string) error {
 		Token:            tgCfg.Token,
 		ChannelID:        tgCfg.ChannelID,
 		DiscussionChatID: tgCfg.DiscussionChatID,
-		Signature:        cfg.Signature,
+		Signature:        tgCfg.Signature,
 		BaseURL:          cfg.Site.BaseURL,
 		HTTPClient:       tgClient,
 	}, slog.Default(), func(context.Context, *models.Update) {})

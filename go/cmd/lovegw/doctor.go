@@ -180,7 +180,7 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 		Token:            tgCfg.Token,
 		ChannelID:        tgCfg.ChannelID,
 		DiscussionChatID: tgCfg.DiscussionChatID,
-		Signature:        cfg.Signature,
+		Signature:        tgCfg.Signature,
 		BaseURL:          cfg.Site.BaseURL,
 		HTTPClient:       tgClient,
 	}, nil, handler)

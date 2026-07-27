@@ -10,7 +10,8 @@
       "token": "<токен MAX-бота или env LOVEGW_MAX_TOKEN>",
       "channel_id": 0,
       "discussion_chat_id": 0,
-      "admin_user_id": 0
+      "admin_user_id": 0,
+      "signature": "<подпись постов в MAX; пусто — общий signature>"
     },
     "telegram": {
       "enabled": false,
