@@ -66,6 +66,12 @@ func (m *Mirror) Dispatch(bridge ReplyBridge, dm DMLogic) UpdateHandler {
 			}
 		case model.UpdateMessageCreated:
 			m.dispatchMessage(ctx, u, bridge, dm)
+		default:
+			// Наблюдательность на debug-уровне: платформа развивается
+			// (нативные комментарии каналов и т.п.), новые типы апдейтов
+			// подсвечиваем, не мешая работе.
+			m.log.Debug("апдейт MAX без обработчика",
+				"type", u.UpdateType, "chat", u.ChatID, "user", u.UserID)
 		}
 	}
 }
@@ -87,7 +93,23 @@ func (m *Mirror) dispatchMessage(ctx context.Context, u model.Update, bridge Rep
 		}
 		bridge.ProcessReply(ctx, msg.Body.Mid, msg.Sender.UserID,
 			msg.Link.Message.Mid, msg.Body.Text)
+	default:
+		// Сообщение из незнакомого чата: работе не мешает, но подсвечивает
+		// новые механики платформы (нативные комментарии каналов пишутся,
+		// вероятно, в скрытый связанный чат). Текст не логируем — только
+		// адресацию и связку.
+		m.log.Debug("сообщение MAX вне известных чатов",
+			"chat", msg.Recipient.ChatID, "chat_type", msg.Recipient.ChatType,
+			"mid", msg.Body.Mid, "link", linkInfo(msg.Link))
 	}
+}
+
+// linkInfo — краткое описание связки сообщения для debug-лога.
+func linkInfo(l *model.LinkedMessage) string {
+	if l == nil {
+		return ""
+	}
+	return string(l.Type) + "→" + l.Message.Mid
 }
 
 // Send шлёт личное сообщение, молча логируя ошибку (dmbot.Transport).
