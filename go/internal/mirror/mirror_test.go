@@ -20,12 +20,14 @@ type fakeSite struct {
 	notes    []love.Note
 	notesErr error
 	comments map[string][]love.Comment
-	avatar   []byte
+	// headers — шапка заметки на странице комментариев (nil — не разобралась).
+	headers map[string]*love.Note
+	avatar  []byte
 }
 
 func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
-func (f *fakeSite) FetchComments(_ context.Context, id string) ([]love.Comment, error) {
-	return f.comments[id], nil
+func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.CommentsPage, error) {
+	return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id]}, nil
 }
 func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
 
@@ -479,4 +481,81 @@ func TestPreexistingNoteSkipsLateSink(t *testing.T) {
 	if n.Status != store.StatusArchived {
 		t.Fatalf("закрытая до-MAX заметка должна уйти в архив, статус %q", n.Status)
 	}
+}
+
+
+// Модераторы добавляют/заменяют иллюстрации после публикации: новая картинка
+// из шапки страницы комментариев доезжает в тред, повторный опрос не дублирует.
+func TestModeratorImageUpdatePostedToThread(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}}, // без картинок при публикации
+		comments: map[string][]love.Comment{},
+		avatar:   []byte("img-bytes"),
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false)
+	n, _ := st.NoteByID(ctx, "n1")
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, strconv.FormatInt(n.TGMessageID, 10), "777")
+	n, _ = st.NoteByID(ctx, "n1")
+
+	// Пока картинок нет — в тред ничего не уходит.
+	m.pollComments(ctx, n)
+	if images(sink) != 0 {
+		t.Fatalf("картинок ещё нет: %v", sink.calls)
+	}
+
+	// Модератор добавил картинку.
+	site.headers = map[string]*love.Note{"n1": {Images: []string{"https://cdn/v1.jpg"}}}
+	m.pollComments(ctx, n)
+	if images(sink) != 1 {
+		t.Fatalf("новая картинка должна уйти в тред: %v", sink.calls)
+	}
+
+	// Модератор заменил картинку на новую (другой URL).
+	site.headers["n1"] = &love.Note{Images: []string{"https://cdn/v2.jpg"}}
+	m.pollComments(ctx, n)
+	if images(sink) != 2 {
+		t.Fatalf("заменённая картинка должна уйти в тред: %v", sink.calls)
+	}
+
+	// Повторный опрос ничего не дублирует.
+	m.pollComments(ctx, n)
+	if images(sink) != 2 {
+		t.Errorf("дубли картинок: %v", sink.calls)
+	}
+}
+
+// «Комментарии запрещены» на странице заметки закрывают её и без ленты
+// (заметка могла выпасть из окна ленты до заморозки).
+func TestClosedMarkerFromNotePage(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{},
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false)
+
+	site.headers = map[string]*love.Note{"n1": {CommentsClosed: true}}
+	n, _ := st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+
+	n, _ = st.NoteByID(ctx, "n1")
+	if !n.CommentsClosed {
+		t.Error("признак «комментарии запрещены» со страницы должен закрывать заметку")
+	}
+}
+
+// images — число image-вызовов приёмника.
+func images(f *fakeSink) int {
+	n := 0
+	for _, c := range f.calls {
+		if c.kind == "image" {
+			n++
+		}
+	}
+	return n
 }

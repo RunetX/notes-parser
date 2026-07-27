@@ -85,12 +85,31 @@ func (c *Client) FetchNotes(ctx context.Context) ([]Note, error) {
 }
 
 // FetchComments скачивает и разбирает комментарии заметки.
-func (c *Client) FetchComments(ctx context.Context, noteID string) ([]Comment, error) {
+// CommentsPage — страница комментариев вместе с шапкой самой заметки.
+// Note == nil — шапка не разобралась: её дрейф не валит комментарии
+// (зеркалу шапка нужна только для необязательных обновлений — свежих
+// иллюстраций и признака «комментарии запрещены»).
+type CommentsPage struct {
+	Comments []Comment
+	Note     *Note
+}
+
+// FetchCommentsPage загружает страницу комментариев целиком: комментарии и
+// шапку заметки одним запросом.
+func (c *Client) FetchCommentsPage(ctx context.Context, noteID string) (CommentsPage, error) {
 	body, err := c.RawComments(ctx, noteID)
 	if err != nil {
-		return nil, err
+		return CommentsPage{}, err
 	}
-	return ParseComments(strings.NewReader(string(body)), c.baseURL)
+	comments, err := ParseComments(strings.NewReader(string(body)), c.baseURL)
+	if err != nil {
+		return CommentsPage{}, err
+	}
+	page := CommentsPage{Comments: comments}
+	if n, err := ParseNoteFromCommentsPage(strings.NewReader(string(body)), c.baseURL); err == nil {
+		page.Note = &n
+	}
+	return page, nil
 }
 
 // RawNotes возвращает сырой HTML ленты (для crawl --save-html и фикстур).

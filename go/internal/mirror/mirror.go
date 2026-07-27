@@ -21,7 +21,7 @@ import (
 // SiteClient — то, что mirror требует от клиента сайта.
 type SiteClient interface {
 	FetchNotes(ctx context.Context) ([]love.Note, error)
-	FetchComments(ctx context.Context, noteID string) ([]love.Comment, error)
+	FetchCommentsPage(ctx context.Context, noteID string) (love.CommentsPage, error)
 	FetchMedia(ctx context.Context, url string) ([]byte, error)
 }
 
@@ -219,7 +219,7 @@ func (m *Mirror) ingestNewNote(ctx context.Context, n love.Note, seed bool) inge
 			m.log.Error("seed заметки", "note", n.ID, "err", err)
 			return ingestSkipped
 		}
-		m.storeNoteImages(ctx, n)
+		m.storeNoteImages(ctx, n.ID, n.Images)
 		return ingestSeeded
 	}
 	added, err := m.st.InsertNote(ctx, rec)
@@ -229,7 +229,7 @@ func (m *Mirror) ingestNewNote(ctx context.Context, n love.Note, seed bool) inge
 		}
 		return ingestSkipped
 	}
-	m.storeNoteImages(ctx, n)
+	m.storeNoteImages(ctx, n.ID, n.Images)
 	if m.postNote(ctx, rec) {
 		return ingestPosted
 	}
@@ -401,14 +401,16 @@ func (m *Mirror) archiveNote(ctx context.Context, noteID string, now time.Time, 
 
 // pollComments — один цикл опроса комментариев заметки.
 func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
-	comments, err := m.site.FetchComments(ctx, n.ID)
+	page, err := m.site.FetchCommentsPage(ctx, n.ID)
 	if err != nil {
 		m.log.Warn("комментарии недоступны", "note", n.ID, "err", err)
 		m.reportSiteError(ctx, keyCommentsDrift, err)
 		return
 	}
+	comments := page.Comments
 	m.alert.ok(ctx, keyCommentsDrift)
 	m.alert.ok(ctx, keyForbidden)
+	m.applyNoteHeader(ctx, n, page.Note)
 	known, err := m.st.CommentIDs(ctx, n.ID)
 	if err != nil {
 		m.log.Error("чтение известных комментариев", "note", n.ID, "err", err)
@@ -445,6 +447,26 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 	}
 
 	m.sendUnsent(ctx, n, fresh)
+}
+
+// applyNoteHeader применяет необязательные обновления из шапки заметки на
+// странице комментариев (nil — шапка не разобралась): дописывает свежие
+// иллюстрации (модераторы добавляют/заменяют картинки после публикации —
+// новая уйдёт в треды обычным путём sendUnsentImages) и ловит признак
+// «комментарии запрещены» для заметок, уже выпавших из окна ленты.
+func (m *Mirror) applyNoteHeader(ctx context.Context, n store.Note, header *love.Note) {
+	if header == nil {
+		return
+	}
+	m.storeNoteImages(ctx, n.ID, header.Images)
+	if header.CommentsClosed && !n.CommentsClosed {
+		changed, err := m.st.MarkNoteCommentsClosed(ctx, n.ID)
+		if err != nil {
+			m.log.Error("отметка «комментарии запрещены»", "note", n.ID, "err", err)
+		} else if changed {
+			m.log.Info("заметка закрыта для комментариев на сайте (страница заметки)", "note", n.ID)
+		}
+	}
 }
 
 // startThread просит приёмник-ThreadStarter открыть тред заметки и
@@ -591,11 +613,12 @@ func (m *Mirror) sendUnsentImages(ctx context.Context, sink Sink, thread string,
 	return true
 }
 
-// storeNoteImages идемпотентно сохраняет иллюстрации заметки.
-func (m *Mirror) storeNoteImages(ctx context.Context, n love.Note) {
-	for i, url := range n.Images {
-		if err := m.st.InsertNoteImage(ctx, n.ID, i, url); err != nil {
-			m.log.Error("сохранение иллюстрации", "note", n.ID, "url", url, "err", err)
+// storeNoteImages идемпотентно сохраняет иллюстрации заметки (по URL);
+// уже известные пропускаются, новые получат посты в тредах.
+func (m *Mirror) storeNoteImages(ctx context.Context, noteID string, images []string) {
+	for i, url := range images {
+		if err := m.st.InsertNoteImage(ctx, noteID, i, url); err != nil {
+			m.log.Error("сохранение иллюстрации", "note", noteID, "url", url, "err", err)
 		}
 	}
 }
