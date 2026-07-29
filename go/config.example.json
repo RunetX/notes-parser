@@ -8,6 +8,7 @@
     "max": {
       "enabled": true,
       "token": "<токен MAX-бота или env LOVEGW_MAX_TOKEN>",
+      "dm_token": "<токен ЛС-бота MAX или env LOVEGW_MAX_DM_TOKEN; пусто — ЛС через основного бота>",
       "channel_id": 0,
       "discussion_chat_id": 0,
       "admin_user_id": 0,

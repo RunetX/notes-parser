@@ -34,7 +34,9 @@ type Messenger struct {
 	Token            string `json:"token"`
 	ChannelID        int64  `json:"channel_id"`
 	DiscussionChatID int64  `json:"discussion_chat_id"`
-	// DMToken — токен ЛС-бота (РюмкинЪ); пока только у telegram.
+	// DMToken — токен отдельного ЛС-бота (РюмкинЪ). У telegram обязателен для
+	// ЛС-стороны; у max опционален — без него ЛС-диалоги обслуживает основной
+	// бот зеркала.
 	DMToken string `json:"dm_token,omitempty"`
 	// AdminUserID — id админа в ЭТОМ мессенджере для алертов (у каждого
 	// мессенджера своё пространство id). Для telegram по умолчанию берётся
@@ -87,7 +89,8 @@ type Config struct {
 }
 
 // Load читает конфиг, накладывает значения по умолчанию и env-переопределения:
-// LOVEGW_MIRROR_TOKEN, LOVEGW_DM_TOKEN, LOVEGW_MAX_TOKEN, LOVEGW_DB_PATH.
+// LOVEGW_MIRROR_TOKEN, LOVEGW_DM_TOKEN, LOVEGW_MAX_TOKEN, LOVEGW_MAX_DM_TOKEN,
+// LOVEGW_DB_PATH.
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Site: Site{
@@ -127,6 +130,9 @@ func Load(path string) (*Config, error) {
 	cfg.normalizeMessengers()
 	if v := os.Getenv("LOVEGW_MAX_TOKEN"); v != "" {
 		cfg.Messengers.Max.Token = v
+	}
+	if v := os.Getenv("LOVEGW_MAX_DM_TOKEN"); v != "" {
+		cfg.Messengers.Max.DMToken = v
 	}
 
 	if cfg.Site.BaseURL == "" {

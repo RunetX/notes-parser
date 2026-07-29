@@ -61,22 +61,22 @@ type Mirror struct {
 	notesLimit   int
 	feedInterval time.Duration
 	seedFirst    bool
-	subNotify    SubNotify
+	subNotify    map[string]SubNotify
 
 	events chan string // id заметок для запуска воркеров
 }
 
 // Config — параметры зеркала. AlertSend (может быть nil) шлёт админу
 // уведомления о дрейфе вёрстки и блокировке сайта. SubNotify (может быть nil)
-// уведомляет подписчика Telegram о комментарии с ключевым словом — если
-// задан, идёт вместо Sink.NotifySubscriber (чтобы слать через ЛС-бота,
-// которого пользователь точно запускал).
+// задаёт по имени мессенджера отправку уведомления подписчику о комментарии
+// с ключевым словом — заданная запись идёт вместо Sink.NotifySubscriber
+// (чтобы слать через ЛС-бота, которого пользователь точно запускал).
 type Config struct {
 	NotesLimit   int
 	FeedInterval time.Duration
 	SeedFirst    bool
 	AlertSend    func(ctx context.Context, text string)
-	SubNotify    SubNotify
+	SubNotify    map[string]SubNotify
 }
 
 // New создаёт зеркало, публикующее во все переданные приёмники (fan-out).
@@ -654,16 +654,16 @@ func isRealAvatar(url string) bool {
 }
 
 // notifySubscribers шлёт ЛС подписчикам этого мессенджера, чьё ключевое
-// слово встретилось в тексте комментария. Для Telegram при заданном
-// subNotify (ЛС-бот) — шлём через него, иначе — через сам приёмник.
+// слово встретилось в тексте комментария. При заданном subNotify мессенджера
+// (ЛС-бот) — шлём через него, иначе — через сам приёмник.
 func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscription,
 	sink Sink, n store.Note, c store.Comment, threadID, commentMsgID string) {
 	for _, sub := range subs {
 		if sub.Messenger != sink.Name() || !strings.Contains(c.Text, sub.Keyword) {
 			continue
 		}
-		if sink.Name() == store.MessengerTelegram && m.subNotify != nil {
-			m.subNotify(ctx, sub.UserID, n, c, threadID, commentMsgID)
+		if notify := m.subNotify[sink.Name()]; notify != nil {
+			notify(ctx, sub.UserID, n, c, threadID, commentMsgID)
 			continue
 		}
 		if err := sink.NotifySubscriber(ctx, sub.UserID, n, c, threadID, commentMsgID); err != nil {

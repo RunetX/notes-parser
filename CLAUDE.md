@@ -72,8 +72,10 @@ messages, and all user-facing bot strings are in Russian.
     are `go:embed`-ded from `maxx/cacert/` when present at build time (see the
     README there), otherwise the host trust store is used. `updates.go` runs
     long polling (`GetUpdates(marker)`) and dispatches: discussion-chat
-    replies → `bridge.Core`, dialog messages → `dmbot.Logic` — one MAX bot
-    covers channel, chat and DMs.
+    replies → `bridge.Core`, dialog messages → `dmbot.Logic`. With
+    `messengers.max.dm_token` set, DMs (dialogs, talks, alerts, subscriber
+    notifications) run on a separate bot — same split as Telegram's
+    poster/РюмкинЪ pair; without it one MAX bot covers channel, chat and DMs.
   - `mirror` — feed watcher + one goroutine per active note with an adaptive
     poll interval; consumes a list of `Sink`s (fan-out: Telegram and MAX can
     mirror in parallel, each with its own thread per note via
@@ -101,7 +103,8 @@ messages, and all user-facing bot strings are in Russian.
 
 - Config `go/config.json` (gitignored, template `go/config.example.json`);
   tokens can come from env `LOVEGW_MIRROR_TOKEN` / `LOVEGW_DM_TOKEN` /
-  `LOVEGW_MAX_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY`. The `messengers`
+  `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN` / `LOVEGW_DB_PATH` /
+  `LOVEGW_TG_PROXY`. The `messengers`
   section gates which sinks run (`max` / `telegram`, each with `enabled`);
   legacy flat `mirror_bot`/`dm_bot` configs still load as telegram-only.
 - Network split: love.ngs.ru needs a Russian IP (403 otherwise), but Telegram's
