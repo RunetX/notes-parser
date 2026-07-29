@@ -8,7 +8,10 @@ package dmbot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +31,18 @@ type Logic struct {
 	site      SiteAuth
 	tr        Transport
 	messenger string
+	talks     TalkRouter // личная переписка сайта; nil — выключена
 	log       *slog.Logger
+}
+
+// SetTalkRouter подключает роутер личной переписки (в runDaemon после сборки
+// поллера talks). Для MAX ставится на maxDM-логику, для Telegram — через Bot.
+func (l *Logic) SetTalkRouter(r TalkRouter) { l.talks = r }
+
+// SiteIdentifier (опц.) снимает site-идентичность владельца сессии со страницы
+// сайта. Реализуется love.Client в Ф4; до этого идентичность не заполняется.
+type SiteIdentifier interface {
+	SiteIdentity(ctx context.Context, cookies []*http.Cookie) (profileID, passportID, nick string, err error)
 }
 
 // NewLogic создаёт диалоговый движок для одного мессенджера.
@@ -93,9 +107,65 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.handleUnsubscribe(ctx, userID, commandArg(text))
 	case "/mysubs":
 		l.handleMySubs(ctx, userID)
+	case "/talks":
+		l.handleTalks(ctx, userID)
+	case "/talk":
+		l.handleTalkOpen(ctx, userID, commandArg(text))
+	case "/cancel":
+		l.handleCancel(ctx, userID)
 	default:
 		l.tr.Send(ctx, userID, "Неизвестная команда. Наберите /start")
 	}
+}
+
+// handleTalks показывает список диалогов личной переписки сайта.
+func (l *Logic) handleTalks(ctx context.Context, userID int64) {
+	if l.talks == nil {
+		l.tr.Send(ctx, userID, "Личная переписка сайта не подключена.")
+		return
+	}
+	peers, err := l.st.TalkPeers(ctx, l.messenger, userID)
+	if err != nil {
+		l.log.Error("список диалогов talks", "user", userID, "err", err)
+		l.tr.Send(ctx, userID, msgInternalError)
+		return
+	}
+	if len(peers) == 0 {
+		l.tr.Send(ctx, userID, "Пока нет диалогов. Как придёт ЛС с сайта — ответьте на него реплаем.")
+		return
+	}
+	var b strings.Builder
+	b.WriteString("Ваши диалоги (ответить: реплай на сообщение или /talk <номер>):\n")
+	for _, p := range peers {
+		fmt.Fprintf(&b, "#%d %s\n", p.ID, nickOrPassport(p))
+	}
+	l.tr.Send(ctx, userID, b.String())
+}
+
+// handleTalkOpen «залипает» на диалоге: следующие сообщения уйдут собеседнику.
+func (l *Logic) handleTalkOpen(ctx context.Context, userID int64, arg string) {
+	if l.talks == nil {
+		l.tr.Send(ctx, userID, "Личная переписка сайта не подключена.")
+		return
+	}
+	peerID, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
+	if err != nil {
+		l.tr.Send(ctx, userID, "Укажите номер диалога: /talk <номер> (список — /talks)")
+		return
+	}
+	peer, err := l.st.TalkPeerByID(ctx, peerID)
+	if err != nil || peer.Messenger != l.messenger || peer.OwnerUserID != userID {
+		l.tr.Send(ctx, userID, "Диалог не найден. Список — /talks")
+		return
+	}
+	l.setState(ctx, userID, statePMPrefix+strconv.FormatInt(peerID, 10))
+	l.tr.Send(ctx, userID, "Пишу в диалог с "+nickOrPassport(peer)+". Следующие сообщения уйдут ему. /cancel — выйти.")
+}
+
+// handleCancel выходит из залипшего диалога (и любого другого состояния).
+func (l *Logic) handleCancel(ctx context.Context, userID int64) {
+	_ = l.st.ClearDialogState(ctx, l.messenger, userID)
+	l.tr.Send(ctx, userID, "Ок, вышел из диалога.")
 }
 
 // handleSubscribe подписывает пользователя на ключевое слово: как только в
@@ -153,6 +223,13 @@ func (l *Logic) handleMySubs(ctx context.Context, userID int64) {
 }
 
 func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messageID, text string) {
+	// Залипание на диалоге talks: состояние сохраняется, пока не /cancel.
+	if peerID, ok := parsePMState(state); ok {
+		if l.talks == nil || !l.talks.SendToDialog(ctx, l.messenger, userID, peerID, messageID, text) {
+			l.tr.Send(ctx, userID, "Не удалось отправить в диалог. Список — /talks")
+		}
+		return
+	}
 	switch state {
 	case stateAwaitCredentials:
 		l.tryLogin(ctx, userID, messageID, text)
@@ -163,6 +240,26 @@ func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messa
 		l.addNote(ctx, userID, text, true)
 		_ = l.st.ClearDialogState(ctx, l.messenger, userID)
 	}
+}
+
+// parsePMState разбирает состояние «pm:<peer_id>» → id диалога.
+func parsePMState(state string) (int64, bool) {
+	if !strings.HasPrefix(state, statePMPrefix) {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(state[len(statePMPrefix):], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+// nickOrPassport — читабельная подпись собеседника.
+func nickOrPassport(p store.TalkPeer) string {
+	if strings.TrimSpace(p.Nick) != "" {
+		return p.Nick
+	}
+	return "паспорт " + p.PassportID
 }
 
 // tryLogin входит на сайт и сохраняет куки. Сообщение с логином/паролем
@@ -197,8 +294,27 @@ func (l *Logic) tryLogin(ctx context.Context, userID int64, messageID, text stri
 		l.tr.Send(ctx, userID, "Не удалось сохранить сессию, попробуйте позже")
 		return
 	}
+	l.captureIdentity(ctx, userID, cookies)
 	_ = l.st.ClearDialogState(ctx, l.messenger, userID)
 	l.tr.Send(ctx, userID, "Успешный вход. Теперь ваши ответы в обсуждениях попадут на сайт")
+}
+
+// captureIdentity снимает site-идентичность владельца сессии (id анкеты,
+// паспорт, ник) со страницы сайта, если клиент это умеет (Ф4). Без неё talks
+// не связать анкету с паспортом; на ошибке просто не заполняем.
+func (l *Logic) captureIdentity(ctx context.Context, userID int64, cookies []*http.Cookie) {
+	ident, ok := l.site.(SiteIdentifier)
+	if !ok {
+		return
+	}
+	profileID, passportID, nick, err := ident.SiteIdentity(ctx, cookies)
+	if err != nil {
+		l.log.Warn("site-идентичность не снята", "user", userID, "err", err)
+		return
+	}
+	if err := l.st.SetSessionIdentity(ctx, l.messenger, userID, profileID, passportID, nick); err != nil {
+		l.log.Error("сохранение site-идентичности", "user", userID, "err", err)
+	}
 }
 
 func (l *Logic) addNote(ctx context.Context, userID int64, text string, anonymous bool) {

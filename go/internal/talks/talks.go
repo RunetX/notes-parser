@@ -356,6 +356,30 @@ func (w *Watcher) SendToPeer(ctx context.Context, tr PMTransport, userID int64, 
 	tr.Confirm(ctx, userID, ackID, true)
 }
 
+// SendToDialog отправляет текст в диалог по его id — команда /talk (залипание
+// на собеседнике). Проверяет, что диалог принадлежит этому пользователю в этом
+// мессенджере. false — диалог чужой/не найден. ackID — id сообщения-исходника
+// для реакции-подтверждения.
+func (w *Watcher) SendToDialog(ctx context.Context, messenger string, userID, peerID int64, ackID, text string) bool {
+	if text == "" {
+		return false
+	}
+	peer, err := w.st.TalkPeerByID(ctx, peerID)
+	if err != nil || peer.Messenger != messenger || peer.OwnerUserID != userID {
+		return false
+	}
+	tr := w.transportFor(messenger)
+	if tr == nil {
+		return false
+	}
+	if !w.cfg.AllowSend {
+		tr.Confirm(ctx, userID, ackID, false)
+		return true
+	}
+	w.SendToPeer(ctx, tr, userID, peer, ackID, text)
+	return true
+}
+
 // TransportFor возвращает транспорт мессенджера (для проводки команд в Ф3).
 func (w *Watcher) TransportFor(messenger string) PMTransport { return w.transportFor(messenger) }
 

@@ -56,6 +56,10 @@ type Mirror struct {
 	lmu            sync.Mutex
 	discussionLink string
 
+	// talks — роутер личной переписки (может быть nil): реплай в диалоге
+	// уходит на сайт. Ставится в runDaemon после сборки поллера (Ф5).
+	talks TalkReplyRouter
+
 	up *uploader
 }
 

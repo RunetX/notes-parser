@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
+
+	"lovegw/internal/store"
 )
 
 // pollErrorPause — пауза перед повтором после ошибки long polling.
@@ -83,6 +85,13 @@ func (m *Mirror) dispatchMessage(ctx context.Context, u model.Update, bridge Rep
 	}
 	switch {
 	case msg.Recipient.ChatType == model.ChatTypeDialog:
+		// Реплай на доставленное ЛС talks → на сайт (до диалоговой логики).
+		if m.talks != nil && msg.Link != nil && msg.Link.Type == model.LinkTypeReply && msg.Body.Text != "" {
+			if m.talks.HandleReply(ctx, store.MessengerMax, msg.Body.Mid,
+				msg.Sender.UserID, msg.Link.Message.Mid, msg.Body.Text) {
+				return
+			}
+		}
 		if dm != nil {
 			dm.HandleText(ctx, msg.Sender.UserID, msg.Body.Mid, msg.Body.Text)
 		}
