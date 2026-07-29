@@ -52,11 +52,28 @@ type Messengers struct {
 	Telegram Messenger `json:"telegram"`
 }
 
+// Talks — гейт личной переписки сайта (talks): один поллер фанит входящие ЛС в
+// личку включённых мессенджеров, ответы реплаем/командой уходят на сайт. По
+// умолчанию выключен; admin_only и read-only (allow_send=false) — безопасный
+// старт. store_text=false — в БД только метаданные, текст живёт в мессенджере.
+type Talks struct {
+	Enabled           bool `json:"enabled"`
+	AdminOnly         bool `json:"admin_only"`
+	AllowSend         bool `json:"allow_send"`
+	PollIntervalS     int  `json:"poll_interval_s"`
+	IdlePollIntervalS int  `json:"idle_poll_interval_s"`
+	MaxDialogsPerTick int  `json:"max_dialogs_per_tick"`
+	MaxRequestsPerMin int  `json:"max_requests_per_min"`
+	StoreText         bool `json:"store_text"`
+	RetentionDays     int  `json:"retention_days"`
+}
+
 type Config struct {
 	Site          Site        `json:"site"`
 	MirrorBot     MirrorBot   `json:"mirror_bot"`
 	DMBot         DMBot       `json:"dm_bot"`
 	Messengers    *Messengers `json:"messengers"`
+	Talks         Talks       `json:"talks"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
 	AdminTGUserID int64       `json:"admin_tg_user_id"`
@@ -82,6 +99,9 @@ func Load(path string) (*Config, error) {
 		FeedIntervalS: 60,
 		DBPath:        "data/lovegw.db",
 		LogLevel:      "info",
+		// talks по умолчанию admin-only и read-only (безопасный старт);
+		// включение и allow_send — явно в конфиге.
+		Talks: Talks{AdminOnly: true},
 	}
 
 	b, err := os.ReadFile(path)

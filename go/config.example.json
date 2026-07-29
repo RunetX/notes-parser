@@ -21,6 +21,17 @@
       "dm_token": "<токен ЛС-бота или env LOVEGW_DM_TOKEN>"
     }
   },
+  "talks": {
+    "enabled": false,
+    "admin_only": true,
+    "allow_send": false,
+    "poll_interval_s": 30,
+    "idle_poll_interval_s": 300,
+    "max_dialogs_per_tick": 5,
+    "max_requests_per_min": 6,
+    "store_text": false,
+    "retention_days": 30
+  },
   "notes_limit": 5,
   "signature": "@your_channel",
   "admin_tg_user_id": 0,

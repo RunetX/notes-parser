@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -44,8 +45,22 @@ import (
 	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
 	"lovegw/internal/store"
+	"lovegw/internal/talks"
 	"lovegw/internal/tgx"
 )
+
+// talksSite адаптирует *love.Client под talks.SiteTalks (имена методов Talks*).
+type talksSite struct{ c *love.Client }
+
+func (t talksSite) Dialogs(ctx context.Context, ck []*http.Cookie, limit int) ([]love.TalkDialog, error) {
+	return t.c.TalksDialogs(ctx, ck, limit)
+}
+func (t talksSite) History(ctx context.Context, ck []*http.Cookie, passportID, afterMsgID string, limit int) ([]love.TalkMessage, error) {
+	return t.c.TalksHistory(ctx, ck, passportID, afterMsgID, limit)
+}
+func (t talksSite) Send(ctx context.Context, ck []*http.Cookie, passportID, text string) (love.TalkMessage, error) {
+	return t.c.TalksSend(ctx, ck, passportID, text)
+}
 
 const (
 	defaultConfigPath = "config.json"
@@ -181,6 +196,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	var subNotify mirror.SubNotify
 	var dm *dmbot.Bot
 	var tg *tgx.Mirror
+	var mx *maxx.Mirror
+	var maxDM *dmbot.Logic
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -250,7 +267,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	}
 
 	if maxCfg.Enabled {
-		mx, err := maxx.NewMirror(maxx.Params{
+		var err error
+		mx, err = maxx.NewMirror(maxx.Params{
 			Token:            maxCfg.Token,
 			ChannelID:        maxCfg.ChannelID,
 			DiscussionChatID: maxCfg.DiscussionChatID,
@@ -277,11 +295,55 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// Мост «ответ в чате MAX → комментарий на сайте» и ЛС-диалоги
 		// (/login, заметки, подписки) — через того же бота.
 		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
-		maxDM := dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
+		maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
 		g.Go(func() error {
 			mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
 			return nil
 		})
+	}
+
+	// Личная переписка сайта (talks): один поллер под общим клиентом сайта фанит
+	// входящие ЛС в личку включённых мессенджеров, ответы реплаем/командой уходят
+	// на сайт. Роутер инжектится в ЛС-стороны обоих мессенджеров (nil-safe:
+	// выключенный talks не меняет поведения ботов).
+	if cfg.Talks.Enabled {
+		var transports []talks.PMTransport
+		adminIDs := map[string]int64{}
+		if dm != nil {
+			transports = append(transports, dm)
+			adminIDs[store.MessengerTelegram] = tgCfg.AdminUserID
+		}
+		if mx != nil {
+			transports = append(transports, mx)
+			adminIDs[store.MessengerMax] = maxCfg.AdminUserID
+		}
+		if len(transports) == 0 {
+			log.Warn("talks включён, но нет мессенджера с ЛС-доставкой — пропускаю")
+		} else {
+			watcher := talks.New(st, talksSite{client}, transports, talks.Config{
+				BaseURL:      cfg.Site.BaseURL,
+				AdminOnly:    cfg.Talks.AdminOnly,
+				AdminIDs:     adminIDs,
+				Interval:     time.Duration(cfg.Talks.PollIntervalS) * time.Second,
+				IdleInterval: time.Duration(cfg.Talks.IdlePollIntervalS) * time.Second,
+				MaxDialogs:   cfg.Talks.MaxDialogsPerTick,
+				AllowSend:    cfg.Talks.AllowSend,
+				StoreText:    cfg.Talks.StoreText,
+				MaxReqPerMin: cfg.Talks.MaxRequestsPerMin,
+				AlertSend:    fanOutAlerts(alerters),
+			}, log)
+			if dm != nil {
+				dm.SetTalkRouter(watcher)
+			}
+			if mx != nil {
+				mx.SetTalkRouter(watcher)
+				maxDM.SetTalkRouter(watcher)
+			}
+			g.Go(func() error { return watcher.Run(gctx) })
+			log.Info("talks включён", "admin_only", cfg.Talks.AdminOnly,
+				"allow_send", cfg.Talks.AllowSend, "store_text", cfg.Talks.StoreText,
+				"мессенджеров", len(transports))
+		}
 	}
 
 	mir := mirror.New(st, client, sinks, mirror.Config{

@@ -124,6 +124,49 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		}
 	}
 
+	if cfg.Talks.Enabled {
+		checked := false
+		for _, m := range []struct {
+			name    string
+			adminID int64
+			enabled bool
+		}{
+			{store.MessengerTelegram, tgCfg.AdminUserID, tgCfg.Enabled && tgCfg.DMToken != ""},
+			{store.MessengerMax, cfg.Messengers.Max.AdminUserID, cfg.Messengers.Max.Enabled},
+		} {
+			if !m.enabled {
+				continue
+			}
+			checked = true
+			label := "talks/" + m.name
+			if m.adminID == 0 {
+				warn(label, "admin_user_id не задан — admin-only не выберет владельца сессии")
+				continue
+			}
+			_, valid, err := st.SessionCookies(ctx, m.name, m.adminID)
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				warn(label, fmt.Sprintf("у admin %d нет сессии сайта — /login в РюмкинЪ", m.adminID))
+			case err != nil:
+				fail(label, err)
+			case !valid:
+				warn(label, "сессия админа невалидна — нужен /login")
+			default:
+				detail := "сессия ок"
+				if _, pass, _, _ := st.SessionIdentity(ctx, m.name, m.adminID); pass == "" {
+					detail += "; site-идентичность пуста (снимется при следующем /login)"
+				}
+				ok(label, detail)
+			}
+		}
+		if !checked {
+			warn("talks", "включён, но нет мессенджера с ЛС (telegram dm_token / max)")
+		}
+		if !cfg.Talks.AllowSend {
+			warn("talks", "allow_send=false — только чтение, ответы на сайт не уходят")
+		}
+	}
+
 	queueEmpty := false
 	if mirrorOK {
 		switch n, err := tgx.ProbePendingUpdates(ctx, tgCfg.Token, tgClient); {
