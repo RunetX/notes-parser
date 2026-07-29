@@ -26,6 +26,7 @@ const (
 	TargetNoteThread = "note_thread" // корень треда в группе/чате обсуждения
 	TargetComment    = "comment"     // комментарий в треде
 	TargetNoteImage  = "note_image"  // иллюстрация заметки в треде
+	TargetPMMessage  = "pm_message"  // доставленное входящее ЛС talks (ref_id = talks_messages.id)
 )
 
 // SetTarget записывает id сообщения сущности в мессенджере. Пустые

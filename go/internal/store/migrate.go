@@ -120,6 +120,47 @@ DROP TABLE processed_replies;
 ALTER TABLE processed_replies_v4 RENAME TO processed_replies;
 `
 
+// migrateV5SQL — личные сообщения сайта (talks). Миграция строго аддитивна:
+// site-идентичность владельца сессии (id анкеты/паспорт/ник) + таблицы
+// диалогов и сообщений talks. Ничего не пересоздаёт и не дропает (в т.ч.
+// tg_*-колонки живы) — откат на прошлый бинарник работает на той же БД:
+// старый код при user_version=5 просто не видит новых таблиц. Текст сообщений
+// (talks_messages.text) при store_text=false остаётся пустым — приватность.
+const migrateV5SQL = `
+ALTER TABLE sessions ADD COLUMN site_profile_id  TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN site_passport_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN site_nick        TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE talks_peers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    messenger     TEXT    NOT NULL,            -- 'telegram' | 'max'
+    owner_user_id INTEGER NOT NULL,            -- владелец сессии (чья переписка)
+    passport_id   TEXT    NOT NULL,            -- собеседник в talks (/talks/<passport_id>)
+    profile_id    TEXT    NOT NULL DEFAULT '', -- id анкеты /profile/<id>/, если известен
+    nick          TEXT    NOT NULL DEFAULT '',
+    avatar_url    TEXT    NOT NULL DEFAULT '',
+    cursor_msg_id TEXT    NOT NULL DEFAULT '', -- последнее втянутое сообщение сайта
+    last_event_at TEXT,                        -- для адаптивного интервала/сортировки
+    created_at    TEXT    NOT NULL,
+    UNIQUE (messenger, owner_user_id, passport_id)
+);
+
+CREATE TABLE talks_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    peer_id     INTEGER NOT NULL REFERENCES talks_peers(id),
+    site_msg_id TEXT,                          -- NULL у исходящего до подтверждения
+    direction   TEXT    NOT NULL CHECK (direction IN ('in','out')),
+    text        TEXT    NOT NULL DEFAULT '',   -- '' при store_text=false
+    media_url   TEXT    NOT NULL DEFAULT '',
+    sent_at     TEXT,                          -- время по сайту
+    created_at  TEXT    NOT NULL
+);
+CREATE INDEX idx_talks_messages_peer ON talks_messages(peer_id, id);
+-- дедуп входящих; частичный индекс — несколько исходящих с NULL не конфликтуют
+CREATE UNIQUE INDEX idx_talks_messages_site
+    ON talks_messages(peer_id, site_msg_id) WHERE site_msg_id IS NOT NULL;
+`
+
 // migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
 // migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
@@ -128,6 +169,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV2SQL, // v2 — аватар автора заметки и иллюстрации
 		migrateV3SQL, // v3 — флаг «комментарии закрыты»
 		migrateV4SQL, // v4 — message_targets и измерение messenger (гейт MAX)
+		migrateV5SQL, // v5 — личные сообщения сайта (talks)
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

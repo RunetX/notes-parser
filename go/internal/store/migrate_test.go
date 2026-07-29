@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 )
 
 // TestMigrateV3ToV4 строит базу версии 3 с данными старого формата и
@@ -81,5 +84,115 @@ func TestMigrateV3ToV4(t *testing.T) {
 	}
 	if fresh, _ := st.TryMarkReplyProcessed(ctx, MessengerTelegram, "903", n.FirstSeenAt); fresh {
 		t.Error("обработанный ответ должен остаться помеченным после миграции")
+	}
+}
+
+// TestMigrateV4ToV5 строит базу версии 4, открывает через Open (накат v5) и
+// проверяет: site-идентичность в sessions, talks_peers/talks_messages,
+// маршрутизацию по доставленному ЛС и что v4-данные не пострадали.
+func TestMigrateV4ToV5(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v4.db")
+
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{schemaSQL, migrateV2SQL, migrateV3SQL, migrateV4SQL} {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := []string{
+		`INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at)
+		 VALUES ('telegram', 42, '[]', 1, '2026-07-01T00:00:00Z')`,
+		`PRAGMA user_version = 4`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// v4-регресс: сессия жива после наката v5.
+	if _, valid, err := st.SessionCookies(ctx, MessengerTelegram, 42); err != nil || !valid {
+		t.Fatalf("сессия после v5: valid=%v err=%v", valid, err)
+	}
+	if owners, _ := st.SessionOwners(ctx, MessengerTelegram); len(owners) != 1 || owners[0] != 42 {
+		t.Errorf("SessionOwners: %v", owners)
+	}
+
+	// Site-идентичность: по умолчанию пусто, потом round-trip.
+	if pid, pass, nick, err := st.SessionIdentity(ctx, MessengerTelegram, 42); err != nil || pid != "" || pass != "" || nick != "" {
+		t.Errorf("идентичность по умолчанию: %q %q %q %v", pid, pass, nick, err)
+	}
+	if err := st.SetSessionIdentity(ctx, MessengerTelegram, 42, "1472546", "280703879", "Рантье"); err != nil {
+		t.Fatal(err)
+	}
+	if pid, pass, nick, _ := st.SessionIdentity(ctx, MessengerTelegram, 42); pid != "1472546" || pass != "280703879" || nick != "Рантье" {
+		t.Errorf("идентичность после записи: %q %q %q", pid, pass, nick)
+	}
+
+	// talks_peers: upsert + latest-wins по непустому нику.
+	peerID, err := st.UpsertTalkPeer(ctx, TalkPeer{Messenger: MessengerTelegram, OwnerUserID: 42, PassportID: "777", Nick: "Аноним"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.UpsertTalkPeer(ctx, TalkPeer{Messenger: MessengerTelegram, OwnerUserID: 42, PassportID: "777", Nick: "Мария", ProfileID: "555"})
+	if err != nil || again != peerID {
+		t.Fatalf("повторный upsert дал другой id: %d != %d (%v)", again, peerID, err)
+	}
+	if p, _ := st.TalkPeerByID(ctx, peerID); p.Nick != "Мария" || p.ProfileID != "555" {
+		t.Errorf("latest-wins: %+v", p)
+	}
+	// Пустой ник не должен затирать заполненный.
+	if _, err := st.UpsertTalkPeer(ctx, TalkPeer{Messenger: MessengerTelegram, OwnerUserID: 42, PassportID: "777"}); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := st.TalkPeerByID(ctx, peerID); p.Nick != "Мария" {
+		t.Errorf("пустой ник затёр заполненный: %q", p.Nick)
+	}
+
+	// talks_messages: дедуп входящих, исходящие с NULL не конфликтуют.
+	msgID, fresh, err := st.InsertTalkMessage(ctx, TalkMessage{PeerID: peerID, SiteMsgID: "100", Direction: TalkIn, Text: "привет"})
+	if err != nil || !fresh {
+		t.Fatalf("первое входящее: fresh=%v err=%v", fresh, err)
+	}
+	if _, fresh, _ := st.InsertTalkMessage(ctx, TalkMessage{PeerID: peerID, SiteMsgID: "100", Direction: TalkIn}); fresh {
+		t.Error("повторное входящее с тем же site_msg_id должно быть не fresh")
+	}
+	o1, f1, _ := st.InsertTalkMessage(ctx, TalkMessage{PeerID: peerID, Direction: TalkOut, Text: "ответ"})
+	o2, f2, _ := st.InsertTalkMessage(ctx, TalkMessage{PeerID: peerID, Direction: TalkOut, Text: "ещё"})
+	if !f1 || !f2 || o1 == o2 {
+		t.Errorf("исходящие с NULL site_msg_id должны быть разными и fresh: %d %d %v %v", o1, o2, f1, f2)
+	}
+
+	// Маршрутизация ответа: доставленное ЛS → message_targets → peer.
+	if err := st.SetTarget(ctx, MessengerTelegram, TargetPMMessage, strconv.FormatInt(msgID, 10), "555", ""); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := st.PeerByDeliveredPM(ctx, MessengerTelegram, "555"); err != nil || p.ID != peerID {
+		t.Errorf("PeerByDeliveredPM: %+v %v", p, err)
+	}
+	if _, err := st.PeerByDeliveredPM(ctx, MessengerTelegram, "999"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("неизвестное ЛС должно давать ErrNotFound, а не %v", err)
+	}
+
+	// Курсор двигается.
+	if err := st.SetPeerCursor(ctx, peerID, "100", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := st.TalkPeerByID(ctx, peerID); p.CursorMsgID != "100" {
+		t.Errorf("курсор не сдвинулся: %q", p.CursorMsgID)
+	}
+	if peers, _ := st.TalkPeers(ctx, MessengerTelegram, 42); len(peers) != 1 || peers[0].ID != peerID {
+		t.Errorf("TalkPeers: %+v", peers)
 	}
 }
