@@ -39,17 +39,17 @@ type PMTransport interface {
 
 // Config — параметры поллера talks.
 type Config struct {
-	BaseURL        string // база сайта для ссылок на анкеты
-	AdminOnly      bool   // MVP: обходить только AdminUserID
-	AdminUserID    int64
-	Interval       time.Duration // активный интервал опроса
-	IdleInterval   time.Duration // холостой интервал (не было новых сообщений)
-	MaxDialogs     int           // сколько диалогов дозабирать историей за тик (бюджет)
-	HistoryLimit   int           // предел сообщений за один запрос истории
-	AllowSend      bool          // false — только читаем, ответы не шлём (обкатка)
-	StoreText      bool          // false — текст в БД не пишем (приватность)
-	MaxReqPerMin   int           // бюджет запросов к сайту у поллера talks
-	ForbiddenLimit int           // подряд ошибок сайта → kill-switch (стоп поллера)
+	BaseURL        string           // база сайта для ссылок на анкеты
+	AdminOnly      bool             // MVP: обходить только админов (AdminIDs)
+	AdminIDs       map[string]int64 // messenger → id админа (у каждого своё пространство)
+	Interval       time.Duration    // активный интервал опроса
+	IdleInterval   time.Duration    // холостой интервал (не было новых сообщений)
+	MaxDialogs     int              // сколько диалогов дозабирать историей за тик (бюджет)
+	HistoryLimit   int              // предел сообщений за один запрос истории
+	AllowSend      bool             // false — только читаем, ответы не шлём (обкатка)
+	StoreText      bool             // false — текст в БД не пишем (приватность)
+	MaxReqPerMin   int              // бюджет запросов к сайту у поллера talks
+	ForbiddenLimit int              // подряд ошибок сайта → kill-switch (стоп поллера)
 	AlertSend      func(ctx context.Context, text string)
 }
 
@@ -162,20 +162,28 @@ func (w *Watcher) pollOnce(ctx context.Context) bool {
 	return active
 }
 
-// owners — владельцы сессий, кого обходим в мессенджере.
+// owners — владельцы валидных сессий, кого обходим в мессенджере. В admin-only
+// оставляем только заданного для этого мессенджера админа (у каждого своё
+// пространство id).
 func (w *Watcher) owners(ctx context.Context, messenger string) []int64 {
-	if w.cfg.AdminOnly {
-		if w.cfg.AdminUserID == 0 {
-			return nil
-		}
-		return []int64{w.cfg.AdminUserID}
-	}
 	owners, err := w.st.SessionOwners(ctx, messenger)
 	if err != nil {
 		w.log.Error("список сессий talks", "messenger", messenger, "err", err)
 		return nil
 	}
-	return owners
+	if !w.cfg.AdminOnly {
+		return owners
+	}
+	admin := w.cfg.AdminIDs[messenger]
+	if admin == 0 {
+		return nil // admin-only, но админ для мессенджера не задан
+	}
+	for _, o := range owners {
+		if o == admin {
+			return []int64{admin}
+		}
+	}
+	return nil
 }
 
 // pollOwner опрашивает список диалогов одного владельца и дозабирает новые.

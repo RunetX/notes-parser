@@ -118,8 +118,8 @@ func seedSession(t *testing.T, st *store.Store, owner int64) {
 
 func testConfig() Config {
 	return Config{
-		AdminOnly: true, AdminUserID: testOwner, AllowSend: true,
-		StoreText: false, MaxReqPerMin: 6000, ForbiddenLimit: 3,
+		AdminOnly: true, AdminIDs: map[string]int64{store.MessengerTelegram: testOwner},
+		AllowSend: true, StoreText: false, MaxReqPerMin: 6000, ForbiddenLimit: 3,
 		BaseURL: "https://love.ngs.ru",
 	}
 }
