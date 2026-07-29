@@ -87,6 +87,8 @@ func main() {
 		err = cmdDoctor(ctx, os.Args[2:])
 	case "repost":
 		err = cmdRepost(ctx, os.Args[2:])
+	case "pull":
+		err = cmdPull(ctx, os.Args[2:])
 	case "grab":
 		err = cmdGrab(ctx, os.Args[2:])
 	case "export":
@@ -116,6 +118,7 @@ func usage() {
   lovegw doctor [-config config.json] [-post-test]
   lovegw talks  [-config config.json] -db <копия.db> [-once] [-interval 20s] [-max-dialogs N] [-history-limit N] watch
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
+  lovegw pull   [-config config.json] [-db lovegw.db] <note_id> [<note_id> ...]   # завести заметку по прямому id, минуя ленту
   lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
   lovegw export [-db archive.db] [-out dir] <note_id>
   lovegw backfill [-config config.json] [-db archive.db] [-proxy] [-workers N] [-interval-ms MS] [-from ID] [-to ID] [-start-page N] [-refresh] [-limit N]

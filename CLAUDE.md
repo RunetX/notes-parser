@@ -33,6 +33,10 @@ messages, and all user-facing bot strings are in Russian.
   `internal/love/testdata/` (fixtures `notes_feed.html` and
   `comments_312696.html` are real recorded pages; re-record with the same
   command on markup drift).
+- Rescue a note the feed scan missed: `go run ./cmd/lovegw pull [-db path] <id>`
+  (заводит заметку по прямому id; `-full` дотягивает весь тред в древовидном
+  виде и возвращает архивную заметку в отслеживание). Безопасно при работающем
+  демоне — постит он сам.
 - One-off import of legacy JSON state (notes / subscribers) into SQLite:
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
@@ -82,10 +86,10 @@ messages, and all user-facing bot strings are in Russian.
     `message_targets`). A sink implementing `ThreadStarter` opens its own
     discussion thread (MAX has no native channel comments — the bot posts a
     copy of the note into the discussion chat itself, retried every poll
-    cycle). A note the site marks «не актуальна» (comments
-    frozen) is archived early after a final comment flush — the only signal for
-    that state is the feed link text, so it's a soft optimization (falls back to
-    the week-based archival on wording drift). `mirror.Config.AlertSend` DMs the
+    cycle). The site's «не актуальна» mark is recorded in `comments_closed` as
+    metadata only — it appears within minutes of publication while comments keep
+    arriving, so it must never drive archival; notes are archived solely by the
+    week-based `ShouldArchive` rule. `mirror.Config.AlertSend` DMs the
     admin after 3 consecutive markup-drift or 403 failures and again on recovery.
   - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
     via `processed_replies`, per messenger) + the Telegram handler with

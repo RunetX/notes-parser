@@ -72,6 +72,9 @@ type Mirror struct {
 // с ключевым словом — заданная запись идёт вместо Sink.NotifySubscriber
 // (чтобы слать через ЛС-бота, которого пользователь точно запускал).
 type Config struct {
+	// NotesLimit — сколько заметок брать из ленты на холодном старте (seed
+	// или пустая БД) и сколько максимум подхватывать за один обход при
+	// догоне после простоя. Глубину просмотра ленты он не ограничивает.
 	NotesLimit   int
 	FeedInterval time.Duration
 	SeedFirst    bool
@@ -158,23 +161,37 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 	}
 	m.alert.OK(ctx, keyFeedDrift)
 	m.alert.OK(ctx, keyForbidden)
-	if len(notes) > m.notesLimit {
-		notes = notes[:m.notesLimit]
-	}
 	known, err := m.st.KnownNoteIDs(ctx)
 	if err != nil {
 		m.log.Error("чтение известных заметок", "err", err)
 		return false
 	}
+	// Холодный старт (seed или пустая БД): берём только верх ленты — незачем
+	// вываливать в канал всю историю. Дальше окно не режем: заметка, успевшая
+	// уехать ниже notes_limit за время простоя демона или всплеска публикаций,
+	// иначе терялась бы навсегда.
+	if (seed || len(known) == 0) && len(notes) > m.notesLimit {
+		notes = notes[:m.notesLimit]
+	}
 
-	seeded, posted := 0, 0
 	// Лента отдаёт новые сверху — обрабатываем в обратном порядке,
 	// чтобы старые заметки попадали в канал первыми.
+	var fresh []love.Note
 	for i := len(notes) - 1; i >= 0; i-- {
-		n := notes[i]
-		if known[n.ID] {
-			continue
+		if !known[notes[i].ID] {
+			fresh = append(fresh, notes[i])
 		}
+	}
+	// Догоняем не быстрее notes_limit заметок за обход: после долгого простоя
+	// вся лента разом не улетит в канал, хвост уйдёт следующими циклами.
+	if !seed && m.notesLimit > 0 && len(fresh) > m.notesLimit {
+		m.log.Info("догоняем пропущенные заметки",
+			"всего", len(fresh), "в этом обходе", m.notesLimit)
+		fresh = fresh[:m.notesLimit]
+	}
+
+	seeded, posted := 0, 0
+	for _, n := range fresh {
 		switch m.ingestNewNote(ctx, n, seed) {
 		case ingestSeeded:
 			seeded++
@@ -237,11 +254,12 @@ func (m *Mirror) ingestNewNote(ctx context.Context, n love.Note, seed bool) inge
 	return ingestSkipped
 }
 
-// markClosedNotes помечает в БД заметки, которые сайт закрыл для новых
-// комментариев («не актуальна» в ленте). Отслеживаемую заметку это уводит в
-// архив (после финального дозабора комментариев) — незачем опрашивать
-// замороженную до недельного таймаута. Заметку, ушедшую из окна ленты до
-// заморозки, досрочно не поймаем — её подхватит недельное правило архивации.
+// markClosedNotes фиксирует в БД пометку сайта «не актуальна». Это справочный
+// признак и только: сайт вешает его почти на все заметки, кроме самой свежей,
+// а комментарии при этом продолжают приходить — поэтому снимать заметку с
+// отслеживания по нему нельзя (проверено на 312811: помечена через 4 минуты
+// после публикации, комментарии шли ещё сутки). Архивация — только по
+// недельному правилу ShouldArchive.
 func (m *Mirror) markClosedNotes(ctx context.Context, notes []love.Note) {
 	for _, n := range notes {
 		if !n.CommentsClosed {
@@ -375,15 +393,6 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 
 		m.pollComments(ctx, n)
 
-		// Сайт закрыл заметку для комментариев («не актуальна»): pollComments
-		// выше сделал финальный дозабор, дальше опрашивать нечего — в архив.
-		// Ждём пойманных тредов во всех приёмниках, иначе застрявшим
-		// комментариям некуда уходить.
-		if n.CommentsClosed && m.allThreadsCaptured(ctx, n.ID) {
-			m.archiveNote(ctx, noteID, now, "заметка «не актуальна» — снята с отслеживания")
-			return
-		}
-
 		select {
 		case <-time.After(PollInterval(now, n.FirstSeenAt, n.LastCommentAt)):
 		case <-ctx.Done():
@@ -493,26 +502,6 @@ func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) strin
 	}
 	m.log.Info("тред открыт приёмником", "note", n.ID, "sink", sink.Name(), "thread", thread)
 	return thread
-}
-
-// allThreadsCaptured — во всех приёмниках, куда заметка зеркалилась, пойман
-// корень треда. Приёмник без note_post-цели (заметка запощена до его
-// включения) не учитывается: тред там не появится никогда.
-func (m *Mirror) allThreadsCaptured(ctx context.Context, noteID string) bool {
-	for _, sink := range m.sinks {
-		_, _, posted, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, noteID)
-		if err != nil {
-			return false
-		}
-		if !posted {
-			continue
-		}
-		_, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, noteID)
-		if err != nil || !found || thread == "" {
-			return false
-		}
-	}
-	return true
 }
 
 // sendUnsent отправляет неотправленное содержимое заметки в тред каждого

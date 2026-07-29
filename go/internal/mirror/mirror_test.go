@@ -145,6 +145,53 @@ func TestFeedCyclePostsNewNotesOldestFirst(t *testing.T) {
 	}
 }
 
+// Заметка, съехавшая ниже notes_limit за время простоя демона, всё равно
+// должна быть подхвачена: окно ленты режется только на холодном старте, а
+// notes_limit ограничивает лишь темп догона (по заметке за обход).
+func TestFeedCycleCatchesNotesBelowLimit(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n1", Text: "т"}}}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.notesLimit = 1
+	m.feedCycle(ctx, false) // холодный старт: знаем только n1
+
+	// Простой демона: сверху появились n2..n4, n1 уехал вниз.
+	site.notes = []love.Note{{ID: "n4", Text: "т"}, {ID: "n3", Text: "т"},
+		{ID: "n2", Text: "т"}, {ID: "n1", Text: "т"}}
+	sink.calls = nil
+	for i := 0; i < 3; i++ { // догон по одной заметке за обход
+		m.feedCycle(ctx, false)
+	}
+
+	if len(sink.calls) != 3 {
+		t.Fatalf("постов при догоне: %d (%v)", len(sink.calls), sink.calls)
+	}
+	if sink.calls[0].noteID != "n2" || sink.calls[2].noteID != "n4" {
+		t.Errorf("порядок догона: %v", sink.calls)
+	}
+	posted, _ := st.NotesByStatus(ctx, store.StatusPosted)
+	if len(posted) != 4 {
+		t.Errorf("posted-заметок: %d", len(posted))
+	}
+}
+
+// На холодном старте (пустая БД) лента режется по notes_limit — незачем
+// вываливать в канал всю историю.
+func TestFeedCycleColdStartLimited(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n3", Text: "т"}, {ID: "n2", Text: "т"}, {ID: "n1", Text: "т"}}}
+	sink := &fakeSink{}
+	m, _ := newTestMirror(t, site, sink, false)
+	m.notesLimit = 1
+
+	m.feedCycle(ctx, false)
+
+	if len(sink.calls) != 1 || sink.calls[0].noteID != "n3" {
+		t.Errorf("холодный старт должен запостить только верх ленты: %v", sink.calls)
+	}
+}
+
 func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 	ctx := context.Background()
 	site := &fakeSite{
@@ -237,36 +284,37 @@ func TestNoteImagePostedBeforeComments(t *testing.T) {
 	}
 }
 
-func TestWorkerArchivesClosedNote(t *testing.T) {
+// Пометка «не актуальна» — справочная: сайт вешает её почти сразу после
+// публикации, а комментарии продолжают приходить. Снимать такую заметку с
+// отслеживания нельзя — иначе зеркалятся первые пару комментариев из сотен.
+func TestClosedNoteStaysTracked(t *testing.T) {
 	ctx := context.Background()
 	site := &fakeSite{
 		notes: []love.Note{{ID: "n1", Text: "т", CommentsClosed: true}},
 		comments: map[string][]love.Comment{
-			"n1": {{ID: 1, AuthorName: "А", Text: "последний"}},
+			"n1": {{ID: 1, AuthorName: "А", Text: "первый"}},
 		},
 	}
 	sink := &fakeSink{}
 	m, st := newTestMirror(t, site, sink, false)
-	m.feedCycle(ctx, false) // постит n1 и помечает её comments_closed
+	m.feedCycle(ctx, false) // постит n1 и фиксирует пометку сайта
 
 	n, _ := st.NoteByID(ctx, "n1")
 	if !n.CommentsClosed {
-		t.Fatal("обход ленты должен пометить заметку закрытой")
+		t.Fatal("обход ленты должен зафиксировать пометку «не актуальна»")
 	}
-	// Ловим тред, чтобы финальный дозабор комментариев прошёл.
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, strconv.FormatInt(n.TGMessageID, 10), "777")
 
-	// Закрытая заметка архивируется на первой же итерации (без сна), поэтому
-	// pollNote завершается быстро; таймаут — страховка от зависания при регрессе.
-	done, cancel := context.WithTimeout(ctx, 2*time.Second)
+	// Свежая заметка не архивируется — воркер продолжит опрос, поэтому ждём
+	// его выхода только по отмене контекста.
+	done, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	m.pollNote(done, "n1")
 
 	n, _ = st.NoteByID(ctx, "n1")
-	if n.Status != store.StatusArchived {
-		t.Fatalf("закрытая заметка должна уйти в архив, статус %q", n.Status)
+	if n.Status == store.StatusArchived {
+		t.Fatal("заметка с пометкой «не актуальна» не должна архивироваться досрочно")
 	}
-	// Последний комментарий всё же отправлен перед архивацией.
 	sent := false
 	for _, c := range sink.calls {
 		if c.kind == "comment" && c.comID == 1 {
@@ -274,7 +322,7 @@ func TestWorkerArchivesClosedNote(t *testing.T) {
 		}
 	}
 	if !sent {
-		t.Errorf("последний комментарий должен уйти до архивации: %+v", sink.calls)
+		t.Errorf("комментарий должен уйти в тред: %+v", sink.calls)
 	}
 }
 
@@ -471,15 +519,6 @@ func TestPreexistingNoteSkipsLateSink(t *testing.T) {
 	}
 	if len(mx.calls) != 0 {
 		t.Errorf("MAX не должен участвовать в старой заметке: %v", mx.calls)
-	}
-
-	// Досрочная архивация не блокируется отсутствием MAX-треда.
-	done, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	m.pollNote(done, "n1")
-	n, _ = st.NoteByID(ctx, "n1")
-	if n.Status != store.StatusArchived {
-		t.Fatalf("закрытая до-MAX заметка должна уйти в архив, статус %q", n.Status)
 	}
 }
 
