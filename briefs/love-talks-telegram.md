@@ -93,8 +93,8 @@
 | Операция | Метод + URL | Параметры запроса | Ключевые поля ответа | Статус |
 |---|---|---|---|---|
 | Список диалогов | **GET** `/ajax?request=loadBuddiesList` | `before`, `limit`, `stick_passport_id` (опц.), `anticache` (ms) | `{loadBuddiesList:{error, data:{html, user_ids[], last_user_time, last_user_express}}}` — диалоги = **rendered HTML** + массив паспортов `user_ids` | ✅ снято (16 КБ JSON) |
-| История диалога | **JSON-RPC POST** `/ajax/` | метод `getMessagesHistory(passportId, page)`; `page` 1-based, `MSG_LIMIT=20` | `{html}` — **rendered HTML** сообщений (парсить goquery) | ◑ эндпоинт+метод из JS; envelope добить живым вызовом в Ф4 |
-| Отправка | ⚠ **не снята статикой** | форма `#writing`/`textarea#text2` → компонент `TextareaOptions` (событие `textareaSended` → `showOutMsg`); POST-эндпоинт зашит внутри `TextareaOptions` | id созданного сообщения (в `responce`) | ❗ нужен DevTools Network-захват одной реальной отправки |
+| История диалога | **JSON-RPC POST** `/ajax/` | `{"jsonrpc":"2.0","method":"getMessagesHistory","params":[passportId, page],"id":N}`; `page` 1-based, `MSG_LIMIT=20` | `result.html` — **rendered HTML** сообщений (парсить goquery) | ✅ снято |
+| Отправка | **JSON-RPC POST** `/ajax/` | `{"jsonrpc":"2.0","method":"sendMessage","params":[passportId, "<text>", []],"id":N}`; авторизация по кукам, **без `Love.token`** | `result` (JSON-RPC); созданное сообщение придёт и историей/пушем | ✅ снято (DevTools, PHP `Love_Page_Ajax::sendMessage`) |
 | Отметка прочитанного | `/ajax?request=markAsReadMessages` | `passport_id`, … | — | в MVP off (mark_read=false) |
 | Неавторизован (гость) | те же без кук | — | **HTTP 200** + `{"…":{"data":[],"html":"","error":"Ошибка авторизации"}}` | ✅ снято — НЕ 401/403 |
 | Идентичность | GET `/` под сессией | — | `Love.user`(id анкеты), `passport_id`, `talkLink`, `Love.token`(32hex), `currentVersion`, `countNewMessages`, `talksLimit` | ✅ снято |
@@ -111,12 +111,12 @@
    goquery (новые селекторы в const-блок `parse.go`/`parse_talks.go`), а не
    `encoding/json` по полям сообщений. `user_ids[]` в списке диалогов даёт паспорта
    напрямую (без парсинга HTML для адресации).
-3. **Транспорт двойной:** список/отметка — `GET/POST /ajax?request=<name>` (форма),
-   история — JSON-RPC `POST /ajax/`. `love/json.go` нужен и `getJSON` (query), и
-   `rpcCall(method, params...)`.
-4. **Отправка — единственный незакрытый эндпоинт.** Проследена до `TextareaOptions`;
-   снять POST-адрес и параметры (вероятно `text2`, `passport_id`, `Love.token`)
-   Network-захватом при реальной отправке — это разблокирует write-path Ф4/Ф5.
+3. **Транспорт двойной:** список/отметка — `GET/POST /ajax?request=<name>` (форма,
+   JSON-ответ), история и отправка — **JSON-RPC POST `/ajax/`** одинаковым
+   конвертом `{jsonrpc:"2.0", method, params:[…], id}`, авторизация по кукам.
+   `love/json.go` нужен и `getJSON` (query), и `rpcCall(method, params…)`.
+4. **Отправка снята:** `sendMessage(passportId, text, [])` (третий параметр —
+   вложения, для текста пустой массив); `Love.token` в теле не нужен.
 5. Идентичность (`SiteIdentity` для `dmbot.captureIdentity`) снимается регулярками
    с авторизованной `/`: `Love.user`=анкета, `passport_id`, ник — из
    `dataFromBlade.layout` (как `parseGenderMobile`).
@@ -281,8 +281,8 @@ type PMTransport interface {
 | 1 | Store v5: `talks_peers`/`talks_messages`, site-идентичность в `sessions`, kind `pm_message`, store-API | `TestMigrateV4ToV5` зелёный, повторное открытие идемпотентно, регресс v4 цел | ✅ **готово** (коммит `store: v5 … [Ф1]`) |
 | 2 | `internal/talks` на фейках + вынос `alerter` в `internal/alerts` | Юнит-тесты: курсор, дедуп, at-most-once, фан-аут, adaptive interval, kill-switch; `mirror`-тесты зелёные | ✅ **готово** (коммит `talks: поллер … [Ф2]`) |
 | 3 | Оба мессенджера: `PMTransport` для Telegram и MAX (`SendPM`+`Confirm`), проброс reply-linkage, команды `/talks`/`/talk`/`/cancel`, снятие site-идентичности при `/login` | Реплай доходит до роутера в обоих; идентичность пишется; dmbot/maxx-тесты зелёные | ✅ **готово** (коммит `talks: проводка … [Ф3]`) |
-| 4 | `love/talks.go` по фактам Ф0 + `getJSON`/`postJSON` + `ErrUnauthorized`/guest-детектор | Парсеры проходят на фикстурах Ф0; гость → `ErrUnauthorized` | **после Ф0** |
-| 5 | Сшивка в `runDaemon` + config-гейт + `doctor` + живой прогон admin-only | ЛС с сайта приходит в Telegram и MAX, реплай из любого доходит до собеседника, бюджет запросов в норме, зеркало не деградировало | после Ф4 |
+| 4 | `love/talks.go`+`json.go` по фактам Ф0 (AJAX/JSON-RPC, HTML-парсеры) + `ErrUnauthorized`/guest-детектор | Парсеры и гость→`ErrUnauthorized` покрыты тестами; клиент проверен живьём (dialogs/history/send сняты) | ✅ **готово** (коммит `love: клиент talks … [Ф4]`) |
+| 5 | Сшивка в `runDaemon` + config-гейт + `doctor` | Watcher собирается, `SetTalkRouter` в TG+MAX, config `talks`, doctor-чек; сборка/vet/тесты зелёные | ✅ **готово** (коммит `talks: сшивка … [Ф5]`); ⏳ остался живой прогон демона admin-only (мигрирует БД 3→5, шлёт в мессенджеры) |
 | 6 | Мультисессия: все залогиненные, `SessionOwners`, per-user бюджет, retention/приватность | Два пользователя параллельно; суммарный бюджет ≤ лимита; ретеншн чистит старое | после Ф5 |
 | 7 (опц.) | push-stream long-poll вместо/в дополнение к поллингу | Мгновенная доставка при нулевом росте числа запросов к сайту | после Ф0 |
 
