@@ -23,7 +23,8 @@ go run ./cmd/lovegw doctor    # диагностика конфига/БД/са�
 
 Конфиг — `go/config.json` (шаблон [`go/config.example.json`](go/config.example.json));
 токены можно задать через переменные окружения `LOVEGW_MIRROR_TOKEN` /
-`LOVEGW_DM_TOKEN`, путь к БД — `LOVEGW_DB_PATH`, прокси — `LOVEGW_TG_PROXY`.
+`LOVEGW_DM_TOKEN` / `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN`, путь к БД —
+`LOVEGW_DB_PATH`, прокси — `LOVEGW_TG_PROXY`.
 На Windows демоном управляют батники `start.bat` / `stop.bat` / `status.bat` /
 `restart.bat`.
 

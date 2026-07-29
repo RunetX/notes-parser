@@ -122,6 +122,22 @@ func cmdDoctor(ctx context.Context, args []string) error {
 				warn("MAX-канал", "chat_id не задан: снимите его из апдейта bot_added (GET /updates)")
 			}
 		}
+
+		// Отдельный ЛС-бот MAX (dm_token) — опционален: без него личку
+		// обслуживает основной бот.
+		if maxCfg.DMToken != "" {
+			if pm, err := maxx.NewMirror(maxx.Params{
+				Token:      maxCfg.DMToken,
+				BaseURL:    cfg.Site.BaseURL,
+				HTTPClient: maxx.MintsifraClient(),
+			}, nil); err != nil {
+				fail("MAX ЛС-бот", err)
+			} else if info, err := pm.Me(ctx); err != nil {
+				fail("MAX ЛС-бот", err)
+			} else {
+				ok("MAX ЛС-бот", "@"+info.Username)
+			}
+		}
 	}
 
 	if cfg.Talks.Enabled {

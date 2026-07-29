@@ -187,8 +187,9 @@ func cmdRun(ctx context.Context, args []string) error {
 
 // runDaemon собирает включённые мессенджеры (гейт messengers) и крутит все
 // компоненты под общим errgroup. Telegram поднимает полный контур (зеркало,
-// мост, ЛС-бот РюмкинЪ); MAX — зеркало + мост + ЛС-диалоги, всё через
-// одного бота (long polling GetUpdates).
+// мост, ЛС-бот РюмкинЪ); MAX — зеркало + мост + ЛС-диалоги: при заданном
+// dm_token личка живёт в отдельном боте (по аналогии с telegram), иначе всё
+// через одного бота (long polling GetUpdates в каждом).
 func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bool, log *slog.Logger) error {
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
@@ -196,10 +197,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	var sinks []mirror.Sink
 	var alerters []func(ctx context.Context, text string)
-	var subNotify mirror.SubNotify
+	subNotify := map[string]mirror.SubNotify{}
 	var dm *dmbot.Bot
 	var tg *tgx.Mirror
 	var mx *maxx.Mirror
+	var maxPM *maxx.Mirror // ЛС-сторона MAX: отдельный бот при dm_token, иначе mx
 	var maxDM *dmbot.Logic
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -245,7 +247,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
 		// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
 		if dm != nil {
-			subNotify = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
+			subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
 				root, err1 := strconv.ParseInt(threadID, 10, 64)
 				msgID, err2 := strconv.ParseInt(commentMsgID, 10, 64)
 				if err1 != nil || err2 != nil {
@@ -286,23 +288,62 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		if maxCfg.DiscussionChatID == 0 {
 			log.Warn("MAX без discussion_chat_id: посты уйдут в канал, комментарии останутся в очереди")
 		}
+
+		// ЛС-сторона MAX: при заданном dm_token — отдельный бот РюмкинЪ
+		// (заметки и личка разведены по разным ботам, как в telegram),
+		// иначе личку обслуживает сам бот зеркала.
+		maxPM = mx
+		if maxCfg.DMToken != "" {
+			maxPM, err = maxx.NewMirror(maxx.Params{
+				Token:      maxCfg.DMToken,
+				BaseURL:    cfg.Site.BaseURL,
+				HTTPClient: maxx.MintsifraClient(),
+			}, log)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Алерты и уведомления — через ЛС-бота: с ним у админа и
+		// пользователей точно открыт диалог (/login живёт там же).
 		if maxCfg.AdminUserID != 0 {
-			adminID := maxCfg.AdminUserID
+			adminID, pm := maxCfg.AdminUserID, maxPM
 			alerters = append(alerters, func(ctx context.Context, text string) {
-				if err := mx.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
+				if err := pm.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
 					log.Warn("не удалось отправить алерт админу", "sink", "max", "err", err)
 				}
 			})
 		}
+		if maxPM != mx {
+			pm := maxPM
+			subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
+				if err := pm.NotifySubscriber(ctx, userID, n, c, threadID, commentMsgID); err != nil {
+					log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
+				}
+			}
+		}
 
-		// Мост «ответ в чате MAX → комментарий на сайте» и ЛС-диалоги
-		// (/login, заметки, подписки) — через того же бота.
-		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
-		maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
-		g.Go(func() error {
-			mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
-			return nil
-		})
+		// Мост «ответ в чате MAX → комментарий на сайте» — через бота
+		// зеркала (он слушает чат обсуждения); ЛС-диалоги (/login, заметки,
+		// подписки) — через ЛС-бота.
+		maxCore := bridge.NewCore(st, client, maxPM.Send, store.MessengerMax, log)
+		maxDM = dmbot.NewLogic(st, client, maxPM, store.MessengerMax, log)
+		if maxPM != mx {
+			pm := maxPM
+			g.Go(func() error {
+				mx.Start(gctx, mx.Dispatch(maxCore, nil))
+				return nil
+			})
+			g.Go(func() error {
+				pm.Start(gctx, pm.Dispatch(nil, maxDM))
+				return nil
+			})
+		} else {
+			g.Go(func() error {
+				mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
+				return nil
+			})
+		}
 	}
 
 	// Личная переписка сайта (talks): один поллер под общим клиентом сайта фанит
@@ -316,8 +357,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			transports = append(transports, dm)
 			adminIDs[store.MessengerTelegram] = tgCfg.AdminUserID
 		}
-		if mx != nil {
-			transports = append(transports, mx)
+		if maxPM != nil {
+			transports = append(transports, maxPM)
 			adminIDs[store.MessengerMax] = maxCfg.AdminUserID
 		}
 		if len(transports) == 0 {
@@ -338,8 +379,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			if dm != nil {
 				dm.SetTalkRouter(watcher)
 			}
-			if mx != nil {
-				mx.SetTalkRouter(watcher)
+			if maxPM != nil {
+				maxPM.SetTalkRouter(watcher)
 				maxDM.SetTalkRouter(watcher)
 			}
 			g.Go(func() error { return watcher.Run(gctx) })
@@ -365,7 +406,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath,
 		"telegram", tgCfg.Enabled, "max", maxCfg.Enabled, "dm_bot", dm != nil,
-		"log_level", cfg.LogLevel)
+		"max_dm_bot", maxPM != nil && maxPM != mx, "log_level", cfg.LogLevel)
 	log.Debug("debug-логирование включено") // видна только на уровне debug
 	g.Go(func() error { return mir.Run(gctx) })
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {

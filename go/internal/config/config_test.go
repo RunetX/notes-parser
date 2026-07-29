@@ -40,6 +40,7 @@ func TestLoadLegacyFlatConfig(t *testing.T) {
 // полей (env-переопределения пишут в плоские).
 func TestLoadMessengersSection(t *testing.T) {
 	t.Setenv("LOVEGW_MAX_TOKEN", "env-max-token")
+	t.Setenv("LOVEGW_MAX_DM_TOKEN", "env-max-dm-token")
 	t.Setenv("LOVEGW_MIRROR_TOKEN", "env-tg-token")
 	cfg, err := Load(writeConfig(t, `{
 		"messengers": {
@@ -51,7 +52,7 @@ func TestLoadMessengersSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	mx := cfg.Messengers.Max
-	if !mx.Enabled || mx.Token != "env-max-token" || mx.ChannelID != 77 {
+	if !mx.Enabled || mx.Token != "env-max-token" || mx.DMToken != "env-max-dm-token" || mx.ChannelID != 77 {
 		t.Errorf("max: %+v", mx)
 	}
 	tg := cfg.Messengers.Telegram
