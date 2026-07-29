@@ -139,6 +139,21 @@ func cmdDoctor(ctx context.Context, args []string) error {
 			}
 			checked = true
 			label := "talks/" + m.name
+			// Мультисессия (admin_only=false): обходим ВСЕ валидные сессии —
+			// показываем их число (кого зеркалим). Admin-only — проверяем сессию
+			// админа поимённо.
+			if !cfg.Talks.AdminOnly {
+				owners, err := st.SessionOwners(ctx, m.name)
+				switch {
+				case err != nil:
+					fail(label, err)
+				case len(owners) == 0:
+					warn(label, "мультисессия: нет валидных сессий сайта — некого обходить")
+				default:
+					ok(label, fmt.Sprintf("мультисессия: %d валидных сессий будут обходиться", len(owners)))
+				}
+				continue
+			}
 			if m.adminID == 0 {
 				warn(label, "admin_user_id не задан — admin-only не выберет владельца сессии")
 				continue

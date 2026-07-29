@@ -327,6 +327,61 @@ func TestHandleReplyReadOnly(t *testing.T) {
 	}
 }
 
+func TestExpiredSessionIsolatedNotKillSwitch(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	// Гостевой ответ talks на список диалогов = сессия юзера истекла.
+	site := &fakeSite{dialogsErr: love.ErrUnauthorized}
+	tr := &fakeTransport{name: store.MessengerTelegram}
+	w := New(st, site, []PMTransport{tr}, testConfig(), nil)
+
+	for i := 0; i < 5; i++ {
+		w.pollOnce(ctx)
+	}
+	if w.stopped {
+		t.Fatal("истёкшая сессия одного юзера не должна ронять поллер (kill-switch — только для 403/дрейфа)")
+	}
+	// Сессия помечена невалидной → выпала из owners.
+	owners, err := st.SessionOwners(ctx, store.MessengerTelegram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owners) != 0 {
+		t.Fatalf("истёкшая сессия должна стать невалидной, owners=%v", owners)
+	}
+	// Уведомление про /login — ровно одно (сессия выпала, повторов нет).
+	if len(tr.sent) != 1 || !strings.Contains(tr.sent[0].html, "/login") {
+		t.Fatalf("ожидалось одно уведомление про /login: %+v", tr.sent)
+	}
+}
+
+func TestPurgeTalksOlderThan(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	peerID, err := st.UpsertTalkPeer(ctx, store.TalkPeer{
+		Messenger: store.MessengerTelegram, OwnerUserID: testOwner, PassportID: "777"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.InsertTalkMessage(ctx, store.TalkMessage{
+		PeerID: peerID, SiteMsgID: "m1", Direction: store.TalkIn, Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	// cutoff в будущем → удаляются все сообщения; собеседник остаётся.
+	n, err := st.PurgeTalksOlderThan(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("ожидалось удаление 1 сообщения, got %d", n)
+	}
+	peers, _ := st.TalkPeers(ctx, store.MessengerTelegram, testOwner)
+	if len(peers) != 1 {
+		t.Fatalf("собеседник не должен удаляться ретеншеном, got %d", len(peers))
+	}
+}
+
 func TestKillSwitchOnForbidden(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)

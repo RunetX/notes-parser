@@ -202,6 +202,10 @@ func (w *Watcher) pollOwner(ctx context.Context, tr PMTransport, owner int64) bo
 	}
 	dialogs, err := w.site.Dialogs(ctx, cookies, w.cfg.MaxDialogs)
 	if err != nil {
+		if errors.Is(err, love.ErrUnauthorized) {
+			w.invalidateOwner(ctx, tr, owner) // сессия этого юзера истекла — не роняем поллер
+			return false
+		}
 		w.handleSiteError(ctx, err)
 		return false
 	}
@@ -260,6 +264,10 @@ func (w *Watcher) processDialog(ctx context.Context, tr PMTransport, owner int64
 	msgs, err := w.site.History(ctx, cookies, d.PassportID, peer.CursorMsgID, w.cfg.HistoryLimit)
 	fetched = true
 	if err != nil {
+		if errors.Is(err, love.ErrUnauthorized) {
+			w.invalidateOwner(ctx, tr, owner)
+			return fetched, false
+		}
 		w.handleSiteError(ctx, err)
 		return fetched, false
 	}
@@ -447,7 +455,11 @@ func (w *Watcher) SendToPeer(ctx context.Context, tr PMTransport, userID int64, 
 	}
 	sent, err := w.site.Send(ctx, cookies, peer.PassportID, text)
 	if err != nil {
-		w.log.Warn("отправка ЛС на сайт не удалась", "user", userID, "err", err)
+		if errors.Is(err, love.ErrUnauthorized) {
+			w.invalidateOwner(ctx, tr, userID)
+		} else {
+			w.log.Warn("отправка ЛС на сайт не удалась", "user", userID, "err", err)
+		}
 		tr.Confirm(ctx, userID, ackID, false)
 		return
 	}
@@ -536,6 +548,23 @@ func (w *Watcher) onSiteOK(ctx context.Context) {
 	w.alert.OK(ctx, keyDrift)
 }
 
+const sessionExpiredMsg = "🔒 Сессия НГС.Лав истекла — личные сообщения на паузе. Войдите снова: /login"
+
+// invalidateOwner помечает сессию владельца невалидной и уведомляет его о
+// повторном входе. В мультисессии истёкшая сессия ОДНОГО пользователя (гостевой
+// ответ talks, ErrUnauthorized) не должна ронять поллер для остальных — в отличие
+// от 403/дрейфа, которые глобальны и ведут к kill-switch. Невалидная сессия
+// выпадает из SessionOwners, поэтому уведомление уходит один раз.
+func (w *Watcher) invalidateOwner(ctx context.Context, tr PMTransport, owner int64) {
+	if err := w.st.SetSessionValid(ctx, tr.Name(), owner, false, time.Now()); err != nil {
+		w.log.Error("сброс истёкшей сессии talks", "messenger", tr.Name(), "user", owner, "err", err)
+	}
+	if _, err := tr.SendPM(ctx, owner, sessionExpiredMsg); err != nil {
+		w.log.Debug("уведомление о протухшей сессии не отправлено", "user", owner, "err", err)
+	}
+	w.log.Info("сессия talks истекла — на паузе до /login", "messenger", tr.Name(), "user", owner)
+}
+
 func (w *Watcher) stop(ctx context.Context, reason string) {
 	if w.stopped {
 		return
@@ -544,6 +573,41 @@ func (w *Watcher) stop(ctx context.Context, reason string) {
 	w.log.Error("поллер talks остановлен (kill-switch)", "reason", reason)
 	if w.cfg.AlertSend != nil {
 		w.cfg.AlertSend(ctx, "поллер talks остановлен: "+reason+". Зеркало работает; включить снова — рестарт.")
+	}
+}
+
+// PurgeLoop периодически удаляет сообщения talks старше retentionDays
+// (приватность: в БД не копится переписка). Метаданные собеседников остаются —
+// они лёгкие. Прогон раз в 12ч, первый — сразу на старте. retentionDays ≤ 0 —
+// очистка выключена. Блокируется до отмены контекста.
+func PurgeLoop(ctx context.Context, st *store.Store, retentionDays int, log *slog.Logger) error {
+	if retentionDays <= 0 {
+		return nil
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	purge := func() {
+		cutoff := time.Now().AddDate(0, 0, -retentionDays)
+		n, err := st.PurgeTalksOlderThan(ctx, cutoff)
+		if err != nil {
+			log.Error("retention talks", "err", err)
+			return
+		}
+		if n > 0 {
+			log.Info("retention talks: старые сообщения удалены", "n", n, "older_than_days", retentionDays)
+		}
+	}
+	purge()
+	t := time.NewTicker(12 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			purge()
+		}
 	}
 }
 

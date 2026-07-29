@@ -347,6 +347,12 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				"allow_send", cfg.Talks.AllowSend, "store_text", cfg.Talks.StoreText,
 				"мессенджеров", len(transports))
 		}
+		// Retention: периодически чистим старые сообщения talks (приватность),
+		// независимо от наличия транспортов.
+		if cfg.Talks.RetentionDays > 0 {
+			days := cfg.Talks.RetentionDays
+			g.Go(func() error { return talks.PurgeLoop(gctx, st, days, log) })
+		}
 	}
 
 	mir := mirror.New(st, client, sinks, mirror.Config{

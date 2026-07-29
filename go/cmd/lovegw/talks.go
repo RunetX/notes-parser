@@ -33,6 +33,7 @@ func cmdTalks(ctx context.Context, args []string) error {
 	backfill := fs.Int("backfill", 0, "разово доставить последние N входящих из каждого диалога (обкатка на существующей переписке); 0 — обычный поллинг")
 	testSend := fs.Bool("test-send", false, "диагностика доставки: показать @ЛС-бота и отправить одно тестовое ЛС")
 	to := fs.Int64("to", 0, "Telegram chat_id получателя (0 — сам админ); для показа в другой аккаунт")
+	all := fs.Bool("all", false, "мультисессия: обходить ВСЕ валидные сессии, а не только админа (admin_only=false)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"config": true, "db": true, "interval": true, "max-dialogs": true, "history-limit": true, "backfill": true, "to": true,
 	})); err != nil {
@@ -105,7 +106,7 @@ func cmdTalks(ctx context.Context, args []string) error {
 
 	w := talks.New(st, talksSite{client}, []talks.PMTransport{dm}, talks.Config{
 		BaseURL:      cfg.Site.BaseURL,
-		AdminOnly:    true,
+		AdminOnly:    !*all,
 		AdminIDs:     map[string]int64{store.MessengerTelegram: tgCfg.AdminUserID},
 		Interval:     *interval,
 		IdleInterval: *interval,
