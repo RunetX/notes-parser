@@ -305,6 +305,10 @@ func (m *Mirror) postNote(ctx context.Context, n store.Note) bool {
 		if found {
 			continue
 		}
+		// Приёмник, открывающий тред сам (MAX), делает это ДО поста в канал:
+		// тогда пост уже может вести кнопкой прямо в ветку заметки. Не вышло —
+		// не страшно, тред дожмётся на цикле опроса (кнопка будет на чат).
+		m.startThreadEarly(ctx, sink, n)
 		msgID, err := sink.PostNote(ctx, n, avatar)
 		if err != nil {
 			m.log.Warn("пост заметки не удался, останется pending",
@@ -502,6 +506,31 @@ func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) strin
 	}
 	m.log.Info("тред открыт приёмником", "note", n.ID, "sink", sink.Name(), "thread", thread)
 	return thread
+}
+
+// startThreadEarly открывает тред до поста в канал — у приёмника, который
+// умеет это сам и ещё не имеет корня. Нужен MAX: кнопка «Обсудить» на посте
+// канала ведёт в ветку заметки, а её id известен только после копии в чате.
+// Все ошибки мягкие: без корня пост уйдёт обычным путём.
+func (m *Mirror) startThreadEarly(ctx context.Context, sink Sink, n store.Note) {
+	ts, ok := sink.(ThreadStarter)
+	if !ok {
+		return
+	}
+	if _, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, n.ID); err != nil ||
+		(found && thread != "") {
+		return
+	}
+	thread, err := ts.StartThread(ctx, n, "")
+	if err != nil {
+		m.log.Warn("тред не открыт до поста", "note", n.ID, "sink", sink.Name(), "err", err)
+		return
+	}
+	if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNoteThread, n.ID, "", thread); err != nil {
+		m.log.Error("фиксация треда", "note", n.ID, "sink", sink.Name(), "err", err)
+		return
+	}
+	m.log.Info("тред открыт до поста", "note", n.ID, "sink", sink.Name(), "thread", thread)
 }
 
 // sendUnsent отправляет неотправленное содержимое заметки в тред каждого

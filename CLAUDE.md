@@ -86,8 +86,11 @@ messages, and all user-facing bot strings are in Russian.
     mirror in parallel, each with its own thread per note via
     `message_targets`). A sink implementing `ThreadStarter` opens its own
     discussion thread (MAX has no native channel comments — the bot posts a
-    copy of the note into the discussion chat itself, retried every poll
-    cycle). The site's «не актуальна» mark is recorded in `comments_closed` as
+    copy of the note into the discussion chat itself). That call happens
+    *before* the channel post so the «💬 Обсудить» button can deep-link to the
+    note's branch (`maxx.MessageLink`: `https://max.ru/c/<chat_id>/<base64url
+    of the mid's last 8 bytes>`); on failure it is retried every poll cycle and
+    the button falls back to the chat invite link. The site's «не актуальна» mark is recorded in `comments_closed` as
     metadata only — it appears within minutes of publication while comments keep
     arriving, so it must never drive archival; notes are archived solely by the
     week-based `ShouldArchive` rule. `mirror.Config.AlertSend` DMs the

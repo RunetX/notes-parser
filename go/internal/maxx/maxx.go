@@ -53,8 +53,12 @@ type Mirror struct {
 
 	// discussionLink — ссылка-приглашение чата обсуждения для кнопки
 	// «Обсудить» на постах канала; снимается через GetChat лениво (один раз).
+	// noteThreads — корни веток заметок (id заметки → mid копии в чате),
+	// чтобы кнопка вела прямо в ветку. Заполняет StartThread; mirror зовёт
+	// его до поста в канал.
 	lmu            sync.Mutex
 	discussionLink string
+	noteThreads    map[string]string
 
 	// talks — роутер личной переписки (может быть nil): реплай в диалоге
 	// уходит на сайт. Ставится в runDaemon после сборки поллера (Ф5).
@@ -123,7 +127,7 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 		SetFormat(model.FormatHTML).
 		SetDisableLinkPreview(true)
 	m.attachImage(ctx, msg, n.AuthorAvatarURL, avatar, "аватар автора")
-	m.attachDiscussButton(ctx, msg)
+	m.attachDiscussButton(ctx, msg, n.ID)
 
 	mid, err := m.send(ctx, m.channelID, msg)
 	if err != nil {
@@ -132,17 +136,27 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 	return mid, nil
 }
 
-// attachDiscussButton добавляет к посту канала кнопку «Обсудить» со ссылкой
-// на чат обсуждения (замена телеграмного автофорварда как точки входа в
-// тред). Ссылка чата снимается через GetChat один раз; при ошибке пост
-// уходит без кнопки — попробуем на следующем.
-func (m *Mirror) attachDiscussButton(ctx context.Context, msg *maxbot.Message) {
+// attachDiscussButton добавляет к посту канала кнопку «Обсудить» (замена
+// телеграмного автофорварда как точки входа в тред). Если корень ветки заметки
+// уже известен — ссылка ведёт прямо в неё, иначе в чат целиком по ссылке-
+// приглашению (она снимается через GetChat один раз; при ошибке пост уходит
+// без кнопки — попробуем на следующем).
+func (m *Mirror) attachDiscussButton(ctx context.Context, msg *maxbot.Message, noteID string) {
 	if m.discussionChatID == 0 {
 		return
 	}
+	// Корень нужен ровно один раз — на этот пост; дальше он живёт в
+	// message_targets, а карта не должна расти вместе с лентой.
 	m.lmu.Lock()
-	link := m.discussionLink
+	link, thread := m.discussionLink, m.noteThreads[noteID]
+	delete(m.noteThreads, noteID)
 	m.lmu.Unlock()
+	if deep := MessageLink(m.discussionChatID, thread); deep != "" {
+		kb := model.NewKeyboard()
+		kb.AddRow().AddLink("💬 Обсудить", deep)
+		msg.AddKeyboard(kb)
+		return
+	}
 	if link == "" {
 		chat, err := m.api.Chats.GetChat(ctx, m.discussionChatID)
 		if err != nil || chat.Link == "" {
@@ -160,9 +174,9 @@ func (m *Mirror) attachDiscussButton(ctx context.Context, msg *maxbot.Message) {
 }
 
 // StartThread — «ручной автофорвард»: копия заметки в чат обсуждения, её mid
-// становится корнем треда (mirror.ThreadStarter; ретраится на каждом цикле
-// опроса до успеха). Точную механику «пост канала ↔ кнопка ↔ чат» уточнит
-// Ф0-спайк на живом боте; для v1 копия даёт рабочий тред без кнопок.
+// становится корнем треда (mirror.ThreadStarter). Mirror зовёт его до поста в
+// канал — тогда кнопка «Обсудить» ведёт прямо в ветку заметки; если не
+// удалось, вызов повторяется на каждом цикле опроса, а кнопка ведёт в чат.
 func (m *Mirror) StartThread(ctx context.Context, n store.Note, _ string) (string, error) {
 	if m.discussionChatID == 0 {
 		return "", errors.New("чат обсуждения MAX не задан (discussion_chat_id)")
@@ -176,6 +190,14 @@ func (m *Mirror) StartThread(ctx context.Context, n store.Note, _ string) (strin
 	if err != nil {
 		return "", fmt.Errorf("копия заметки %s в чат обсуждения: %w", n.ID, err)
 	}
+	// Запоминаем корень: если пост в канал ещё впереди (mirror зовёт
+	// StartThread до него), кнопка «Обсудить» поведёт прямо в эту ветку.
+	m.lmu.Lock()
+	if m.noteThreads == nil {
+		m.noteThreads = make(map[string]string)
+	}
+	m.noteThreads[n.ID] = mid
+	m.lmu.Unlock()
 	return mid, nil
 }
 

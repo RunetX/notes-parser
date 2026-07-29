@@ -76,6 +76,47 @@ func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, n store.Not
 	return nil
 }
 
+// threadSink — приёмник, открывающий тред сам (как MAX).
+type threadSink struct {
+	fakeSink
+	threads int
+}
+
+func (f *threadSink) StartThread(_ context.Context, n store.Note, postMsgID string) (string, error) {
+	f.threads++
+	f.calls = append(f.calls, sinkCall{kind: "thread", noteID: n.ID, comID: int64(len(postMsgID))})
+	return "thread-" + n.ID, nil
+}
+
+// MAX-порядок: тред открывается ДО поста в канал — иначе кнопка «Обсудить» не
+// знает mid ветки и ведёт в чат целиком.
+func TestThreadStartedBeforeNotePost(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n1", Text: "т"}}}
+	sink := &threadSink{fakeSink: fakeSink{name: store.MessengerMax}}
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	m := New(st, site, []Sink{sink}, Config{NotesLimit: 5, FeedInterval: time.Minute}, slog.Default())
+
+	m.feedCycle(ctx, false)
+
+	if len(sink.calls) < 2 || sink.calls[0].kind != "thread" || sink.calls[1].kind != "note" {
+		t.Fatalf("ожидался тред до поста: %+v", sink.calls)
+	}
+	if _, thread, found, err := st.Target(ctx, store.MessengerMax, store.TargetNoteThread, "n1"); err != nil ||
+		!found || thread != "thread-n1" {
+		t.Errorf("корень треда не зафиксирован: %q found=%v err=%v", thread, found, err)
+	}
+	// Повторный цикл не плодит копий заметки в чате.
+	m.feedCycle(ctx, false)
+	if sink.threads != 1 {
+		t.Errorf("StartThread вызван %d раз(а)", sink.threads)
+	}
+}
+
 func newTestMirror(t *testing.T, site *fakeSite, sink *fakeSink, seed bool) (*Mirror, *store.Store) {
 	return newTestMirrorAlert(t, site, sink, seed, nil)
 }
