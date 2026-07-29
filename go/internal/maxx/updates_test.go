@@ -84,6 +84,30 @@ func TestDispatch(t *testing.T) {
 	}
 }
 
+// Бот переписки: моста у него нет (Dispatch с nil), поэтому чат обсуждения он
+// не трогает, а ЛС и первое открытие диалога обрабатывает как обычно.
+func TestDispatchTalksBot(t *testing.T) {
+	ctx := context.Background()
+	m := &Mirror{log: slog.Default()} // без discussionChatID: чат не его забота
+	dm := &fakeDM{}
+	h := m.Dispatch(nil, dm)
+
+	h(ctx, model.Update{UpdateType: model.UpdateBotStarted, UserID: 25978651})
+	h(ctx, chatMsg(342358595, model.ChatTypeDialog, "mid.dm1", "/talks", false))
+
+	reply := chatMsg(-200, model.ChatTypeChat, "mid.r1", "ответ в чате", false)
+	reply.Message.Link = &model.LinkedMessage{Type: model.LinkTypeReply,
+		Message: model.MessageBody{Mid: "mid.root"}}
+	h(ctx, reply) // без моста — просто игнор, паники быть не должно
+
+	if dm.greets != 1 {
+		t.Errorf("приветствий: %d", dm.greets)
+	}
+	if len(dm.texts) != 1 || dm.texts[0] != "/talks" {
+		t.Errorf("ЛС в движок переписки: %v", dm.texts)
+	}
+}
+
 // Start: батч апдейтов доставляется обработчику, маркер передаётся дальше,
 // отмена контекста завершает цикл.
 func TestStartDeliversUpdates(t *testing.T) {

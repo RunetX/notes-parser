@@ -52,12 +52,58 @@ func TestLoadMessengersSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	mx := cfg.Messengers.Max
-	if !mx.Enabled || mx.Token != "env-max-token" || mx.DMToken != "env-max-dm-token" || mx.ChannelID != 77 {
+	// Легаси-dm_token у max — это бот переписки: значение переезжает в talks_token.
+	if !mx.Enabled || mx.Token != "env-max-token" || mx.TalksToken != "env-max-dm-token" ||
+		mx.DMToken != "" || mx.ChannelID != 77 {
 		t.Errorf("max: %+v", mx)
 	}
 	tg := cfg.Messengers.Telegram
 	if tg.Enabled || tg.Token != "env-tg-token" {
 		t.Errorf("telegram: %+v", tg)
+	}
+}
+
+// Бот переписки: talks_token читается у обоих мессенджеров, у max легаси
+// dm_token переезжает в него, у telegram dm_token остаётся ботом команд.
+func TestLoadTalksTokens(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{
+		"messengers": {
+			"max": {"enabled": true, "token": "max-token", "dm_token": "max-legacy-dm"},
+			"telegram": {"enabled": true, "token": "tg-token", "dm_token": "tg-dm",
+			             "talks_token": "tg-talks"}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mx := cfg.Messengers.Max
+	if mx.TalksToken != "max-legacy-dm" || mx.DMToken != "" {
+		t.Errorf("max: dm_token должен стать talks_token: %+v", mx)
+	}
+	tg := cfg.Messengers.Telegram
+	if tg.DMToken != "tg-dm" || tg.TalksToken != "tg-talks" {
+		t.Errorf("telegram: dm_token — бот команд, talks_token — бот переписки: %+v", tg)
+	}
+}
+
+// Явный talks_token у max переезда не допускает: dm_token остаётся как есть.
+func TestLoadTalksTokenExplicitWins(t *testing.T) {
+	t.Setenv("LOVEGW_TG_TALKS_TOKEN", "env-tg-talks")
+	cfg, err := Load(writeConfig(t, `{
+		"messengers": {
+			"max": {"enabled": true, "token": "max-token",
+			        "dm_token": "max-dm", "talks_token": "max-talks"},
+			"telegram": {"enabled": true, "token": "tg-token", "talks_token": "json-tg-talks"}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mx := cfg.Messengers.Max; mx.TalksToken != "max-talks" || mx.DMToken != "max-dm" {
+		t.Errorf("max: %+v", mx)
+	}
+	if tg := cfg.Messengers.Telegram; tg.TalksToken != "env-tg-talks" {
+		t.Errorf("env должен перебивать talks_token из конфига: %+v", tg)
 	}
 }
 

@@ -55,8 +55,13 @@ func cmdTalks(ctx context.Context, args []string) error {
 	cfg.DBPath = *dbPath
 
 	tgCfg := cfg.Messengers.Telegram
-	if !tgCfg.Enabled || tgCfg.DMToken == "" {
-		return fmt.Errorf("talks: нужен telegram ЛС-бот (dm_token) для доставки входящих")
+	// Доставку ведёт бот переписки, а без своего токена — бот команд.
+	pmToken := tgCfg.TalksToken
+	if pmToken == "" {
+		pmToken = tgCfg.DMToken
+	}
+	if !tgCfg.Enabled || pmToken == "" {
+		return fmt.Errorf("talks: нужен telegram-бот переписки (talks_token) или ЛС-бот (dm_token) для доставки входящих")
 	}
 	if tgCfg.AdminUserID == 0 {
 		return fmt.Errorf("talks: не задан admin id (admin_tg_user_id) — admin-only не выберет сессию")
@@ -76,10 +81,10 @@ func cmdTalks(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	// ЛС-бот создаётся, но НЕ стартуется: Start() — это long polling getUpdates,
-	// а нам нужны только SendPM/Confirm (SendMessage). Так боевой РюмкинЪ на том
+	// Бот создаётся, но НЕ стартуется: Start() — это long polling getUpdates,
+	// а нам нужны только SendPM/Confirm (SendMessage). Так боевой бот на том
 	// же токене продолжает получать апдейты без конфликта.
-	dm, err := dmbot.New(tgCfg.DMToken, st, client, tgClient, log)
+	dm, err := dmbot.NewTalks(pmToken, st, tgClient, log)
 	if err != nil {
 		return err
 	}
@@ -90,10 +95,10 @@ func cmdTalks(ctx context.Context, args []string) error {
 	}
 
 	if *testSend {
-		if me, err := tgx.CheckToken(ctx, tgCfg.DMToken, tgClient); err != nil {
-			fmt.Printf("getMe ЛС-бота: ОШИБКА %v\n", err)
+		if me, err := tgx.CheckToken(ctx, pmToken, tgClient); err != nil {
+			fmt.Printf("getMe бота переписки: ОШИБКА %v\n", err)
 		} else {
-			fmt.Printf("ЛС-бот: @%s — тестовое ЛС ищи в диалоге ИМЕННО с ним\n", me.Username)
+			fmt.Printf("бот переписки: @%s — тестовое ЛС ищи в диалоге ИМЕННО с ним\n", me.Username)
 		}
 		id, err := dm.SendPM(ctx, dest, "🔧 talks watch: тест доставки. Видишь это — мост в Telegram работает.")
 		if err != nil {

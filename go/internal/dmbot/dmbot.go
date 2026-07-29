@@ -51,9 +51,24 @@ type TalkRouter interface {
 	SendToDialog(ctx context.Context, messenger string, userID, peerID int64, ackID, text string) bool
 }
 
-// New создаёт ЛС-бота. httpClient (может быть nil) задаёт соединение с
-// Bot API через прокси.
+// New создаёт ЛС-бота команд (РюмкинЪ). httpClient (может быть nil) задаёт
+// соединение с Bot API через прокси.
 func New(token string, st *store.Store, site SiteAuth, httpClient *http.Client, log *slog.Logger) (*Bot, error) {
+	return newBot(token, httpClient, log, func(b *bot.Bot, log *slog.Logger) *Logic {
+		return NewLogic(st, site, tgTransport{b: b, log: log}, store.MessengerTelegram, log)
+	})
+}
+
+// NewTalks создаёт бота личной переписки: только /talks, /talk и доставка ЛС
+// сайта. Сайт ему не нужен — вход и заметки живут у бота команд.
+func NewTalks(token string, st *store.Store, httpClient *http.Client, log *slog.Logger) (*Bot, error) {
+	return newBot(token, httpClient, log, func(b *bot.Bot, log *slog.Logger) *Logic {
+		return NewTalksLogic(st, tgTransport{b: b, log: log}, store.MessengerTelegram, log)
+	})
+}
+
+func newBot(token string, httpClient *http.Client, log *slog.Logger,
+	newLogic func(*bot.Bot, *slog.Logger) *Logic) (*Bot, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -72,19 +87,25 @@ func New(token string, st *store.Store, site SiteAuth, httpClient *http.Client, 
 		return nil, err
 	}
 	d.b = b
-	d.logic = NewLogic(st, site, tgTransport{b: b, log: log}, store.MessengerTelegram, log)
+	d.logic = newLogic(b, log)
 	return d, nil
 }
 
 // Start запускает long polling; блокируется до отмены контекста.
 func (d *Bot) Start(ctx context.Context) { d.b.Start(ctx) }
 
-// SetTalkRouter подключает роутер личной переписки (в runDaemon после сборки
-// поллера talks).
+// SetTalkRouter подключает роутер личной переписки целиком: и маршрутизацию
+// реплаев, и команды /talks, /talk (в runDaemon после сборки поллера talks).
 func (d *Bot) SetTalkRouter(r TalkRouter) {
 	d.talks = r
 	d.logic.talks = r
 }
+
+// SetReplyRouter подключает только маршрутизацию реплаев, без команд. Нужен
+// боту команд, когда переписку ведёт отдельный бот: ЛС, доставленные раньше,
+// привязаны в message_targets к сообщениям бота команд, и ответ на них
+// прилетит именно ему. В /start при этом /talks не появляется.
+func (d *Bot) SetReplyRouter(r TalkRouter) { d.talks = r }
 
 // Name — имя мессенджера (talks.PMTransport).
 func (d *Bot) Name() string { return store.MessengerTelegram }
@@ -199,13 +220,28 @@ func commandArg(text string) string {
 	return ""
 }
 
-const startMessage = `Привет! Меня зовут РюмкинЪ. Я умею:
+// startMessage собирает приветствие под роль бота: у бота переписки свой
+// короткий список, у бота команд строки про диалоги появляются только когда
+// переписку обслуживает он же (talks-роутер подключён).
+func startMessage(talksOnly, withTalks bool) string {
+	if talksOnly {
+		return `Привет! Я бот личной переписки НГС.Лав. Я умею:
+/talks — мои диалоги на сайте
+/talk <номер> — писать в выбранный диалог
+/cancel — выйти из диалога
+Ответить на входящее ЛС можно просто реплаем.
+Вход на сайт, заметки и подписки — у основного бота (там же /login).`
+	}
+	msg := `Привет! Меня зовут РюмкинЪ. Я умею:
 /login — войти на сайт НГС.Лав
 /add_note — добавить заметку
 /add_anonymous_note — добавить анонимную заметку
 /status — проверить сессию сайта
 /subscribe <слово> — уведомлять о комментариях с этим словом
 /unsubscribe <слово> — отписаться от слова
-/mysubs — мои подписки
-/talks — мои личные диалоги на сайте
-/talk <номер> — писать в выбранный диалог`
+/mysubs — мои подписки`
+	if withTalks {
+		msg += "\n/talks — мои личные диалоги на сайте\n/talk <номер> — писать в выбранный диалог"
+	}
+	return msg
+}

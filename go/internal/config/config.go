@@ -34,10 +34,14 @@ type Messenger struct {
 	Token            string `json:"token"`
 	ChannelID        int64  `json:"channel_id"`
 	DiscussionChatID int64  `json:"discussion_chat_id"`
-	// DMToken — токен отдельного ЛС-бота (РюмкинЪ). У telegram обязателен для
-	// ЛС-стороны; у max опционален — без него ЛС-диалоги обслуживает основной
-	// бот зеркала.
+	// DMToken — токен ЛС-бота команд (РюмкинЪ: /login, заметки, подписки).
+	// У telegram это исторический второй бот; у max команды обслуживает сам
+	// бот зеркала, поэтому поле здесь устарело и трактуется как TalksToken.
 	DMToken string `json:"dm_token,omitempty"`
+	// TalksToken — токен бота личной переписки сайта (talks): доставка входящих
+	// ЛС, ответ реплаем, /talks и /talk, плюс алерты админу. Пусто — переписку
+	// обслуживает бот команд (telegram) или бот зеркала (max), как раньше.
+	TalksToken string `json:"talks_token,omitempty"`
 	// AdminUserID — id админа в ЭТОМ мессенджере для алертов (у каждого
 	// мессенджера своё пространство id). Для telegram по умолчанию берётся
 	// admin_tg_user_id.
@@ -134,6 +138,13 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOVEGW_MAX_DM_TOKEN"); v != "" {
 		cfg.Messengers.Max.DMToken = v
 	}
+	if v := os.Getenv("LOVEGW_MAX_TALKS_TOKEN"); v != "" {
+		cfg.Messengers.Max.TalksToken = v
+	}
+	if v := os.Getenv("LOVEGW_TG_TALKS_TOKEN"); v != "" {
+		cfg.Messengers.Telegram.TalksToken = v
+	}
+	cfg.normalizeTalksTokens()
 
 	if cfg.Site.BaseURL == "" {
 		return nil, fmt.Errorf("site.base_url не задан")
@@ -178,5 +189,16 @@ func (c *Config) normalizeMessengers() {
 	}
 	if c.Messengers.Max.Signature == "" {
 		c.Messengers.Max.Signature = c.Signature
+	}
+}
+
+// normalizeTalksTokens переносит легаси-настройку MAX: отдельный бот там
+// заводился как dm_token и обслуживал всю личку, а теперь это бот переписки —
+// конфиг менять руками не нужно. У telegram переноса нет: dm_token там —
+// это бот команд (РюмкинЪ), то есть «бот 1».
+func (c *Config) normalizeTalksTokens() {
+	mx := &c.Messengers.Max
+	if mx.TalksToken == "" && mx.DMToken != "" {
+		mx.TalksToken, mx.DMToken = mx.DMToken, ""
 	}
 }

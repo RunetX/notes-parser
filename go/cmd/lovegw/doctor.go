@@ -99,6 +99,16 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		} else {
 			ok("ЛС-бот", "@"+me.Username)
 		}
+
+		// Бот переписки (talks_token) опционален: без него переписку ведёт
+		// ЛС-бот команд, как раньше.
+		if tgCfg.TalksToken != "" {
+			if me, err := tgx.CheckToken(ctx, tgCfg.TalksToken, tgClient); err != nil {
+				fail("бот переписки", err)
+			} else {
+				ok("бот переписки", "@"+me.Username)
+			}
+		}
 	}
 
 	// MAX: проверка токена заодно проверяет TLS-доверие к platform-api2
@@ -123,19 +133,19 @@ func cmdDoctor(ctx context.Context, args []string) error {
 			}
 		}
 
-		// Отдельный ЛС-бот MAX (dm_token) — опционален: без него личку
-		// обслуживает основной бот.
-		if maxCfg.DMToken != "" {
+		// Бот переписки MAX (talks_token; легаси-dm_token приводится к нему при
+		// загрузке конфига) — опционален: без него личку ведёт бот зеркала.
+		if maxCfg.TalksToken != "" {
 			if pm, err := maxx.NewMirror(maxx.Params{
-				Token:      maxCfg.DMToken,
+				Token:      maxCfg.TalksToken,
 				BaseURL:    cfg.Site.BaseURL,
 				HTTPClient: maxx.MintsifraClient(),
 			}, nil); err != nil {
-				fail("MAX ЛС-бот", err)
+				fail("MAX бот переписки", err)
 			} else if info, err := pm.Me(ctx); err != nil {
-				fail("MAX ЛС-бот", err)
+				fail("MAX бот переписки", err)
 			} else {
-				ok("MAX ЛС-бот", "@"+info.Username)
+				ok("MAX бот переписки", "@"+info.Username)
 			}
 		}
 	}
@@ -147,7 +157,8 @@ func cmdDoctor(ctx context.Context, args []string) error {
 			adminID int64
 			enabled bool
 		}{
-			{store.MessengerTelegram, tgCfg.AdminUserID, tgCfg.Enabled && tgCfg.DMToken != ""},
+			{store.MessengerTelegram, tgCfg.AdminUserID,
+				tgCfg.Enabled && (tgCfg.DMToken != "" || tgCfg.TalksToken != "")},
 			{store.MessengerMax, cfg.Messengers.Max.AdminUserID, cfg.Messengers.Max.Enabled},
 		} {
 			if !m.enabled {

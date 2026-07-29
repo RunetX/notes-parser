@@ -7,8 +7,9 @@
   "messengers": {
     "max": {
       "enabled": true,
-      "token": "<токен MAX-бота или env LOVEGW_MAX_TOKEN>",
-      "dm_token": "<токен ЛС-бота MAX или env LOVEGW_MAX_DM_TOKEN; пусто — ЛС через основного бота>",
+      "token": "<токен MAX-бота или env LOVEGW_MAX_TOKEN; он же ведёт ЛС-команды>",
+      "talks_token": "<токен бота личной переписки или env LOVEGW_MAX_TALKS_TOKEN; пусто — переписку ведёт бот зеркала>",
+      "dm_token": "<устаревший псевдоним talks_token: при загрузке переезжает в него>",
       "channel_id": 0,
       "discussion_chat_id": 0,
       "admin_user_id": 0,
@@ -19,7 +20,8 @@
       "token": "<токен постер-бота или env LOVEGW_MIRROR_TOKEN>",
       "channel_id": -1001234567890,
       "discussion_chat_id": -1009876543210,
-      "dm_token": "<токен ЛС-бота или env LOVEGW_DM_TOKEN>"
+      "dm_token": "<токен ЛС-бота команд (РюмкинЪ) или env LOVEGW_DM_TOKEN>",
+      "talks_token": "<токен бота личной переписки или env LOVEGW_TG_TALKS_TOKEN; пусто — переписку ведёт РюмкинЪ>"
     }
   },
   "talks": {

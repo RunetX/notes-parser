@@ -76,10 +76,11 @@ messages, and all user-facing bot strings are in Russian.
     are `go:embed`-ded from `maxx/cacert/` when present at build time (see the
     README there), otherwise the host trust store is used. `updates.go` runs
     long polling (`GetUpdates(marker)`) and dispatches: discussion-chat
-    replies → `bridge.Core`, dialog messages → `dmbot.Logic`. With
-    `messengers.max.dm_token` set, DMs (dialogs, talks, alerts, subscriber
-    notifications) run on a separate bot — same split as Telegram's
-    poster/РюмкинЪ pair; without it one MAX bot covers channel, chat and DMs.
+    replies → `bridge.Core`, dialog messages → `dmbot.Logic`. The mirror bot
+    always covers channel, discussion chat and DM commands; only the site's
+    personal correspondence (talks) can move to a second bot via
+    `messengers.max.talks_token` (the legacy `max.dm_token` is migrated to it
+    on load).
   - `mirror` — feed watcher + one goroutine per active note with an adaptive
     poll interval; consumes a list of `Sink`s (fan-out: Telegram and MAX can
     mirror in parallel, each with its own thread per note via
@@ -98,6 +99,12 @@ messages, and all user-facing bot strings are in Russian.
     `dialog_states`, transport behind an interface — Telegram wrapper here,
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
     `/add_anonymous_note`, `/status`, `/subscribe`, `/unsubscribe`, `/mysubs`.
+    `NewTalksLogic` is the second role — a talks-only bot (`/talks`, `/talk`,
+    reply→site delivery, admin alerts) that keeps its own `dialog_states`
+    namespace (`<messenger>:talks`) so a stuck `pm:<id>` cannot break the
+    command bot; sessions, subscriptions and peers stay keyed by messenger, so
+    it sees the login made in the command bot. The command bot keeps a
+    reply-only router (`SetReplyRouter`) for DMs it delivered before the split.
   - `legacy` — one-shot importer of old JSON state.
 - Reply→site and note-post reuse saved cookie sessions; a 401/403 marks the
   session invalid and DMs the user to re-`/login`. Admin alerts require
@@ -107,10 +114,15 @@ messages, and all user-facing bot strings are in Russian.
 
 - Config `go/config.json` (gitignored, template `go/config.example.json`);
   tokens can come from env `LOVEGW_MIRROR_TOKEN` / `LOVEGW_DM_TOKEN` /
-  `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN` / `LOVEGW_DB_PATH` /
-  `LOVEGW_TG_PROXY`. The `messengers`
+  `LOVEGW_TG_TALKS_TOKEN` / `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN` /
+  `LOVEGW_MAX_TALKS_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY`.
+  The `messengers`
   section gates which sinks run (`max` / `telegram`, each with `enabled`);
   legacy flat `mirror_bot`/`dm_bot` configs still load as telegram-only.
+- Bot roles per messenger: everything that predates talks stays on the original
+  bots (Telegram poster + РюмкинЪ, MAX mirror bot), and `talks_token` moves only
+  the site's personal correspondence — plus admin alerts — to a separate bot.
+  Without `talks_token` nothing changes: talks runs on РюмкинЪ / the MAX mirror bot.
 - Network split: love.ngs.ru needs a Russian IP (403 otherwise), but Telegram's
   API is blocked from inside Russia. A box that reaches both needs nothing
   special. For split networks, `telegram_proxy` in config

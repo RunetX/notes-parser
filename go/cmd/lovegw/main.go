@@ -201,11 +201,13 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	var sinks []mirror.Sink
 	var alerters []func(ctx context.Context, text string)
 	subNotify := map[string]mirror.SubNotify{}
-	var dm *dmbot.Bot
+	var dm *dmbot.Bot      // Telegram: бот команд (РюмкинЪ)
+	var tgTalks *dmbot.Bot // Telegram: бот переписки (talks_token), иначе = dm
 	var tg *tgx.Mirror
-	var mx *maxx.Mirror
-	var maxPM *maxx.Mirror // ЛС-сторона MAX: отдельный бот при dm_token, иначе mx
-	var maxDM *dmbot.Logic
+	var mx *maxx.Mirror       // MAX: бот зеркала — канал, чат обсуждения и ЛС-команды
+	var maxTalks *maxx.Mirror // MAX: бот переписки (talks_token), иначе = mx
+	var maxDM *dmbot.Logic    // ЛС-команды бота зеркала MAX
+	var maxTalksDM *dmbot.Logic
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -238,9 +240,31 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			return err
 		}
 		sinks = append(sinks, tg)
+
+		// Бот переписки (опционален): личная переписка сайта уезжает к нему
+		// целиком, у бота команд остаётся только маршрутизация старых реплаев.
+		tgTalks = dm
+		if tgCfg.TalksToken != "" {
+			if tgTalks, err = dmbot.NewTalks(tgCfg.TalksToken, st, tgClient, log); err != nil {
+				return err
+			}
+			talksBot := tgTalks
+			g.Go(func() error {
+				talksBot.Start(gctx)
+				return nil
+			})
+		}
+
 		if tgCfg.AdminUserID != 0 {
+			// Алерты шлём в ЛС — приоритет боту переписки, затем боту команд;
+			// без ЛС-ботов остаётся постер (в личку он писать сможет не всегда).
 			adminID := tgCfg.AdminUserID
+			notifier := tgTalks
 			alerters = append(alerters, func(ctx context.Context, text string) {
+				if notifier != nil {
+					notifier.Notify(ctx, adminID, "⚠️ lovegw: "+text)
+					return
+				}
 				if err := tg.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
 					log.Warn("не удалось отправить алерт админу", "sink", "telegram", "err", err)
 				}
@@ -292,13 +316,16 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			log.Warn("MAX без discussion_chat_id: посты уйдут в канал, комментарии останутся в очереди")
 		}
 
-		// ЛС-сторона MAX: при заданном dm_token — отдельный бот РюмкинЪ
-		// (заметки и личка разведены по разным ботам, как в telegram),
-		// иначе личку обслуживает сам бот зеркала.
-		maxPM = mx
-		if maxCfg.DMToken != "" {
-			maxPM, err = maxx.NewMirror(maxx.Params{
-				Token:      maxCfg.DMToken,
+		// Бот переписки MAX (опционален): к нему уезжает только личная
+		// переписка сайта. Канал, чат обсуждения и все ЛС-команды остаются у
+		// бота зеркала — как было до появления переписки.
+		maxTalks = mx
+		if maxCfg.TalksToken != "" {
+			if maxCfg.TalksToken == maxCfg.Token {
+				log.Warn("MAX: talks_token совпадает с token — два поллера на один бот, апдейты будут теряться")
+			}
+			maxTalks, err = maxx.NewMirror(maxx.Params{
+				Token:      maxCfg.TalksToken,
 				BaseURL:    cfg.Site.BaseURL,
 				HTTPClient: maxx.MintsifraClient(),
 			}, log)
@@ -307,43 +334,36 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			}
 		}
 
-		// Алерты и уведомления — через ЛС-бота: с ним у админа и
-		// пользователей точно открыт диалог (/login живёт там же).
+		// Алерты — через бота переписки (без него это тот же бот зеркала).
 		if maxCfg.AdminUserID != 0 {
-			adminID, pm := maxCfg.AdminUserID, maxPM
+			adminID, pm := maxCfg.AdminUserID, maxTalks
 			alerters = append(alerters, func(ctx context.Context, text string) {
 				if err := pm.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
 					log.Warn("не удалось отправить алерт админу", "sink", "max", "err", err)
 				}
 			})
 		}
-		if maxPM != mx {
-			pm := maxPM
-			subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
-				if err := pm.NotifySubscriber(ctx, userID, n, c, threadID, commentMsgID); err != nil {
-					log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
-				}
+		// Подписки — функция бота зеркала: он же принимает /subscribe.
+		subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
+			if err := mx.NotifySubscriber(ctx, userID, n, c, threadID, commentMsgID); err != nil {
+				log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
 			}
 		}
 
-		// Мост «ответ в чате MAX → комментарий на сайте» — через бота
-		// зеркала (он слушает чат обсуждения); ЛС-диалоги (/login, заметки,
-		// подписки) — через ЛС-бота.
-		maxCore := bridge.NewCore(st, client, maxPM.Send, store.MessengerMax, log)
-		maxDM = dmbot.NewLogic(st, client, maxPM, store.MessengerMax, log)
-		if maxPM != mx {
-			pm := maxPM
+		// Бот зеркала ведёт и мост «ответ в чате → комментарий на сайте», и
+		// ЛС-команды; бот переписки — только диалоги talks.
+		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
+		maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
+		g.Go(func() error {
+			mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
+			return nil
+		})
+		if maxTalks != mx {
+			pm := maxTalks
+			maxTalksDM = dmbot.NewTalksLogic(st, pm, store.MessengerMax, log)
+			talksLogic := maxTalksDM
 			g.Go(func() error {
-				mx.Start(gctx, mx.Dispatch(maxCore, nil))
-				return nil
-			})
-			g.Go(func() error {
-				pm.Start(gctx, pm.Dispatch(nil, maxDM))
-				return nil
-			})
-		} else {
-			g.Go(func() error {
-				mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
+				pm.Start(gctx, pm.Dispatch(nil, talksLogic))
 				return nil
 			})
 		}
@@ -354,14 +374,16 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	// на сайт. Роутер инжектится в ЛС-стороны обоих мессенджеров (nil-safe:
 	// выключенный talks не меняет поведения ботов).
 	if cfg.Talks.Enabled {
+		// Транспорт — бот переписки мессенджера (без своего токена это бот
+		// команд в telegram и бот зеркала в MAX, как было раньше).
 		var transports []talks.PMTransport
 		adminIDs := map[string]int64{}
-		if dm != nil {
-			transports = append(transports, dm)
+		if tgTalks != nil {
+			transports = append(transports, tgTalks)
 			adminIDs[store.MessengerTelegram] = tgCfg.AdminUserID
 		}
-		if maxPM != nil {
-			transports = append(transports, maxPM)
+		if maxTalks != nil {
+			transports = append(transports, maxTalks)
 			adminIDs[store.MessengerMax] = maxCfg.AdminUserID
 		}
 		if len(transports) == 0 {
@@ -379,12 +401,25 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				MaxReqPerMin: cfg.Talks.MaxRequestsPerMin,
 				AlertSend:    fanOutAlerts(alerters),
 			}, log)
-			if dm != nil {
-				dm.SetTalkRouter(watcher)
+			if tgTalks != nil {
+				tgTalks.SetTalkRouter(watcher)
 			}
-			if maxPM != nil {
-				maxPM.SetTalkRouter(watcher)
-				maxDM.SetTalkRouter(watcher)
+			// Боту команд оставляем только маршрутизацию реплаев: ЛС,
+			// доставленные им раньше, по-прежнему ждут ответа у него.
+			if dm != nil && dm != tgTalks {
+				dm.SetReplyRouter(watcher)
+			}
+			if maxTalks != nil {
+				maxTalks.SetTalkRouter(watcher)
+				if maxTalksDM != nil {
+					maxTalksDM.SetTalkRouter(watcher)
+				}
+			}
+			if mx != nil && mx != maxTalks {
+				mx.SetTalkRouter(watcher) // старые реплаи в MAX; команды /talks у бота переписки
+			}
+			if maxTalks == mx && maxDM != nil {
+				maxDM.SetTalkRouter(watcher) // один бот на всё — как раньше
 			}
 			g.Go(func() error { return watcher.Run(gctx) })
 			log.Info("talks включён", "admin_only", cfg.Talks.AdminOnly,
@@ -409,7 +444,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath,
 		"telegram", tgCfg.Enabled, "max", maxCfg.Enabled, "dm_bot", dm != nil,
-		"max_dm_bot", maxPM != nil && maxPM != mx, "log_level", cfg.LogLevel)
+		"tg_talks_bot", tgTalks != nil && tgTalks != dm,
+		"max_talks_bot", maxTalks != nil && maxTalks != mx, "log_level", cfg.LogLevel)
 	log.Debug("debug-логирование включено") // видна только на уровне debug
 	g.Go(func() error { return mir.Run(gctx) })
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {

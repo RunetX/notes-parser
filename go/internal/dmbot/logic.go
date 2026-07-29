@@ -33,7 +33,18 @@ type Logic struct {
 	messenger string
 	talks     TalkRouter // личная переписка сайта; nil — выключена
 	log       *slog.Logger
+	// talksOnly — движок бота переписки: из команд живут только /start,
+	// /talks, /talk и /cancel, остальное отправляем к боту команд.
+	talksOnly bool
+	// stateNS — пространство ключей dialog_states. У бота переписки своё:
+	// user_id в мессенджере общий на обоих ботов, и без разделения залипшее
+	// «pm:<id>» ломало бы ввод логина/заметки у бота команд.
+	stateNS string
 }
+
+// talksCommands — что умеет бот переписки; остальные команды он отфутболивает
+// к боту команд, чтобы у пользователя не двоились /login и заметки.
+var talksCommands = map[string]bool{"/start": true, "/talks": true, "/talk": true, "/cancel": true}
 
 // SetTalkRouter подключает роутер личной переписки (в runDaemon после сборки
 // поллера talks). Для MAX ставится на maxDM-логику, для Telegram — через Bot.
@@ -45,18 +56,32 @@ type SiteIdentifier interface {
 	SiteIdentity(ctx context.Context, cookies []*http.Cookie) (profileID, passportID, nick string, err error)
 }
 
-// NewLogic создаёт диалоговый движок для одного мессенджера.
+// NewLogic создаёт диалоговый движок бота команд для одного мессенджера.
 func NewLogic(st *store.Store, site SiteAuth, tr Transport, messenger string, log *slog.Logger) *Logic {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Logic{st: st, site: site, tr: tr, messenger: messenger, log: log}
+	return &Logic{st: st, site: site, tr: tr, messenger: messenger, log: log, stateNS: messenger}
+}
+
+// NewTalksLogic создаёт движок бота личной переписки: сайт ему не нужен
+// (вход и заметки живут у бота команд), состояния — в своём пространстве.
+// Сессии, подписки и диалоги читаются по messenger, а не по боту, поэтому
+// переписка видит вход, сделанный пользователем у бота команд.
+func NewTalksLogic(st *store.Store, tr Transport, messenger string, log *slog.Logger) *Logic {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Logic{
+		st: st, tr: tr, messenger: messenger, log: log,
+		talksOnly: true, stateNS: messenger + ":talks",
+	}
 }
 
 // Greet шлёт приветствие со списком команд (на /start и первое открытие
 // диалога — bot_started в MAX).
 func (l *Logic) Greet(ctx context.Context, userID int64) {
-	l.tr.Send(ctx, userID, startMessage)
+	l.tr.Send(ctx, userID, startMessage(l.talksOnly, l.talks != nil))
 }
 
 // HandleText обрабатывает входящее ЛС. messageID нужен для удаления
@@ -65,7 +90,7 @@ func (l *Logic) HandleText(ctx context.Context, userID int64, messageID, text st
 	if text == "" {
 		return
 	}
-	state, err := l.st.DialogState(ctx, l.messenger, userID)
+	state, err := l.st.DialogState(ctx, l.stateNS, userID)
 	if err != nil {
 		l.log.Error("чтение состояния диалога", "user", userID, "err", err)
 		return
@@ -74,7 +99,7 @@ func (l *Logic) HandleText(ctx context.Context, userID int64, messageID, text st
 	// Команда прерывает любой текущий диалог.
 	if cmd := command(text); cmd != "" {
 		if state != "" {
-			_ = l.st.ClearDialogState(ctx, l.messenger, userID)
+			_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
 		}
 		l.handleCommand(ctx, userID, cmd, messageID, text)
 		return
@@ -87,6 +112,11 @@ func (l *Logic) HandleText(ctx context.Context, userID int64, messageID, text st
 }
 
 func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID, text string) {
+	if l.talksOnly && !talksCommands[cmd] {
+		l.tr.Send(ctx, userID, "Здесь только личная переписка сайта: /talks, /talk <номер>. "+
+			"Вход, заметки и подписки — у основного бота.")
+		return
+	}
 	switch cmd {
 	case "/start":
 		l.Greet(ctx, userID)
@@ -131,7 +161,12 @@ func (l *Logic) handleTalks(ctx context.Context, userID int64) {
 		return
 	}
 	if len(peers) == 0 {
-		l.tr.Send(ctx, userID, "Пока нет диалогов. Как придёт ЛС с сайта — ответьте на него реплаем.")
+		msg := "Пока нет диалогов. Как придёт ЛС с сайта — ответьте на него реплаем."
+		if l.talksOnly {
+			// Сессии заводит бот команд — без входа диалогов не будет вовсе.
+			msg += "\nЕсли вы ещё не входили на сайт, сделайте /login у основного бота."
+		}
+		l.tr.Send(ctx, userID, msg)
 		return
 	}
 	var b strings.Builder
@@ -164,7 +199,7 @@ func (l *Logic) handleTalkOpen(ctx context.Context, userID int64, arg string) {
 
 // handleCancel выходит из залипшего диалога (и любого другого состояния).
 func (l *Logic) handleCancel(ctx context.Context, userID int64) {
-	_ = l.st.ClearDialogState(ctx, l.messenger, userID)
+	_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
 	l.tr.Send(ctx, userID, "Ок, вышел из диалога.")
 }
 
@@ -225,20 +260,30 @@ func (l *Logic) handleMySubs(ctx context.Context, userID int64) {
 func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messageID, text string) {
 	// Залипание на диалоге talks: состояние сохраняется, пока не /cancel.
 	if peerID, ok := parsePMState(state); ok {
-		if l.talks == nil || !l.talks.SendToDialog(ctx, l.messenger, userID, peerID, messageID, text) {
+		if l.talks == nil {
+			// Переписку увёл к себе отдельный бот: чистим легаси-состояние,
+			// иначе пользователь остался бы «залипшим» в диалоге навсегда.
+			_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
+			l.tr.Send(ctx, userID, "Личная переписка живёт у бота переписки — напишите ему.")
+			return
+		}
+		if !l.talks.SendToDialog(ctx, l.messenger, userID, peerID, messageID, text) {
 			l.tr.Send(ctx, userID, "Не удалось отправить в диалог. Список — /talks")
 		}
 		return
+	}
+	if l.talksOnly {
+		return // прочие состояния — не наша роль
 	}
 	switch state {
 	case stateAwaitCredentials:
 		l.tryLogin(ctx, userID, messageID, text)
 	case stateAwaitNote:
 		l.addNote(ctx, userID, text, false)
-		_ = l.st.ClearDialogState(ctx, l.messenger, userID)
+		_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
 	case stateAwaitAnonNote:
 		l.addNote(ctx, userID, text, true)
-		_ = l.st.ClearDialogState(ctx, l.messenger, userID)
+		_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
 	}
 }
 
@@ -295,7 +340,7 @@ func (l *Logic) tryLogin(ctx context.Context, userID int64, messageID, text stri
 		return
 	}
 	l.captureIdentity(ctx, userID, cookies)
-	_ = l.st.ClearDialogState(ctx, l.messenger, userID)
+	_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
 	l.tr.Send(ctx, userID, "Успешный вход. Теперь ваши ответы в обсуждениях попадут на сайт")
 }
 
@@ -359,7 +404,7 @@ func (l *Logic) handleStatus(ctx context.Context, userID int64) {
 }
 
 func (l *Logic) setState(ctx context.Context, userID int64, state string) {
-	if err := l.st.SetDialogState(ctx, l.messenger, userID, state, time.Now()); err != nil {
+	if err := l.st.SetDialogState(ctx, l.stateNS, userID, state, time.Now()); err != nil {
 		l.log.Error("сохранение состояния диалога", "user", userID, "err", err)
 	}
 }
