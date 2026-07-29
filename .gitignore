@@ -141,8 +141,10 @@ data/
 /go/lovegw.exe~
 # Лог демона
 /go/run.log
-# Конфиги с токенами ботов (шаблоны: *.example.json)
+# Конфиги с токенами ботов (шаблоны *.example.json — можно коммитить)
 config.json
+config.*.json
+!config.example.json
 ryumkin.json
 # Состояние и данные пользователей
 notes.json
@@ -157,6 +159,10 @@ yesterday/
 # Дампы грабера заметок (grab -out / -save-html): исследовательские выгрузки
 # JSON и сырой HTML. Архив archive.db уже покрыт правилом data/ выше.
 # ВНИМАНИЕ: testdata НЕ игнорируем — там реальные фикстуры под тесты.
+# Исключение: сырой снимок мессенджера сайта с живыми секретами (Love.token,
+# passport_id, hash push-канала) — не фикстура; санитизированные фикстуры
+# talks появятся отдельно (см. briefs/love-talks-telegram.md §5).
+/go/internal/love/testdata/love.ngs.ru.mhtml
 dump/
 .vscode/
 .claude/
