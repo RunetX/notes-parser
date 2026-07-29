@@ -74,6 +74,11 @@ type Watcher struct {
 
 	errStreak int
 	stopped   bool
+	// lastUnread — последнее виденное число непрочитанных по peer.id: сигнал
+	// «есть новое» без mark-read (loadBuddiesList не отдаёт last-msg-id).
+	// Трогает только горутина Run — без мьютекса. Сбрасывается при рестарте
+	// (тогда один лишний дозабор на диалог, дальше по дельте).
+	lastUnread map[int64]int
 }
 
 // New создаёт поллер. transports — по одному на включённый мессенджер.
@@ -111,6 +116,7 @@ func New(st *store.Store, site SiteTalks, transports []PMTransport, cfg Config, 
 		alert:      alerts.New(cfg.AlertSend, cfg.ForbiddenLimit),
 		limiter:    rate.NewLimiter(rate.Every(time.Minute/time.Duration(cfg.MaxReqPerMin)), burst),
 		log:        log,
+		lastUnread: make(map[int64]int),
 	}
 }
 
@@ -227,7 +233,12 @@ func (w *Watcher) processDialog(ctx context.Context, tr PMTransport, owner int64
 	if err != nil {
 		return false, false
 	}
-	if d.LastMsgID == "" || d.LastMsgID == peer.CursorMsgID {
+	// Сигнал новой активности: либо last-msg-id диалога сдвинулся (если сайт его
+	// отдаёт), либо выросло число непрочитанных (loadBuddiesList отдаёт только
+	// его). Без mark-read счётчик залипает, поэтому сравниваем с прошлым виденным.
+	byMsgID := d.LastMsgID != "" && d.LastMsgID != peer.CursorMsgID
+	byUnread := d.Unread > 0 && d.Unread != w.lastUnread[peerID]
+	if !byMsgID && !byUnread {
 		return false, false // новой активности нет; недоставленного тоже (курсор идёт лишь по доставленным)
 	}
 
@@ -241,6 +252,7 @@ func (w *Watcher) processDialog(ctx context.Context, tr PMTransport, owner int64
 		return fetched, false
 	}
 	w.onSiteOK(ctx)
+	w.lastUnread[peerID] = d.Unread // дозабор состоялся — запоминаем счётчик
 
 	newCursor, cursorTime := peer.CursorMsgID, peer.LastEventAt
 	for _, m := range msgs {
