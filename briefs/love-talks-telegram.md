@@ -92,7 +92,7 @@
 
 | Операция | Метод + URL | Параметры запроса | Ключевые поля ответа | Статус |
 |---|---|---|---|---|
-| Список диалогов | **GET** `/ajax?request=loadBuddiesList` | `before`, `limit`, `stick_passport_id` (опц.), `anticache` (ms) | `{loadBuddiesList:{error, data:{html, user_ids[], last_user_time, last_user_express}}}` — диалоги = **rendered HTML** + массив паспортов `user_ids` | ✅ снято (16 КБ JSON) |
+| Список диалогов | **GET** `/ajax?request=loadBuddiesList` | `before`, `limit`, `stick_passport_id` (опц.), `anticache` (ms) | `{loadBuddiesList:{error, html, data:{user_ids[], last_user_time, last_user_express}}}` — диалоги = **rendered HTML в `loadBuddiesList.html`** (НЕ в `data.html` — тот пустой); `data` несёт лишь массив паспортов `user_ids` и метки времени | ✅ снято (16 КБ JSON); ⚠ envelope-путь исправлен по read-only прогону 29.07 (парсер читал `data.html` → 0 диалогов) |
 | История диалога | **JSON-RPC POST** `/ajax/` | `{"jsonrpc":"2.0","method":"getMessagesHistory","params":[passportId, page],"id":N}`; `page` 1-based, `MSG_LIMIT=20` | `result.html` — **rendered HTML** сообщений (парсить goquery) | ✅ снято |
 | Отправка | **JSON-RPC POST** `/ajax/` | `{"jsonrpc":"2.0","method":"sendMessage","params":[passportId, "<text>", []],"id":N}`; авторизация по кукам, **без `Love.token`** | `result` (JSON-RPC); созданное сообщение придёт и историей/пушем | ✅ снято (DevTools, PHP `Love_Page_Ajax::sendMessage`) |
 | Отметка прочитанного | `/ajax?request=markAsReadMessages` | `passport_id`, … | — | в MVP off (mark_read=false) |
@@ -107,10 +107,14 @@
    (подстроки «статус 401/403») здесь бесполезен — в `love/json.go` проверять поле
    `error` == «Ошибка авторизации» (и/или пустой `data`) → `ErrUnauthorized`.
 2. **Ответы — rendered HTML, не структурированный JSON:** и список диалогов
-   (`data.html`), и история (`{html}`) отдаются готовым HTML. Значит Ф4 парсит их
-   goquery (новые селекторы в const-блок `parse.go`/`parse_talks.go`), а не
-   `encoding/json` по полям сообщений. `user_ids[]` в списке диалогов даёт паспорта
-   напрямую (без парсинга HTML для адресации).
+   (`loadBuddiesList.html`, НЕ `data.html`), и история (`result.html`) отдаются
+   готовым HTML. Значит Ф4 парсит их goquery (новые селекторы в const-блоке
+   `love/talks.go`), а не `encoding/json` по полям сообщений. `user_ids[]` в
+   `loadBuddiesList.data` даёт паспорта, но адресацию берём из data-атрибутов
+   разметки (`data-user-passport-id`). ⚠ Ловушка, всплывшая на read-only прогоне
+   29.07: HTML именно в `loadBuddiesList.html`; парсер сперва читал `data.html`
+   (пустой) и молча отдавал 0 диалогов — фикстура повторяла ту же ошибку, поэтому
+   юнит-тест не ловил. Исправлено + фикстура приведена к реальной форме.
 3. **Транспорт двойной:** список/отметка — `GET/POST /ajax?request=<name>` (форма,
    JSON-ответ), история и отправка — **JSON-RPC POST `/ajax/`** одинаковым
    конвертом `{jsonrpc:"2.0", method, params:[…], id}`, авторизация по кукам.

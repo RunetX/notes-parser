@@ -3,7 +3,7 @@ package love
 // Личная переписка сайта (talks): доменные типы + клиентские методы поверх
 // AJAX/JSON-RPC на `/ajax/` (см. json.go). Эндпоинты и формат ответов сняты в
 // Ф0 живьём — см. briefs/love-talks-telegram.md §2:
-//   - список диалогов: GET /ajax?request=loadBuddiesList → JSON {data:{html, user_ids}};
+//   - список диалогов: GET /ajax?request=loadBuddiesList → JSON {loadBuddiesList:{html, data:{user_ids}}};
 //   - история: JSON-RPC getMessagesHistory(passportId, page) → result.html;
 //   - отправка: JSON-RPC sendMessage(passportId, text, []) → result (HTML сообщения).
 // Ответы отдаются rendered HTML, поэтому парсим goquery (селекторы — ниже).
@@ -89,17 +89,18 @@ func (c *Client) TalksDialogs(ctx context.Context, cookies []*http.Cookie, limit
 	if err != nil {
 		return nil, err
 	}
+	// Разметка списка лежит в loadBuddiesList.html (снято живьём в Ф0-прогоне);
+	// data — сопутствующий объект {user_ids, html:""}, его html пустой. Раньше
+	// парсер читал data.html и молча получал 0 диалогов.
 	var env struct {
 		LoadBuddiesList struct {
-			Data struct {
-				HTML string `json:"html"`
-			} `json:"data"`
+			HTML string `json:"html"`
 		} `json:"loadBuddiesList"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, &SchemaError{Op: "loadBuddiesList", Detail: err.Error()}
 	}
-	return parseBuddies(env.LoadBuddiesList.Data.HTML)
+	return parseBuddies(env.LoadBuddiesList.HTML)
 }
 
 // TalksHistory возвращает сообщения диалога (страница 1 = последние 20). Сервер

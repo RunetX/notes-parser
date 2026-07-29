@@ -93,7 +93,12 @@ func talksServer(t *testing.T, guest bool) *Client {
 			_, _ = io.WriteString(w, `{"loadBuddiesList":{"data":[],"html":"","error":"Ошибка авторизации"}}`)
 			return
 		}
-		resp := map[string]any{"loadBuddiesList": map[string]any{"data": map[string]any{"html": buddiesHTML, "user_ids": []int64{777, 888}}}}
+		// Реальная форма (снята в Ф0-прогоне): разметка в loadBuddiesList.html,
+		// а data несёт лишь user_ids (data.html пустой).
+		resp := map[string]any{"loadBuddiesList": map[string]any{
+			"html": buddiesHTML,
+			"data": map[string]any{"html": "", "user_ids": []int64{777, 888}},
+		}}
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("/ajax/", func(w http.ResponseWriter, r *http.Request) {

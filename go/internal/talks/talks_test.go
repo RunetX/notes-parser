@@ -209,6 +209,61 @@ func TestDeliveryFailureIsRetried(t *testing.T) {
 	}
 }
 
+func TestDeliverExistingBackfill(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	// unread=0 и LastMsgID пуст — обычный поллинг не триггерится.
+	site := &fakeSite{
+		dialogs: []love.TalkDialog{{PassportID: "777", Nick: "Оля", ProfileID: "555"}},
+		history: map[string][]love.TalkMessage{
+			"777": {
+				{SiteMsgID: "m1", Text: "раз"},
+				{SiteMsgID: "m2", Text: "два", FromSelf: true},
+				{SiteMsgID: "m3", Text: "три"},
+			},
+		},
+	}
+	tr := &fakeTransport{name: store.MessengerTelegram}
+	w := New(st, site, []PMTransport{tr}, testConfig(), nil)
+
+	w.pollOnce(ctx)
+	if len(tr.sent) != 0 {
+		t.Fatalf("без непрочитанного поллинг не доставляет: %d", len(tr.sent))
+	}
+
+	// Бэкфилл последнего 1 входящего: m3 (исходящее m2 пропущено).
+	n, err := w.DeliverExisting(ctx, 5, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || len(tr.sent) != 1 || !strings.Contains(tr.sent[0].html, "три") {
+		t.Fatalf("бэкфилл: n=%d sent=%+v", n, tr.sent)
+	}
+	// deliverTo=0 → доставка владельцу сессии.
+	if tr.sent[0].userID != testOwner {
+		t.Errorf("ожидалась доставка владельцу %d, got %d", testOwner, tr.sent[0].userID)
+	}
+	// Идемпотентность: повтор не задваивает.
+	n2, err := w.DeliverExisting(ctx, 5, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n2 != 0 || len(tr.sent) != 1 {
+		t.Fatalf("повторный бэкфилл задвоил: n2=%d sent=%d", n2, len(tr.sent))
+	}
+
+	// Явный deliverTo → доставка в другой чат (демо в другой аккаунт).
+	const other = 99
+	n3, err := w.DeliverExisting(ctx, 5, 2, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n3 == 0 || tr.sent[len(tr.sent)-1].userID != other {
+		t.Fatalf("deliverTo=%d не сработал: n3=%d last=%+v", other, n3, tr.sent[len(tr.sent)-1])
+	}
+}
+
 func TestHandleReplyAtMostOnceAndJurisdiction(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)

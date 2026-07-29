@@ -95,6 +95,8 @@ func main() {
 		err = cmdBackfill(ctx, os.Args[2:])
 	case "personas":
 		err = cmdPersonas(ctx, os.Args[2:])
+	case "talks":
+		err = cmdTalks(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -112,6 +114,7 @@ func usage() {
   lovegw import [-config config.json] [-notes notes.json] [-sessions sessions_export.json] [-subscribers subscribers.json]
   lovegw run    [-config config.json] [-seed]
   lovegw doctor [-config config.json] [-post-test]
+  lovegw talks  [-config config.json] -db <копия.db> [-once] [-interval 20s] [-max-dialogs N] [-history-limit N] watch
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
   lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
   lovegw export [-db archive.db] [-out dir] <note_id>

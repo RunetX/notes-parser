@@ -146,6 +146,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 	return nil
 }
 
+// PollOnce делает один проход поллера и возвращает, была ли активность.
+// Для отладочного/безопасного прогона `lovegw talks watch -once`.
+func (w *Watcher) PollOnce(ctx context.Context) bool { return w.pollOnce(ctx) }
+
 // pollOnce обходит все транспорты и их владельцев сессий один раз.
 func (w *Watcher) pollOnce(ctx context.Context) bool {
 	active := false
@@ -304,6 +308,91 @@ func (w *Watcher) deliverOne(ctx context.Context, tr PMTransport, owner int64, p
 		w.log.Error("привязка доставленного ЛС talks", "err", err)
 	}
 	return true, false
+}
+
+// DeliverExisting принудительно доставляет последние perDialog ВХОДЯЩИХ из
+// первых maxDialogs диалогов каждого владельца, игнорируя триггер непрочитанного
+// — для обкатки/бэкфилла: показать уже существующую переписку в мессенджере,
+// когда всё на сайте прочитано. Читаем под сессией владельца, а доставляем в
+// deliverTo (0 — самому владельцу): удобно, когда демонстрируешь в другой
+// аккаунт. Идемпотентно по message_targets (повтор не задваивает); на сайт
+// ничего не пишет. Возвращает число доставленных сообщений.
+func (w *Watcher) DeliverExisting(ctx context.Context, maxDialogs, perDialog int, deliverTo int64) (int, error) {
+	total := 0
+	for _, tr := range w.transports {
+		for _, owner := range w.owners(ctx, tr.Name()) {
+			cookies, ok := w.cookies(ctx, tr.Name(), owner)
+			if !ok {
+				continue
+			}
+			target := deliverTo
+			if target == 0 {
+				target = owner
+			}
+			if err := w.limiter.Wait(ctx); err != nil {
+				return total, err
+			}
+			dialogs, err := w.site.Dialogs(ctx, cookies, maxDialogs)
+			if err != nil {
+				return total, err
+			}
+			for i, d := range dialogs {
+				if i >= maxDialogs {
+					break
+				}
+				n, err := w.deliverDialogTail(ctx, tr, owner, target, cookies, d, perDialog)
+				if err != nil {
+					return total, err
+				}
+				total += n
+			}
+		}
+	}
+	return total, nil
+}
+
+// deliverDialogTail доставляет последние perDialog входящих одного диалога
+// (perDialog ≤ 0 — все со страницы истории) в чат target, не двигая
+// курсор/триггеры. owner — владелец сессии (ключ собеседника), target — куда слать.
+func (w *Watcher) deliverDialogTail(ctx context.Context, tr PMTransport, owner, target int64, cookies []*http.Cookie, d love.TalkDialog, perDialog int) (int, error) {
+	peerID, err := w.st.UpsertTalkPeer(ctx, store.TalkPeer{
+		Messenger: tr.Name(), OwnerUserID: owner, PassportID: d.PassportID,
+		ProfileID: d.ProfileID, Nick: d.Nick, AvatarURL: d.AvatarURL,
+	})
+	if err != nil {
+		return 0, err
+	}
+	peer, err := w.st.TalkPeerByID(ctx, peerID)
+	if err != nil {
+		return 0, err
+	}
+	if err := w.limiter.Wait(ctx); err != nil {
+		return 0, err
+	}
+	msgs, err := w.site.History(ctx, cookies, d.PassportID, "", w.cfg.HistoryLimit)
+	if err != nil {
+		return 0, err
+	}
+	var incoming []love.TalkMessage
+	for _, m := range msgs {
+		if !m.FromSelf {
+			incoming = append(incoming, m)
+		}
+	}
+	if perDialog > 0 && len(incoming) > perDialog {
+		incoming = incoming[len(incoming)-perDialog:]
+	}
+	n := 0
+	for _, m := range incoming {
+		rowID, _, err := w.st.InsertTalkMessage(ctx, toStoreMsg(peerID, m, w.cfg.StoreText))
+		if err != nil {
+			return n, err
+		}
+		if delivered, _ := w.deliverOne(ctx, tr, target, peer, m, rowID); delivered {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // HandleReply маршрутизирует ответ пользователя (реплай на доставленное ЛС) в
