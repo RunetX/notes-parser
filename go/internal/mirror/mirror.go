@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"lovegw/internal/alerts"
 	"lovegw/internal/love"
 	"lovegw/internal/store"
 )
@@ -56,7 +57,7 @@ type Mirror struct {
 	site         SiteClient
 	sinks        []Sink
 	log          *slog.Logger
-	alert        *alerter
+	alert        *alerts.Alerter
 	notesLimit   int
 	feedInterval time.Duration
 	seedFirst    bool
@@ -88,7 +89,7 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 		site:         site,
 		sinks:        sinks,
 		log:          log,
-		alert:        newAlerter(cfg.AlertSend, alertThreshold),
+		alert:        alerts.New(cfg.AlertSend, alertThreshold),
 		notesLimit:   cfg.NotesLimit,
 		feedInterval: cfg.FeedInterval,
 		seedFirst:    cfg.SeedFirst,
@@ -104,9 +105,9 @@ func (m *Mirror) reportSiteError(ctx context.Context, driftKey string, err error
 	var me *love.MarkupError
 	switch {
 	case errors.As(err, &me):
-		m.alert.fail(ctx, driftKey, "селектор «"+me.Selector+"» — "+me.Context)
+		m.alert.Fail(ctx, driftKey, "селектор «"+me.Selector+"» — "+me.Context)
 	case errors.Is(err, love.ErrForbidden):
-		m.alert.fail(ctx, keyForbidden, "сайт вернул 403 (геоблок или бан IP)")
+		m.alert.Fail(ctx, keyForbidden, "сайт вернул 403 (геоблок или бан IP)")
 	}
 }
 
@@ -155,8 +156,8 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 		m.reportSiteError(ctx, keyFeedDrift, err)
 		return false
 	}
-	m.alert.ok(ctx, keyFeedDrift)
-	m.alert.ok(ctx, keyForbidden)
+	m.alert.OK(ctx, keyFeedDrift)
+	m.alert.OK(ctx, keyForbidden)
 	if len(notes) > m.notesLimit {
 		notes = notes[:m.notesLimit]
 	}
@@ -408,8 +409,8 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 		return
 	}
 	comments := page.Comments
-	m.alert.ok(ctx, keyCommentsDrift)
-	m.alert.ok(ctx, keyForbidden)
+	m.alert.OK(ctx, keyCommentsDrift)
+	m.alert.OK(ctx, keyForbidden)
 	m.applyNoteHeader(ctx, n, page.Note)
 	known, err := m.st.CommentIDs(ctx, n.ID)
 	if err != nil {

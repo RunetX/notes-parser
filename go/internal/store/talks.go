@@ -120,7 +120,9 @@ func (s *Store) SetPeerCursor(ctx context.Context, peerID int64, cursorMsgID str
 
 // InsertTalkMessage сохраняет сообщение, дедуплицируя входящие по
 // (peer_id, site_msg_id). fresh=false — сообщение уже было (частичный уникальный
-// индекс; исходящие с NULL site_msg_id никогда не конфликтуют).
+// индекс; исходящие с NULL site_msg_id никогда не конфликтуют). При конфликте
+// возвращается id уже существующей строки — доставка идемпотентна по
+// message_targets и может использовать его, не завися от свежести вставки.
 func (s *Store) InsertTalkMessage(ctx context.Context, m TalkMessage) (id int64, fresh bool, err error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO talks_messages
@@ -131,11 +133,21 @@ func (s *Store) InsertTalkMessage(ctx context.Context, m TalkMessage) (id int64,
 	if err != nil {
 		return 0, false, fmt.Errorf("insert talk message peer=%d: %w", m.PeerID, err)
 	}
-	if affected, _ := res.RowsAffected(); affected == 0 {
+	if affected, _ := res.RowsAffected(); affected > 0 {
+		id, _ = res.LastInsertId()
+		return id, true, nil
+	}
+	// Конфликт по (peer_id, site_msg_id) — вернём id существующей строки.
+	if m.SiteMsgID == "" {
 		return 0, false, nil
 	}
-	id, _ = res.LastInsertId()
-	return id, true, nil
+	err = s.db.QueryRowContext(ctx, `
+		SELECT id FROM talks_messages WHERE peer_id = ? AND site_msg_id = ?`,
+		m.PeerID, m.SiteMsgID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return id, false, err
 }
 
 // TalkMessageByID возвращает сообщение по внутреннему id. ErrNotFound — нет.
