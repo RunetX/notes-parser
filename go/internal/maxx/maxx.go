@@ -236,14 +236,15 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, i
 	return mid, nil
 }
 
-// NotifySubscriber шлёт подписчику ЛС о комментарии с его ключевым словом.
-// Deep-link на сообщение чата в MAX не документирован — даём ссылку на
-// комментарий на сайте (анкер сайта — anchor-<id>).
-func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment, _, _ string) error {
+// NotifySubscriber шлёт подписчику ЛС о комментарии с его ключевым словом:
+// слово, автор, заметка и выдержка текста. Deep-link на сообщение чата в MAX
+// не документирован — даём ссылку на комментарий на сайте (анкер — anchor-<id>).
+func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, _, _ string) error {
 	link := fmt.Sprintf("%s/notes/%s/#anchor-%d", m.baseURL, n.ID, c.ID)
 	msg := maxbot.NewMessage().
 		SetUser(userID).
-		SetText("🔔 Новый комментарий по вашему ключевому слову:\n" + link)
+		SetText(composeSubNotice(keyword, n, c, link)).
+		SetFormat(model.FormatHTML)
 	if _, err := m.send(ctx, userID, msg); err != nil {
 		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
 	}

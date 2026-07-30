@@ -36,12 +36,13 @@ type Sink interface {
 	PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error)
 	PostComment(ctx context.Context, n store.Note, threadID string, c store.Comment, avatar []byte) (string, error)
 	PostNoteImage(ctx context.Context, threadID, imageURL string, image []byte) (string, error)
-	NotifySubscriber(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) error
+	NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) error
 }
 
 // SubNotify уведомляет подписчика о комментарии с ключевым словом.
-// threadID/commentMsgID — id в мессенджере подписки (для deep-link).
-type SubNotify func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string)
+// keyword — сработавшее слово подписки (в тексте уведомления видно, почему
+// оно пришло). threadID/commentMsgID — id в мессенджере подписки (для deep-link).
+type SubNotify func(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string)
 
 // ThreadStarter — приёмник, умеющий сам открыть тред обсуждения заметки
 // (MAX: «ручной автофорвард» — копия заметки в чат обсуждения). Если тред
@@ -681,10 +682,10 @@ func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscriptio
 			continue
 		}
 		if notify := m.subNotify[sink.Name()]; notify != nil {
-			notify(ctx, sub.UserID, n, c, threadID, commentMsgID)
+			notify(ctx, sub.UserID, sub.Keyword, n, c, threadID, commentMsgID)
 			continue
 		}
-		if err := sink.NotifySubscriber(ctx, sub.UserID, n, c, threadID, commentMsgID); err != nil {
+		if err := sink.NotifySubscriber(ctx, sub.UserID, sub.Keyword, n, c, threadID, commentMsgID); err != nil {
 			m.log.Warn("уведомление подписчика не удалось",
 				"user", sub.UserID, "sink", sink.Name(), "err", err)
 		}

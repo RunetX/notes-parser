@@ -32,10 +32,11 @@ func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.Comment
 func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
 
 type sinkCall struct {
-	kind   string
-	noteID string
-	comID  int64
-	userID int64
+	kind    string
+	noteID  string
+	comID   int64
+	userID  int64
+	keyword string
 }
 
 type fakeSink struct {
@@ -71,8 +72,9 @@ func (f *fakeSink) PostNoteImage(_ context.Context, _ string, imageURL string, _
 	return f.id(), nil
 }
 
-func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, n store.Note, c store.Comment, _, _ string) error {
-	f.calls = append(f.calls, sinkCall{kind: "notify", noteID: n.ID, comID: c.ID, userID: userID})
+func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, keyword string, n store.Note, c store.Comment, _, _ string) error {
+	f.calls = append(f.calls, sinkCall{kind: "notify", noteID: n.ID, comID: c.ID,
+		userID: userID, keyword: keyword})
 	return nil
 }
 
@@ -384,14 +386,18 @@ func TestNotifySubscribersOnKeyword(t *testing.T) {
 	n, _ := st.NoteByID(ctx, "n1")
 	m.pollComments(ctx, n)
 
-	var notified []int64
+	var notified []sinkCall
 	for _, c := range sink.calls {
 		if c.kind == "notify" {
-			notified = append(notified, c.userID)
+			notified = append(notified, c)
 		}
 	}
-	if len(notified) != 1 || notified[0] != 42 {
+	if len(notified) != 1 || notified[0].userID != 42 {
 		t.Errorf("уведомления: %v", notified)
+	}
+	// Сработавшее слово доходит до приёмника — из него собирается текст ЛС.
+	if len(notified) == 1 && notified[0].keyword != "рюмк" {
+		t.Errorf("ключевое слово в уведомлении: %q", notified[0].keyword)
 	}
 }
 

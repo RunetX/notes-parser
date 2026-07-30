@@ -274,7 +274,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
 		// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
 		if dm != nil {
-			subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
+			subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) {
 				root, err1 := strconv.ParseInt(threadID, 10, 64)
 				msgID, err2 := strconv.ParseInt(commentMsgID, 10, 64)
 				if err1 != nil || err2 != nil {
@@ -282,7 +282,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 					return
 				}
 				link := tgx.DeepLink(tgCfg.DiscussionChatID, msgID, root)
-				dm.Notify(ctx, userID, "🔔 Новый комментарий по вашему ключевому слову:\n"+link)
+				dm.NotifyHTML(ctx, userID, tgx.ComposeSubNotice(keyword, n, c, link))
 			}
 		}
 
@@ -344,8 +344,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			})
 		}
 		// Подписки — функция бота зеркала: он же принимает /subscribe.
-		subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, n store.Note, c store.Comment, threadID, commentMsgID string) {
-			if err := mx.NotifySubscriber(ctx, userID, n, c, threadID, commentMsgID); err != nil {
+		subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) {
+			if err := mx.NotifySubscriber(ctx, userID, keyword, n, c, threadID, commentMsgID); err != nil {
 				log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
 			}
 		}
