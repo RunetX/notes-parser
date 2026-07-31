@@ -141,14 +141,22 @@ docker compose run --rm lovegw doctor -config /config.json
 
 Секция `digest` в `config.json` (`"enabled": true`; слот по умолчанию —
 пятница 19:00 Нск). Демон в слот выпуска строит черновик и материалы в
-`/data/digest/` (на хосте — `deploy/data/digest/`) и шлёт админу ЛС;
-публикация — за админом после правки LLM-рубрик:
+`/data/digest/` и шлёт админу ЛС; публикация — за админом после правки
+LLM-рубрик. `/data` — named volume (не bind-mount, см. комментарий в
+compose), поэтому файлы достаём/возвращаем через `docker cp` в работающий
+контейнер демона:
 
 ```sh
-vi data/digest/digest-<неделя>.draft.txt            # вставить рубрики из materials.md
+docker cp lovegw:/data/digest/digest-<неделя>.draft.txt .
+docker cp lovegw:/data/digest/digest-<неделя>.materials.md .
+vi digest-<неделя>.draft.txt                        # вставить рубрики из materials.md
+docker cp digest-<неделя>.draft.txt lovegw:/data/digest/
 docker compose run --rm lovegw digest -config /config.json preview
 docker compose run --rm lovegw digest -config /config.json publish
 ```
+
+(Альтернатива — правка прямо в томе от root:
+`sudo vi "$(docker volume inspect deploy_lovegw-data -f '{{.Mountpoint}}')/digest/…"`.)
 
 Публикация идемпотентна (message_targets) — безопасна при работающем демоне;
 `-force` публикует «сухой» выпуск без LLM-рубрик. Пропущенный слот (демон
