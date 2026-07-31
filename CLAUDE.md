@@ -37,6 +37,13 @@ messages, and all user-facing bot strings are in Russian.
   (заводит заметку по прямому id; `-full` дотягивает весь тред в древовидном
   виде и возвращает архивную заметку в отслеживание). Безопасно при работающем
   демоне — постит он сам.
+- Weekly digest: `go run ./cmd/lovegw digest [-week N] draft` строит черновик
+  недели и материалы для LLM-редактуры (`<dir(db)>/digest/`); админ заполняет
+  `<!-- LLM:… -->`-рубрики из materials.md, `digest preview` рендерит выпуск
+  per-messenger, `digest publish` постит в каналы (`-force` — «сухой» выпуск
+  без LLM-рубрик). Публикация идемпотентна и резюмируема через
+  `message_targets` (kind `digest`) — безопасно при работающем демоне
+  (поллинг не поднимается).
 - One-off import of legacy JSON state (notes / subscribers) into SQLite:
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
@@ -98,6 +105,12 @@ messages, and all user-facing bot strings are in Russian.
   - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
     via `processed_replies`, per messenger) + the Telegram handler with
     auto-forward capture (linking a channel post to its discussion thread).
+  - `digest` — еженедельный дайджест: слот выпуска (пятница 19:00 Нск, окно
+    неделя-до-слота), метрики рубрик по живой БД (заметка/спор/цитата недели,
+    новые лица, сравнительные рекорды), черновик с маркерами
+    `{note:ID|текст}` и LLM-плейсхолдерами + materials.md с промптами
+    (полуручной цикл), рендер per-sink через опциональный интерфейс
+    `Publisher` (реализован в tgx/maxx), сплит серии по 3500 видимых рун.
   - `dmbot` — РюмкинЪ; messenger-agnostic dialog engine `Logic` (state in
     `dialog_states`, transport behind an interface — Telegram wrapper here,
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,

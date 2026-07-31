@@ -14,6 +14,7 @@
 //	         одного человека (flag → candidates → link → cluster → set)
 //	import — импорт состояния старой Python-версии (M2)
 //	run    — основной демон (M3+)
+//	digest — еженедельный дайджест: draft → правка LLM-рубрик → publish
 package main
 
 import (
@@ -99,6 +100,8 @@ func main() {
 		err = cmdPersonas(ctx, os.Args[2:])
 	case "talks":
 		err = cmdTalks(ctx, os.Args[2:])
+	case "digest":
+		err = cmdDigest(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -118,6 +121,9 @@ func usage() {
   lovegw doctor [-config config.json] [-post-test]
   lovegw talks  [-config config.json] -db <копия.db> [-once] [-interval 20s] [-max-dialogs N] [-history-limit N] watch
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
+  lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-out dir] [-force] draft      # черновик недели + материалы для LLM
+  lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-in draft.txt] [-to telegram|max] [-force] preview
+  lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-in draft.txt] [-to telegram|max] [-force] publish
   lovegw pull   [-config config.json] [-db lovegw.db] <note_id> [<note_id> ...]   # завести заметку по прямому id, минуя ленту
   lovegw grab   [-config config.json] [-db archive.db] [-json] [-out dir] [-save-html dir] [-view tree|linear] [-max-pages N] <note_id>
   lovegw export [-db archive.db] [-out dir] <note_id>

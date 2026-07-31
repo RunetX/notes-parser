@@ -33,17 +33,17 @@ func SplitMessages(blocks []Block, budget int) []string {
 			curLen += len("\n\n")
 		}
 		cur = append(cur, t)
-		curLen += visibleLen(t)
+		curLen += VisibleLen(t)
 	}
 	for _, b := range blocks {
 		if b.NewSection {
 			header = b.Text
 		}
 		t := b.Text
-		if visibleLen(t) > limit {
+		if VisibleLen(t) > limit {
 			t = truncateHTML(t, limit-1)
 		}
-		need := visibleLen(t)
+		need := VisibleLen(t)
 		if curLen > 0 && curLen+len("\n\n")+need > limit {
 			msgs = append(msgs, cur)
 			cur, curLen = nil, 0
@@ -68,9 +68,9 @@ func SplitMessages(blocks []Block, budget int) []string {
 	return out
 }
 
-// visibleLen — видимая длина HTML в рунах: теги отбрасываются, сущности
+// VisibleLen — видимая длина HTML в рунах: теги отбрасываются, сущности
 // (&lt; и т.п.) считаются одним символом. Методика visibleNoteLen из tgx.
-func visibleLen(s string) int {
+func VisibleLen(s string) int {
 	return len([]rune(html.UnescapeString(htmlTagRe.ReplaceAllString(s, ""))))
 }
 

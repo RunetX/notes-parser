@@ -16,8 +16,8 @@ func TestVisibleLen(t *testing.T) {
 		{"&lt;тег&gt;", 5},
 	}
 	for _, tc := range cases {
-		if got := visibleLen(tc.text); got != tc.want {
-			t.Errorf("visibleLen(%q) = %d, ожидалось %d", tc.text, got, tc.want)
+		if got := VisibleLen(tc.text); got != tc.want {
+			t.Errorf("VisibleLen(%q) = %d, ожидалось %d", tc.text, got, tc.want)
 		}
 	}
 }
@@ -92,8 +92,8 @@ func TestTruncateHTMLKeepsMarkupSane(t *testing.T) {
 	if strings.Count(m, "<b>") != strings.Count(m, "</b>") {
 		t.Errorf("незакрытый <b>: %q", m)
 	}
-	if visibleLen(m) > 400 {
-		t.Errorf("видимая длина после обрезки: %d", visibleLen(m))
+	if VisibleLen(m) > 400 {
+		t.Errorf("видимая длина после обрезки: %d", VisibleLen(m))
 	}
 }
 

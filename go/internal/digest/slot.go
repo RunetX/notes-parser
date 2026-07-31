@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// Дефолтный слот выпуска: пятница, 19:00 по Новосибирску.
+const (
+	DefaultWeekday = time.Friday
+	DefaultHour    = 19
+	DefaultTZ      = "Asia/Novosibirsk"
+)
+
 // Window — окно выпуска (Start, End]: Start исключительно, End (момент слота
 // публикации) включительно. Границы несут часовой пояс слота.
 //

@@ -383,11 +383,17 @@ func (m *Mirror) PostChannelHTML(ctx context.Context, html string) (string, erro
 // ThreadLink — ссылка на корень треда обсуждения (ссылки дайджеста);
 // "" — threadID не телеграмный.
 func (m *Mirror) ThreadLink(threadID string) string {
+	return ThreadDeepLink(m.discussionChatID, threadID)
+}
+
+// ThreadDeepLink — ссылка на корень треда по строковому id из
+// message_targets (для превью дайджеста без создания бота).
+func ThreadDeepLink(discussionChatID int64, threadID string) string {
 	root, err := parseMessageID(threadID)
 	if err != nil {
 		return ""
 	}
-	return DeepLink(m.discussionChatID, int64(root), int64(root))
+	return DeepLink(discussionChatID, int64(root), int64(root))
 }
 
 // SendSilent шлёт тихое сообщение без уведомления подписчиков (doctor).
