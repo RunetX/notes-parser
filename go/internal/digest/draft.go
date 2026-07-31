@@ -59,9 +59,13 @@ func WriteDraft(w io.Writer, is *Issue) error {
 	b.WriteString("# Черновик выпуска. Строки с # — служебные, в публикацию не идут.\n")
 	b.WriteString("# Секции разделены строкой ---, абзацы внутри — пустой строкой.\n")
 	b.WriteString("# {note:ID|текст} станет ссылкой на тред заметки в каждом мессенджере.\n")
-	fmt.Fprintf(&b, "# Плейсхолдеры %s… --> заполните текстом из digest-%s.materials.md;\n",
-		llmMark, is.Window.ID)
-	b.WriteString("# публиковать с незаполненными можно только с -force (секции выпадут).\n")
+	if is.Editorial == nil {
+		fmt.Fprintf(&b, "# Плейсхолдеры %s… --> заполните текстом из digest-%s.materials.md;\n",
+			llmMark, is.Window.ID)
+		b.WriteString("# публиковать с незаполненными можно только с -force (секции выпадут).\n")
+	} else {
+		b.WriteString("# LLM-рубрики заполнены автоматически — при желании поправьте текст и публикуйте.\n")
+	}
 	for i, sec := range draftSections(is) {
 		if i > 0 {
 			b.WriteString("---\n")
@@ -77,6 +81,8 @@ func WriteDraft(w io.Writer, is *Issue) error {
 }
 
 // draftSections собирает рубрики черновика; пустые рубрики опускаются.
+// LLM-рубрики берутся из is.Editorial, если он есть и поле заполнено, иначе
+// в черновик встаёт плейсхолдер полуручного цикла.
 func draftSections(is *Issue) []draftSection {
 	loc := is.Window.End.Location()
 	secs := []draftSection{{
@@ -84,26 +90,23 @@ func draftSections(is *Issue) []draftSection {
 			"<b>📰 Дайджест недели</b> · %s–%s\nЗаметок: %d · комментариев: %d · участников: %d",
 			is.Window.Start.In(loc).Format("02.01"), is.Window.End.In(loc).Format("02.01"),
 			is.Stats.Notes, is.Stats.Comments, is.Stats.Commenters)},
-	}, {
-		hint:     []string{"О чём была неделя: 2–3 предложения, промпт 1 в materials."},
-		elements: []string{llmWeekSummary},
 	}}
+	secs = append(secs, editorialSection(is, func(ed *Editorial) string { return ed.WeekSummary },
+		llmWeekSummary, "О чём была неделя: 2–3 предложения, промпт 1 в materials.", nil))
 	if is.TopNote != nil {
 		secs = append(secs, draftSection{
 			elements: []string{"<b>📌 Заметка недели</b>", noteStatLine(*is.TopNote)},
 		})
 	}
 	if len(is.Disputes) > 0 {
-		secs = append(secs, draftSection{
-			hint:     []string{"Спор недели: 2–3 предложения о накале, промпт 2 в materials.", "Маркер ниже указывает на главного кандидата — поправьте id, если LLM выбрал другой тред."},
-			elements: []string{"<b>🔥 Спор недели</b>", llmDispute, noteStatLine(is.Disputes[0])},
-		})
+		secs = append(secs, editorialSection(is, func(ed *Editorial) string { return ed.Dispute },
+			llmDispute, "Спор недели: 2–3 предложения о накале, промпт 2 в materials.",
+			[]string{"<b>🔥 Спор недели</b>"}, noteStatLine(disputePick(is))))
 	}
 	if len(is.Quotes) > 0 {
-		secs = append(secs, draftSection{
-			hint:     []string{"Цитата недели: подводка + цитата, промпт 3 в materials."},
-			elements: []string{"<b>💬 Цитата недели</b>", llmQuote},
-		})
+		secs = append(secs, editorialSection(is, func(ed *Editorial) string { return ed.Quote },
+			llmQuote, "Цитата недели: подводка + цитата, промпт 3 в materials.",
+			[]string{"<b>💬 Цитата недели</b>"}))
 	}
 	if len(is.Newcomers) > 0 {
 		secs = append(secs, draftSection{
@@ -116,10 +119,9 @@ func draftSections(is *Issue) []draftSection {
 		})
 	}
 	if len(is.ThisWeekNotes) > 0 {
-		secs = append(secs, draftSection{
-			hint:     []string{"Темы недели: 2–4 строки, промпт 4 в materials."},
-			elements: []string{"<b>🧭 Темы недели</b>", llmTopics},
-		})
+		secs = append(secs, editorialSection(is, func(ed *Editorial) string { return ed.Topics },
+			llmTopics, "Темы недели: 2–4 строки, промпт 4 в materials.",
+			[]string{"<b>🧭 Темы недели</b>"}))
 	}
 	if len(is.Records) > 0 {
 		lines := make([]string, 0, len(is.Records))
@@ -168,6 +170,22 @@ func aliveLines(stats []NoteStat) string {
 		lines = append(lines, line+".")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// editorialSection — рубрика с LLM-текстом: заполненное поле Editorial
+// встаёт в черновик как готовый текст, пустое — плейсхолдером с подсказкой
+// полуручного цикла. header и trailing — элементы вокруг текста (заголовок
+// рубрики, строка-маркер кандидата).
+func editorialSection(is *Issue, get func(*Editorial) string, placeholder, hint string, header []string, trailing ...string) draftSection {
+	text := placeholder
+	hints := []string{hint}
+	if is.Editorial != nil {
+		if t := get(is.Editorial); t != "" {
+			text, hints = t, nil
+		}
+	}
+	elements := append(append([]string{}, header...), text)
+	return draftSection{hint: hints, elements: append(elements, trailing...)}
 }
 
 // noteStatLine — строка заметки с метриками обсуждения.

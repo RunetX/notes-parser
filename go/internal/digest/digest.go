@@ -105,6 +105,10 @@ type Issue struct {
 	PrevWeekNotes []NoteBrief
 
 	CommentsByNote map[string][]store.Comment // комментарии окна по заметкам (для материалов LLM)
+
+	// Editorial — тексты LLM-рубрик (GenerateEditorial); nil — черновик
+	// пишется с плейсхолдерами под полуручной цикл.
+	Editorial *Editorial
 }
 
 // Build считает выпуск по живой БД. siteBase — базовый URL сайта для ссылок

@@ -74,6 +74,16 @@ type Talks struct {
 	RetentionDays     int  `json:"retention_days"`
 }
 
+// LLM — онлайн-доступ к Claude API (Anthropic): автоматическая редактура
+// LLM-рубрик дайджеста (дальше — смысловой поиск, C4). Запросы идут через
+// telegram_proxy: api.anthropic.com недоступен с российского IP. Пустой
+// api_key — LLM выключен, дайджест живёт полуручным циклом.
+type LLM struct {
+	APIKey    string `json:"api_key"`    // или env LOVEGW_LLM_KEY
+	Model     string `json:"model"`      // пусто — дефолт пакета llm (claude-opus-5)
+	MaxTokens int    `json:"max_tokens"` // 0 — дефолт пакета llm
+}
+
 // Digest — еженедельный дайджест. Планировщик демона в слот выпуска строит
 // черновик и материалы и зовёт админа в ЛС; публикация остаётся за админом
 // (lovegw digest publish) — премодерация. Дефолты слота — пятница 19:00
@@ -96,6 +106,7 @@ type Config struct {
 	Messengers    *Messengers `json:"messengers"`
 	Talks         Talks       `json:"talks"`
 	Digest        Digest      `json:"digest"`
+	LLM           LLM         `json:"llm"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
 	AdminTGUserID int64       `json:"admin_tg_user_id"`
@@ -149,6 +160,9 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("LOVEGW_TG_PROXY"); v != "" {
 		cfg.TelegramProxy = v
+	}
+	if v := os.Getenv("LOVEGW_LLM_KEY"); v != "" {
+		cfg.LLM.APIKey = v
 	}
 	cfg.normalizeMessengers()
 	if v := os.Getenv("LOVEGW_MAX_TOKEN"); v != "" {

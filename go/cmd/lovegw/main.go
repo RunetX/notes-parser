@@ -122,7 +122,7 @@ func usage() {
   lovegw doctor [-config config.json] [-post-test]
   lovegw talks  [-config config.json] -db <копия.db> [-once] [-interval 20s] [-max-dialogs N] [-history-limit N] watch
   lovegw repost [-config config.json] <note_id> [<note_id> ...]
-  lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-out dir] [-force] draft      # черновик недели + материалы для LLM
+  lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-out dir] [-llm] [-force] draft   # черновик недели (+LLM-рубрики через Claude API)
   lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-in draft.txt] [-to telegram|max] [-force] preview
   lovegw digest [-config config.json] [-db lovegw.db] [-week N] [-in draft.txt] [-to telegram|max] [-force] publish
   lovegw pull   [-config config.json] [-db lovegw.db] <note_id> [<note_id> ...]   # завести заметку по прямому id, минуя ленту

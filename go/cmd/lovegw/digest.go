@@ -20,6 +20,7 @@ import (
 
 	"lovegw/internal/config"
 	"lovegw/internal/digest"
+	"lovegw/internal/llm"
 	"lovegw/internal/maxx"
 	"lovegw/internal/store"
 	"lovegw/internal/tgx"
@@ -31,6 +32,7 @@ type digestOpts struct {
 	in    string
 	to    string
 	force bool
+	llm   bool
 }
 
 func cmdDigest(ctx context.Context, args []string) error {
@@ -43,6 +45,7 @@ func cmdDigest(ctx context.Context, args []string) error {
 	fs.StringVar(&o.in, "in", "", "файл черновика для preview/publish (по умолчанию из -out по неделе)")
 	fs.StringVar(&o.to, "to", "", "только один мессенджер: telegram или max")
 	fs.BoolVar(&o.force, "force", false, "draft: перезаписать черновик; preview/publish: выбросить секции с незаполненными LLM-плейсхолдерами")
+	fs.BoolVar(&o.llm, "llm", false, "draft: заполнить LLM-рубрики через Claude API (нужен llm.api_key)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"config": true, "db": true, "week": true, "out": true, "in": true, "to": true,
 	})); err != nil {
@@ -128,6 +131,23 @@ func digestDraftPath(o digestOpts, w digest.Window) string {
 	return digest.DraftPath(o.out, w.ID)
 }
 
+// digestLLM строит LLM-клиента по конфигу; запросы идут через telegram_proxy.
+func digestLLM(cfg *config.Config) (*llm.Client, error) {
+	if cfg.LLM.APIKey == "" {
+		return nil, errors.New("llm.api_key не задан (секция llm конфига или env LOVEGW_LLM_KEY)")
+	}
+	transport, err := tgx.ProxyTransport(cfg.TelegramProxy)
+	if err != nil {
+		return nil, err
+	}
+	return llm.New(llm.Config{
+		APIKey:    cfg.LLM.APIKey,
+		Model:     cfg.LLM.Model,
+		MaxTokens: cfg.LLM.MaxTokens,
+		Transport: transport,
+	}, ""), nil
+}
+
 // digestDraft считает выпуск и пишет черновик + материалы.
 func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w digest.Window, o digestOpts) error {
 	if !o.force {
@@ -139,6 +159,18 @@ func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w dig
 	is, err := digest.Build(ctx, st, w, cfg.Site.BaseURL)
 	if err != nil {
 		return err
+	}
+	if o.llm {
+		client, err := digestLLM(cfg)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("заполняю LLM-рубрики (%s, может занять минуты)…\n", client.Model())
+		ed, err := digest.GenerateEditorial(ctx, client, is)
+		if err != nil {
+			return fmt.Errorf("LLM-редактура: %w", err)
+		}
+		is.Editorial = ed
 	}
 	draftPath, matPath, err := digest.WriteIssueFiles(is, o.out)
 	if err != nil {
