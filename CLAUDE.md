@@ -111,6 +111,10 @@ messages, and all user-facing bot strings are in Russian.
     `{note:ID|текст}` и LLM-плейсхолдерами + materials.md с промптами
     (полуручной цикл), рендер per-sink через опциональный интерфейс
     `Publisher` (реализован в tgx/maxx), сплит серии по 3500 видимых рун.
+    Планировщик (`RunSchedule`, секция конфига `digest`, дефолт выключен) в
+    слот выпуска строит черновик и зовёт админа в ЛС; публикует админ через
+    CLI (премодерация; `auto_publish` зарезервирован до callback-кнопок).
+    Пропущенный слот догоняется в течение 48 ч, старше — пропускается.
   - `dmbot` — РюмкинЪ; messenger-agnostic dialog engine `Logic` (state in
     `dialog_states`, transport behind an interface — Telegram wrapper here,
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,

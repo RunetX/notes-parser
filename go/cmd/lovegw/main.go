@@ -40,6 +40,7 @@ import (
 
 	"lovegw/internal/bridge"
 	"lovegw/internal/config"
+	"lovegw/internal/digest"
 	"lovegw/internal/dmbot"
 	"lovegw/internal/legacy"
 	"lovegw/internal/love"
@@ -437,6 +438,29 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		if cfg.Talks.RetentionDays > 0 {
 			days := cfg.Talks.RetentionDays
 			g.Go(func() error { return talks.PurgeLoop(gctx, st, days, log) })
+		}
+	}
+
+	// Планировщик дайджеста: в слот выпуска готовит черновик и зовёт админа;
+	// публикацию делает админ командой digest publish (премодерация).
+	if cfg.Digest.Enabled {
+		loc, weekday, hour, err := digestSlotParams(cfg)
+		if err != nil {
+			return err
+		}
+		dcfg := digest.ScheduleConfig{
+			Loc:      loc,
+			Weekday:  weekday,
+			Hour:     hour,
+			OutDir:   digestOutDir(cfg),
+			SiteBase: cfg.Site.BaseURL,
+			Notify:   fanOutAlerts(alerters),
+		}
+		g.Go(func() error { return digest.RunSchedule(gctx, st, dcfg, log) })
+		log.Info("дайджест включён", "слот",
+			fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir)
+		if cfg.Digest.AutoPublish {
+			log.Warn("digest.auto_publish пока не реализован — публикуйте командой lovegw digest publish")
 		}
 	}
 

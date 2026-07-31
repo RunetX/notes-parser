@@ -74,12 +74,28 @@ type Talks struct {
 	RetentionDays     int  `json:"retention_days"`
 }
 
+// Digest — еженедельный дайджест. Планировщик демона в слот выпуска строит
+// черновик и материалы и зовёт админа в ЛС; публикация остаётся за админом
+// (lovegw digest publish) — премодерация. Дефолты слота — пятница 19:00
+// Asia/Novosibirsk.
+type Digest struct {
+	Enabled bool   `json:"enabled"`
+	Weekday int    `json:"weekday"` // день слота: 0=воскресенье … 6=суббота
+	Hour    int    `json:"hour"`    // час слота (0–23) в поясе tz
+	TZ      string `json:"tz"`
+	OutDir  string `json:"out_dir"` // каталог черновиков; пусто — digest рядом с БД
+	// AutoPublish зарезервирован на будущее (после стабилизации тона): демон
+	// пока не публикует сам, флаг игнорируется.
+	AutoPublish bool `json:"auto_publish"`
+}
+
 type Config struct {
 	Site          Site        `json:"site"`
 	MirrorBot     MirrorBot   `json:"mirror_bot"`
 	DMBot         DMBot       `json:"dm_bot"`
 	Messengers    *Messengers `json:"messengers"`
 	Talks         Talks       `json:"talks"`
+	Digest        Digest      `json:"digest"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
 	AdminTGUserID int64       `json:"admin_tg_user_id"`
@@ -109,6 +125,9 @@ func Load(path string) (*Config, error) {
 		// talks по умолчанию admin-only и read-only (безопасный старт);
 		// включение и allow_send — явно в конфиге.
 		Talks: Talks{AdminOnly: true},
+		// Слот дайджеста: пятница 19:00 Нск (дефолты пакета digest);
+		// включение — явно в конфиге.
+		Digest: Digest{Weekday: 5, Hour: 19, TZ: "Asia/Novosibirsk"},
 	}
 
 	b, err := os.ReadFile(path)

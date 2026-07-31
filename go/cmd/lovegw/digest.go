@@ -65,14 +65,14 @@ func cmdDigest(ctx context.Context, args []string) error {
 		cfg.DBPath = *dbPath
 	}
 	if o.out == "" {
-		o.out = filepath.Join(filepath.Dir(cfg.DBPath), "digest")
+		o.out = digestOutDir(cfg)
 	}
 
-	loc, err := time.LoadLocation(digest.DefaultTZ)
+	loc, weekday, hour, err := digestSlotParams(cfg)
 	if err != nil {
 		return err
 	}
-	w := digest.SlotFor(time.Now(), loc, digest.DefaultWeekday, digest.DefaultHour, o.week)
+	w := digest.SlotFor(time.Now(), loc, weekday, hour, o.week)
 
 	st, err := store.Open(ctx, cfg.DBPath)
 	if err != nil {
@@ -92,33 +92,56 @@ func cmdDigest(ctx context.Context, args []string) error {
 	}
 }
 
+// digestOutDir — каталог черновиков: из конфига, иначе digest рядом с БД.
+func digestOutDir(cfg *config.Config) string {
+	if cfg.Digest.OutDir != "" {
+		return cfg.Digest.OutDir
+	}
+	return filepath.Join(filepath.Dir(cfg.DBPath), "digest")
+}
+
+// digestSlotParams — параметры слота выпуска из конфига (дефолты — пакета
+// digest). Общие для CLI и планировщика демона: их окна должны совпадать.
+func digestSlotParams(cfg *config.Config) (*time.Location, time.Weekday, int, error) {
+	d := cfg.Digest
+	tz := d.TZ
+	if tz == "" {
+		tz = digest.DefaultTZ
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("digest.tz: %w", err)
+	}
+	if d.Weekday < 0 || d.Weekday > 6 {
+		return nil, 0, 0, fmt.Errorf("digest.weekday %d вне 0–6 (0=воскресенье)", d.Weekday)
+	}
+	if d.Hour < 0 || d.Hour > 23 {
+		return nil, 0, 0, fmt.Errorf("digest.hour %d вне 0–23", d.Hour)
+	}
+	return loc, time.Weekday(d.Weekday), d.Hour, nil
+}
+
 func digestDraftPath(o digestOpts, w digest.Window) string {
 	if o.in != "" {
 		return o.in
 	}
-	return filepath.Join(o.out, "digest-"+w.ID+".draft.txt")
+	return digest.DraftPath(o.out, w.ID)
 }
 
 // digestDraft считает выпуск и пишет черновик + материалы.
 func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w digest.Window, o digestOpts) error {
-	draftPath := filepath.Join(o.out, "digest-"+w.ID+".draft.txt")
-	matPath := filepath.Join(o.out, "digest-"+w.ID+".materials.md")
 	if !o.force {
-		if _, err := os.Stat(draftPath); err == nil {
-			return fmt.Errorf("черновик %s уже существует (правки админа — ценность); перезапись только с -force", draftPath)
+		if _, err := os.Stat(digest.DraftPath(o.out, w.ID)); err == nil {
+			return fmt.Errorf("черновик %s уже существует (правки админа — ценность); перезапись только с -force",
+				digest.DraftPath(o.out, w.ID))
 		}
 	}
 	is, err := digest.Build(ctx, st, w, cfg.Site.BaseURL)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(o.out, 0o755); err != nil {
-		return err
-	}
-	if err := writeFileWith(draftPath, func(f *os.File) error { return digest.WriteDraft(f, is) }); err != nil {
-		return err
-	}
-	if err := writeFileWith(matPath, func(f *os.File) error { return digest.WriteMaterials(f, is) }); err != nil {
+	draftPath, matPath, err := digest.WriteIssueFiles(is, o.out)
+	if err != nil {
 		return err
 	}
 	fmt.Printf("выпуск %s: заметок %d, комментариев %d, участников %d\n",
@@ -126,18 +149,6 @@ func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w dig
 	fmt.Printf("черновик:  %s\nматериалы: %s\n", draftPath, matPath)
 	fmt.Println("дальше: заполните LLM-рубрики из материалов, проверьте preview, затем publish")
 	return nil
-}
-
-func writeFileWith(path string, write func(*os.File) error) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	if err := write(f); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 func loadDraft(o digestOpts, w digest.Window) (digest.Draft, error) {

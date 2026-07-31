@@ -24,6 +24,14 @@
       "talks_token": "<токен бота личной переписки или env LOVEGW_TG_TALKS_TOKEN; пусто — переписку ведёт РюмкинЪ>"
     }
   },
+  "digest": {
+    "enabled": false,
+    "weekday": 5,
+    "hour": 19,
+    "tz": "Asia/Novosibirsk",
+    "out_dir": "",
+    "auto_publish": false
+  },
   "talks": {
     "enabled": false,
     "admin_only": true,

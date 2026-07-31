@@ -137,6 +137,23 @@ docker compose run --rm lovegw doctor -config /config.json
 - Мгновенный откат: `talks.enabled=false` + `docker compose up -d` — зеркало и
   мост живут как раньше.
 
+## Шаг 8 — еженедельный дайджест (опционально)
+
+Секция `digest` в `config.json` (`"enabled": true`; слот по умолчанию —
+пятница 19:00 Нск). Демон в слот выпуска строит черновик и материалы в
+`/data/digest/` (на хосте — `deploy/data/digest/`) и шлёт админу ЛС;
+публикация — за админом после правки LLM-рубрик:
+
+```sh
+vi data/digest/digest-<неделя>.draft.txt            # вставить рубрики из materials.md
+docker compose run --rm lovegw digest -config /config.json preview
+docker compose run --rm lovegw digest -config /config.json publish
+```
+
+Публикация идемпотентна (message_targets) — безопасна при работающем демоне;
+`-force` публикует «сухой» выпуск без LLM-рубрик. Пропущенный слот (демон
+лежал) догоняется в течение 48 часов, старше — пропускается.
+
 ## Эксплуатация
 
 ```sh
