@@ -441,27 +441,42 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		}
 	}
 
-	// Планировщик дайджеста: в слот выпуска готовит черновик и зовёт админа;
-	// публикацию делает админ командой digest publish (премодерация).
+	// Планировщик дайджеста: в слот выпуска готовит черновик (LLM заполняет
+	// рубрики, если настроен) и либо публикует сам (auto_publish), либо
+	// зовёт админа — премодерация через lovegw digest publish.
 	if cfg.Digest.Enabled {
 		loc, weekday, hour, err := digestSlotParams(cfg)
 		if err != nil {
 			return err
 		}
 		dcfg := digest.ScheduleConfig{
-			Loc:      loc,
-			Weekday:  weekday,
-			Hour:     hour,
-			OutDir:   digestOutDir(cfg),
-			SiteBase: cfg.Site.BaseURL,
-			Notify:   fanOutAlerts(alerters),
+			Loc:         loc,
+			Weekday:     weekday,
+			Hour:        hour,
+			OutDir:      digestOutDir(cfg),
+			SiteBase:    cfg.Site.BaseURL,
+			Notify:      fanOutAlerts(alerters),
+			AutoPublish: cfg.Digest.AutoPublish,
+		}
+		// Автопубликация идёт в те же приёмники, что и зеркало.
+		for _, s := range sinks {
+			if p, ok := s.(digest.Publisher); ok {
+				dcfg.Publishers = append(dcfg.Publishers, p)
+			}
+		}
+		llmModel := ""
+		if cfg.LLM.APIKey != "" {
+			lc, err := digestLLM(cfg)
+			if err != nil {
+				return err
+			}
+			dcfg.LLM = lc
+			llmModel = lc.Model()
 		}
 		g.Go(func() error { return digest.RunSchedule(gctx, st, dcfg, log) })
 		log.Info("дайджест включён", "слот",
-			fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir)
-		if cfg.Digest.AutoPublish {
-			log.Warn("digest.auto_publish пока не реализован — публикуйте командой lovegw digest publish")
-		}
+			fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir,
+			"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel)
 	}
 
 	mir := mirror.New(st, client, sinks, mirror.Config{

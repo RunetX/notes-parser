@@ -32,6 +32,11 @@
     "out_dir": "",
     "auto_publish": false
   },
+  "llm": {
+    "api_key": "<ключ Anthropic API или env LOVEGW_LLM_KEY; пусто — LLM выключен>",
+    "model": "",
+    "max_tokens": 0
+  },
   "talks": {
     "enabled": false,
     "admin_only": true,

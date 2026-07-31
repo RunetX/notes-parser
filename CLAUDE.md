@@ -112,9 +112,18 @@ messages, and all user-facing bot strings are in Russian.
     (полуручной цикл), рендер per-sink через опциональный интерфейс
     `Publisher` (реализован в tgx/maxx), сплит серии по 3500 видимых рун.
     Планировщик (`RunSchedule`, секция конфига `digest`, дефолт выключен) в
-    слот выпуска строит черновик и зовёт админа в ЛС; публикует админ через
-    CLI (премодерация; `auto_publish` зарезервирован до callback-кнопок).
-    Пропущенный слот догоняется в течение 48 ч, старше — пропускается.
+    слот выпуска строит черновик; при настроенной секции `llm` рубрики
+    заполняет Claude (`GenerateEditorial`: один запрос со structured outputs,
+    ответ валидируется как правки админа — брак откатывает на полуручной
+    цикл), а `auto_publish: true` сразу публикует выпуск через sinks. Иначе —
+    ЛС админу и премодерация через CLI. Пропущенный слот догоняется в
+    течение 48 ч, старше — пропускается.
+  - `llm` — онлайн-клиент Claude API (официальный `anthropic-sdk-go`):
+    `GenerateJSON` со structured outputs, дефолтная модель `claude-opus-5`,
+    обработка refusal/обрыва; транспорт — `tgx.ProxyTransport(telegram_proxy)`
+    (api.anthropic.com недоступен с RU-IP, ходим через тот же прокси, что и
+    Bot API). Ключ — `llm.api_key` / env `LOVEGW_LLM_KEY`. Общий клиент для
+    дайджеста и будущего поиска (C4).
   - `dmbot` — РюмкинЪ; messenger-agnostic dialog engine `Logic` (state in
     `dialog_states`, transport behind an interface — Telegram wrapper here,
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
@@ -135,7 +144,8 @@ messages, and all user-facing bot strings are in Russian.
 - Config `go/config.json` (gitignored, template `go/config.example.json`);
   tokens can come from env `LOVEGW_MIRROR_TOKEN` / `LOVEGW_DM_TOKEN` /
   `LOVEGW_TG_TALKS_TOKEN` / `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN` /
-  `LOVEGW_MAX_TALKS_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY`.
+  `LOVEGW_MAX_TALKS_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY` /
+  `LOVEGW_LLM_KEY` (Claude API для LLM-рубрик дайджеста).
   The `messengers`
   section gates which sinks run (`max` / `telegram`, each with `enabled`);
   legacy flat `mirror_bot`/`dm_bot` configs still load as telegram-only.

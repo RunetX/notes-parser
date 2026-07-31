@@ -2,9 +2,11 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +102,92 @@ func TestProcessSlotSkipsPublished(t *testing.T) {
 	}
 	if _, err := os.Stat(DraftPath(cfg.OutDir, "2026-W31")); err == nil {
 		t.Error("черновик не должен создаваться для опубликованного выпуска")
+	}
+}
+
+func TestProcessSlotAutoPublishWithLLM(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	var notes []string
+	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg.LLM = &fakeGen{resp: map[string]string{
+		"week_summary": "Неделя была тихой.", "dispute_note_id": "",
+		"dispute": "", "quote": "", "topics": "",
+	}}
+	pub := &fakePub{name: "tg"}
+	cfg.AutoPublish = true
+	cfg.Publishers = []Publisher{pub}
+	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk)
+
+	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.posts) != 1 || !strings.Contains(pub.posts[0], "Неделя была тихой.") {
+		t.Fatalf("выпуск с LLM-текстом должен быть опубликован: %q", pub.posts)
+	}
+	if _, _, done, _ := st.Target(ctx, "tg", store.TargetDigest, "2026-W31"); !done {
+		t.Error("после автопубликации должна стоять головная запись выпуска")
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "опубликован автоматически") {
+		t.Errorf("уведомление: %v", notes)
+	}
+	// Повторный тик: выпуск опубликован — ничего не делаем.
+	if err := processSlot(ctx, st, cfg, now.Add(time.Hour), quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.posts) != 1 || len(notes) != 1 {
+		t.Errorf("повторный тик не должен публиковать/спамить: posts=%d notes=%d", len(pub.posts), len(notes))
+	}
+}
+
+func TestProcessSlotLLMFailureFallsBackToManual(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	var notes []string
+	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg.LLM = &fakeGen{err: errors.New("api недоступен")}
+	pub := &fakePub{name: "tg"}
+	cfg.AutoPublish = true
+	cfg.Publishers = []Publisher{pub}
+	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk)
+
+	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.posts) != 0 {
+		t.Error("при сбое LLM автопубликация не выполняется — премодерация")
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "не удалась") ||
+		!strings.Contains(notes[0], "digest publish") {
+		t.Errorf("уведомление о полуручном цикле: %v", notes)
+	}
+	data, err := os.ReadFile(DraftPath(cfg.OutDir, "2026-W31"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), llmMark) {
+		t.Error("черновик должен остаться с плейсхолдерами под ручное заполнение")
+	}
+}
+
+func TestProcessSlotAutoPublishDryWithoutLLM(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	var notes []string
+	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	pub := &fakePub{name: "max"}
+	cfg.AutoPublish = true
+	cfg.Publishers = []Publisher{pub}
+	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk)
+
+	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.posts) != 1 {
+		t.Fatalf("без LLM автопубликация шлёт «сухой» выпуск: %q", pub.posts)
+	}
+	if strings.Contains(pub.posts[0], llmMark) {
+		t.Error("плейсхолдеры не должны попадать в публикацию")
 	}
 }
 

@@ -7,10 +7,12 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"lovegw/internal/store"
@@ -25,6 +27,17 @@ type ScheduleConfig struct {
 	SiteBase string
 	Grace    time.Duration                          // окно догона пропущенного слота; 0 — 48h
 	Notify   func(ctx context.Context, text string) // ЛС админу (может быть nil)
+
+	// LLM заполняет LLM-рубрики автоматически (nil — черновик с
+	// плейсхолдерами под полуручной цикл). Ошибка редактуры не срывает
+	// выпуск: пишется черновик с плейсхолдерами и зовётся админ.
+	LLM JSONGenerator
+	// AutoPublish — публиковать выпуск сразу после генерации через
+	// Publishers. С настроенным LLM выпуск уходит с редактурой; без LLM —
+	// «сухим» (LLM-секции выпадают). Если LLM настроен, но редактура не
+	// удалась, автопубликация не выполняется — премодерация админа.
+	AutoPublish bool
+	Publishers  []Publisher
 }
 
 const defaultGrace = 48 * time.Hour
@@ -119,18 +132,83 @@ func processSlot(ctx context.Context, st *store.Store, cfg ScheduleConfig, now t
 	if err != nil {
 		return fmt.Errorf("выпуск %s: %w", w.ID, err)
 	}
+
+	var llmNote string
+	if cfg.LLM != nil {
+		if ed, err := GenerateEditorial(ctx, cfg.LLM, is); err != nil {
+			log.Error("дайджест: LLM-редактура не удалась, откат на полуручной цикл",
+				"week", w.ID, "err", err)
+			llmNote = fmt.Sprintf(" LLM-редактура не удалась (%v) — рубрики нужно заполнить вручную.", err)
+		} else {
+			is.Editorial = ed
+		}
+	}
+
 	draftPath, matPath, err := WriteIssueFiles(is, cfg.OutDir)
 	if err != nil {
 		return fmt.Errorf("выпуск %s: %w", w.ID, err)
 	}
-	log.Info("дайджест: черновик готов", "week", w.ID,
+	log.Info("дайджест: черновик готов", "week", w.ID, "llm", is.Editorial != nil,
 		"заметок", is.Stats.Notes, "комментариев", is.Stats.Comments, "draft", draftPath)
-	if cfg.Notify != nil {
-		cfg.Notify(ctx, fmt.Sprintf(
-			"📰 Дайджест %s готов: %s (материалы: %s). Проверьте и опубликуйте: lovegw digest publish",
-			w.ID, draftPath, matPath))
+
+	// Автопубликация: с редактурой — всегда, «насухо» — только когда LLM не
+	// настроен вовсе (сбой редактуры оставляет выпуск админу).
+	if cfg.AutoPublish && (is.Editorial != nil || cfg.LLM == nil) {
+		summary, err := publishDraft(ctx, st, cfg, w, draftPath)
+		if err != nil {
+			log.Error("дайджест: автопубликация не удалась", "week", w.ID, "err", err)
+			notify(ctx, cfg, fmt.Sprintf(
+				"📰 Дайджест %s готов (%s), но автопубликация сорвалась: %v. Докатите: lovegw digest publish",
+				w.ID, draftPath, err))
+			return nil
+		}
+		log.Info("дайджест: выпуск опубликован", "week", w.ID, "итог", summary)
+		notify(ctx, cfg, fmt.Sprintf("📰 Дайджест %s опубликован автоматически: %s.%s Черновик: %s",
+			w.ID, summary, llmNote, draftPath))
+		return nil
 	}
+
+	notify(ctx, cfg, fmt.Sprintf(
+		"📰 Дайджест %s готов: %s (материалы: %s).%s Проверьте и опубликуйте: lovegw digest publish",
+		w.ID, draftPath, matPath, llmNote))
 	return nil
+}
+
+func notify(ctx context.Context, cfg ScheduleConfig, text string) {
+	if cfg.Notify != nil {
+		cfg.Notify(ctx, text)
+	}
+}
+
+// publishDraft публикует свежесобранный черновик во все приёмники и
+// возвращает сводку по частям. Частичный сбой безопасен: публикация
+// идемпотентна, admin докатывает командой digest publish.
+func publishDraft(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, draftPath string) (string, error) {
+	if len(cfg.Publishers) == 0 {
+		return "", errors.New("нет приёмников публикации")
+	}
+	f, err := os.Open(draftPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	d, err := ParseDraft(f, false) // не-strict: «сухой» выпуск тоже публикуем
+	if err != nil {
+		return "", err
+	}
+	var parts []string
+	for _, p := range cfg.Publishers {
+		sent, err := Publish(ctx, st, p, d, w.ID, cfg.SiteBase)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", p.Name(), err)
+		}
+		parts = append(parts, fmt.Sprintf("%s — %d ч.", p.Name(), sent))
+	}
+	summary := strings.Join(parts, ", ")
+	if d.Dropped > 0 {
+		summary += fmt.Sprintf(" (без LLM-рубрик: %d секций выпало)", d.Dropped)
+	}
+	return summary, nil
 }
 
 // WriteIssueFiles пишет черновик и материалы выпуска в dir (создавая его).

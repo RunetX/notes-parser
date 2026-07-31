@@ -162,6 +162,19 @@ docker compose run --rm lovegw digest -config /config.json publish
 `-force` публикует «сухой» выпуск без LLM-рубрик. Пропущенный слот (демон
 лежал) догоняется в течение 48 часов, старше — пропускается.
 
+**Полная автоматизация через Claude API.** Задайте ключ в `secrets.env`
+(`LOVEGW_LLM_KEY` — значение из `pepper/.env`, `ANTHROPIC_API_KEY`) и
+включите `"auto_publish": true` в секции `digest`: в слот демон сам заполнит
+LLM-рубрики (Claude, запросы через `LOVEGW_TG_PROXY`) и опубликует выпуск,
+прислав админу итог в ЛС. При сбое или невалидном ответе LLM автопубликации
+не будет — придёт обычное «черновик готов», дальше полуручной цикл выше.
+Разовая редактура вручную:
+
+```sh
+docker compose run --rm lovegw digest -config /config.json -llm -force draft
+docker compose run --rm lovegw digest -config /config.json publish
+```
+
 ## Эксплуатация
 
 ```sh
