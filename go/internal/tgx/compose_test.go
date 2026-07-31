@@ -3,6 +3,7 @@ package tgx
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"lovegw/internal/store"
 )
@@ -78,6 +79,54 @@ func TestComposeCommentCaptionEscapes(t *testing.T) {
 	}
 	if !strings.Contains(got, "x&lt;y") {
 		t.Errorf("текст не экранирован: %s", got)
+	}
+}
+
+func TestComposeSubNotice(t *testing.T) {
+	n := store.Note{ID: "312818", AuthorName: "Мария",
+		Text: "Ищу того,\nкто пьёт чай\nиз рюмки"}
+	c := store.Comment{ID: 7, AuthorName: "Виктор <3", AuthorAge: "45 лет",
+		AuthorLink:  "https://love.ngs.ru/profile/1",
+		PublishedAt: time.Date(2026, 7, 30, 14, 5, 0, 0, time.UTC),
+		Text:        "выпьем рюмку чая & закусим"}
+	got := ComposeSubNotice("рюмк", n, c, "https://t.me/c/1/2?thread=3")
+
+	for _, want := range []string{
+		"<b>рюмк</b>", // повод: сработавшее слово
+		`<a href="https://love.ngs.ru/profile/1">Виктор &lt;3, 45 лет</a>`, // кто написал
+		"Мария: Ищу того, кто пьёт чай из рюмки",                          // под какой заметкой, одной строкой
+		"(30.07 14:05)",
+		"выпьем рюмку чая &amp; закусим",
+		`<a href="https://t.me/c/1/2?thread=3">Открыть в обсуждении</a>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("нет %q в:\n%s", want, got)
+		}
+	}
+}
+
+func TestComposeSubNoticeTruncatesComment(t *testing.T) {
+	long := strings.Repeat("я", 600)
+	got := ComposeSubNotice("к", store.Note{AuthorName: "А", Text: "т"},
+		store.Comment{AuthorName: "Б", Text: long}, "https://t.me/c/1/2")
+	if !strings.Contains(got, strings.Repeat("я", subNoticeCommentLimit)+"…") {
+		t.Errorf("длинный комментарий не обрезан: %q", got)
+	}
+	if strings.Contains(got, strings.Repeat("я", subNoticeCommentLimit+1)) {
+		t.Errorf("обрезка не сработала: %q", got)
+	}
+}
+
+func TestComposeSubNoticeWithoutOptionalFields(t *testing.T) {
+	// Аноним без возраста, ссылки на профиль и даты: в тексте не должно
+	// появиться ни «Гость, :», ни пустого <a href="">.
+	got := ComposeSubNotice("к", store.Note{AuthorName: "Анонимно", Text: "т"},
+		store.Comment{AuthorName: "Гость", Text: "к"}, "https://t.me/c/1/2")
+	if strings.Contains(got, `<a href="">`) || strings.Contains(got, "Гость, :") {
+		t.Errorf("пустые поля протекли в текст: %q", got)
+	}
+	if !strings.Contains(got, "<b>Гость</b>") {
+		t.Errorf("нет автора: %q", got)
 	}
 }
 

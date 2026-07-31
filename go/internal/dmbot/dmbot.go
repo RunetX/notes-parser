@@ -158,6 +158,20 @@ func (d *Bot) Notify(ctx context.Context, tgUserID int64, text string) {
 	}
 }
 
+// NotifyHTML отправляет личное сообщение с HTML-разметкой (уведомление
+// подписчика: имя автора ссылкой, выдержка комментария). Превью ссылок
+// выключено — иначе телеграм подтягивает карточку сайта под каждым уведомлением.
+func (d *Bot) NotifyHTML(ctx context.Context, tgUserID int64, html string) {
+	if _, err := d.b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:             tgUserID,
+		Text:               html,
+		ParseMode:          models.ParseModeHTML,
+		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
+	}); err != nil {
+		d.log.Warn("уведомление пользователя не отправлено", "user", tgUserID, "err", err)
+	}
+}
+
 // handle обрабатывает входящее ЛС.
 func (d *Bot) handle(ctx context.Context, u *models.Update) {
 	msg := u.Message

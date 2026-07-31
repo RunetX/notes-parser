@@ -358,3 +358,27 @@ func TestPostNoteImageByToken(t *testing.T) {
 		t.Errorf("вложение: %+v", sent.body.Attachments)
 	}
 }
+
+// Порт tgx.ComposeSubNotice не должен разъезжаться с оригиналом: подписчик в
+// MAX видит тот же состав — слово, автора, заметку, выдержку и ссылку.
+func TestComposeSubNotice(t *testing.T) {
+	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "Ищу того,\nкто пьёт чай"}
+	c := store.Comment{ID: 7, AuthorName: "Виктор <3", AuthorAge: "45 лет",
+		AuthorLink:  "https://love.ngs.ru/profile/1",
+		PublishedAt: time.Date(2026, 7, 30, 14, 5, 0, 0, time.UTC),
+		Text:        "выпьем рюмку чая & закусим"}
+	got := composeSubNotice("рюмк", n, c, "https://love.ngs.ru/notes/312818/#anchor-7")
+
+	for _, want := range []string{
+		"<b>рюмк</b>",
+		`<a href="https://love.ngs.ru/profile/1">Виктор &lt;3, 45 лет</a>`,
+		"Мария: Ищу того, кто пьёт чай",
+		"(30.07 14:05)",
+		"выпьем рюмку чая &amp; закусим",
+		`<a href="https://love.ngs.ru/notes/312818/#anchor-7">Открыть комментарий</a>`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("нет %q в:\n%s", want, got)
+		}
+	}
+}
