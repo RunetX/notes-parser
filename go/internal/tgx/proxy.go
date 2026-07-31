@@ -21,6 +21,17 @@ const httpClientTimeout = 60 * time.Second
 // Полезно, когда сайт доступен только с российского IP, а Telegram из
 // России — только через прокси.
 func ProxyClient(proxyURL string) (*http.Client, error) {
+	transport, err := ProxyTransport(proxyURL)
+	if err != nil || transport == nil {
+		return nil, err
+	}
+	return &http.Client{Transport: transport, Timeout: httpClientTimeout}, nil
+}
+
+// ProxyTransport строит HTTP-транспорт через прокси — для клиентов с другим
+// таймаутом, чем у Bot API (например, минуты у LLM-запросов дайджеста).
+// Пустая строка — прямое соединение (nil, nil).
+func ProxyTransport(proxyURL string) (*http.Transport, error) {
 	if proxyURL == "" {
 		return nil, nil
 	}
@@ -52,5 +63,5 @@ func ProxyClient(proxyURL string) (*http.Client, error) {
 	default:
 		return nil, fmt.Errorf("неизвестная схема прокси %q (нужно http/https/socks5)", u.Scheme)
 	}
-	return &http.Client{Transport: transport, Timeout: httpClientTimeout}, nil
+	return transport, nil
 }
