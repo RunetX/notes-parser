@@ -363,6 +363,33 @@ func (m *Mirror) SendText(ctx context.Context, chatID int64, text string) error 
 	return err
 }
 
+// PostChannelHTML постит произвольный HTML-текст в канал без превью ссылок
+// (публикация дайджеста). Возвращает id сообщения строкой.
+func (m *Mirror) PostChannelHTML(ctx context.Context, html string) (string, error) {
+	msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
+		return m.b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:             m.channelID,
+			Text:               html,
+			ParseMode:          models.ParseModeHTML,
+			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
+		})
+	})
+	if err != nil {
+		return "", fmt.Errorf("пост в канал: %w", err)
+	}
+	return strconv.Itoa(msg.ID), nil
+}
+
+// ThreadLink — ссылка на корень треда обсуждения (ссылки дайджеста);
+// "" — threadID не телеграмный.
+func (m *Mirror) ThreadLink(threadID string) string {
+	root, err := parseMessageID(threadID)
+	if err != nil {
+		return ""
+	}
+	return DeepLink(m.discussionChatID, int64(root), int64(root))
+}
+
 // SendSilent шлёт тихое сообщение без уведомления подписчиков (doctor).
 func (m *Mirror) SendSilent(ctx context.Context, chatID int64, text string) (int, error) {
 	msg, err := send(ctx, m, chatID, func(ctx context.Context) (*models.Message, error) {

@@ -256,6 +256,30 @@ func (m *Mirror) SendText(ctx context.Context, userID int64, text string) error 
 	return err
 }
 
+// PostChannelHTML постит произвольный HTML-текст в канал без превью ссылок
+// (публикация дайджеста). Возвращает mid сообщения.
+func (m *Mirror) PostChannelHTML(ctx context.Context, html string) (string, error) {
+	msg := maxbot.NewMessage().
+		SetChat(m.channelID).
+		SetText(html).
+		SetFormat(model.FormatHTML).
+		SetDisableLinkPreview(true)
+	mid, err := m.send(ctx, m.channelID, msg)
+	if err != nil {
+		return "", fmt.Errorf("пост в канал MAX: %w", err)
+	}
+	return mid, nil
+}
+
+// ThreadLink — ссылка на ветку заметки в чате обсуждения (ссылки дайджеста);
+// "" — mid непонятного вида или чат обсуждения не задан.
+func (m *Mirror) ThreadLink(threadID string) string {
+	if m.discussionChatID == 0 {
+		return ""
+	}
+	return MessageLink(m.discussionChatID, threadID)
+}
+
 // attachImage прикладывает изображение к сообщению через upload-токен
 // (с кэшем URL→токен). Ошибка загрузки не валит отправку: сообщение уйдёт
 // без картинки, как и в телеграм-стороне.
