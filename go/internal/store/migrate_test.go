@@ -196,3 +196,52 @@ func TestMigrateV4ToV5(t *testing.T) {
 		t.Errorf("TalkPeers: %+v", peers)
 	}
 }
+
+// TestMigrateV5ToV6 строит базу версии 5, открывает через Open (накат v6) и
+// проверяет кэш расшифровок с квотой ASR, а также что данные v5 не пострадали.
+func TestMigrateV5ToV6(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v5.db")
+
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{schemaSQL, migrateV2SQL, migrateV3SQL, migrateV4SQL, migrateV5SQL} {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := []string{
+		`INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at)
+		 VALUES ('telegram', 42, '[]', 1, '2026-08-01T00:00:00Z')`,
+		`PRAGMA user_version = 5`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// v5-регресс: сессия жива после наката v6.
+	if _, valid, err := st.SessionCookies(ctx, MessengerTelegram, 42); err != nil || !valid {
+		t.Fatalf("сессия после v6: valid=%v err=%v", valid, err)
+	}
+
+	if err := st.SaveTranscript(ctx, MessengerTelegram, "AgADXQ", "расшифровка", 12); err != nil {
+		t.Fatal(err)
+	}
+	if text, ok, err := st.Transcript(ctx, MessengerTelegram, "AgADXQ"); err != nil || !ok || text != "расшифровка" {
+		t.Errorf("кэш после миграции: %q ok=%v err=%v", text, ok, err)
+	}
+	if ok, err := st.TryReserveASR(ctx, MessengerTelegram, 42, "2026-08-02", 30, 60); err != nil || !ok {
+		t.Errorf("квота после миграции: ok=%v err=%v", ok, err)
+	}
+}

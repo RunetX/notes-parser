@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Site — параметры доступа к сайту love.ngs.ru.
@@ -101,6 +102,25 @@ type Digest struct {
 	AutoPublish bool `json:"auto_publish"`
 }
 
+// ASR — автораспознавание голосовых в треде обсуждения: бот отвечает реплаем
+// расшифровкой, дальше человек решает сам. Провайдер российский (Nexara),
+// поэтому запросы идут напрямую, мимо telegram_proxy. Ключ — только конфиг или
+// env LOVEGW_ASR_API_KEY, в репозиторий не попадает. enabled=false — фича
+// выключена целиком, гейт работает как раньше.
+type ASR struct {
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider"` // пока только nexara
+	BaseURL  string `json:"base_url"` // пусто — боевой адрес провайдера
+	APIKey   string `json:"api_key"`  // или env LOVEGW_ASR_API_KEY
+	// FFmpegPath — путь к бинарнику конвертера. Пусто — ffmpeg из PATH;
+	// в образе задаётся через ENV LOVEGW_ASR_FFMPEG (в distroless нет PATH).
+	FFmpegPath        string `json:"ffmpeg_path"`
+	MaxDurationSec    int    `json:"max_duration_sec"`     // потолок одного сообщения
+	UserDailyLimitSec int    `json:"user_daily_limit_sec"` // суточная квота; 0 — без квоты
+	Concurrency       int    `json:"concurrency"`          // воркеров распознавания
+	TimeoutSec        int    `json:"timeout_sec"`          // таймаут запроса к провайдеру
+}
+
 type Config struct {
 	Site          Site        `json:"site"`
 	MirrorBot     MirrorBot   `json:"mirror_bot"`
@@ -109,6 +129,7 @@ type Config struct {
 	Talks         Talks       `json:"talks"`
 	Digest        Digest      `json:"digest"`
 	LLM           LLM         `json:"llm"`
+	ASR           ASR         `json:"asr"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
 	AdminTGUserID int64       `json:"admin_tg_user_id"`
@@ -123,7 +144,7 @@ type Config struct {
 
 // Load читает конфиг, накладывает значения по умолчанию и env-переопределения:
 // LOVEGW_MIRROR_TOKEN, LOVEGW_DM_TOKEN, LOVEGW_MAX_TOKEN, LOVEGW_MAX_DM_TOKEN,
-// LOVEGW_DB_PATH.
+// LOVEGW_DB_PATH, LOVEGW_ASR_* (см. applyASREnv).
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Site: Site{
@@ -141,6 +162,15 @@ func Load(path string) (*Config, error) {
 		// Слот дайджеста: пятница 19:00 Нск (дефолты пакета digest);
 		// включение — явно в конфиге.
 		Digest: Digest{Weekday: 5, Hour: 19, TZ: "Asia/Novosibirsk"},
+		// ASR по умолчанию выключен; лимиты — консервативные, чтобы
+		// случайное включение не вылилось в счёт от провайдера.
+		ASR: ASR{
+			Provider:          "nexara",
+			MaxDurationSec:    90,
+			UserDailyLimitSec: 600,
+			Concurrency:       2,
+			TimeoutSec:        60,
+		},
 	}
 
 	b, err := os.ReadFile(path)
@@ -180,11 +210,71 @@ func Load(path string) (*Config, error) {
 		cfg.Messengers.Telegram.TalksToken = v
 	}
 	cfg.normalizeTalksTokens()
+	if err := cfg.applyASREnv(); err != nil {
+		return nil, err
+	}
 
 	if cfg.Site.BaseURL == "" {
 		return nil, fmt.Errorf("site.base_url не задан")
 	}
 	return cfg, nil
+}
+
+// applyASREnv накладывает env-переопределения секции asr.
+func (c *Config) applyASREnv() error {
+	if err := envBool(&c.ASR.Enabled, "LOVEGW_ASR_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.ASR.Provider, "LOVEGW_ASR_PROVIDER")
+	envString(&c.ASR.BaseURL, "LOVEGW_ASR_BASE_URL")
+	envString(&c.ASR.APIKey, "LOVEGW_ASR_API_KEY")
+	envString(&c.ASR.FFmpegPath, "LOVEGW_ASR_FFMPEG")
+	if err := envInt(&c.ASR.MaxDurationSec, "LOVEGW_ASR_MAX_DURATION_SEC"); err != nil {
+		return err
+	}
+	if err := envInt(&c.ASR.UserDailyLimitSec, "LOVEGW_ASR_USER_DAILY_LIMIT_SEC"); err != nil {
+		return err
+	}
+	if err := envInt(&c.ASR.Concurrency, "LOVEGW_ASR_CONCURRENCY"); err != nil {
+		return err
+	}
+	return envInt(&c.ASR.TimeoutSec, "LOVEGW_ASR_TIMEOUT_SEC")
+}
+
+// envString переопределяет значение, если переменная задана и непуста.
+func envString(dst *string, name string) {
+	if v := os.Getenv(name); v != "" {
+		*dst = v
+	}
+}
+
+// envInt разбирает целое из переменной окружения; мусор — ошибка конфига,
+// а не молчаливый ноль.
+func envInt(dst *int, name string) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fmt.Errorf("%s: ожидалось целое число, получено %q", name, v)
+	}
+	*dst = n
+	return nil
+}
+
+// envBool разбирает булево из переменной окружения (1/0, true/false).
+func envBool(dst *bool, name string) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("%s: ожидалось true/false, получено %q", name, v)
+	}
+	*dst = b
+	return nil
 }
 
 // normalizeMessengers приводит конфиг к секции messengers. Без секции —

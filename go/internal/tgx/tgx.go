@@ -40,9 +40,17 @@ type Mirror struct {
 	signature        string
 	baseURL          string
 	log              *slog.Logger
+	// hc — тот же клиент, что и у поллинга: файлы Bot API качаем через прокси,
+	// иначе с российского IP они недоступны.
+	hc *http.Client
 
 	mu       sync.Mutex
 	limiters map[int64]*rate.Limiter
+
+	// onVoice — необязательный хук распознавания голосовых (nil — фича
+	// выключена). Ставится до старта поллинга, читается из его горутин.
+	vmu     sync.Mutex
+	onVoice func(ctx context.Context, u *models.Update)
 
 	// mediaCache: URL медиа → Telegram file_id. Одинаковые аватары (один автор
 	// комментирует много раз) грузим в Telegram один раз, дальше — по file_id.
@@ -70,10 +78,27 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 	if log == nil {
 		log = slog.Default()
 	}
+	hc := p.HTTPClient
+	if hc == nil {
+		hc = &http.Client{}
+	}
+	m := &Mirror{
+		channelID:        p.ChannelID,
+		discussionChatID: p.DiscussionChatID,
+		signature:        p.Signature,
+		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
+		log:              log,
+		hc:               hc,
+		limiters:         make(map[int64]*rate.Limiter),
+		mediaCache:       make(map[string]string),
+	}
 	opts := []bot.Option{
 		bot.WithSkipGetMe(),
 		bot.WithDefaultHandler(func(ctx context.Context, _ *bot.Bot, u *models.Update) {
 			onUpdate(ctx, u)
+			if h := m.voiceHook(); h != nil {
+				h(ctx, u)
+			}
 		}),
 	}
 	if p.HTTPClient != nil {
@@ -83,16 +108,22 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 	if err != nil {
 		return nil, fmt.Errorf("создание бота: %w", err)
 	}
-	return &Mirror{
-		b:                b,
-		channelID:        p.ChannelID,
-		discussionChatID: p.DiscussionChatID,
-		signature:        p.Signature,
-		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
-		log:              log,
-		limiters:         make(map[int64]*rate.Limiter),
-		mediaCache:       make(map[string]string),
-	}, nil
+	m.b = b
+	return m, nil
+}
+
+// SetVoiceHandler подключает распознавание голосовых. Вызывается до Start;
+// nil снимает хук.
+func (m *Mirror) SetVoiceHandler(fn func(ctx context.Context, u *models.Update)) {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	m.onVoice = fn
+}
+
+func (m *Mirror) voiceHook() func(ctx context.Context, u *models.Update) {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	return m.onVoice
 }
 
 // Start запускает long polling; блокируется до отмены контекста.

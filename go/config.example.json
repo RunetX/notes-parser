@@ -37,6 +37,17 @@
     "model": "",
     "max_tokens": 0
   },
+  "asr": {
+    "enabled": false,
+    "provider": "nexara",
+    "base_url": "",
+    "api_key": "<ключ Nexara (nx-…) или env LOVEGW_ASR_API_KEY; пусто — распознавание не работает>",
+    "ffmpeg_path": "",
+    "max_duration_sec": 90,
+    "user_daily_limit_sec": 600,
+    "concurrency": 2,
+    "timeout_sec": 60
+  },
   "talks": {
     "enabled": false,
     "admin_only": true,

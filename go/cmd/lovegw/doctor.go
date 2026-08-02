@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"lovegw/internal/asr"
 	"lovegw/internal/config"
 	"lovegw/internal/love"
 	"lovegw/internal/maxx"
@@ -206,6 +207,24 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		}
 		if !cfg.Talks.AllowSend {
 			warn("talks", "allow_send=false — только чтение, ответы на сайт не уходят")
+		}
+	}
+
+	if cfg.ASR.Enabled {
+		switch {
+		case cfg.ASR.Provider != asrProviderNexara:
+			fail("asr", fmt.Errorf("неизвестный провайдер %q", cfg.ASR.Provider))
+		case cfg.ASR.APIKey == "":
+			warn("asr", "api_key не задан (секция asr конфига или env LOVEGW_ASR_API_KEY)")
+		default:
+			ok("asr", fmt.Sprintf("%s, потолок %d сек, квота %d сек/сутки, воркеров %d",
+				cfg.ASR.Provider, cfg.ASR.MaxDurationSec, cfg.ASR.UserDailyLimitSec, cfg.ASR.Concurrency))
+		}
+		// Без ffmpeg распознавание молча не работает: проверяем бинарник.
+		if version, err := (&asr.FFmpeg{Path: cfg.ASR.FFmpegPath}).Check(ctx); err != nil {
+			fail("asr/ffmpeg", err)
+		} else {
+			ok("asr/ffmpeg", version)
 		}
 	}
 

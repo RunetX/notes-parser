@@ -126,3 +126,52 @@ func TestLoadPerMessengerSignature(t *testing.T) {
 		t.Errorf("подпись telegram (наследование): %q", got)
 	}
 }
+
+// ASR по умолчанию выключен, лимиты — консервативные.
+func TestLoadASRDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"site": {"base_url": "https://love.ngs.ru"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.ASR
+	if a.Enabled || a.Provider != "nexara" || a.MaxDurationSec != 90 ||
+		a.UserDailyLimitSec != 600 || a.Concurrency != 2 || a.TimeoutSec != 60 {
+		t.Errorf("дефолты asr: %+v", a)
+	}
+}
+
+// Секция asr читается из JSON, env перебивает её.
+func TestLoadASREnvOverrides(t *testing.T) {
+	t.Setenv("LOVEGW_ASR_ENABLED", "true")
+	t.Setenv("LOVEGW_ASR_API_KEY", "nx-from-env")
+	t.Setenv("LOVEGW_ASR_BASE_URL", "https://asr.example/v1")
+	t.Setenv("LOVEGW_ASR_FFMPEG", "/usr/local/bin/ffmpeg")
+	t.Setenv("LOVEGW_ASR_MAX_DURATION_SEC", "45")
+	t.Setenv("LOVEGW_ASR_USER_DAILY_LIMIT_SEC", "300")
+	t.Setenv("LOVEGW_ASR_CONCURRENCY", "4")
+	t.Setenv("LOVEGW_ASR_TIMEOUT_SEC", "30")
+	cfg, err := Load(writeConfig(t, `{
+		"asr": {"enabled": false, "api_key": "nx-from-file", "max_duration_sec": 120}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cfg.ASR
+	if !a.Enabled || a.APIKey != "nx-from-env" || a.BaseURL != "https://asr.example/v1" ||
+		a.FFmpegPath != "/usr/local/bin/ffmpeg" || a.MaxDurationSec != 45 ||
+		a.UserDailyLimitSec != 300 || a.Concurrency != 4 || a.TimeoutSec != 30 {
+		t.Errorf("env-переопределения asr: %+v", a)
+	}
+}
+
+// Мусор в числовой/булевой переменной — ошибка конфига, а не молчаливый ноль.
+func TestLoadASRBadEnv(t *testing.T) {
+	for _, name := range []string{"LOVEGW_ASR_CONCURRENCY", "LOVEGW_ASR_ENABLED"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "не число")
+			if _, err := Load(writeConfig(t, `{}`)); err == nil {
+				t.Errorf("%s с мусором должен ломать загрузку", name)
+			}
+		})
+	}
+}

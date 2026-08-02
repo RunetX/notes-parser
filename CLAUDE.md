@@ -49,7 +49,8 @@ messages, and all user-facing bot strings are in Russian.
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
   the daemon (write-through SQLite is crash-safe, so a hard kill is fine).
 - Deploy: container image via `go/Dockerfile` (multi-stage, `CGO_ENABLED=0` →
-  `distroless/static`, ~23 MB; tzdata baked in via `time/tzdata`). `deploy/` has
+  `distroless/static`, ~100 MB: a ~23 MB binary plus a static `ffmpeg` copied in
+  for ASR; tzdata baked in via `time/tzdata`). `deploy/` has
   `docker-compose.yml` + systemd unit + runbook; config mounts as `/config.json`,
   DB in the `/data` volume, secrets via env
   (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`).
@@ -118,6 +119,24 @@ messages, and all user-facing bot strings are in Russian.
     цикл), а `auto_publish: true` сразу публикует выпуск через sinks. Иначе —
     ЛС админу и премодерация через CLI. Пропущенный слот догоняется в
     течение 48 ч, старше — пропускается.
+  - `asr` — автораспознавание голосовых в тредах: голосовое (и кружок) в
+    группе обсуждения — а также запощенное в канал заметок, оно приходит
+    автофорвардом — расшифровывается и уходит реплаем на исходное сообщение;
+    что делать с текстом, решает автор (ни кнопок, ни состояния). Пакет
+    messenger-agnostic: транспорт приходит замыканиями `Fetch`/`Reply` в
+    `asr.Job`, телеграм-сторона — `tgx.VoiceHandler` + `Mirror.DownloadFile`
+    /`ReplyText` (хук ставится `SetVoiceHandler` до старта поллинга).
+    `Service` — воркер-пул с очередью (хендлер апдейта только ставит задачу,
+    переполнение — drop + лог) и защитой от расходов: потолок длительности,
+    суточная квота в секундах на пользователя и кэш расшифровок по
+    `file_unique_id` (таблицы `asr_transcripts`/`asr_usage`, миграция v6) —
+    пересланное голосовое не оплачивается повторно. `Transcriber` — клиент
+    Nexara (OpenAI Whisper-совместимый API, ретраи с backoff, `ErrAuth` на
+    401/402 → разовый алерт админу); провайдер российский, поэтому идёт
+    напрямую, мимо `telegram_proxy`. `Converter` — ffmpeg пайпом stdin→stdout
+    (в образе статический бинарник, путь в `LOVEGW_ASR_FFMPEG`). При любом
+    сбое в треде тишина и запись в лог; единственное сообщение об отказе —
+    превышенный потолок длительности. `asr.enabled=false` — гейт как раньше.
   - `llm` — онлайн-клиент Claude API (официальный `anthropic-sdk-go`):
     `GenerateJSON` со structured outputs, дефолтная модель `claude-opus-5`,
     обработка refusal/обрыва; транспорт — `tgx.ProxyTransport(telegram_proxy)`
@@ -145,7 +164,10 @@ messages, and all user-facing bot strings are in Russian.
   tokens can come from env `LOVEGW_MIRROR_TOKEN` / `LOVEGW_DM_TOKEN` /
   `LOVEGW_TG_TALKS_TOKEN` / `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN` /
   `LOVEGW_MAX_TALKS_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY` /
-  `LOVEGW_LLM_KEY` (Claude API для LLM-рубрик дайджеста).
+  `LOVEGW_LLM_KEY` (Claude API для LLM-рубрик дайджеста) /
+  `LOVEGW_ASR_*` (`ENABLED`, `PROVIDER`, `BASE_URL`, `API_KEY`, `FFMPEG`,
+  `MAX_DURATION_SEC`, `USER_DAILY_LIMIT_SEC`, `CONCURRENCY`, `TIMEOUT_SEC` —
+  секция `asr`; единственные env с числами/булевыми, разбор в `config.Load`).
   The `messengers`
   section gates which sinks run (`max` / `telegram`, each with `enabled`);
   legacy flat `mirror_bot`/`dm_bot` configs still load as telegram-only.

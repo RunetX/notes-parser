@@ -38,6 +38,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"lovegw/internal/asr"
 	"lovegw/internal/bridge"
 	"lovegw/internal/config"
 	"lovegw/internal/digest"
@@ -218,6 +219,23 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	g, gctx := errgroup.WithContext(ctx)
 
+	// Распознавание голосовых в тредах: сервис поднимаем до ботов, чтобы хук
+	// был на месте раньше старта поллинга. Выключен — гейт работает как раньше.
+	var asrSvc *asr.Service
+	if cfg.ASR.Enabled {
+		var err error
+		if asrSvc, err = newASR(cfg, st, log); err != nil {
+			return err
+		}
+		g.Go(func() error { return asrSvc.Run(gctx) })
+		log.Info("распознавание голосовых включено", "provider", cfg.ASR.Provider,
+			"max_duration_sec", cfg.ASR.MaxDurationSec,
+			"daily_limit_sec", cfg.ASR.UserDailyLimitSec, "concurrency", cfg.ASR.Concurrency)
+		if !tgCfg.Enabled {
+			log.Warn("asr включён, но telegram выключен — голосовые слушать некому")
+		}
+	}
+
 	if tgCfg.Enabled {
 		tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
 		if err != nil {
@@ -291,6 +309,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				link := tgx.DeepLink(tgCfg.DiscussionChatID, msgID, root)
 				dm.NotifyHTML(ctx, userID, tgx.ComposeSubNotice(keyword, n, c, link))
 			}
+		}
+
+		// Хук распознавания ставим до старта поллинга — гонки нет.
+		if asrSvc != nil {
+			tg.SetVoiceHandler(tgx.NewVoiceHandler(tg, asrSvc, tgCfg.DiscussionChatID, log).Handle)
 		}
 
 		g.Go(func() error {
@@ -374,6 +397,12 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				return nil
 			})
 		}
+	}
+
+	// Алертеры собраны — подключаем к ним ASR: о сбое ключа или исчерпанном
+	// балансе провайдера админ узнаёт один раз (в треде при этом тишина).
+	if asrSvc != nil {
+		asrSvc.SetAlert(fanOutAlerts(alerters))
 	}
 
 	// Личная переписка сайта (talks): один поллер под общим клиентом сайта фанит
@@ -499,6 +528,30 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	log.Info("lovegw остановлен")
 	return nil
 }
+
+// newASR собирает сервис распознавания голосовых. Провайдер российский —
+// соединение прямое, мимо telegram_proxy (в отличие от Bot API и Claude).
+func newASR(cfg *config.Config, st *store.Store, log *slog.Logger) (*asr.Service, error) {
+	if cfg.ASR.Provider != asrProviderNexara {
+		return nil, fmt.Errorf("asr: неизвестный провайдер %q (поддерживается %s)",
+			cfg.ASR.Provider, asrProviderNexara)
+	}
+	if cfg.ASR.APIKey == "" {
+		return nil, errors.New("asr включён, но не задан api_key (секция asr конфига или env LOVEGW_ASR_API_KEY)")
+	}
+	tr := asr.NewNexara(asr.NexaraConfig{
+		APIKey:  cfg.ASR.APIKey,
+		Timeout: time.Duration(cfg.ASR.TimeoutSec) * time.Second,
+	}, cfg.ASR.BaseURL, log)
+	return asr.New(tr, &asr.FFmpeg{Path: cfg.ASR.FFmpegPath}, st, asr.Config{
+		MaxDurationSec:    cfg.ASR.MaxDurationSec,
+		UserDailyLimitSec: cfg.ASR.UserDailyLimitSec,
+		Concurrency:       cfg.ASR.Concurrency,
+	}, log), nil
+}
+
+// asrProviderNexara — единственный поддерживаемый провайдер распознавания.
+const asrProviderNexara = "nexara"
 
 // fanOutAlerts объединяет алертеры включённых мессенджеров (nil, если ни у
 // одного не задан admin id): алерт о дрейфе/блокировке уходит во все.

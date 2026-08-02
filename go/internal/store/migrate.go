@@ -161,6 +161,29 @@ CREATE UNIQUE INDEX idx_talks_messages_site
     ON talks_messages(peer_id, site_msg_id) WHERE site_msg_id IS NOT NULL;
 `
 
+// migrateV6SQL — автораспознавание голосовых (ASR). Аддитивна: кэш расшифровок
+// по стабильному id файла (в telegram это file_unique_id — переживает
+// пересылку, в отличие от file_id) и суточный расход секунд аудио на
+// пользователя. Ничего не дропает — откат бинарника на той же БД безопасен.
+const migrateV6SQL = `
+CREATE TABLE asr_transcripts (
+    messenger    TEXT    NOT NULL,            -- 'telegram' | 'max'
+    file_key     TEXT    NOT NULL,            -- стабильный id файла в мессенджере
+    text         TEXT    NOT NULL,
+    duration_sec INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL,
+    PRIMARY KEY (messenger, file_key)
+);
+
+CREATE TABLE asr_usage (
+    messenger TEXT    NOT NULL,
+    user_id   INTEGER NOT NULL,               -- автор голосового (или id канала)
+    day       TEXT    NOT NULL,               -- 'YYYY-MM-DD' UTC: сброс в 07:00 Нск
+    seconds   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (messenger, user_id, day)
+);
+`
+
 // migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
 // migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
@@ -170,6 +193,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV3SQL, // v3 — флаг «комментарии закрыты»
 		migrateV4SQL, // v4 — message_targets и измерение messenger (гейт MAX)
 		migrateV5SQL, // v5 — личные сообщения сайта (talks)
+		migrateV6SQL, // v6 — кэш расшифровок и суточная квота ASR
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
