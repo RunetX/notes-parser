@@ -57,18 +57,26 @@ func (h *VoiceHandler) Handle(ctx context.Context, u *models.Update) {
 	if msg.Chat.ID != h.chatID {
 		return
 	}
-	// Автофорвард — копия поста канала: посты каналов не распознаём, мессенджеры
-	// показывают там собственную расшифровку по кнопке. Прочие сообщения от
-	// ботов тоже не наши.
-	if msg.IsAutomaticForward || msg.From == nil || msg.From.IsBot {
-		return
-	}
 	fileID, fileKey, duration, ok := voiceFile(msg)
 	if !ok {
 		return
 	}
 
-	userID := msg.From.ID
+	// Автофорвард — копия поста канала: голосовое, запощенное в канал заметок,
+	// распознаём так же, квоту пишем на канал (msg.From там — служебный бот).
+	// Прочие сообщения от ботов игнорируем.
+	userID := int64(0)
+	switch {
+	case msg.IsAutomaticForward:
+		if msg.SenderChat != nil {
+			userID = msg.SenderChat.ID
+		}
+	case msg.From == nil || msg.From.IsBot:
+		return
+	default:
+		userID = msg.From.ID
+	}
+
 	replyTo := msg.ID
 	job := asr.Job{
 		Messenger: store.MessengerTelegram,
