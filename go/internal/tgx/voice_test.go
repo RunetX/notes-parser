@@ -69,30 +69,6 @@ func TestVoiceHandlerEnqueuesVideoNote(t *testing.T) {
 	}
 }
 
-// Голосовое, запощенное в канал заметок, приходит в группу автофорвардом:
-// распознаём и его, квоту пишем на канал.
-func TestVoiceHandlerEnqueuesChannelAutoForward(t *testing.T) {
-	const channelID = int64(-1009876543210)
-	q := &fakeQueue{}
-	h := NewVoiceHandler(nil, q, testChatID, nil)
-
-	h.Handle(context.Background(), voiceUpdate(&models.Message{
-		ID:                 79,
-		Chat:               models.Chat{ID: testChatID},
-		From:               &models.User{ID: 777, IsBot: true}, // служебный бот автофорварда
-		SenderChat:         &models.Chat{ID: channelID},
-		IsAutomaticForward: true,
-		Voice:              &models.Voice{FileID: "AgADch", FileUniqueID: "AQADch", Duration: 30},
-	}))
-
-	if len(q.jobs) != 1 {
-		t.Fatalf("голосовое из канала должно распознаваться: %+v", q.jobs)
-	}
-	if q.jobs[0].UserID != channelID {
-		t.Errorf("квота автофорварда пишется на канал, а не %d", q.jobs[0].UserID)
-	}
-}
-
 func TestVoiceHandlerIgnores(t *testing.T) {
 	cases := []struct {
 		name string
@@ -112,6 +88,13 @@ func TestVoiceHandlerIgnores(t *testing.T) {
 		{"автофорвард без голосового", &models.Message{
 			ID: 4, Chat: models.Chat{ID: testChatID}, IsAutomaticForward: true,
 			SenderChat: &models.Chat{ID: -100999}, Text: "текст заметки",
+		}},
+		// Пост канала приходит в группу автофорвардом: свою расшифровку там
+		// показывает сам мессенджер, платить провайдеру незачем.
+		{"голосовое из канала (автофорвард)", &models.Message{
+			ID: 5, Chat: models.Chat{ID: testChatID}, IsAutomaticForward: true,
+			SenderChat: &models.Chat{ID: -100999},
+			Voice:      &models.Voice{FileID: "a", FileUniqueID: "b", Duration: 5},
 		}},
 	}
 	for _, c := range cases {
