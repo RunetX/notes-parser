@@ -106,6 +106,11 @@ messages, and all user-facing bot strings are in Russian.
   - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
     via `processed_replies`, per messenger) + the Telegram handler with
     auto-forward capture (linking a channel post to its discussion thread).
+    The auto-forward update arrives once and can be lost to a Bot API failure,
+    stranding a note's comments in the queue forever (happened to note 312859
+    on 3 Aug 2026), so there is a fallback: the first reply to the thread root
+    carries that same forward in `reply_to_message`, and the link is recovered
+    from it.
   - `digest` — еженедельный дайджест: слот выпуска (пятница 19:00 Нск, окно
     неделя-до-слота), метрики рубрик по живой БД (заметка/спор/цитата недели,
     новые лица, сравнительные рекорды), черновик с маркерами
