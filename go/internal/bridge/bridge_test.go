@@ -202,6 +202,36 @@ func TestBotReplyIgnored(t *testing.T) {
 	}
 }
 
+// Автофорвард потерялся (сбой Bot API) — тред ловится из первого же ответа
+// на корень ветки, и этот же ответ уходит на сайт.
+func TestThreadCapturedFromReplyWhenForwardLost(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.SetTarget(ctx, store.MessengerTelegram, store.TargetNotePost, "n1", "10", "")
+	// Захвата автофорварда не было: note_thread отсутствует.
+
+	upd := replyUpdate(900, 5, "мой ответ")
+	upd.Message.MessageThreadID = 900
+	upd.Message.ReplyToMessage.ForwardOrigin = &models.MessageOrigin{
+		Type: models.MessageOriginTypeChannel,
+		MessageOriginChannel: &models.MessageOriginChannel{
+			Chat: models.Chat{ID: channelID}, MessageID: 10,
+		},
+	}
+	h.Handle(ctx, upd)
+
+	_, thread, found, err := st.Target(ctx, store.MessengerTelegram, store.TargetNoteThread, "n1")
+	if err != nil || !found || thread != "900" {
+		t.Fatalf("тред не пойман запасным путём: thread=%q found=%v err=%v", thread, found, err)
+	}
+	if len(site.posts) != 1 || site.posts[0].noteID != "n1" {
+		t.Errorf("ответ не ушёл на сайт: %+v", site.posts)
+	}
+}
+
 // Ядро с messenger=max: реплаи по строковым mid, включая ответ на комментарий.
 func TestCoreMaxReplies(t *testing.T) {
 	ctx := context.Background()

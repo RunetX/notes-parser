@@ -56,11 +56,42 @@ func (h *Handler) Handle(ctx context.Context, u *models.Update) {
 		h.captureForward(ctx, msg)
 		return
 	}
+	h.captureFromThread(ctx, msg)
 	if msg.ReplyToMessage != nil && msg.Text != "" &&
 		msg.From != nil && !msg.From.IsBot {
 		h.core.ProcessReply(ctx, strconv.Itoa(msg.ID), msg.From.ID,
 			strconv.Itoa(msg.ReplyToMessage.ID), msg.Text)
 	}
+}
+
+// captureFromThread — запасной захват корня треда: обновление с автофорвардом
+// приходит один раз и может потеряться (сбой сети, 502 от Bot API), после чего
+// комментарии заметки навсегда копятся в очереди. Но у ответа на корневое
+// сообщение ветки reply_to_message — это тот же автофорвард, с ForwardOrigin
+// поста канала, так что связку можно восстановить из первого же ответа.
+func (h *Handler) captureFromThread(ctx context.Context, msg *models.Message) {
+	root := msg.ReplyToMessage
+	if root == nil || msg.MessageThreadID == 0 || root.ID != msg.MessageThreadID {
+		return
+	}
+	if root.ForwardOrigin == nil || root.ForwardOrigin.MessageOriginChannel == nil {
+		return
+	}
+	origin := root.ForwardOrigin.MessageOriginChannel
+	if origin.Chat.ID != h.channelID {
+		return
+	}
+	noteID, ok, err := h.st.CaptureNoteThread(ctx, store.MessengerTelegram,
+		strconv.Itoa(origin.MessageID), strconv.Itoa(root.ID))
+	if err != nil {
+		h.log.Error("запасной захват треда", "channel_message", origin.MessageID, "err", err)
+		return
+	}
+	if !ok {
+		return // тред уже пойман (обычный случай) или пост не наш
+	}
+	h.log.Info("тред пойман запасным путём", "note", noteID,
+		"channel_message", origin.MessageID, "thread", root.ID)
 }
 
 // captureForward связывает пост канала с его автофорвардом в группе:
