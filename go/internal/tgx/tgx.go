@@ -52,8 +52,13 @@ type Mirror struct {
 	vmu     sync.Mutex
 	onVoice func(ctx context.Context, u *models.Update)
 
-	// mediaCache: URL медиа → Telegram file_id. Одинаковые аватары (один автор
-	// комментирует много раз) грузим в Telegram один раз, дальше — по file_id.
+	// mediaCache: (тип, URL медиа) → Telegram file_id. Одинаковые аватары (один
+	// автор комментирует много раз) грузим в Telegram один раз, дальше — по
+	// file_id. Тип в ключе обязателен: file_id привязан к типу вложения, и
+	// присланный как фото аватар Telegram не примет документом
+	// («can't use file of type Photo as Document») — а один и тот же URL
+	// уходит и фотографией (аватар автора заметки в канал), и документом
+	// (аватар в комментарии).
 	cmu        sync.Mutex
 	mediaCache map[string]string
 }
@@ -146,13 +151,13 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 		msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
 				ChatID:    m.channelID,
-				Photo:     m.mediaInput(n.AuthorAvatarURL, avatar, "avatar.jpg"),
+				Photo:     m.mediaInput(mediaPhoto, n.AuthorAvatarURL, avatar, "avatar.jpg"),
 				Caption:   text,
 				ParseMode: models.ParseModeHTML,
 			})
 		})
 		if err == nil {
-			m.rememberFileID(n.AuthorAvatarURL, photoFileID(msg))
+			m.rememberFileID(mediaPhoto, n.AuthorAvatarURL, photoFileID(msg))
 			return strconv.Itoa(msg.ID), nil
 		}
 		m.log.Warn("заметка с фото не отправлена, шлём текстом", "note", n.ID, "err", err)
@@ -189,7 +194,7 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID string,
 		msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendDocument(ctx, &bot.SendDocumentParams{
 				ChatID:          m.discussionChatID,
-				Document:        m.mediaInput(c.AvatarURL, avatar, "avatar.jpg"),
+				Document:        m.mediaInput(mediaDocument, c.AvatarURL, avatar, "avatar.jpg"),
 				Caption:         ComposeCommentCaption(c),
 				ParseMode:       models.ParseModeHTML,
 				ReplyParameters: reply,
@@ -197,7 +202,7 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID string,
 		})
 		if err == nil {
 			if msg.Document != nil {
-				m.rememberFileID(c.AvatarURL, msg.Document.FileID)
+				m.rememberFileID(mediaDocument, c.AvatarURL, msg.Document.FileID)
 			}
 			return strconv.Itoa(msg.ID), nil
 		}
@@ -232,12 +237,12 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, i
 	msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 		return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
 			ChatID:          m.discussionChatID,
-			Photo:           m.mediaInput(imageURL, image, "image.jpg"),
+			Photo:           m.mediaInput(mediaPhoto, imageURL, image, "image.jpg"),
 			ReplyParameters: reply,
 		})
 	})
 	if err == nil {
-		m.rememberFileID(imageURL, photoFileID(msg))
+		m.rememberFileID(mediaPhoto, imageURL, photoFileID(msg))
 		return strconv.Itoa(msg.ID), nil
 	}
 	m.log.Warn("иллюстрация как фото не отправлена, пробуем документом", "err", err)
@@ -245,7 +250,7 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, i
 	msg, err = send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
 		return m.b.SendDocument(ctx, &bot.SendDocumentParams{
 			ChatID:          m.discussionChatID,
-			Document:        m.mediaInput(imageURL, image, "image.jpg"),
+			Document:        m.mediaInput(mediaDocument, imageURL, image, "image.jpg"),
 			ReplyParameters: reply,
 		})
 	})
@@ -253,36 +258,43 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, i
 		return "", fmt.Errorf("пост иллюстрации в тред: %w", err)
 	}
 	if msg.Document != nil {
-		m.rememberFileID(imageURL, msg.Document.FileID)
+		m.rememberFileID(mediaDocument, imageURL, msg.Document.FileID)
 	}
 	return strconv.Itoa(msg.ID), nil
 }
 
-// mediaInput отдаёт готовый file_id, если этот URL уже грузили в Telegram,
-// иначе — байты на загрузку. Так одинаковые аватары не грузятся повторно.
-func (m *Mirror) mediaInput(url string, data []byte, filename string) models.InputFile {
-	if fid := m.cachedFileID(url); fid != "" {
+// Типы вложений в ключе mediaCache: file_id одного типа не годится для другого.
+const (
+	mediaPhoto    = "photo"
+	mediaDocument = "document"
+)
+
+// mediaInput отдаёт готовый file_id, если этот URL уже грузили в Telegram тем
+// же типом вложения, иначе — байты на загрузку. Так одинаковые аватары не
+// грузятся повторно.
+func (m *Mirror) mediaInput(kind, url string, data []byte, filename string) models.InputFile {
+	if fid := m.cachedFileID(kind, url); fid != "" {
 		return &models.InputFileString{Data: fid}
 	}
 	return &models.InputFileUpload{Filename: filename, Data: bytes.NewReader(data)}
 }
 
-func (m *Mirror) cachedFileID(url string) string {
+func (m *Mirror) cachedFileID(kind, url string) string {
 	if url == "" {
 		return ""
 	}
 	m.cmu.Lock()
 	defer m.cmu.Unlock()
-	return m.mediaCache[url]
+	return m.mediaCache[kind+"\x00"+url]
 }
 
-func (m *Mirror) rememberFileID(url, fileID string) {
+func (m *Mirror) rememberFileID(kind, url, fileID string) {
 	if url == "" || fileID == "" {
 		return
 	}
 	m.cmu.Lock()
 	defer m.cmu.Unlock()
-	m.mediaCache[url] = fileID
+	m.mediaCache[kind+"\x00"+url] = fileID
 }
 
 // photoFileID — file_id самого крупного варианта отправленного фото.
