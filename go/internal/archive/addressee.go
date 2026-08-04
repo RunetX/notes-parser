@@ -164,6 +164,7 @@ func sqlInboundReplies(in, cols string) string {
 type AddresseeStats struct {
 	Replies       int // ответов в архиве (parent_id != 0)
 	WithPrefix    int // из них с обращением «Ник, …»
+	Reply         int // разрешено по дереву мобильной версии (точно, без догадок)
 	Branch        int // разрешено по участнику ветки
 	HistoryBranch int // разрешено по истории ников, владелец в ветке
 	History       int // разрешено по истории ников, владелец вне ветки
@@ -171,7 +172,9 @@ type AddresseeStats struct {
 }
 
 // Resolved — сколько реплик получили точного адресата.
-func (s AddresseeStats) Resolved() int { return s.Branch + s.HistoryBranch + s.History }
+func (s AddresseeStats) Resolved() int {
+	return s.Reply + s.Branch + s.HistoryBranch + s.History
+}
 
 // BuildAddressees пересчитывает nick_history и comment_addressee с нуля.
 // Идемпотентна: обе таблицы очищаются перед заполнением. Тяжёлые промежуточные
@@ -236,6 +239,24 @@ func (s *Store) BuildAddressees(ctx context.Context, progress func(string)) (Add
 	}
 
 	if err := exec("очистка слоя", `DELETE FROM comment_addressee; DELETE FROM nick_history;`); err != nil {
+		return st, err
+	}
+
+	say("этап 0/3: точные цели ответа с мобильной версии")
+	// Пары, снятые слоем обогащения (comment_reply), — не догадка, а то, что
+	// сайт хранит сам: они идут первыми и перекрывают все остальные методы
+	// (дальше INSERT OR IGNORE и NOT EXISTS их не трогают). Обращение здесь не
+	// требуется — точный адресат есть и у реплик без «Ник, …», которые
+	// эвристике вообще недоступны. Само-адресация отсекается, как и в
+	// остальных этапах: петля «сам себе» ничего не добавляет социальному графу,
+	// а сырая пара остаётся в comment_reply.
+	if err := exec("резолв по дереву мобильной", `
+		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method, confidence)
+		SELECT r.comment_id, t.author_id, 'reply', 1.0
+		FROM comment_reply r
+		JOIN comments c ON c.id = r.comment_id
+		JOIN comments t ON t.id = r.reply_to
+		WHERE c.parent_id != 0 AND t.author_id != c.author_id;`); err != nil {
 		return st, err
 	}
 
@@ -320,20 +341,24 @@ func (s *Store) addresseeStats(ctx context.Context) (AddresseeStats, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT (SELECT COUNT(*) FROM comments WHERE parent_id != 0),
 		       (SELECT COUNT(*) FROM comments WHERE parent_id != 0 AND addr_prefix(text) IS NOT NULL),
+		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'reply'),
 		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'branch'),
 		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'history_branch'),
 		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'history'),
 		       (SELECT COUNT(*) FROM nick_history)`)
-	if err := row.Scan(&st.Replies, &st.WithPrefix, &st.Branch, &st.HistoryBranch, &st.History, &st.Nicks); err != nil {
+	if err := row.Scan(&st.Replies, &st.WithPrefix, &st.Reply,
+		&st.Branch, &st.HistoryBranch, &st.History, &st.Nicks); err != nil {
 		return st, fmt.Errorf("статистика слоя адресатов: %w", err)
 	}
 	return st, nil
 }
 
-// AddresseeCoverage — доля ответов с обращением, получивших точного адресата.
+// Coverage — доля ВСЕХ ответов архива, получивших точного адресата. Считается
+// от всех, а не от ответов с обращением: метод reply разрешает и те реплики,
+// где обращения нет вовсе, — от них знаменатель «с обращением» переполнялся бы.
 func (s AddresseeStats) Coverage() float64 {
-	if s.WithPrefix == 0 {
+	if s.Replies == 0 {
 		return 0
 	}
-	return float64(s.Resolved()) / float64(s.WithPrefix)
+	return float64(s.Resolved()) / float64(s.Replies)
 }

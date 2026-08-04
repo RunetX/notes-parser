@@ -95,6 +95,8 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	fromDate := fs.String("from", "", "нижняя граница окна публикации, ISO-дата (anon)")
 	toDate := fs.String("to", "", "верхняя граница окна публикации, ISO-дата, не включая (anon)")
 	minText := fs.Int("min-text", 400, "мин. длина анонимки в знаках — короче не ранжируем (anon)")
+	maxComments := fs.Int("max-comments", 0, "пропускать треды длиннее N комментариев — на них страница со всем деревом падает в 500 (replies; 0 — не пропускать)")
+	retryFailed := fs.Bool("retry", false, "повторить заметки, на которых страница уже не отдалась (replies)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
@@ -106,7 +108,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
 		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
-		"from": true, "to": true, "min-text": true,
+		"from": true, "to": true, "min-text": true, "max-comments": true,
 	})); err != nil {
 		return err
 	}
@@ -199,6 +201,11 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			outDir: *outDir, inPath: *inPath, minReplies: *relMinReplies,
 			candReplies: *candReplies, bandMin: *bandMin, bandTop: *bandTop, exchanges: *exchanges,
 		})
+	case "replies":
+		return personasReplies(ctx, ar, repliesOpts{
+			cfgPath: *cfgPath, limit: *limit,
+			maxComments: *maxComments, retry: *retryFailed,
+		})
 	case "addressees":
 		return personasAddressees(ctx, ar)
 	case "report":
@@ -209,7 +216,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			reportTop: *reportTop, limit: *limit,
 		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|addressees|report|gender)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|replies|addressees|report|gender)", action)
 	}
 }
 

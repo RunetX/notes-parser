@@ -214,6 +214,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV14SQL, // v14 — лексические TF-IDF-профили (lexis_profiles/lexis_meta) для атрибуции
 		migrateV15SQL, // v15 — жанр эталона (genre в PK профилей): note-only слой для register-matched атрибуции
 		migrateV16SQL, // v16 — слой адресатов (comment_addressee/nick_history): граф по адресату, а не по корню ветки
+		migrateV17SQL, // v17 — настоящие цели ответа с мобильной версии (comment_reply/reply_scan)
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
