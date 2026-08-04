@@ -66,6 +66,11 @@ type Store struct {
 
 // Open открывает (создавая при необходимости) архивную БД и накатывает схему.
 func Open(ctx context.Context, path string) (*Store, error) {
+	// UDF регистрируются в init: драйвер раздаёт функции только соединениям,
+	// открытым после регистрации, поэтому ошибку ловим здесь — до первого Open.
+	if udfErr != nil {
+		return nil, udfErr
+	}
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -208,6 +213,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV13SQL, // v13 — пол анкеты (users.gender), обходом профилей под сессией
 		migrateV14SQL, // v14 — лексические TF-IDF-профили (lexis_profiles/lexis_meta) для атрибуции
 		migrateV15SQL, // v15 — жанр эталона (genre в PK профилей): note-only слой для register-matched атрибуции
+		migrateV16SQL, // v16 — слой адресатов (comment_addressee/nick_history): граф по адресату, а не по корню ветки
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

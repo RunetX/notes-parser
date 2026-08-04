@@ -188,6 +188,8 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			outDir: *outDir, inPath: *inPath, minReplies: *relMinReplies,
 			candReplies: *candReplies, bandMin: *bandMin, bandTop: *bandTop, exchanges: *exchanges,
 		})
+	case "addressees":
+		return personasAddressees(ctx, ar)
 	case "report":
 		return personasReport(ctx, ar, *outDir, *reportTop, *activeDays, *reportHTML)
 	case "gender":
@@ -196,7 +198,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			reportTop: *reportTop, limit: *limit,
 		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|report|gender)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|addressees|report|gender)", action)
 	}
 }
 

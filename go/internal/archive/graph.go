@@ -459,23 +459,23 @@ func (s *Store) portraitEdges(ctx context.Context, accIDs []int64, self string, 
 	}
 	in := intList(accIDs)
 	var q string
+	args := []any{self, top}
 	if outgoing {
 		q = `
 			SELECT ti.identity, MAX(ti.label), COUNT(*) AS n
-			FROM comments c
-			JOIN comments pc ON pc.id = c.parent_id
-			JOIN v_identity ti ON ti.user_id = pc.author_id
+			FROM comments c ` + sqlAddresseeJoin + `
+			JOIN v_identity ti ON ti.user_id = ` + sqlAddressee + `
 			WHERE c.parent_id != 0 AND c.author_id IN (` + in + `)
 			GROUP BY ti.identity HAVING ti.identity != ? ORDER BY n DESC LIMIT ?`
 	} else {
+		// in подставляется дважды (обе половины sqlInboundReplies).
 		q = `
 			SELECT fi.identity, MAX(fi.label), COUNT(*) AS n
-			FROM comments child
-			JOIN v_identity fi ON fi.user_id = child.author_id
-			WHERE child.parent_id IN (SELECT id FROM comments WHERE author_id IN (` + in + `))
+			FROM (` + sqlInboundReplies(in, "c.author_id AS author_id") + `) r
+			JOIN v_identity fi ON fi.user_id = r.author_id
 			GROUP BY fi.identity HAVING fi.identity != ? ORDER BY n DESC LIMIT ?`
 	}
-	rows, err := s.db.QueryContext(ctx, q, self, top)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

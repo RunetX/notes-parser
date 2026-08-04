@@ -304,18 +304,17 @@ func (s *Store) circleSets(ctx context.Context, ids []int64) (map[int64]map[int6
 		}
 		set[partner] = true
 	}
-	// исходящие: на кого кандидат отвечал.
+	// исходящие: кому кандидат адресовал реплики.
 	if err := s.scanPairs(ctx, `
-		SELECT c.author_id, pc.author_id
-		FROM comments c JOIN comments pc ON pc.id = c.parent_id
+		SELECT c.author_id, `+sqlAddressee+`
+		FROM comments c `+sqlAddresseeJoin+`
 		WHERE c.author_id IN (`+in+`) AND c.parent_id != 0`, add); err != nil {
 		return nil, err
 	}
-	// входящие: кто отвечал кандидату.
-	if err := s.scanPairs(ctx, `
-		SELECT pc.author_id, child.author_id
-		FROM comments child JOIN comments pc ON pc.id = child.parent_id
-		WHERE pc.author_id IN (`+in+`)`, add); err != nil {
+	// входящие: кто адресовал реплики кандидату. Направление в паре (x, partner)
+	// здесь обратное, поэтому пересобираем колонки после UNION ALL.
+	if err := s.scanPairs(ctx, sqlInboundReplies(in,
+		"{ADDR} AS addressee_id, c.author_id AS author_id"), add); err != nil {
 		return nil, err
 	}
 	return out, nil

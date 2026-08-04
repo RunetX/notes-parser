@@ -148,10 +148,9 @@ func (s *Store) ScoreTone(ctx context.Context, p ToneParams, now time.Time) (Ton
 	acc := map[string]*toneAcc{} // ключ from+"\x00"+to
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.id, c.text, fi.identity, ti.identity
-		FROM comments c
-		JOIN comments pc ON pc.id = c.parent_id
+		FROM comments c `+sqlAddresseeJoin+`
 		JOIN v_identity fi ON fi.user_id = c.author_id
-		JOIN v_identity ti ON ti.user_id = pc.author_id
+		JOIN v_identity ti ON ti.user_id = `+sqlAddressee+`
 		WHERE c.parent_id != 0`)
 	if err != nil {
 		return st, err
@@ -465,10 +464,12 @@ func (s *Store) sampleExchanges(ctx context.Context, fromAcc, toAcc []int64, fro
 	if limit <= 0 || len(fromAcc) == 0 || len(toAcc) == 0 {
 		return nil, nil
 	}
+	// pc.text остаётся текстом корня ветки — это контекст разговора; адресность
+	// же определяется слоем адресатов, иначе в выборку попадают реплики соседям.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.note_id, COALESCE(c.published_at, ''), c.text, pc.text
-		FROM comments c JOIN comments pc ON pc.id = c.parent_id
-		WHERE c.author_id IN (`+intList(fromAcc)+`) AND pc.author_id IN (`+intList(toAcc)+`)
+		FROM comments c `+sqlAddresseeJoin+`
+		WHERE c.author_id IN (`+intList(fromAcc)+`) AND `+sqlAddressee+` IN (`+intList(toAcc)+`)
 		ORDER BY c.published_at, c.id`)
 	if err != nil {
 		return nil, err

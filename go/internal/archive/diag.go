@@ -274,26 +274,29 @@ func onePair(a, b int64, idx map[int64]int, vecs [][]float32, repliesTo map[int6
 	return p
 }
 
-// replyOutCounts — на кого автор отвечал: author_id родителей его ответов → счётчик.
+// replyOutCounts — кому автор адресовал реплики: адресат → счётчик.
 func (s *Store) replyOutCounts(ctx context.Context, id int64) (map[int64]int, error) {
 	return s.replyCounts(ctx, `
-		SELECT pc.author_id, COUNT(*)
-		FROM comments c JOIN comments pc ON pc.id = c.parent_id
+		SELECT `+sqlAddressee+`, COUNT(*)
+		FROM comments c `+sqlAddresseeJoin+`
 		WHERE c.author_id = ? AND c.parent_id != 0
-		GROUP BY pc.author_id`, id)
+		GROUP BY 1`, id)
 }
 
-// replyInCounts — кто отвечал автору: author_id ответов на его комментарии → счётчик.
+// replyInCounts — кто адресовал реплики автору: их автор → счётчик.
+// Список анкет здесь из одного id, поэтому он подставляется дважды.
 func (s *Store) replyInCounts(ctx context.Context, id int64) (map[int64]int, error) {
-	return s.replyCounts(ctx, `
-		SELECT child.author_id, COUNT(*)
-		FROM comments child
-		WHERE child.parent_id IN (SELECT id FROM comments WHERE author_id = ?)
-		GROUP BY child.author_id`, id)
+	q := `SELECT author_id, COUNT(*) FROM (` +
+		sqlInboundReplies("?", "c.author_id AS author_id") + `) GROUP BY author_id`
+	return s.replyCountsArgs(ctx, q, id, id)
 }
 
 func (s *Store) replyCounts(ctx context.Context, query string, id int64) (map[int64]int, error) {
-	rows, err := s.db.QueryContext(ctx, query, id)
+	return s.replyCountsArgs(ctx, query, id)
+}
+
+func (s *Store) replyCountsArgs(ctx context.Context, query string, args ...any) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
