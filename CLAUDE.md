@@ -101,7 +101,15 @@ messages, and all user-facing bot strings are in Russian.
     the button falls back to the chat invite link. The site's «не актуальна» mark is recorded in `comments_closed` as
     metadata only — it appears within minutes of publication while comments keep
     arriving, so it must never drive archival; notes are archived solely by the
-    week-based `ShouldArchive` rule. `mirror.Config.AlertSend` DMs the
+    week-based `ShouldArchive` rule. A mirrored comment is posted as a reply to
+    its addressee's message, so the messenger renders the original as a quote:
+    the addressee is the «Ник, …» prefix (`love.AddressPrefix`) resolved against
+    the note's already-mirrored commenters — the site's own `parent_id` points at
+    the branch root and agrees with the addressee only a third of the time.
+    No addressee (no prefix, unknown nick, or the note's own author) → reply to
+    the thread root, as before; a rejected reply (message deleted) falls back to
+    the root too, or the note's queue would stall forever.
+    `mirror.Config.AlertSend` DMs the
     admin after 3 consecutive markup-drift or 403 failures and again on recovery.
   - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
     via `processed_replies`, per messenger) + the Telegram handler with

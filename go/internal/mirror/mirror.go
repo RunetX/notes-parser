@@ -31,10 +31,12 @@ type SiteClient interface {
 // Id сообщений — строки: Telegram отдаёт числа (десятичной строкой), MAX —
 // mid; mirror трактует их как непрозрачные значения и хранит per-messenger
 // в message_targets. threadID — корень треда обсуждения в этом мессенджере.
+// replyToID (может быть пустым) — сообщение адресата реплики: комментарий
+// уходит ответом на него, и мессенджер сам рисует цитату исходного.
 type Sink interface {
 	Name() string // имя мессенджера: store.MessengerTelegram / store.MessengerMax
 	PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error)
-	PostComment(ctx context.Context, n store.Note, threadID string, c store.Comment, avatar []byte) (string, error)
+	PostComment(ctx context.Context, n store.Note, threadID, replyToID string, c store.Comment, avatar []byte) (string, error)
 	PostNoteImage(ctx context.Context, threadID, imageURL string, image []byte) (string, error)
 	NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) error
 }
@@ -586,7 +588,7 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 		}
 		for _, c := range unsent {
 			avatar := m.fetchMedia(ctx, c.AvatarURL, "аватар комментария")
-			msgID, err := sink.PostComment(ctx, n, thread, c, avatar)
+			msgID, err := sink.PostComment(ctx, n, thread, m.addresseeMessage(ctx, sink, n, c), c, avatar)
 			if err != nil {
 				// Порядок важен: не перескакиваем через неотправленный.
 				m.log.Warn("пост комментария не удался", "comment", c.ID, "sink", sink.Name(), "err", err)
@@ -600,6 +602,25 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 			m.notifySubscribers(ctx, subs, sink, n, c, thread, msgID)
 		}
 	}
+}
+
+// addresseeMessage определяет, какому сообщению треда отвечает комментарий:
+// обращение «Ник, …» в начале текста — это адресат (parent_id сайта указывает
+// на корень ветки и сходится с адресатом лишь в трети случаев, см.
+// love.AddressPrefix), ник ищется среди уже отзеркаленных комментаторов этой
+// заметки. Пусто — обращения нет, автор не комментировал (адресуются и автору
+// самой заметки) или ник не разошёлся: комментарий уйдёт на корень треда.
+func (m *Mirror) addresseeMessage(ctx context.Context, sink Sink, n store.Note, c store.Comment) string {
+	nick := love.AddressPrefix(c.Text)
+	if nick == "" {
+		return ""
+	}
+	msgID, err := m.st.AddresseeMessage(ctx, sink.Name(), n.ID, c.ID, nick)
+	if err != nil {
+		m.log.Error("поиск адресата реплики", "comment", c.ID, "sink", sink.Name(), "err", err)
+		return ""
+	}
+	return msgID
 }
 
 // sendUnsentImages шлёт неотправленные иллюстрации заметки в тред приёмника.

@@ -33,6 +33,9 @@ type fakeMax struct {
 	failFirst int // столько первых /messages ответить 429
 	seq       int
 
+	rejectReplyTo string // реплай на этот mid отвергать 400 (сообщение удалили)
+	rejected      int
+
 	markerSeen atomic.Int64 // последний маркер, переданный в GET /updates
 }
 
@@ -66,6 +69,12 @@ func (f *fakeMax) server() *httptest.Server {
 			f.t.Errorf("разбор NewMessageBody: %v", err)
 		}
 		_ = json.Unmarshal(data, &raw)
+		if f.rejectReplyTo != "" && body.Link != nil && body.Link.Mid == f.rejectReplyTo {
+			f.rejected++
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"code":"attachment.not.found","message":"Message to reply not found"}`)
+			return
+		}
 		f.seq++
 		f.sent = append(f.sent, sentMessage{
 			auth:    r.Header.Get("Authorization"),
@@ -273,7 +282,7 @@ func TestPostCommentReply(t *testing.T) {
 	m := newTestMirror(t, f)
 
 	mid, err := m.PostComment(context.Background(),
-		store.Note{ID: "n1"}, "mid.root",
+		store.Note{ID: "n1"}, "mid.root", "",
 		store.Comment{ID: 5, AuthorName: "Пётр", AuthorAge: "44",
 			AuthorLink: "https://love.ngs.ru/profile/5", Text: "ответ <б>"}, nil)
 	if err != nil {
@@ -291,6 +300,46 @@ func TestPostCommentReply(t *testing.T) {
 	}
 	if !strings.Contains(sent.body.Text, "Пётр, 44:") || !strings.Contains(sent.body.Text, "ответ &lt;б&gt;") {
 		t.Errorf("текст комментария: %q", sent.body.Text)
+	}
+}
+
+// Известный адресат — реплай на его сообщение, а не на корень треда: MAX сам
+// покажет цитату исходного комментария.
+func TestPostCommentRepliesToAddressee(t *testing.T) {
+	f := &fakeMax{t: t}
+	m := newTestMirror(t, f)
+
+	if _, err := m.PostComment(context.Background(),
+		store.Note{ID: "n1"}, "mid.root", "mid.parent",
+		store.Comment{ID: 5, AuthorName: "Пётр", AuthorAge: "44", Text: "Аня, ответ"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if link := f.last().body.Link; link == nil || link.Mid != "mid.parent" {
+		t.Errorf("reply-link должен вести на адресата: %+v", link)
+	}
+}
+
+// Сообщение адресата удалили — реплай на него MAX отвергает. Без запасного
+// захода на корень треда комментарий остался бы неотправленным, а поскольку
+// mirror не перескакивает через него, тред заметки встал бы навсегда.
+func TestPostCommentFallsBackToThreadRoot(t *testing.T) {
+	f := &fakeMax{t: t, rejectReplyTo: "mid.deleted"}
+	m := newTestMirror(t, f)
+
+	mid, err := m.PostComment(context.Background(),
+		store.Note{ID: "n1"}, "mid.root", "mid.deleted",
+		store.Comment{ID: 5, AuthorName: "Пётр", AuthorAge: "44", Text: "Аня, ответ"}, nil)
+	if err != nil {
+		t.Fatalf("комментарий должен уйти на корень треда: %v", err)
+	}
+	if mid == "" {
+		t.Error("пустой mid")
+	}
+	if f.rejected != 1 {
+		t.Errorf("отвергнутых попыток: %d, ожидалась 1", f.rejected)
+	}
+	if link := f.last().body.Link; link == nil || link.Mid != "mid.root" {
+		t.Errorf("запасной reply-link должен вести на корень треда: %+v", link)
 	}
 }
 

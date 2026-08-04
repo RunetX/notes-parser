@@ -201,17 +201,34 @@ func (m *Mirror) StartThread(ctx context.Context, n store.Note, _ string) (strin
 	return mid, nil
 }
 
-// PostComment постит комментарий ответом на корень треда в чате обсуждения.
-// Текст не режем: лимит длины сообщения MAX не задокументирован (бриф, R2).
-func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID string, c store.Comment, avatar []byte) (string, error) {
-	msg := maxbot.NewMessage().
-		SetChat(m.discussionChatID).
-		SetReply(ComposeCommentMessage(c), threadID).
-		SetFormat(model.FormatHTML).
-		SetDisableLinkPreview(true)
-	m.attachImage(ctx, msg, c.AvatarURL, avatar, "аватар комментария")
+// PostComment постит комментарий в тред чата обсуждения — ответом на
+// сообщение адресата реплики, а при неизвестном адресате (replyToID пуст) на
+// корень треда, как было до слоя адресатов. Текст не режем: лимит длины
+// сообщения MAX не задокументирован (бриф, R2).
+func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID, replyToID string, c store.Comment, avatar []byte) (string, error) {
+	send := func(replyTo string) (string, error) {
+		msg := maxbot.NewMessage().
+			SetChat(m.discussionChatID).
+			SetReply(ComposeCommentMessage(c), replyTo).
+			SetFormat(model.FormatHTML).
+			SetDisableLinkPreview(true)
+		m.attachImage(ctx, msg, c.AvatarURL, avatar, "аватар комментария")
+		return m.send(ctx, m.discussionChatID, msg)
+	}
 
-	mid, err := m.send(ctx, m.discussionChatID, msg)
+	if replyToID != "" && replyToID != threadID {
+		mid, err := send(replyToID)
+		if err == nil {
+			return mid, nil
+		}
+		// Сообщение адресата могли удалить — реплай на него не пройдёт, а
+		// sendUnsent не перескакивает через неотправленный комментарий, и тред
+		// заметки встал бы навсегда. Запасной заход на корень треда.
+		m.log.Warn("реплай на адресата не прошёл, отвечаем корню треда",
+			"comment", c.ID, "reply_to", replyToID, "err", err)
+	}
+
+	mid, err := send(threadID)
 	if err != nil {
 		return "", fmt.Errorf("пост комментария %d в тред MAX: %w", c.ID, err)
 	}

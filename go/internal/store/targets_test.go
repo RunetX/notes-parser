@@ -86,6 +86,61 @@ func TestUnsentCommentsPerMessenger(t *testing.T) {
 	}
 }
 
+func TestAddresseeMessage(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	if _, err := st.InsertNote(ctx, Note{ID: "n1", Text: "т", Status: StatusPosted, FirstSeenAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// Ягода высказывалась дважды; адресатом должна стать её последняя реплика.
+	comments := []Comment{
+		{ID: 1, NoteID: "n1", AuthorName: "Ягода", Text: "первая"},
+		{ID: 2, NoteID: "n1", AuthorName: "ПЁТР", Text: "своё"},
+		{ID: 3, NoteID: "n1", AuthorName: "Ягода", Text: "вторая"},
+		{ID: 4, NoteID: "n1", AuthorName: "Гость", Text: "не отзеркален"},
+	}
+	for _, c := range comments {
+		c.CreatedAt = time.Now()
+		if _, err := st.InsertComment(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, mid := range map[string]string{"1": "101", "2": "102", "3": "103"} {
+		if err := st.SetTarget(ctx, MessengerTelegram, TargetComment, id, mid, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name     string
+		nick     string
+		beforeID int64
+		want     string
+	}{
+		{"последняя реплика адресата", "ягода", 10, "103"},
+		{"более ранняя реплика", "ягода", 3, "101"},
+		{"регистр кириллицы", "пётр", 10, "102"},
+		{"адресат ещё не отзеркален", "гость", 10, ""},
+		{"ник не встречался", "хатуль", 10, ""},
+		{"обращения нет", "", 10, ""},
+		{"сам себе не адресат", "ягода", 1, ""},
+	}
+	for _, c := range cases {
+		got, err := st.AddresseeMessage(ctx, MessengerTelegram, "n1", c.beforeID, c.nick)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+
+	// Цели у каждого мессенджера свои: в MAX те же комментарии не отправлены.
+	if got, err := st.AddresseeMessage(ctx, MessengerMax, "n1", 10, "ягода"); err != nil || got != "" {
+		t.Errorf("адресат из чужого мессенджера: %q %v", got, err)
+	}
+}
+
 func TestReplyDedupPerMessenger(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)

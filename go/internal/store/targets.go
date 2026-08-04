@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -173,6 +174,44 @@ func (s *Store) CommentByTarget(ctx context.Context, messenger, messageID string
 		return Comment{}, fmt.Errorf("комментарий с id %s/%s: %w", messenger, messageID, ErrNotFound)
 	}
 	return scanComment(rows)
+}
+
+// AddresseeMessage ищет сообщение того комментария, которому адресована
+// реплика: последний по времени комментарий заметки до beforeID, чей автор
+// зовётся nick (ник уже в нижнем регистре — love.AddressPrefix). Пустая строка
+// — адресат не найден; звать с ним PostComment безопасно, комментарий уйдёт
+// реплаем на корень треда, как было до слоя адресатов.
+//
+// Регистр сводится в Go, а не в SQL: встроенный lower() в SQLite приводит
+// только ASCII, а ники сплошь кириллические. Кандидатов даёт джойн с
+// message_targets — комментарий без сообщения в этом мессенджере (запощен до
+// его включения) адресатом всё равно быть не может.
+func (s *Store) AddresseeMessage(ctx context.Context, messenger, noteID string,
+	beforeID int64, nick string) (string, error) {
+	if nick == "" {
+		return "", nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.author_name, t.message_id
+		FROM comments c
+		JOIN message_targets t
+			ON t.messenger = ? AND t.kind = ? AND t.ref_id = CAST(c.id AS TEXT)
+		WHERE c.note_id = ? AND c.id < ? AND t.message_id IS NOT NULL
+		ORDER BY c.id DESC`, messenger, TargetComment, noteID, beforeID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, msgID string
+		if err := rows.Scan(&name, &msgID); err != nil {
+			return "", err
+		}
+		if strings.ToLower(name) == nick {
+			return msgID, nil
+		}
+	}
+	return "", rows.Err()
 }
 
 // UnsentCommentsFor возвращает комментарии заметки, ещё не отправленные в

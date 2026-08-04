@@ -32,11 +32,13 @@ func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.Comment
 func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
 
 type sinkCall struct {
-	kind    string
-	noteID  string
-	comID   int64
-	userID  int64
-	keyword string
+	kind     string
+	noteID   string
+	comID    int64
+	userID   int64
+	keyword  string
+	threadID string // корень треда (kind == "comment")
+	replyTo  string // сообщение адресата реплики, "" — отвечаем корню
 }
 
 type fakeSink struct {
@@ -60,9 +62,10 @@ func (f *fakeSink) PostNote(_ context.Context, n store.Note, _ []byte) (string, 
 	return f.id(), nil
 }
 
-func (f *fakeSink) PostComment(_ context.Context, n store.Note, _ string, c store.Comment, _ []byte) (string, error) {
+func (f *fakeSink) PostComment(_ context.Context, n store.Note, threadID, replyToID string, c store.Comment, _ []byte) (string, error) {
 	f.nextID++
-	f.calls = append(f.calls, sinkCall{kind: "comment", noteID: n.ID, comID: c.ID})
+	f.calls = append(f.calls, sinkCall{kind: "comment", noteID: n.ID, comID: c.ID,
+		threadID: threadID, replyTo: replyToID})
 	return f.id(), nil
 }
 
@@ -289,6 +292,61 @@ func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 	m.pollComments(ctx, n)
 	if len(sink.calls) != before {
 		t.Errorf("повторная отправка: %v", sink.calls[before:])
+	}
+}
+
+// Реплика с обращением «Ник, …» уходит ответом на сообщение адресата — тогда
+// мессенджер сам покажет цитату исходного комментария. Всё остальное, как и
+// раньше, отвечает корню треда (то есть самой заметке).
+func TestCommentRepliesToAddressee(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes: []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{
+			"n1": {
+				{ID: 4, AuthorName: "Гость", Text: "Хатуль, а ты как думаешь?"},
+				{ID: 3, AuthorName: "Пётр", Text: "просто мысль вслух"},
+				{ID: 2, AuthorName: "Пётр", Text: "ЯГОДА, согласен"},
+				{ID: 1, AuthorName: "Ягода", Text: "первая мысль"},
+			},
+		},
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false) // постит n1, сообщение «1»
+
+	n, _ := st.NoteByID(ctx, "n1")
+	if _, _, err := st.CaptureNoteThread(ctx, store.MessengerTelegram,
+		strconv.FormatInt(n.TGMessageID, 10), "777"); err != nil {
+		t.Fatal(err)
+	}
+	n, _ = st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+
+	// Комментарии получают сообщения 2..5 по порядку id.
+	want := map[int64]string{
+		1: "",  // корневая реплика — обращения нет
+		2: "2", // «ЯГОДА, …» → сообщение комментария 1, регистр не помеха
+		3: "",  // обращения нет
+		4: "",  // Хатуль в этой заметке не писал — падаем на корень треда
+	}
+	seen := 0
+	for _, c := range sink.calls {
+		if c.kind != "comment" {
+			continue
+		}
+		seen++
+		if c.threadID != "777" {
+			t.Errorf("комментарий %d ушёл мимо треда: %q", c.comID, c.threadID)
+		}
+		if w, ok := want[c.comID]; !ok {
+			t.Errorf("неожиданный комментарий %d", c.comID)
+		} else if c.replyTo != w {
+			t.Errorf("комментарий %d: адресат %q, ожидался %q", c.comID, c.replyTo, w)
+		}
+	}
+	if seen != len(want) {
+		t.Errorf("отправлено комментариев: %d, ожидалось %d", seen, len(want))
 	}
 }
 

@@ -5,9 +5,10 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	sqlite3 "modernc.org/sqlite"
+
+	"lovegw/internal/love"
 )
 
 // Слой адресатов реплик.
@@ -41,29 +42,9 @@ import (
 // интервал [from_ym, to_ym]; ник, переходивший между людьми, даёт пересекающиеся
 // интервалы и на резолве отсекается требованием единственного владельца.
 
-// maxNickLen — потолок длины обращения в рунах. Ровно 20: столько же у самого
-// длинного ника в архиве (сайт обрезает поле имени), поэтому порог не теряет ни
-// одного настоящего ника, зато отсекает придаточные предложения, начинающиеся с
-// запятой, — «Когда я разводилась в 35 лет, …».
-const maxNickLen = 20
-
-// addressPrefix вырезает обращение «Ник, …» из начала реплики и приводит к
-// нижнему регистру. Пустая строка — обращения нет.
-func addressPrefix(text string) string {
-	// Обращение всегда в первой строке: «Ник, текст».
-	if i := strings.IndexByte(text, '\n'); i >= 0 {
-		text = text[:i]
-	}
-	i := strings.IndexByte(text, ',')
-	if i < 0 {
-		return ""
-	}
-	nick := strings.TrimSpace(text[:i])
-	if n := utf8.RuneCountInString(nick); n < 2 || n > maxNickLen {
-		return ""
-	}
-	return strings.ToLower(nick)
-}
+// Само правило «обращение — это префикс до первой запятой» живёт в
+// love.AddressPrefix: им пользуется и живое зеркало, когда решает, на какое
+// сообщение треда отвечать.
 
 // udfErr — ошибка регистрации UDF. Регистрация обязана произойти до открытия
 // первого соединения (драйвер раздаёт функции только тем, что открыты после),
@@ -85,7 +66,7 @@ func init() {
 	if err := sqlite3.RegisterDeterministicScalarFunction("addr_prefix", 1,
 		func(_ *sqlite3.FunctionContext, args []driver.Value) (driver.Value, error) {
 			s, _ := args[0].(string)
-			if p := addressPrefix(s); p != "" {
+			if p := love.AddressPrefix(s); p != "" {
 				return p, nil
 			}
 			return nil, nil

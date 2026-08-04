@@ -182,13 +182,33 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 // Длинный — обычным текстовым сообщением (до 4096), чтобы не резать текст:
 // подпись к медиа ограничена 1024, а на сайте комментарий целиком. avatar —
 // уже скачанные байты (Telegram не может забрать медиа love.ngs.ru по URL).
-// threadID — корень треда (id автофорварда) десятичной строкой.
-func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID string, c store.Comment, avatar []byte) (string, error) {
+// threadID — корень треда (id автофорварда) десятичной строкой, replyToID —
+// сообщение адресата реплики (пусто — отвечаем корню, как было раньше).
+func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID, replyToID string, c store.Comment, avatar []byte) (string, error) {
 	root, err := parseMessageID(threadID)
 	if err != nil {
 		return "", fmt.Errorf("пост комментария %d: %w", c.ID, err)
 	}
-	reply := &models.ReplyParameters{MessageID: root}
+	target := m.replyTarget(root, replyToID)
+
+	msgID, err := m.sendComment(ctx, c, target, avatar)
+	if err != nil && target != root {
+		// Сообщение адресата могли удалить — такой реплай Telegram отвергает, а
+		// sendUnsent не перескакивает через неотправленный комментарий, и тред
+		// заметки встал бы навсегда. Запасной заход на корень треда.
+		m.log.Warn("реплай на адресата не прошёл, отвечаем корню треда",
+			"comment", c.ID, "reply_to", target, "err", err)
+		msgID, err = m.sendComment(ctx, c, root, avatar)
+	}
+	if err != nil {
+		return "", fmt.Errorf("пост комментария %d в тред: %w", c.ID, err)
+	}
+	return msgID, nil
+}
+
+// sendComment — одна попытка отправки комментария реплаем на replyTo.
+func (m *Mirror) sendComment(ctx context.Context, c store.Comment, replyTo int, avatar []byte) (string, error) {
+	reply := &models.ReplyParameters{MessageID: replyTo}
 
 	if len(avatar) > 0 && commentVisibleLen(c) <= captionLimit {
 		msg, err := send(ctx, m, m.discussionChatID, func(ctx context.Context) (*models.Message, error) {
@@ -219,9 +239,25 @@ func (m *Mirror) PostComment(ctx context.Context, n store.Note, threadID string,
 		})
 	})
 	if err != nil {
-		return "", fmt.Errorf("пост комментария %d в тред: %w", c.ID, err)
+		return "", err
 	}
 	return strconv.Itoa(msg.ID), nil
+}
+
+// replyTarget — сообщение, на которое отвечаем: адресат реплики, если он
+// известен, иначе корень треда. Тред от этого не рвётся — Telegram считает
+// его по цепочке реплаев, а адресат сам сидит в этом же треде. Непонятный
+// id адресата не валит пост: падаем на корень.
+func (m *Mirror) replyTarget(root int, replyToID string) int {
+	if replyToID == "" {
+		return root
+	}
+	id, err := parseMessageID(replyToID)
+	if err != nil {
+		m.log.Warn("id адресата не разобран, отвечаем корню треда", "reply_to", replyToID, "err", err)
+		return root
+	}
+	return id
 }
 
 // PostNoteImage постит иллюстрацию заметки первым сообщением в треде. Пробуем
