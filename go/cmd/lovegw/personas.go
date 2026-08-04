@@ -42,6 +42,7 @@ var defaultDisclosurePatterns = []string{
 //	set <id> <confirmed|rejected|pending> — проставить статус личности после ревью
 //	diag <id> <id> …                      — ground-truth диагностика набора анкет (стиль/собеседники/время)
 //	ensemble    — направленный стиль + handoff + пересечение круга → alias_candidates(ensemble)
+//	anon        — прогнать анонимные заметки через скоринг -suspect (поиск анонимок личности)
 func cmdPersonas(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("personas", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -91,6 +92,9 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	activeDays := fs.Int("active-days", 0, "рецент-фильтр по активности за N суток (report/attribute/calibrate/verify; 0 — все)")
 	reportHTML := fs.Bool("html", false, "дополнительно собрать красивый characters.html (report)")
 	tgUser := fs.Int64("tg-user", 0, "чья сессия сайта для обхода профилей (gender; 0 — admin_tg_user_id)")
+	fromDate := fs.String("from", "", "нижняя граница окна публикации, ISO-дата (anon)")
+	toDate := fs.String("to", "", "верхняя граница окна публикации, ISO-дата, не включая (anon)")
+	minText := fs.Int("min-text", 400, "мин. длина анонимки в знаках — короче не ранжируем (anon)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
@@ -102,6 +106,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
 		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
+		"from": true, "to": true, "min-text": true,
 	})); err != nil {
 		return err
 	}
@@ -168,6 +173,12 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			suspect: *suspect, inPath: *inPath, noteID: *noteID, notes: *notesList,
 			lexWeight: *lexWeight, nullN: *nullN,
 			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes, genre: gen,
+		})
+	case "anon":
+		return personasAnon(ctx, ar, anonOpts{
+			suspect: *suspect, genre: gen, lexWeight: *lexWeight,
+			activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
+			from: *fromDate, to: *toDate, minText: *minText, top: *top, nullN: *nullN,
 		})
 	case "portrait":
 		return personasPortrait(ctx, ar, fs.Args()[1:], *outDir, *top)
