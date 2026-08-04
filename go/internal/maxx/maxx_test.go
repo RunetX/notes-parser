@@ -367,7 +367,7 @@ func TestComposeSubNotice(t *testing.T) {
 		AuthorLink:  "https://love.ngs.ru/profile/1",
 		PublishedAt: time.Date(2026, 7, 30, 14, 5, 0, 0, time.UTC),
 		Text:        "выпьем рюмку чая & закусим"}
-	got := composeSubNotice("рюмк", n, c, "https://love.ngs.ru/notes/312818/#anchor-7")
+	got := composeSubNotice("рюмк", n, c, "https://max.ru/c/200/AZ-t-FzlEyg")
 
 	for _, want := range []string{
 		"<b>рюмк</b>",
@@ -375,10 +375,51 @@ func TestComposeSubNotice(t *testing.T) {
 		"Мария: Ищу того, кто пьёт чай",
 		"(30.07 14:05)",
 		"выпьем рюмку чая &amp; закусим",
-		`<a href="https://love.ngs.ru/notes/312818/#anchor-7">Открыть комментарий</a>`,
+		`<a href="https://max.ru/c/200/AZ-t-FzlEyg">Открыть комментарий</a>`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("нет %q в:\n%s", want, got)
 		}
+	}
+}
+
+// Подписчику ссылка нужна в тред мессенджера, а не на сайт: mid комментария
+// известен, значит уведомление ведёт прямо на сообщение чата обсуждения.
+func TestNotifySubscriberDeepLink(t *testing.T) {
+	f := &fakeMax{t: t}
+	m := newTestMirror(t, f)
+	m.limiters[7] = rate.NewLimiter(rate.Inf, 1)
+
+	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "т"}
+	c := store.Comment{ID: 7, AuthorName: "Виктор", Text: "выпьем рюмку чая"}
+	err := m.NotifySubscriber(context.Background(), 7, "рюмк", n, c,
+		"mid.ffffb9b4e305e2e5019fadf85ce51328", "mid.ffffb9b4e305e2e5019fadf85ce51329")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := f.last()
+	if sent.userID != "7" {
+		t.Errorf("user_id: %q", sent.userID)
+	}
+	if want := `<a href="https://max.ru/c/200/AZ-t-FzlEyk">Открыть комментарий</a>`; !strings.Contains(sent.body.Text, want) {
+		t.Errorf("нет ссылки на сообщение чата:\n%s", sent.body.Text)
+	}
+}
+
+// Запасной вариант: mid непонятного вида (например, доехавший из старой
+// записи) — ссылка на комментарий на сайте, уведомление всё равно уходит.
+func TestNotifySubscriberFallsBackToSite(t *testing.T) {
+	f := &fakeMax{t: t}
+	m := newTestMirror(t, f)
+	m.limiters[7] = rate.NewLimiter(rate.Inf, 1)
+
+	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "т"}
+	c := store.Comment{ID: 7, AuthorName: "Виктор", Text: "выпьем рюмку чая"}
+	if err := m.NotifySubscriber(context.Background(), 7, "рюмк", n, c, "", "странный-mid"); err != nil {
+		t.Fatal(err)
+	}
+	want := `<a href="https://love.ngs.ru/notes/312818/#anchor-7">Открыть комментарий</a>`
+	if !strings.Contains(f.last().body.Text, want) {
+		t.Errorf("нет запасной ссылки на сайт:\n%s", f.last().body.Text)
 	}
 }

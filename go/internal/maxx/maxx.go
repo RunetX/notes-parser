@@ -237,10 +237,14 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, i
 }
 
 // NotifySubscriber шлёт подписчику ЛС о комментарии с его ключевым словом:
-// слово, автор, заметка и выдержка текста. Deep-link на сообщение чата в MAX
-// не документирован — даём ссылку на комментарий на сайте (анкер — anchor-<id>).
-func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, _, _ string) error {
-	link := fmt.Sprintf("%s/notes/%s/#anchor-%d", m.baseURL, n.ID, c.ID)
+// слово, автор, заметка и выдержка текста — плюс deep-link на сам комментарий
+// в чате обсуждения. Запасной вариант, если mid непонятного вида или чата
+// обсуждения нет, — ссылка на комментарий на сайте (анкер — anchor-<id>).
+func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, _, commentMsgID string) error {
+	link := m.chatMessageLink(commentMsgID)
+	if link == "" {
+		link = fmt.Sprintf("%s/notes/%s/#anchor-%d", m.baseURL, n.ID, c.ID)
+	}
 	msg := maxbot.NewMessage().
 		SetUser(userID).
 		SetText(composeSubNotice(keyword, n, c, link)).
@@ -275,10 +279,16 @@ func (m *Mirror) PostChannelHTML(ctx context.Context, html string) (string, erro
 // ThreadLink — ссылка на ветку заметки в чате обсуждения (ссылки дайджеста);
 // "" — mid непонятного вида или чат обсуждения не задан.
 func (m *Mirror) ThreadLink(threadID string) string {
+	return m.chatMessageLink(threadID)
+}
+
+// chatMessageLink — ссылка на сообщение чата обсуждения; "" — mid непонятного
+// вида или чат обсуждения не задан (вызывающий откатывается на сайт).
+func (m *Mirror) chatMessageLink(mid string) string {
 	if m.discussionChatID == 0 {
 		return ""
 	}
-	return MessageLink(m.discussionChatID, threadID)
+	return MessageLink(m.discussionChatID, mid)
 }
 
 // attachImage прикладывает изображение к сообщению через upload-токен
