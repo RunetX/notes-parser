@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"lovegw/internal/chantext"
 	"lovegw/internal/store"
 )
 
@@ -33,10 +34,7 @@ const (
 	llmMark        = "<!-- LLM:"
 )
 
-var (
-	noteMarkerRe = regexp.MustCompile(`\{note:([^|}]+)\|([^}]*)\}`)
-	htmlTagRe    = regexp.MustCompile(`</?([a-zA-Z0-9]+)[^<>]*>`)
-)
+var noteMarkerRe = regexp.MustCompile(`\{note:([^|}]+)\|([^}]*)\}`)
 
 // Draft — распарсенный черновик: секции → абзацы (HTML с маркерами).
 type Draft struct {
@@ -350,34 +348,11 @@ func sectionPlaceholder(sec []string) string {
 	return ""
 }
 
-// validateElement проверяет абзац: целые маркеры, только разрешённые парные
-// теги, никаких неэкранированных < и > в тексте.
+// validateElement проверяет абзац: целые маркеры плюс общее для каналов
+// HTML-подмножество (chantext).
 func validateElement(el string) error {
 	if strings.Count(el, "{note:") != len(noteMarkerRe.FindAllString(el, -1)) {
 		return errors.New("повреждён маркер {note:ID|текст}")
 	}
-	var stack []string
-	for _, m := range htmlTagRe.FindAllString(el, -1) {
-		name := strings.ToLower(htmlTagRe.FindStringSubmatch(m)[1])
-		switch name {
-		case "b", "i", "a":
-		default:
-			return fmt.Errorf("тег <%s> не поддерживается (можно <b>, <i>, <a>)", name)
-		}
-		if strings.HasPrefix(m, "</") {
-			if len(stack) == 0 || stack[len(stack)-1] != name {
-				return fmt.Errorf("непарный тег </%s>", name)
-			}
-			stack = stack[:len(stack)-1]
-		} else {
-			stack = append(stack, name)
-		}
-	}
-	if len(stack) > 0 {
-		return fmt.Errorf("незакрытый тег <%s>", stack[len(stack)-1])
-	}
-	if rest := htmlTagRe.ReplaceAllString(el, ""); strings.ContainsAny(rest, "<>") {
-		return errors.New("символы < и > вне тегов нужно экранировать (&lt; и &gt;)")
-	}
-	return nil
+	return chantext.ValidateHTML(el)
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"lovegw/internal/news"
 	"lovegw/internal/store"
 )
 
@@ -23,12 +24,21 @@ const (
 	stateAwaitCredentials = "await_credentials"
 	stateAwaitNote        = "await_note"
 	stateAwaitAnonNote    = "await_anon_note"
+	stateAwaitNews        = "await_news"
 	// statePMPrefix + <peer_id> — залипание на диалоге talks (/talk): текст без
 	// команды уходит выбранному собеседнику.
 	statePMPrefix = "pm:"
+	// stateNewsPrefix + <id новости> + "\n" + <html> — новость админа ждёт
+	// подтверждения. Текст лежит прямо в состоянии, поэтому черновик
+	// переживает рестарт демона, а id — повторную попытку после сбоя одного
+	// из каналов (уже отправленные не задваиваются).
+	stateNewsPrefix = "news:"
 )
 
-const msgInternalError = "Внутренняя ошибка, попробуйте позже"
+const (
+	msgInternalError  = "Внутренняя ошибка, попробуйте позже"
+	msgUnknownCommand = "Неизвестная команда. Наберите /start"
+)
 
 // SiteAuth — то, что боту нужно от клиента сайта.
 type SiteAuth interface {
@@ -100,6 +110,9 @@ func (d *Bot) SetTalkRouter(r TalkRouter) {
 	d.talks = r
 	d.logic.talks = r
 }
+
+// SetNews подключает публикацию новостей проекта админом (/news).
+func (d *Bot) SetNews(svc *news.Service, adminID int64) { d.logic.SetNews(svc, adminID) }
 
 // SetReplyRouter подключает только маршрутизацию реплаев, без команд. Нужен
 // боту команд, когда переписку ведёт отдельный бот: ЛС, доставленные раньше,

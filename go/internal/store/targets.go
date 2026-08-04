@@ -29,6 +29,7 @@ const (
 	TargetNoteImage  = "note_image"  // иллюстрация заметки в треде
 	TargetPMMessage  = "pm_message"  // доставленное входящее ЛС talks (ref_id = talks_messages.id)
 	TargetDigest     = "digest"      // выпуск дайджеста (ref_id = ISO-неделя или неделя#часть)
+	TargetNews       = "news"        // новость проекта (ref_id = метка времени публикации)
 )
 
 // SetTarget записывает id сообщения сущности в мессенджере. Пустые

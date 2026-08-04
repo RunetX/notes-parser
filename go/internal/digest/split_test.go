@@ -3,24 +3,9 @@ package digest
 import (
 	"strings"
 	"testing"
-)
 
-func TestVisibleLen(t *testing.T) {
-	cases := []struct {
-		text string
-		want int
-	}{
-		{"просто текст", 12},
-		{"<b>жирный</b>", 6},
-		{`<a href="https://очень/длинный/url">яд</a>`, 2},
-		{"&lt;тег&gt;", 5},
-	}
-	for _, tc := range cases {
-		if got := VisibleLen(tc.text); got != tc.want {
-			t.Errorf("VisibleLen(%q) = %d, ожидалось %d", tc.text, got, tc.want)
-		}
-	}
-}
+	"lovegw/internal/chantext"
+)
 
 func TestSplitMessagesSingle(t *testing.T) {
 	msgs := SplitMessages([]Block{
@@ -92,18 +77,7 @@ func TestTruncateHTMLKeepsMarkupSane(t *testing.T) {
 	if strings.Count(m, "<b>") != strings.Count(m, "</b>") {
 		t.Errorf("незакрытый <b>: %q", m)
 	}
-	if VisibleLen(m) > 400 {
-		t.Errorf("видимая длина после обрезки: %d", VisibleLen(m))
-	}
-}
-
-func TestTruncateHTMLClosesOpenTags(t *testing.T) {
-	got := truncateHTML("<b>"+strings.Repeat("а", 50)+"</b>", 10)
-	if got != "<b>"+strings.Repeat("а", 10)+"…</b>" {
-		t.Errorf("обрезка внутри тега: %q", got)
-	}
-	got = truncateHTML("даже &lt;без&gt; тегов", 6)
-	if got != "даже &lt;…" {
-		t.Errorf("сущность — одна руна: %q", got)
+	if chantext.VisibleLen(m) > 400 {
+		t.Errorf("видимая длина после обрезки: %d", chantext.VisibleLen(m))
 	}
 }

@@ -47,6 +47,7 @@ import (
 	"lovegw/internal/love"
 	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
+	"lovegw/internal/news"
 	"lovegw/internal/store"
 	"lovegw/internal/talks"
 	"lovegw/internal/tgx"
@@ -467,6 +468,31 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		if cfg.Talks.RetentionDays > 0 {
 			days := cfg.Talks.RetentionDays
 			g.Go(func() error { return talks.PurgeLoop(gctx, st, days, log) })
+		}
+	}
+
+	// Новости проекта: админ пишет /news в ЛС командному боту, и текст уходит
+	// постом в каналы мимо сайта (заметки на love.ngs.ru не появляется).
+	// Приёмники — те же, что у зеркала.
+	var newsPubs []news.Publisher
+	for _, s := range sinks {
+		if p, ok := s.(news.Publisher); ok {
+			newsPubs = append(newsPubs, p)
+		}
+	}
+	if len(newsPubs) > 0 {
+		newsSvc := news.New(st, newsPubs, log)
+		bots := 0
+		if dm != nil && tgCfg.AdminUserID != 0 {
+			dm.SetNews(newsSvc, tgCfg.AdminUserID)
+			bots++
+		}
+		if maxDM != nil && maxCfg.AdminUserID != 0 {
+			maxDM.SetNews(newsSvc, maxCfg.AdminUserID)
+			bots++
+		}
+		if bots > 0 {
+			log.Info("новости проекта включены", "каналов", len(newsPubs), "ботов", bots)
 		}
 	}
 

@@ -132,6 +132,17 @@ messages, and all user-facing bot strings are in Russian.
     цикл), а `auto_publish: true` сразу публикует выпуск через sinks. Иначе —
     ЛС админу и премодерация через CLI. Пропущенный слот догоняется в
     течение 48 ч, старше — пропускается.
+  - `news` — внутренние новости проекта: текст админа уходит постом в каналы
+    **мимо сайта** (заметки на love.ngs.ru не появляется, в `notes` ничего не
+    пишется). Ввод — `/news` в ЛС командному боту, публикация идемпотентна по
+    `message_targets` (kind `news`, ref_id — метка времени), так что при сбое
+    одного мессенджера повтор досылает только его. Тред обсуждения новость не
+    заводит: в Telegram комментарии всё равно появятся автофорвардом канала,
+    но на сайт они не уйдут — `bridge` не опознаёт такое сообщение ни как
+    заметку, ни как комментарий.
+  - `chantext` — общее HTML-подмножество каналов (`<b>`, `<i>`, `<a href>`):
+    валидация, видимая длина в рунах и обрезка без порчи разметки, бюджет
+    сообщения 3500 рун. Общий для `digest` и `news`.
   - `asr` — автораспознавание голосовых в тредах: голосовое (и кружок) в
     группе обсуждения — а также запощенное в канал заметок, оно приходит
     автофорвардом (квота таких пишется на id канала) — расшифровывается и
@@ -169,6 +180,11 @@ messages, and all user-facing bot strings are in Russian.
     `dialog_states`, transport behind an interface — Telegram wrapper here,
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
     `/add_anonymous_note`, `/status`, `/subscribe`, `/unsubscribe`, `/mysubs`.
+    Плюс админская `/news` (`SetNews`, пакет `news`): текст → превью →
+    подтверждение словом «да» → пост в каналы. Она видна только
+    `messengers.<m>.admin_user_id`, в `/start` не значится, черновик ждёт
+    подтверждения прямо в `dialog_states` (`news:<id>\n<html>`) и переживает
+    рестарт; при сбое канала состояние остаётся под повтор.
     `NewTalksLogic` is the second role — a talks-only bot (`/talks`, `/talk`,
     reply→site delivery, admin alerts) that keeps its own `dialog_states`
     namespace (`<messenger>:talks`) so a stuck `pm:<id>` cannot break the

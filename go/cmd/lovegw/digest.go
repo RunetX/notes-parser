@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-telegram/bot/models"
 
+	"lovegw/internal/chantext"
 	"lovegw/internal/config"
 	"lovegw/internal/digest"
 	"lovegw/internal/llm"
@@ -221,7 +222,7 @@ func digestPreview(ctx context.Context, cfg *config.Config, st *store.Store, w d
 			len(msgs), pluralParts(len(msgs)))
 		for i, m := range msgs {
 			fmt.Printf("--- часть %d/%d · %d видимых символов ---\n%s\n", i+1, len(msgs),
-				digest.VisibleLen(m), m)
+				chantext.VisibleLen(m), m)
 		}
 	}
 	return nil

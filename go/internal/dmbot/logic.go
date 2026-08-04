@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"lovegw/internal/love"
+	"lovegw/internal/news"
 	"lovegw/internal/store"
 )
 
@@ -32,7 +33,11 @@ type Logic struct {
 	tr        Transport
 	messenger string
 	talks     TalkRouter // личная переписка сайта; nil — выключена
-	log       *slog.Logger
+	// news + adminID — публикация внутренних новостей проекта (/news).
+	// nil/0 — команды нет: она админская и в списке команд не значится.
+	news    *news.Service
+	adminID int64
+	log     *slog.Logger
 	// talksOnly — движок бота переписки: из команд живут только /start,
 	// /talks, /talk и /cancel, остальное отправляем к боту команд.
 	talksOnly bool
@@ -49,6 +54,15 @@ var talksCommands = map[string]bool{"/start": true, "/talks": true, "/talk": tru
 // SetTalkRouter подключает роутер личной переписки (в runDaemon после сборки
 // поллера talks). Для MAX ставится на maxDM-логику, для Telegram — через Bot.
 func (l *Logic) SetTalkRouter(r TalkRouter) { l.talks = r }
+
+// SetNews подключает публикацию новостей проекта: /news станет доступна
+// пользователю adminID. Пустая служба или нулевой admin — команды нет.
+func (l *Logic) SetNews(svc *news.Service, adminID int64) {
+	if !svc.Ready() || adminID == 0 {
+		return
+	}
+	l.news, l.adminID = svc, adminID
+}
 
 // SiteIdentifier (опц.) снимает site-идентичность владельца сессии со страницы
 // сайта. Реализуется love.Client в Ф4; до этого идентичность не заполняется.
@@ -141,10 +155,12 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.handleTalks(ctx, userID)
 	case "/talk":
 		l.handleTalkOpen(ctx, userID, commandArg(text))
+	case "/news":
+		l.handleNews(ctx, userID)
 	case "/cancel":
 		l.handleCancel(ctx, userID)
 	default:
-		l.tr.Send(ctx, userID, "Неизвестная команда. Наберите /start")
+		l.tr.Send(ctx, userID, msgUnknownCommand)
 	}
 }
 
@@ -275,6 +291,11 @@ func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messa
 	if l.talksOnly {
 		return // прочие состояния — не наша роль
 	}
+	// Новость админа, ожидающая подтверждения: черновик лежит в состоянии.
+	if id, html, ok := parseNewsState(state); ok {
+		l.confirmNews(ctx, userID, id, html, text)
+		return
+	}
 	switch state {
 	case stateAwaitCredentials:
 		l.tryLogin(ctx, userID, messageID, text)
@@ -284,6 +305,8 @@ func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messa
 	case stateAwaitAnonNote:
 		l.addNote(ctx, userID, text, true)
 		_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
+	case stateAwaitNews:
+		l.draftNews(ctx, userID, text)
 	}
 }
 
