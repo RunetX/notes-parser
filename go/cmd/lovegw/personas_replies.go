@@ -21,9 +21,10 @@ import (
 // repliesOpts — параметры действия replies (из флагов cmdPersonas).
 type repliesOpts struct {
 	cfgPath     string
-	limit       int  // максимум заметок за прогон (0 — все)
-	maxComments int  // пропускать треды длиннее (0 — не пропускать)
-	retry       bool // повторить заметки, на которых страница уже падала
+	since       string // ISO-дата: обойти только заметки не старше (пусто — весь архив)
+	limit       int    // максимум заметок за прогон (0 — все)
+	maxComments int    // пропускать треды длиннее (0 — не пропускать)
+	retry       bool   // повторить заметки, на которых страница уже падала
 }
 
 // personasReplies обогащает уже выкачанный архив настоящими целями ответа:
@@ -50,13 +51,20 @@ func personasReplies(ctx context.Context, ar *archive.Store, opt repliesOpts) er
 	}
 	log := newLogger(cfg.LogLevel)
 
-	ids, err := ar.ReplyScanTargets(ctx, opt.limit, opt.maxComments, opt.retry)
+	ids, err := ar.ReplyScanTargets(ctx, opt.limit, opt.maxComments, opt.since, opt.retry)
 	if err != nil {
 		return err
 	}
 	if len(ids) == 0 {
 		fmt.Fprintln(os.Stderr, "replies: нечего обходить (все заметки уже размечены)")
 		return printReplyCoverage(ctx, ar)
+	}
+	// -limit общий для всех действий personas и по умолчанию не нулевой, так
+	// что выборку легко обрезать, не заметив: хвост остаётся необойдённым, а
+	// покрытие выглядит полным. Молчать об этом нельзя.
+	if opt.limit > 0 && len(ids) == opt.limit {
+		fmt.Fprintf(os.Stderr,
+			"replies: выборка обрезана до -limit %d — хвост останется на следующий прогон\n", opt.limit)
 	}
 
 	client, err := repliesClient(cfg, log)

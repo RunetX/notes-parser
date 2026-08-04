@@ -138,10 +138,14 @@ func markScan(ctx context.Context, tx *sql.Tx, noteID int64, status string, seen
 }
 
 // ReplyScanTargets — заметки, которые ещё стоит обойти: сначала самые
-// многолюдные (там больше всего рёбер чинится за один запрос). maxComments > 0
-// отсекает заведомо неподъёмные треды — страница со всем тредом на них падает
-// в 500. retryFailed — вернуть и те, что уже падали. limit 0 — без предела.
-func (s *Store) ReplyScanTargets(ctx context.Context, limit, maxComments int, retryFailed bool) ([]int64, error) {
+// многолюдные (там больше всего рёбер чинится за один запрос). since (ISO-дата,
+// пусто — без границы) ограничивает окно публикации: полный архив обходится
+// часами, а «обновить связи за последний месяц» — это десятки минут.
+// maxComments > 0 отсекает заведомо неподъёмные треды — страница со всем тредом
+// на них падает в 500. retryFailed — вернуть и те, что уже падали. limit 0 —
+// без предела.
+func (s *Store) ReplyScanTargets(ctx context.Context, limit, maxComments int,
+	since string, retryFailed bool) ([]int64, error) {
 	q := `
 		SELECT n.id FROM notes n
 		JOIN (SELECT note_id, COUNT(*) AS cnt FROM comments GROUP BY note_id) c ON c.note_id = n.id
@@ -152,6 +156,10 @@ func (s *Store) ReplyScanTargets(ctx context.Context, limit, maxComments int, re
 	}
 	q += `)`
 	args := []any{}
+	if since != "" {
+		q += ` AND n.published_at >= ?`
+		args = append(args, since)
+	}
 	if maxComments > 0 {
 		q += ` AND c.cnt <= ?`
 		args = append(args, maxComments)

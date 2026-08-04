@@ -92,7 +92,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	activeDays := fs.Int("active-days", 0, "рецент-фильтр по активности за N суток (report/attribute/calibrate/verify; 0 — все)")
 	reportHTML := fs.Bool("html", false, "дополнительно собрать красивый characters.html (report)")
 	tgUser := fs.Int64("tg-user", 0, "чья сессия сайта для обхода профилей (gender; 0 — admin_tg_user_id)")
-	fromDate := fs.String("from", "", "нижняя граница окна публикации, ISO-дата (anon)")
+	fromDate := fs.String("from", "", "нижняя граница окна публикации, ISO-дата (anon; replies — обойти только заметки не старше)")
 	toDate := fs.String("to", "", "верхняя граница окна публикации, ISO-дата, не включая (anon)")
 	minText := fs.Int("min-text", 400, "мин. длина анонимки в знаках — короче не ранжируем (anon)")
 	maxComments := fs.Int("max-comments", 0, "пропускать треды длиннее N комментариев — на них страница со всем деревом падает в 500 (replies; 0 — не пропускать)")
@@ -203,7 +203,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		})
 	case "replies":
 		return personasReplies(ctx, ar, repliesOpts{
-			cfgPath: *cfgPath, limit: *limit,
+			cfgPath: *cfgPath, since: *fromDate, limit: *limit,
 			maxComments: *maxComments, retry: *retryFailed,
 		})
 	case "addressees":
