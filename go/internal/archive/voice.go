@@ -90,6 +90,25 @@ type VoiceShape struct {
 	WordsPerSentence float64 `json:"words_per_sentence"`
 	WordRunes        float64 `json:"word_runes"`
 
+	// РИТМ фразы — самое сильное из найденного по живым замерам. Среднее слов в
+	// предложении у автора и у машинного текста совпадает, а текст всё равно
+	// мёртвый: модель гонит ровный поток предложений одной длины, человек мешает
+	// рубленые с длинными. У Монаха sd 5.9 против 2.3 у черновиков, ≤3 слов —
+	// 18% против 5%. Мера — разброс и доли краёв, не среднее.
+	SentWords  Dist    `json:"sent_words"` // длина предложения в словах
+	SentWordSD float64 `json:"sent_word_sd"`
+	ShortSents float64 `json:"short_sents"` // доля предложений ≤3 слов
+	LongSents  float64 `json:"long_sents"`  // доля предложений ≥18 слов
+
+	// Person — местоимения на 100 слов: «я»/«ты»/«мы»/«вы». Кому автор говорит —
+	// признак не менее личный, чем словарь: Монах обращается на «ты» (0.9), а
+	// черновики рассказывали о людях в третьем лице (0.1).
+	Person map[string]float64 `json:"person"`
+
+	EndsQuestion float64 `json:"ends_question"` // доля текстов, кончающихся вопросом
+	HasQuote     float64 `json:"has_quote"`     // доля текстов с кавычками или тире-диалогом
+	HasDigits    float64 `json:"has_digits"`    // доля текстов с цифрами
+
 	// Punct — знаков на 1000 рун: сравнимо между текстами разной длины.
 	Punct map[string]float64 `json:"punct"`
 	// ParenRuns — скобочная подпись: доля текстов с серией ")" длиной ровно
@@ -463,16 +482,27 @@ func voiceAutoSamples(corpus []voiceText) int {
 	for _, t := range corpus {
 		lens = append(lens, len([]rune(t.text)))
 	}
+	n := 6
 	switch med := medianInt(lens); {
 	case med == 0:
 		return 6
 	case med < 150:
-		return 24
+		n = 24
 	case med < 400:
-		return 12
-	default:
-		return 6
+		n = 12
 	}
+	// Малый корпус: манеру взять больше негде, и лучше показать модели ощутимую
+	// его часть, чем беречь тексты под полосу. Держим полосе хотя бы половину.
+	if len(corpus) <= 60 && n < 12 {
+		n = 12
+	}
+	if n > len(corpus)/2 {
+		n = len(corpus) / 2
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // voiceTexts — последние limit текстов жанра по анкетам личности. Свежие первыми:
@@ -574,6 +604,10 @@ type shapeAcc struct {
 
 	// счётчики ТЕКСТОВ с признаком (не вхождений)
 	noFinal, allLower, startsLower, yo, emoji, urls, sadParens, addressed int
+	endsQuestion, hasQuote, hasDigits                                     int
+
+	sentWords []int          // длина каждого предложения в словах — ритм фразы
+	person    map[string]int // я/ты/мы/вы
 
 	punct       map[rune]int
 	parenHas    map[string]int
@@ -587,7 +621,105 @@ func newShapeAcc() *shapeAcc {
 	return &shapeAcc{
 		punct: map[rune]int{}, parenHas: map[string]int{}, markup: map[string]int{},
 		smileys: map[string]int{}, smileyTexts: map[string]int{}, openings: map[string]int{},
+		person: map[string]int{},
 	}
+}
+
+// personGroups — местоимения по лицам. Формы перечислены списком, а не
+// вычисляются: морфологии в проекте нет и ради четырёх групп её тянуть незачем.
+var personGroups = map[string][]string{
+	"я":  {"я", "меня", "мне", "мной", "мною", "мой", "моя", "моё", "мое", "мои", "моего", "моей", "моим", "моих", "моему"},
+	"ты": {"ты", "тебя", "тебе", "тобой", "тобою", "твой", "твоя", "твоё", "твое", "твои", "твоего", "твоей", "твоим", "твоих"},
+	"мы": {"мы", "нас", "нам", "нами", "наш", "наша", "наше", "наши", "нашего", "нашей", "нашим", "наших"},
+	"вы": {"вы", "вас", "вам", "вами", "ваш", "ваша", "ваше", "ваши", "вашего", "вашей", "вашим", "ваших"},
+}
+
+// personOf — лицо словоформы ("" — не местоимение). Построено один раз.
+var personOf = func() map[string]string {
+	m := map[string]string{}
+	for group, forms := range personGroups {
+		for _, f := range forms {
+			m[f] = group
+		}
+	}
+	return m
+}()
+
+// addRhythm — ритм фразы и лица. Ровный поток предложений одной длины — главный
+// признак машинного текста, поэтому длины предложений копятся поштучно: нужны
+// разброс и доли краёв, а не среднее.
+func (a *shapeAcc) addRhythm(text string, r []rune) {
+	for _, s := range splitSentences(text) {
+		if n := sentWordCount(s); n > 0 {
+			a.sentWords = append(a.sentWords, n)
+		}
+	}
+	forEachWord(text, func(w []rune) {
+		if p := personOf[strings.ToLower(string(w))]; p != "" {
+			a.person[p]++
+		}
+	})
+	if endsWithQuestion(r) {
+		a.endsQuestion++
+	}
+	if strings.ContainsAny(text, `"«»`) || dialogDashRe.MatchString(text) {
+		a.hasQuote++
+	}
+	if strings.ContainsAny(text, "0123456789") {
+		a.hasDigits++
+	}
+}
+
+// dialogDashRe — реплика с тире в начале строки.
+var dialogDashRe = regexp.MustCompile(`(?m)^\s*[-—]\s`)
+
+// sentWordCount — слов в предложении. Намеренно НЕ через forEachWord: тот требует
+// букв ≥2 и не видит цифр, из-за чего «Я пошёл в 2019 году» становится двумя
+// словами и попадает в «рубленые». Для ритма нужен честный счёт токенов.
+func sentWordCount(s string) int {
+	n, inWord := 0, false
+	for _, c := range s {
+		if unicode.IsLetter(c) || unicode.IsDigit(c) {
+			if !inWord {
+				n++
+				inWord = true
+			}
+			continue
+		}
+		inWord = false
+	}
+	return n
+}
+
+// splitSentences — предложения по знакам конца и переводам строк. Тот же разрез,
+// что у countSentences, но с самими строками: они нужны для ритма.
+func splitSentences(text string) []string {
+	fields := strings.FieldsFunc(text, func(c rune) bool {
+		return c == '.' || c == '!' || c == '?' || c == '…' || c == '\n'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if s := strings.TrimSpace(f); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// endsWithQuestion — последний значащий знак текста вопросительный (скобки-улыбки
+// и кавычки после него не считаются концом).
+func endsWithQuestion(r []rune) bool {
+	for i := len(r) - 1; i >= 0; i-- {
+		switch r[i] {
+		case ' ', '\n', '\t', '\r', ')', '(', '"', '»', '\'':
+			continue
+		case '?':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // addLengths — длины: руны, предложения, абзацы, слова.
@@ -717,12 +849,57 @@ func (a *shapeAcc) finish(sh *VoiceShape, texts int) {
 	if sh.Kind == "comments" {
 		sh.AddressPrefix = round4(float64(a.addressed) / n)
 	}
+	a.finishRhythm(sh, n)
 	sh.TopSmileys = topCounts(a.smileys, a.smileyTexts, texts, 10)
 	sh.TopOpenings = topCounts(a.openings, a.openings, texts, 8)
 }
 
 // measureShape меряет механику письма. nicks — множество реальных ников сайта
 // (нижний регистр) для проверки обращений; nil — сверка выключена.
+// finishRhythm — ритм фразы, лица и признаки живости в доли. Разброс считается
+// как sd: именно он отличает человека от ровного машинного потока.
+func (a *shapeAcc) finishRhythm(sh *VoiceShape, texts float64) {
+	sh.SentWords = distOf(a.sentWords)
+	if len(a.sentWords) > 0 {
+		var mean float64
+		for _, n := range a.sentWords {
+			mean += float64(n)
+		}
+		mean /= float64(len(a.sentWords))
+		var sq float64
+		short, long := 0, 0
+		for _, n := range a.sentWords {
+			d := float64(n) - mean
+			sq += d * d
+			switch {
+			case n <= shortSentWords:
+				short++
+			case n >= longSentWords:
+				long++
+			}
+		}
+		sh.SentWordSD = round2(math.Sqrt(sq / float64(len(a.sentWords))))
+		sh.ShortSents = round4(float64(short) / float64(len(a.sentWords)))
+		sh.LongSents = round4(float64(long) / float64(len(a.sentWords)))
+	}
+	if a.totalWords > 0 {
+		sh.Person = map[string]float64{}
+		for p, cnt := range a.person {
+			sh.Person[p] = round2(100 * float64(cnt) / float64(a.totalWords))
+		}
+	}
+	sh.EndsQuestion = round4(float64(a.endsQuestion) / texts)
+	sh.HasQuote = round4(float64(a.hasQuote) / texts)
+	sh.HasDigits = round4(float64(a.hasDigits) / texts)
+}
+
+// Границы «рубленой» и «длинной» фразы. Подобраны по живому корпусу: у Монаха
+// 18% предложений ≤3 слов и 10% ≥18, у машинных черновиков 5% и 0%.
+const (
+	shortSentWords = 3
+	longSentWords  = 18
+)
+
 func measureShape(texts []voiceText, kind string, nicks map[string]bool) VoiceShape {
 	sh := VoiceShape{
 		Kind: kind, Texts: len(texts),
@@ -739,6 +916,7 @@ func measureShape(texts []voiceText, kind string, nicks map[string]bool) VoiceSh
 		a.addTraits(t.text, r)
 		a.addMarkup(t.text)
 		a.addOpening(t.text, kind, nicks)
+		a.addRhythm(t.text, r)
 	}
 	a.finish(&sh, len(texts))
 	sh.From, sh.To = spanOf(texts)
@@ -1258,6 +1436,19 @@ func WriteVoiceBrief(w io.Writer, c *VoiceCard, kind string) error {
 		sh.Runes.Median, sh.Runes.P10, sh.Runes.P90, sh.Runes.Max, sh.Runes.P25, sh.Runes.P75)
 	fmt.Fprintf(w, "Предложений: медиана %d; слов в предложении %.1f; длина слова %.1f; абзацев медиана %d.\n",
 		sh.Sentences.Median, sh.WordsPerSentence, sh.WordRunes, sh.Paragraphs.Median)
+	// РИТМ — главная цель. Ровный поток предложений одной длины читается как
+	// машинный текст даже при верном среднем, поэтому здесь и разброс, и края.
+	fmt.Fprintf(w, "РИТМ ФРАЗЫ (важнее среднего): длина предложения p10 %d, медиана %d, p90 %d, макс %d; "+
+		"разброс sd %.1f.\n", sh.SentWords.P10, sh.SentWords.Median, sh.SentWords.P90, sh.SentWords.Max, sh.SentWordSD)
+	fmt.Fprintf(w, "  рубленых (≤%d слов) %s всех предложений, длинных (≥%d слов) %s — мешай их, "+
+		"ровный поток одинаковых фраз это провал.\n",
+		shortSentWords, pct(sh.ShortSents), longSentWords, pct(sh.LongSents))
+	if len(sh.Person) > 0 {
+		fmt.Fprintf(w, "Кому говорит, местоимений на 100 слов: я %.1f, ты %.1f, мы %.1f, вы %.1f.\n",
+			sh.Person["я"], sh.Person["ты"], sh.Person["мы"], sh.Person["вы"])
+	}
+	fmt.Fprintf(w, "Кончает вопросом %s текстов; кавычки или диалог в %s; цифры в %s.\n",
+		pct(sh.EndsQuestion), pct(sh.HasQuote), pct(sh.HasDigits))
 	fmt.Fprintf(w, "Пунктуация на 1000 рун: %s\n", fmtRates(sh.Punct, 8))
 	fmt.Fprintf(w, "Скобки-улыбки: %s; грустных «((» в %s текстов.\n",
 		fmtParens(sh.ParenRuns), pct(sh.SadParens))

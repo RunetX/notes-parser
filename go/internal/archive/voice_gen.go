@@ -122,6 +122,12 @@ const voiceSystemBase = `Ты — исследовательский инстр�
   если он груб, коряв, нарочно пишет с ошибками и рубит фразу — воспроизводи это.
   Гладкий литературный текст с симметричной шуткой в конце — самый частый провал
   имитации: он не похож ни на кого конкретного.
+- РИТМ важнее среднего. Ровный поток предложений одной длины — главная примета
+  машинного текста, даже когда среднее совпало. Мешай рубленые фразы в 1–3 слова
+  с длинными на 20+ слов ровно в той пропорции, что в измерениях.
+- Повтори КОМПОЗИЦИЮ образцов, не только слова: как автор входит в текст (со
+  сцены, с наблюдения, с тезиса), как разворачивает и чем заканчивает. Строй
+  «мысль — пример — вывод» в каждом абзаце выдаёт машину.
 - Варианты должны различаться СОДЕРЖАНИЕМ, а не косметикой.`
 
 const voiceSystemNote = voiceSystemBase + `
@@ -483,6 +489,7 @@ func draftDiff(d VoiceDraft, card *VoiceCard, kind string, band VoiceBand) []str
 				got.Sentences.Median, sh.Sentences.Median))
 		}
 	}
+	out = append(out, rhythmDiff(got, sh)...)
 	for _, k := range []string{",", ".", "!", "?", "…", "—"} {
 		want, have := sh.Punct[k], got.Punct[k]
 		if want < 1 && have < 1 {
@@ -510,6 +517,37 @@ func draftDiff(d VoiceDraft, card *VoiceCard, kind string, band VoiceBand) []str
 		out = append(out, fmt.Sprintf("АТРИБУЦИЯ: автор на месте %d из %d; настоящие тексты автора занимают %d–%d, "+
 			"черновик узнаётся лучше %.0f%% из них; первым атрибутор назвал %s",
 			d.Score.Rank, d.Score.Of, band.Min, band.Max, d.Quantile*100, topLabel(d.Score)))
+	}
+	return out
+}
+
+// rhythmDiff — расхождения ритма фразы и адресации. Самый действенный пункт
+// обратной связи из найденных живыми замерами: у машинного текста верное среднее
+// слов в предложении при вдвое меньшем разбросе, и текст от этого мёртвый.
+func rhythmDiff(got, sh VoiceShape) []string {
+	var out []string
+	if sh.SentWordSD > 0 && got.SentWordSD > 0 && got.SentWordSD < sh.SentWordSD*0.7 {
+		out = append(out, fmt.Sprintf("РИТМ РОВНЫЙ: разброс длины предложения %.1f против %.1f у автора — "+
+			"добавь и рубленых фраз в 1–3 слова, и длинных на 20+", got.SentWordSD, sh.SentWordSD))
+	}
+	if sh.ShortSents >= 0.1 && got.ShortSents < sh.ShortSents*0.5 {
+		out = append(out, fmt.Sprintf("рубленых предложений %s, у автора %s",
+			pct(got.ShortSents), pct(sh.ShortSents)))
+	}
+	if sh.LongSents >= 0.08 && got.LongSents == 0 {
+		out = append(out, fmt.Sprintf("ни одного длинного предложения (≥%d слов), у автора %s",
+			longSentWords, pct(sh.LongSents)))
+	}
+	for _, p := range []string{"ты", "я", "вы"} {
+		want, have := sh.Person[p], got.Person[p]
+		if want >= 0.5 && have < want*0.4 {
+			out = append(out, fmt.Sprintf("почти не говорит «%s»: %.1f на 100 слов против %.1f у автора",
+				p, have, want))
+		}
+	}
+	if sh.EndsQuestion >= 0.25 && got.EndsQuestion == 0 {
+		out = append(out, fmt.Sprintf("не кончается вопросом, а автор так кончает %s текстов",
+			pct(sh.EndsQuestion)))
 	}
 	return out
 }

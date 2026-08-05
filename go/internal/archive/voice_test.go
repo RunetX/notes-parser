@@ -249,15 +249,62 @@ func TestVoiceAutoSamples(t *testing.T) {
 		return out
 	}
 	cases := []struct {
-		runes, want int
-	}{{80, 24}, {300, 12}, {900, 6}}
+		name     string
+		runes, n int
+		want     int
+	}{
+		{"короткие реплики", 80, 200, 24},
+		{"средние тексты", 300, 200, 12},
+		{"длинные заметки, корпус большой", 900, 200, 6},
+		{"длинные заметки, корпус малый — берём больше", 900, 50, 12},
+		{"корпус крошечный — полосе оставляем половину", 900, 10, 5},
+	}
 	for _, c := range cases {
-		if got := voiceAutoSamples(mk(c.runes, 50)); got != c.want {
-			t.Errorf("при медиане %d рун образцов %d, ожидалось %d", c.runes, got, c.want)
+		if got := voiceAutoSamples(mk(c.runes, c.n)); got != c.want {
+			t.Errorf("%s (медиана %d рун, %d текстов): образцов %d, ожидалось %d",
+				c.name, c.runes, c.n, got, c.want)
 		}
 	}
 	if got := voiceAutoSamples(nil); got != 6 {
 		t.Errorf("на пустом корпусе образцов %d, ожидалось 6", got)
+	}
+}
+
+// TestShapeMeasuresRhythm — ритм фразы, лица и признаки живости. Числа взяты так,
+// что каждый признак проверяем руками: три предложения на 1, 2 и 20 слов.
+func TestShapeMeasuresRhythm(t *testing.T) {
+	texts := []voiceText{
+		{id: 1, kind: "notes", text: "Девятнадцать. Июнь жаркий. " +
+			"Ты стоишь у расписания и делаешь вид что изучаешь его хотя помнишь наизусть свой номер?"},
+		{id: 2, kind: "notes", text: "Мне сказали \"нельзя\". Я пошёл в 2019 году."},
+	}
+	sh := measureShape(texts, "notes", nil)
+
+	// Предложения по словам: 1, 2, 15 | 3, 5. Цифры и односимвольные слова
+	// считаются (иначе «Я пошёл в 2019 году» было бы «рубленым»).
+	if sh.SentWords.N != 5 {
+		t.Fatalf("предложений в замере %d, ожидалось 5: %+v", sh.SentWords.N, sh.SentWords)
+	}
+	if sh.SentWords.Max != 15 {
+		t.Errorf("самое длинное предложение %d слов, ожидалось 15", sh.SentWords.Max)
+	}
+	if sh.ShortSents != 0.6 {
+		t.Errorf("доля рубленых (≤3 слов) = %v, ожидалось 0.6 (1, 2 и 3 слова из пяти)", sh.ShortSents)
+	}
+	if sh.SentWordSD <= 0 {
+		t.Errorf("разброс длины предложения не посчитан: %v", sh.SentWordSD)
+	}
+	if sh.Person["ты"] <= 0 || sh.Person["я"] <= 0 {
+		t.Errorf("лица не посчитаны: %+v", sh.Person)
+	}
+	if sh.EndsQuestion != 0.5 {
+		t.Errorf("доля текстов, кончающихся вопросом = %v, ожидалось 0.5", sh.EndsQuestion)
+	}
+	if sh.HasQuote != 0.5 {
+		t.Errorf("доля текстов с кавычками = %v, ожидалось 0.5", sh.HasQuote)
+	}
+	if sh.HasDigits != 0.5 {
+		t.Errorf("доля текстов с цифрами = %v, ожидалось 0.5", sh.HasDigits)
 	}
 }
 
