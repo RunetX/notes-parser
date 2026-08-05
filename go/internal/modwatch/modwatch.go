@@ -205,10 +205,10 @@ func (s *Store) LiveNotes(ctx context.Context) (map[int64]NoteRow, error) {
 	out := map[int64]NoteRow{}
 	for rows.Next() {
 		var (
-			r                                 NoteRow
-			pub, polled                       sql.NullString
-			firstSeen, lastSeen               string
-			closed                            int
+			r                   NoteRow
+			pub, polled         sql.NullString
+			firstSeen, lastSeen string
+			closed              int
 		)
 		if err := rows.Scan(&r.ID, &r.AuthorID, &r.AuthorName, &r.TextHead, &r.Images, &closed,
 			&pub, &firstSeen, &lastSeen, &polled); err != nil {
@@ -305,8 +305,8 @@ func (s *Store) LiveComments(ctx context.Context, noteID int64) (map[int64]Comme
 	out := map[int64]CommentRow{}
 	for rows.Next() {
 		var (
-			r                             CommentRow
-			pub, firstSeen, lastSeen      string
+			r                        CommentRow
+			pub, firstSeen, lastSeen string
 		)
 		if err := rows.Scan(&r.ID, &r.NoteID, &r.AuthorID, &r.AuthorName, &r.TextHead,
 			&pub, &firstSeen, &lastSeen); err != nil {

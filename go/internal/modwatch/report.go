@@ -23,7 +23,8 @@ type ReportOptions struct {
 const (
 	DefaultPresenceWindow = 5 * time.Minute
 	DefaultControls       = 24
-	controlShiftDays      = 14 // на сколько суток вперёд/назад искать контрольные окна
+	controlShiftDays      = 14   // на сколько суток вперёд/назад искать контрольные окна
+	controlSmoothing      = 0.25 // сглаживание доли контрольных окон (см. accumulate)
 )
 
 // ReportRow — строка отчёта по одному человеку.
@@ -48,6 +49,18 @@ type Report struct {
 	AvgPresentCtrl float64   // то же в контрольных окнах — база для сравнения
 }
 
+// tally — накопитель статистики по всем событиям.
+type tally struct {
+	hits             map[int64]int
+	expected         map[int64]float64
+	variance         map[int64]float64
+	events           int
+	skipped          int
+	presentTotal     int
+	ctrlPresentTotal int
+	ctrlWindows      int
+}
+
 // Analyze считает, кто присутствует в моменты действий модерации чаще, чем в
 // сопоставимые минуты без действий.
 //
@@ -66,85 +79,95 @@ func (s *Store) Analyze(ctx context.Context, opt ReportOptions) (Report, error) 
 	rep := Report{Controls: opt.Controls}
 
 	events, err := s.Events(ctx, opt.Since, opt.Until, opt.Kinds, 0)
-	if err != nil {
+	if err != nil || len(events) == 0 {
 		return rep, err
-	}
-	if len(events) == 0 {
-		return rep, nil
 	}
 	// Присутствие берём за весь период наблюдения: контрольные окна лежат в
 	// других сутках, значит нужны реплики далеко за границами событий.
 	presence, err := s.PresenceLog(ctx, time.Unix(0, 0).UTC(), time.Now().UTC().AddDate(1, 0, 0))
-	if err != nil {
+	if err != nil || len(presence) == 0 {
 		return rep, err
-	}
-	if len(presence) == 0 {
-		return rep, nil
 	}
 	obsFrom, obsTo := presence[0].At, presence[len(presence)-1].At
 	rep.From, rep.To = obsFrom, obsTo
 
-	comments := map[int64]int{}
-	for _, p := range presence {
-		comments[p.UserID]++
-	}
-
 	rng := rand.New(rand.NewPCG(uint64(opt.Seed), uint64(opt.Seed)^0x9e3779b97f4a7c15))
-
-	hits := map[int64]int{}
-	expected := map[int64]float64{}
-	variance := map[int64]float64{}
-	var presentTotal, ctrlPresentTotal, ctrlWindows int
-
+	acc := &tally{hits: map[int64]int{}, expected: map[int64]float64{}, variance: map[int64]float64{}}
 	for _, e := range events {
-		from := e.PrevSeen.Add(-opt.Window)
-		to := e.DetectedAt.Add(opt.Window)
-		if !to.After(from) {
-			to = from.Add(opt.Window)
-		}
-		dur := to.Sub(from)
-
-		controls := controlWindows(from, dur, obsFrom, obsTo, opt.Controls, rng)
-		if len(controls) == 0 {
-			rep.EventsSkipped++
-			continue
-		}
-		rep.Events++
-
-		inEvent := authorsIn(presence, from, to)
-		presentTotal += len(inEvent)
-		for u := range inEvent {
-			hits[u]++
-		}
-		seenCtrl := map[int64]int{}
-		for _, c := range controls {
-			set := authorsIn(presence, c, c.Add(dur))
-			ctrlPresentTotal += len(set)
-			ctrlWindows++
-			for u := range set {
-				seenCtrl[u]++
-			}
-		}
-		n := float64(len(controls))
-		for u, c := range seenCtrl {
-			p := float64(c) / n
-			expected[u] += p
-			variance[u] += p * (1 - p)
-		}
+		acc.add(e, presence, obsFrom, obsTo, opt, rng)
 	}
+	rep.Events, rep.EventsSkipped = acc.events, acc.skipped
 	if rep.Events == 0 {
 		return rep, nil
 	}
-	rep.AvgPresent = float64(presentTotal) / float64(rep.Events)
-	if ctrlWindows > 0 {
-		rep.AvgPresentCtrl = float64(ctrlPresentTotal) / float64(ctrlWindows)
+	rep.AvgPresent = float64(acc.presentTotal) / float64(rep.Events)
+	if acc.ctrlWindows > 0 {
+		rep.AvgPresentCtrl = float64(acc.ctrlPresentTotal) / float64(acc.ctrlWindows)
 	}
 
 	names, err := s.Names(ctx)
 	if err != nil {
 		return rep, err
 	}
-	for u, h := range hits {
+	comments := map[int64]int{}
+	for _, p := range presence {
+		comments[p.UserID]++
+	}
+	rep.Rows = acc.rows(names, comments, opt)
+	return rep, nil
+}
+
+// add обсчитывает одно событие: кто был в его окне и кто бывает в контрольных.
+func (t *tally) add(e Event, presence []Presence, obsFrom, obsTo time.Time, opt ReportOptions, rng *rand.Rand) {
+	from := e.PrevSeen.Add(-opt.Window)
+	to := e.DetectedAt.Add(opt.Window)
+	if !to.After(from) {
+		to = from.Add(opt.Window)
+	}
+	dur := to.Sub(from)
+
+	controls := controlWindows(from, dur, obsFrom, obsTo, opt.Controls, rng)
+	if len(controls) == 0 {
+		t.skipped++
+		return
+	}
+	t.events++
+
+	inEvent := authorsIn(presence, from, to)
+	t.presentTotal += len(inEvent)
+	for u := range inEvent {
+		t.hits[u]++
+	}
+	seenCtrl := map[int64]int{}
+	for _, c := range controls {
+		set := authorsIn(presence, c, c.Add(dur))
+		t.ctrlPresentTotal += len(set)
+		t.ctrlWindows++
+		for u := range set {
+			seenCtrl[u]++
+		}
+	}
+	n := float64(len(controls))
+	for u := range inEvent {
+		if _, ok := seenCtrl[u]; !ok {
+			seenCtrl[u] = 0 // был при действии, но никогда в контроле — учесть надо
+		}
+	}
+	for u, c := range seenCtrl {
+		t.expected[u] += float64(c) / n
+		// Дисперсию считаем по сглаженной доле: без сглаживания у человека,
+		// которого не оказалось ни в одном контрольном окне, σ обнуляется — и
+		// самый сильный случай («был только при действиях») получил бы z = 0.
+		// Сглаживание задаёт нижнюю границу неопределённости.
+		p := (float64(c) + controlSmoothing) / (n + 2*controlSmoothing)
+		t.variance[u] += p * (1 - p)
+	}
+}
+
+// rows собирает и сортирует итоговую таблицу.
+func (t *tally) rows(names map[int64]string, comments map[int64]int, opt ReportOptions) []ReportRow {
+	var out []ReportRow
+	for u, h := range t.hits {
 		if h < opt.MinHits {
 			continue
 		}
@@ -152,27 +175,27 @@ func (s *Store) Analyze(ctx context.Context, opt ReportOptions) (Report, error) 
 			UserID:   u,
 			Name:     names[u],
 			Hits:     h,
-			Expected: expected[u],
+			Expected: t.expected[u],
 			Comments: comments[u],
 		}
 		if row.Expected > 0 {
 			row.Lift = float64(h) / row.Expected
 		}
-		if v := variance[u]; v > 0 {
+		if v := t.variance[u]; v > 0 {
 			row.Z = (float64(h) - row.Expected) / math.Sqrt(v)
 		}
-		rep.Rows = append(rep.Rows, row)
+		out = append(out, row)
 	}
-	sort.Slice(rep.Rows, func(i, j int) bool {
-		if rep.Rows[i].Z != rep.Rows[j].Z {
-			return rep.Rows[i].Z > rep.Rows[j].Z
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Z != out[j].Z {
+			return out[i].Z > out[j].Z
 		}
-		return rep.Rows[i].Hits > rep.Rows[j].Hits
+		return out[i].Hits > out[j].Hits
 	})
-	if opt.Top > 0 && len(rep.Rows) > opt.Top {
-		rep.Rows = rep.Rows[:opt.Top]
+	if opt.Top > 0 && len(out) > opt.Top {
+		out = out[:opt.Top]
 	}
-	return rep, nil
+	return out
 }
 
 // controlWindows подбирает начала контрольных окон: то же окно, сдвинутое на
@@ -197,7 +220,7 @@ func controlWindows(from time.Time, dur time.Duration, obsFrom, obsTo time.Time,
 }
 
 // authorsIn возвращает множество авторов, писавших в интервале [from, to].
-// presence отсортирован по времени — ищем границы двоичным поиском.
+// presence отсортирован по времени — ищем границу двоичным поиском.
 func authorsIn(presence []Presence, from, to time.Time) map[int64]bool {
 	lo := sort.Search(len(presence), func(i int) bool { return !presence[i].At.Before(from) })
 	out := map[int64]bool{}

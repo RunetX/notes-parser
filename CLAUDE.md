@@ -44,6 +44,13 @@ messages, and all user-facing bot strings are in Russian.
   без LLM-рубрик). Публикация идемпотентна и резюмируема через
   `message_targets` (kind `digest`) — безопасно при работающем демоне
   (поллинг не поднимается).
+- Watch moderation live: `go run ./cmd/lovegw modwatch [-db path] watch` — пишет в
+  отдельную `modwatch.db` моменты, которых нет в архиве: заметка исчезла из ленты,
+  комментарий исчез из треда, появилась иллюстрация, закрыли комментарии. Дальше
+  `modwatch report` сверяет эти минуты с присутствием людей (кто писал рядом) и
+  сравнивает с контрольными окнами того же часа суток; `modwatch events` —
+  сырой список, `modwatch status` — наполнение БД. Только чтение сайта, боевую БД
+  не трогает, с работающим демоном совместим (нужен RU-IP).
 - One-off import of legacy JSON state (notes / subscribers) into SQLite:
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
@@ -191,6 +198,20 @@ messages, and all user-facing bot strings are in Russian.
     command bot; sessions, subscriptions and peers stay keyed by messenger, so
     it sees the login made in the command bot. The command bot keeps a
     reply-only router (`SetReplyRouter`) for DMs it delivered before the split.
+  - `modwatch` — наблюдатель за действиями модерации (своя `modwatch.db`, схема
+    v1). Поля «модератор» на сайте нет, а по речи опознаются только болтливые;
+    действие же видно всегда, но архив его не хранит — это снимок уцелевшего.
+    Сборщик опрашивает ленту и свежие треды и пишет ЧТО и КОГДА произошло
+    (`events`: note_gone / comment_gone / image_added / comments_closed /
+    note_published / nick_changed) вместе с окном неопределённости
+    `[prev_seen, detected]`. Ключевое правило детекции — **охват**: исчезновение
+    считается удалением только у объекта с id больше самого старого из
+    присутствующих сейчас, иначе уход за нижний край страницы был бы принят за
+    снос. `Analyze` — case-control: для каждого события окно присутствия
+    сравнивается с тем же окном, сдвинутым на целые сутки (тот же час — та же
+    посещаемость), поправка на «активные всегда онлайн» встроена в конструкцию;
+    дисперсия считается по сглаженной доле, иначе «был только при действиях» дал
+    бы z = 0. Метод слеп к модератору, который не комментирует.
   - `legacy` — one-shot importer of old JSON state.
 - Reply→site and note-post reuse saved cookie sessions; a 401/403 marks the
   session invalid and DMs the user to re-`/login`. Admin alerts require
