@@ -172,19 +172,30 @@ func (s *Store) accumulateLexisFrom(ctx context.Context, query string, dims int,
 	return rows.Err()
 }
 
+// loadLexisIDF грузит ТОЛЬКО веса IDF жанра genre, без профилей авторов. Нужен
+// тем, кому хватает весов слов (стилевая карта: вес слова берётся из корзины его
+// хэша) — грузить ради них десятки тысяч векторов по dims float32 расточительно.
+// dims=0 без ошибки — слой этого жанра не построен, сигнал недоступен.
+func (s *Store) loadLexisIDF(ctx context.Context, genre string) (idf []float32, dims int, err error) {
+	var idfBlob []byte
+	err = s.db.QueryRowContext(ctx, `SELECT dims, idf FROM lexis_meta WHERE genre = ?`, genre).Scan(&dims, &idfBlob)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return decodeVec(idfBlob, dims), dims, nil
+}
+
 // loadLexisProfiles грузит лексические профили и IDF жанра genre. Если lexis-слой
 // этого жанра ещё не построен (нет строки meta), возвращает пустые срезы и
 // dims=0 — вызов атрибуции трактует это как «сигнал недоступен».
 func (s *Store) loadLexisProfiles(ctx context.Context, genre string) (ids []int64, vecs [][]float32, idf []float32, dims int, err error) {
-	var idfBlob []byte
-	err = s.db.QueryRowContext(ctx, `SELECT dims, idf FROM lexis_meta WHERE genre = ?`, genre).Scan(&dims, &idfBlob)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, nil, 0, nil
-	}
-	if err != nil {
+	idf, dims, err = s.loadLexisIDF(ctx, genre)
+	if err != nil || dims == 0 {
 		return nil, nil, nil, 0, err
 	}
-	idf = decodeVec(idfBlob, dims)
 
 	rows, err := s.db.QueryContext(ctx, `SELECT user_id, dims, vec FROM lexis_profiles WHERE genre = ?`, genre)
 	if err != nil {

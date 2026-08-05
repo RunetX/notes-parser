@@ -97,6 +97,18 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	minText := fs.Int("min-text", 400, "мин. длина анонимки в знаках — короче не ранжируем (anon)")
 	maxComments := fs.Int("max-comments", 0, "пропускать треды длиннее N комментариев — на них страница со всем деревом падает в 500 (replies; 0 — не пропускать)")
 	retryFailed := fs.Bool("retry", false, "повторить заметки, на которых страница уже не отдалась (replies)")
+	recent := fs.Int("recent", -1, "сколько последних текстов на жанр в замер манеры (voice; 0 — все)")
+	samples := fs.Int("samples", -1, "образцов текста в промпт (voice; 0 — только измерения, дословные тексты никуда не уходят)")
+	band := fs.Int("band", -1, "held-out текстов под эталонную полосу атрибуции (voice)")
+	seed := fs.Int64("seed", 1, "seed детерминированного разреза корпуса на образцы и полосу (voice)")
+	topWords := fs.Int("top-words", 0, "характерных слов в карте (voice; 0 — дефолт)")
+	topic := fs.String("topic", "", "тема заметки (voice note)")
+	replyTo := fs.Int64("reply-to", 0, "id комментария, которому отвечаем (voice comment)")
+	drafts := fs.Int("drafts", 3, "черновиков за один запрос к модели (voice note/comment)")
+	rounds := fs.Int("rounds", 2, "запросов максимум: 1 — без обратной связи, потолок 3 (voice note/comment)")
+	accept := fs.Float64("accept", 0, "порог квантиля эталонной полосы для приёмки (voice; 0 — дефолт 0.25)")
+	maxCopy := fs.Float64("max-copy", 0, "потолок пересечения черновика с образцами (voice; 0 — дефолт 0.30)")
+	control := fs.String("control", "", "вторая личность для контроля различающей силы (voice note/comment)")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
 		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
 		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
@@ -109,6 +121,9 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
 		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
 		"from": true, "to": true, "min-text": true, "max-comments": true,
+		"recent": true, "samples": true, "band": true, "seed": true, "top-words": true,
+		"topic": true, "reply-to": true, "drafts": true, "rounds": true,
+		"accept": true, "max-copy": true, "control": true,
 	})); err != nil {
 		return err
 	}
@@ -206,6 +221,14 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			cfgPath: *cfgPath, since: *fromDate, limit: *limit,
 			maxComments: *maxComments, retry: *retryFailed,
 		})
+	case "voice":
+		return personasVoice(ctx, ar, fs.Args()[1:], voiceOpts{
+			cfgPath: *cfgPath, outDir: *outDir, genre: gen, genreSet: *genre != "",
+			recent: *recent, samples: *samples, band: *band, seed: *seed, topWords: *topWords,
+			topic: *topic, replyTo: *replyTo, drafts: *drafts, rounds: *rounds,
+			accept: *accept, maxCopy: *maxCopy, control: *control,
+			lexWeight: *lexWeight, activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
+		})
 	case "addressees":
 		return personasAddressees(ctx, ar)
 	case "report":
@@ -216,7 +239,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 			reportTop: *reportTop, limit: *limit,
 		})
 	default:
-		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|replies|addressees|report|gender)", action)
+		return fmt.Errorf("personas: неизвестное действие %q (flag|candidates|link|cluster|set|avatars|stylometry|lexis|attribute|calibrate|verify|portrait|diag|ensemble|facts|relations|replies|addressees|report|gender|voice)", action)
 	}
 }
 

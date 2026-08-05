@@ -21,7 +21,6 @@ import (
 	"lovegw/internal/chantext"
 	"lovegw/internal/config"
 	"lovegw/internal/digest"
-	"lovegw/internal/llm"
 	"lovegw/internal/maxx"
 	"lovegw/internal/store"
 	"lovegw/internal/tgx"
@@ -132,23 +131,6 @@ func digestDraftPath(o digestOpts, w digest.Window) string {
 	return digest.DraftPath(o.out, w.ID)
 }
 
-// digestLLM строит LLM-клиента по конфигу; запросы идут через telegram_proxy.
-func digestLLM(cfg *config.Config) (*llm.Client, error) {
-	if cfg.LLM.APIKey == "" {
-		return nil, errors.New("llm.api_key не задан (секция llm конфига или env LOVEGW_LLM_KEY)")
-	}
-	transport, err := tgx.ProxyTransport(cfg.TelegramProxy)
-	if err != nil {
-		return nil, err
-	}
-	return llm.New(llm.Config{
-		APIKey:    cfg.LLM.APIKey,
-		Model:     cfg.LLM.Model,
-		MaxTokens: cfg.LLM.MaxTokens,
-		Transport: transport,
-	}, ""), nil
-}
-
 // digestDraft считает выпуск и пишет черновик + материалы.
 func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w digest.Window, o digestOpts) error {
 	if !o.force {
@@ -162,7 +144,7 @@ func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w dig
 		return err
 	}
 	if o.llm {
-		client, err := digestLLM(cfg)
+		client, err := llmClient(cfg)
 		if err != nil {
 			return err
 		}

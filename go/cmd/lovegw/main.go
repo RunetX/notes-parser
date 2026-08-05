@@ -155,7 +155,10 @@ func usage() {
   lovegw personas [-db archive.db] [-out dir] [-cand-replies N] [-band-min N] [-band-top N] [-exchanges N] relations candidates
   lovegw personas [-db archive.db] [-out dir] [-in relations_llm.json] relations import
   lovegw personas [-db archive.db] [-out dir] [-report-top N] [-active-days N] [-html] report
-  lovegw personas [-db archive.db] [-config config.json] [-tg-user id] [-active-days N] [-limit N] gender`)
+  lovegw personas [-db archive.db] [-config config.json] [-tg-user id] [-active-days N] [-limit N] gender
+  lovegw personas [-db archive.db] [-out dir] [-genre notes|all] [-recent N] [-samples N] [-band N] [-seed N] [-top-words N] voice card <p<id>|u<id>|user_id>   # читаемая карта манеры письма
+  lovegw personas [-db archive.db] [-config config.json] [-topic "…"] [-drafts N] [-rounds N] [-control p<id>] [-accept F] [-max-copy F] voice note <p<id>|u<id>|user_id>      # заметка в манере автора + замкнутый цикл через атрибуцию
+  lovegw personas [-db archive.db] [-config config.json] -reply-to <comment_id> [-drafts N] [-rounds N] [-control p<id>] voice comment <p<id>|u<id>|user_id>                   # реплика в живую ветку`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
@@ -521,7 +524,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		}
 		llmModel := ""
 		if cfg.LLM.APIKey != "" {
-			lc, err := digestLLM(cfg)
+			lc, err := llmClient(cfg)
 			if err != nil {
 				return err
 			}

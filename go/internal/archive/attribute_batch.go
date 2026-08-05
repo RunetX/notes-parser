@@ -125,35 +125,16 @@ func (s *Store) scoreNote(n authoredNote, sa *styleAttributor, la *lexisAttribut
 	if !ok {
 		return na // у анкеты автора нет стиль-профиля — ранг неопределён (0)
 	}
-	sCos, _, ok := sa.cosines(normalizeStyle(n.text))
+	// cf=nil: фон здесь считается по всем профилям (пакетная валидация не сужает
+	// популяцию — этим занимаются calibrate/verify своими фильтрами).
+	tr, ok := rankTextScores(n.text, sa, la, lexWeight, nil)
 	if !ok {
 		return na
 	}
-	at := &Attribution{LexWeight: lexWeight}
-	at.StyleCosMean, at.StyleCosStd = meanStd(sCos)
-	var lexCos map[int64]float64
-	if la != nil {
-		lexCos, at.LexCosMean, at.LexCosStd, _ = la.cosines(n.text)
-	}
-
-	scores := make([]float64, len(sa.ids))
-	topIdx := 0
-	for i := range sa.ids {
-		_, _, scores[i], _ = combineScores(sCos[i], sa.ids[i], lexCos, at)
-		if scores[i] > scores[topIdx] {
-			topIdx = i
-		}
-	}
-	aScore := scores[authorIdx]
-	rank := 1
-	for _, sc := range scores {
-		if sc > aScore {
-			rank++
-		}
-	}
-	na.Rank, na.Score = rank, aScore
-	na.StyleZ, na.LexZ, _, na.HasLex = combineScores(sCos[authorIdx], n.author, lexCos, at)
-	na.TopID, na.TopScore = sa.ids[topIdx], scores[topIdx]
+	aScore := tr.scores[authorIdx]
+	na.Rank, na.Score = 1+countGreater(tr.scores, aScore), aScore
+	na.StyleZ, na.LexZ, _, na.HasLex = combineScores(tr.sCos[authorIdx], n.author, tr.lexCos, tr.at)
+	na.TopID, na.TopScore = sa.ids[tr.topIdx], tr.scores[tr.topIdx]
 	na.Self = identity != "" && idmap[na.TopID] == identity
 	return na
 }
