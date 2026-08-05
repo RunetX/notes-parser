@@ -21,14 +21,14 @@ import (
 // ulower). Точное совпадение аватара оказалось мёртвым сигналом (у каждой анкеты
 // свой URL), а текстовые признания — золотой жилой. Переопределяется -patterns.
 var defaultDisclosurePatterns = []string{
-	"%втор%анкет%",   // «это моя вторая анкета», «со второй анкеты»
-	"%стар%анкет%",   // «на старой анкете»
-	"%фейк%анкет%",   // «фейк-анкета»
+	"%втор%анкет%",    // «это моя вторая анкета», «со второй анкеты»
+	"%стар%анкет%",    // «на старой анкете»
+	"%фейк%анкет%",    // «фейк-анкета»
 	"%это моя%анкет%", // прямое указание
-	"%бывш%ник%",     // «бывший ник»
-	"%под ником%",    // «пишу под ником …»
-	"%смени%ник%",    // «сменил/сменила ник»
-	"%мой клон%",     // «это мой клон»
+	"%бывш%ник%",      // «бывший ник»
+	"%под ником%",     // «пишу под ником …»
+	"%смени%ник%",     // «сменил/сменила ник»
+	"%мой клон%",      // «это мой клон»
 }
 
 // cmdPersonas — слой распознавания личностей (persona resolution) поверх archive.db.
@@ -104,6 +104,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	topWords := fs.Int("top-words", 0, "характерных слов в карте (voice; 0 — дефолт)")
 	topic := fs.String("topic", "", "тема заметки (voice note)")
 	replyTo := fs.Int64("reply-to", 0, "id комментария, которому отвечаем (voice comment)")
+	solo := fs.Bool("solo", false, "voice: имитировать ОДНУ анкету u<id>, без склейки личности (иначе карта усредняет все склеенные анкеты, в т.ч. чужих эпох)")
 	drafts := fs.Int("drafts", 3, "черновиков за один запрос к модели (voice note/comment)")
 	rounds := fs.Int("rounds", 2, "запросов максимум: 1 — без обратной связи, потолок 3 (voice note/comment)")
 	accept := fs.Float64("accept", 0, "порог квантиля эталонной полосы для приёмки (voice; 0 — дефолт 0.25)")
@@ -225,7 +226,8 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasVoice(ctx, ar, fs.Args()[1:], voiceOpts{
 			cfgPath: *cfgPath, outDir: *outDir, genre: gen, genreSet: *genre != "",
 			recent: *recent, samples: *samples, band: *band, seed: *seed, topWords: *topWords,
-			topic: *topic, replyTo: *replyTo, noteID: *noteID, drafts: *drafts, rounds: *rounds,
+			topic: *topic, replyTo: *replyTo, noteID: *noteID, solo: *solo,
+			drafts: *drafts, rounds: *rounds,
 			accept: *accept, maxCopy: *maxCopy, control: *control,
 			lexWeight: *lexWeight, activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
 		})

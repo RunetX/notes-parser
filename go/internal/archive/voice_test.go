@@ -210,6 +210,34 @@ func TestVoiceCorpusFollowsKind(t *testing.T) {
 	}
 }
 
+// TestVoiceTargetSolo — solo берёт ровно указанную анкету, а не склеенную
+// личность: иначе «профиль X» означает всё, что с ним склеено, включая анкеты
+// других эпох (реальный случай — кластер из 11 анкет 2010–2026 годов).
+func TestVoiceTargetSolo(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	users := []User{{ID: 1, Name: "Старая"}, {ID: 2, Name: "Нынешняя"}}
+	for i, uid := range []int64{1, 2} {
+		note := Note{ID: int64(10 + i), AuthorID: uid, Text: strings.Repeat("текст заметки ", 20)}
+		if _, err := s.SaveGrab(ctx, note, nil, users, testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity, accs, err := s.voiceTarget(ctx, "u2", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity != "u2" || len(accs) != 1 || accs[0] != 2 {
+		t.Errorf("solo дал identity=%q анкеты=%v, ожидалось u2 / [2]", identity, accs)
+	}
+	if _, _, err := s.voiceTarget(ctx, "p7", true); err == nil {
+		t.Error("solo принял личность p7, а должен требовать анкету u<id>")
+	}
+	if _, _, err := s.voiceTarget(ctx, "u999999", true); err == nil {
+		t.Error("solo принял несуществующую анкету")
+	}
+}
+
 // TestVoiceAutoSamples — число образцов считается по медиане корпуса: на коротких
 // репликах шести примеров мало, чтобы манера вообще проявилась.
 func TestVoiceAutoSamples(t *testing.T) {

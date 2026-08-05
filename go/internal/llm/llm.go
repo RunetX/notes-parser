@@ -21,9 +21,11 @@ import (
 // DefaultModel — модель по умолчанию.
 const DefaultModel = "claude-opus-5"
 
-// defaultMaxTokens — потолок ответа: рубрики дайджеста короткие, но модель
-// думает в тот же бюджет токенов.
-const defaultMaxTokens = 8192
+// defaultMaxTokens — потолок ответа. Это ПОТОЛОК, а не расход, поэтому берём с
+// запасом: рубрики дайджеста короткие, но voice просит по три черновика заметки
+// сразу, а размышление модели идёт в тот же бюджет — на 8192 генерация длинных
+// заметок обрывалась так, что текста не оставалось вовсе.
+const defaultMaxTokens = 16384
 
 // requestTimeout — таймаут одного запроса: модель на высоком effort может
 // думать минуты.
@@ -100,11 +102,14 @@ func (c *Client) GenerateJSON(ctx context.Context, system, prompt string, schema
 			b.WriteString(t.Text)
 		}
 	}
-	if b.Len() == 0 {
-		return nil, fmt.Errorf("пустой ответ модели (stop_reason %s)", resp.StopReason)
-	}
+	// Обрыв по бюджету проверяется ДО пустоты: при adaptive thinking весь бюджет
+	// может уйти в размышление, текста не остаётся вовсе, и «пустой ответ» уводит
+	// от настоящей причины.
 	if resp.StopReason == anthropic.StopReasonMaxTokens {
 		return nil, fmt.Errorf("ответ оборван по max_tokens=%d — поднимите llm.max_tokens", c.maxTokens)
+	}
+	if b.Len() == 0 {
+		return nil, fmt.Errorf("пустой ответ модели (stop_reason %s)", resp.StopReason)
 	}
 	return []byte(b.String()), nil
 }

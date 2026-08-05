@@ -96,6 +96,10 @@ type VoiceRun struct {
 	Best     *VoiceDraft  `json:"best,omitempty"`
 	Accepted bool         `json:"accepted"`
 	Verdict  string       `json:"verdict"`
+
+	// Aborted — прогон оборвался на позднем раунде, но результаты предыдущих
+	// сохранены. Молча терять это нельзя: неполный цикл читается иначе.
+	Aborted string `json:"aborted,omitempty"`
 }
 
 const voiceSystemBase = `Ты — исследовательский инструмент проверки устойчивости атрибуции авторства.
@@ -192,13 +196,17 @@ func (s *Store) GenerateVoice(ctx context.Context, gen JSONGenerator, card *Voic
 	if err != nil {
 		return nil, err
 	}
-	member := s.identityMembers(ctx, card.Identity)
-	if member == nil {
+	// Анкеты берём У КАРТЫ, а не через identityMembers(identity): в solo-режиме
+	// карта — одна анкета, и ранг обязан считаться по ней же, иначе полоса меряет
+	// лучшую из склеенных (у кластера из 11 анкет медиана ранга вырождается в 1).
+	if len(card.Accounts) == 0 {
 		return nil, fmt.Errorf("voice: %s не резолвится в анкеты", card.Identity)
 	}
-	accIDs := make([]int64, 0, len(member))
-	for id := range member {
-		accIDs = append(accIDs, id)
+	member := make(map[int64]bool, len(card.Accounts))
+	accIDs := make([]int64, 0, len(card.Accounts))
+	for _, a := range card.Accounts {
+		member[a.ID] = true
+		accIDs = append(accIDs, a.ID)
 	}
 	pn, err := s.profileNgrams(ctx, accIDs, card.Genre)
 	if err != nil {
@@ -324,16 +332,17 @@ func (j *voiceJudge) runRounds(ctx context.Context, gen JSONGenerator) error {
 	var feedback string
 	for r := 1; r <= maxRounds(j.req.Rounds); r++ {
 		prompt := buildVoicePrompt(j.card, j.req, j.kind, feedback)
-		raw, err := gen.GenerateJSON(ctx, systemFor(j.req.Mode, j.req.Thread), prompt, voiceSchema)
+		reply, err := askDrafts(ctx, gen, j.req, prompt)
+		// Сбой ПОЗДНЕГО раунда не должен уносить уже сделанное: прогон дорогой
+		// (полоса, слой профилей, предыдущие черновики), и «оборвался раунд 2»
+		// — это результат с оговоркой, а не пустота. Сбой первого раунда —
+		// по-прежнему ошибка: показывать нечего.
 		if err != nil {
-			return fmt.Errorf("раунд %d: %w", r, err)
-		}
-		var reply voiceReply
-		if err := json.Unmarshal(raw, &reply); err != nil {
-			return fmt.Errorf("раунд %d: разбор ответа модели: %w", r, err)
-		}
-		if len(reply.Drafts) == 0 {
-			return fmt.Errorf("раунд %d: модель не вернула ни одного варианта", r)
+			if r == 1 || j.run.Best == nil {
+				return fmt.Errorf("раунд %d: %w", r, err)
+			}
+			j.run.Aborted = fmt.Sprintf("раунд %d не состоялся: %v", r, err)
+			return nil
 		}
 
 		round := VoiceRound{N: r, Prompt: prompt}
@@ -352,6 +361,22 @@ func (j *voiceJudge) runRounds(ctx context.Context, gen JSONGenerator) error {
 		feedback = voiceFeedback(round.Drafts, j.card, j.kind)
 	}
 	return nil
+}
+
+// askDrafts — один запрос к модели с разбором и проверкой ответа.
+func askDrafts(ctx context.Context, gen JSONGenerator, req VoiceRequest, prompt string) (*voiceReply, error) {
+	raw, err := gen.GenerateJSON(ctx, systemFor(req.Mode, req.Thread), prompt, voiceSchema)
+	if err != nil {
+		return nil, err
+	}
+	var reply voiceReply
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return nil, fmt.Errorf("разбор ответа модели: %w", err)
+	}
+	if len(reply.Drafts) == 0 {
+		return nil, fmt.Errorf("модель не вернула ни одного варианта")
+	}
+	return &reply, nil
 }
 
 // vocabStuffing — черновик набит характерными словами против нормы автора?
@@ -955,6 +980,13 @@ func (s *Store) fillVoiceNames(ctx context.Context, run *VoiceRun) error {
 // voiceVerdict — читаемый итог. Отрицательный результат формулируется прямо: на
 // машинном тексте атрибуция может не работать вовсе, и это тоже результат.
 func voiceVerdict(run *VoiceRun, req VoiceRequest) string {
+	if run.Aborted != "" {
+		return voiceVerdictBody(run, req) + " [цикл неполон: " + run.Aborted + "]"
+	}
+	return voiceVerdictBody(run, req)
+}
+
+func voiceVerdictBody(run *VoiceRun, req VoiceRequest) string {
 	switch {
 	case !run.Band.Usable:
 		return "ПОЛОСА НЕПРИГОДНА: " + run.Band.Why + " — ранги черновиков не с чем сравнивать"
@@ -974,8 +1006,18 @@ func voiceVerdict(run *VoiceRun, req VoiceRequest) string {
 		}
 		return v
 	default:
-		return fmt.Sprintf("НЕ ПРИНЯТ: лучший черновик узнаётся лучше %.0f%% реальных текстов, порог %.0f%%",
+		v := fmt.Sprintf("НЕ ПРИНЯТ: лучший черновик узнаётся лучше %.0f%% реальных текстов, порог %.0f%%",
 			run.Best.Quantile*100, acceptOf(req)*100)
+		// У очень узнаваемого автора вся полоса стоит на первых местах, и «лучше
+		// 25% реальных» требует ранга 1 — недостижимо для машинного текста.
+		// Молчать об этом нельзя: попадание ВНУТРЬ диапазона полосы — сильный
+		// результат, а вердикт по квантилю читается как провал.
+		if r := run.Best.Score.Rank; r >= run.Band.Min && r <= run.Band.Max {
+			v += fmt.Sprintf("; НО ранг %d лежит ВНУТРИ диапазона настоящих текстов автора (%d–%d): "+
+				"полоса слишком тесная, чтобы квантиль что-то значил",
+				r, run.Band.Min, run.Band.Max)
+		}
+		return v
 	}
 }
 

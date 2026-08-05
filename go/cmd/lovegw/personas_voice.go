@@ -36,6 +36,7 @@ type voiceOpts struct {
 	topic   string
 	replyTo int64
 	noteID  int64
+	solo    bool
 	drafts  int
 	rounds  int
 	accept  float64
@@ -263,6 +264,7 @@ func voiceParams(o voiceOpts, sub string) archive.VoiceCardParams {
 	p := archive.VoiceCardDefaults()
 	p.Genre = voiceGenre(o, sub)
 	p.Kind = voiceKind(sub)
+	p.Solo = o.solo
 	if o.recent >= 0 {
 		p.Recent = o.recent
 	}

@@ -18,6 +18,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -166,6 +167,7 @@ type VoiceAccount struct {
 type VoiceCardParams struct {
 	Genre    string // GenreNotes | GenreAll: слой атрибуции и источник IDF
 	Kind     string // РОД текста, который пишем: notes | comments ("" — по жанру)
+	Solo     bool   // только указанная анкета, без склейки личности
 	Recent   int    // последних текстов в замер на жанр (0 — все)
 	Samples  int    // образцов в промпт; 0 — БЕЗ дословных текстов автора; <0 — по роду
 	Band     int    // held-out текстов под эталонную полосу
@@ -230,16 +232,9 @@ func (s *Store) BuildVoiceCard(ctx context.Context, token string, p VoiceCardPar
 	if !ValidGenre(p.Genre) {
 		return nil, fmt.Errorf("voice: неизвестный жанр %q (all|notes)", p.Genre)
 	}
-	identity, err := s.canonIdentity(ctx, token)
+	identity, accIDs, err := s.voiceTarget(ctx, token, p.Solo)
 	if err != nil {
 		return nil, err
-	}
-	accIDs, err := s.identityAccountIDs(ctx, identity)
-	if err != nil {
-		return nil, err
-	}
-	if len(accIDs) == 0 {
-		return nil, fmt.Errorf("voice: у %s нет анкет", identity)
 	}
 
 	notes, err := s.voiceTexts(ctx, accIDs, "notes", p.Recent)
@@ -271,6 +266,10 @@ func (s *Store) BuildVoiceCard(ctx context.Context, token string, p VoiceCardPar
 	}
 	if card.Accounts, err = s.voiceAccounts(ctx, accIDs, p.Genre); err != nil {
 		return nil, err
+	}
+	// В solo-режиме ярлыка личности нет (identity — сама анкета), берём её ник.
+	if card.Label == "" && len(card.Accounts) > 0 {
+		card.Label = card.Accounts[0].Name
 	}
 
 	corpus := voiceCorpus(p, notes, comments)
@@ -384,6 +383,57 @@ func pickSampleContext(pText, pAuthor, nText, nAuthor string) voiceCtx {
 // voiceContextRunes — потолок контекста образца. Реплика короткая, и длинный
 // контекст перевесил бы в промпте сам образец.
 const voiceContextRunes = 300
+
+// voiceTarget — кого имитируем: личность целиком или ОДНУ анкету.
+//
+// Склейка личности для имитации манеры не всегда то, что нужно. У кластера из
+// одиннадцати анкет 2010–2026 годов (реальный случай) карта усредняет манеру
+// пятнадцати лет: пять образцов из шести пришли из 2011-го, хотя имитировать
+// просили нынешнюю анкету. Solo берёт ровно указанную анкету — тогда «профиль
+// X» значит профиль X, а не всё, что с ним склеено.
+func (s *Store) voiceTarget(ctx context.Context, token string, solo bool) (string, []int64, error) {
+	if solo {
+		id, err := parseAccountToken(token)
+		if err != nil {
+			return "", nil, err
+		}
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id = ?`, id).Scan(&n); err != nil {
+			return "", nil, err
+		}
+		if n == 0 {
+			return "", nil, fmt.Errorf("voice: анкета %d не найдена", id)
+		}
+		return fmt.Sprintf("u%d", id), []int64{id}, nil
+	}
+	identity, err := s.canonIdentity(ctx, token)
+	if err != nil {
+		return "", nil, err
+	}
+	accIDs, err := s.identityAccountIDs(ctx, identity)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(accIDs) == 0 {
+		return "", nil, fmt.Errorf("voice: у %s нет анкет", identity)
+	}
+	return identity, accIDs, nil
+}
+
+// parseAccountToken — u<id>|<id>. Личность p<id> в solo-режиме не годится: там
+// анкет несколько, и выбирать за пользователя нельзя.
+func parseAccountToken(token string) (int64, error) {
+	t := strings.TrimSpace(token)
+	if strings.HasPrefix(t, "p") {
+		return 0, fmt.Errorf("voice -solo: нужна анкета u<id>, а не личность %q", token)
+	}
+	t = strings.TrimPrefix(t, "u")
+	id, err := strconv.ParseInt(t, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("voice -solo: некорректный id анкеты %q", token)
+	}
+	return id, nil
+}
 
 // voiceCorpus — корпус образцов, словаря и полосы. Он обязан совпадать с РОДОМ
 // текста, который пишем, а не со слоем атрибуции: у режима комментария эталон
