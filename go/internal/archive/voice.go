@@ -16,6 +16,7 @@ import (
 	"html"
 	"io"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -134,18 +135,24 @@ type VoiceRhythm struct {
 type VoiceWord struct {
 	Word      string  `json:"word"`
 	Count     int     `json:"count"`
+	Docs      int     `json:"docs"` // в скольких разных текстах встречается
 	IDF       float64 `json:"idf"`
 	TFIDF     float64 `json:"tfidf"`
 	Collision bool    `json:"collision,omitempty"`
 }
 
-// VoiceSample — образец, уходящий в промпт.
+// VoiceSample — образец, уходящий в промпт. У реплики образцом служит ПАРА
+// «на что отвечает → что ответил»: короткая реплика сама по себе не показывает
+// манеру, потому что вся манера в том, как человек цепляется за чужие слова.
 type VoiceSample struct {
 	ID    int64  `json:"id"`
 	Kind  string `json:"kind"`
 	At    string `json:"at,omitempty"`
 	Runes int    `json:"runes"` // до усечения
 	Text  string `json:"text"`
+
+	Context       string `json:"context,omitempty"`        // текст, на который отвечает
+	ContextAuthor string `json:"context_author,omitempty"` // и чей он
 }
 
 // VoiceAccount — анкета личности и надёжность её эталона.
@@ -158,8 +165,9 @@ type VoiceAccount struct {
 // VoiceCardParams — параметры сборки карты.
 type VoiceCardParams struct {
 	Genre    string // GenreNotes | GenreAll: слой атрибуции и источник IDF
+	Kind     string // РОД текста, который пишем: notes | comments ("" — по жанру)
 	Recent   int    // последних текстов в замер на жанр (0 — все)
-	Samples  int    // образцов в промпт; 0 — промпт БЕЗ дословных текстов автора
+	Samples  int    // образцов в промпт; 0 — БЕЗ дословных текстов автора; <0 — по роду
 	Band     int    // held-out текстов под эталонную полосу
 	Seed     int64
 	TopWords int
@@ -189,6 +197,7 @@ type VoiceCard struct {
 	Rhythm    VoiceRhythm `json:"rhythm"`
 	Vocab     []VoiceWord `json:"vocab"`
 	VocabNote string      `json:"vocab_note,omitempty"` // почему словарь пуст
+	VocabRate float64     `json:"vocab_rate"`           // слов из Vocab на 100 слов у САМОГО автора
 
 	Samples []VoiceSample `json:"samples"`
 	HeldIDs []int64       `json:"held_ids"` // отложены под полосу, в промпт НЕ идут
@@ -264,13 +273,12 @@ func (s *Store) BuildVoiceCard(ctx context.Context, token string, p VoiceCardPar
 		return nil, err
 	}
 
-	// Корпус жанра: заметочный эталон — только заметки, иначе весь текст автора.
-	corpus := notes
-	if p.Genre == GenreAll {
-		corpus = append(append([]voiceText{}, notes...), comments...)
-	}
+	corpus := voiceCorpus(p, notes, comments)
 	if len(corpus) == 0 {
-		return nil, fmt.Errorf("voice: у %s нет текстов жанра %s", identity, p.Genre)
+		return nil, fmt.Errorf("voice: у %s нет текстов жанра %s (род %q)", identity, p.Genre, p.Kind)
+	}
+	if p.Samples < 0 {
+		p.Samples = voiceAutoSamples(corpus)
 	}
 
 	if card.Vocab, card.words, card.VocabNote, err = s.distinctiveWords(ctx, corpus, p.Genre, p.TopWords); err != nil {
@@ -282,13 +290,139 @@ func (s *Store) BuildVoiceCard(ctx context.Context, token string, p VoiceCardPar
 	for _, t := range held {
 		card.HeldIDs = append(card.HeldIDs, t.id)
 	}
+	card.Samples = voiceSamples(sample, p.MaxRunes)
+	if err := s.fillSampleContexts(ctx, card.Samples); err != nil {
+		return nil, err
+	}
+	card.VocabRate = vocabRate(corpus, card.Vocab)
+	return card, nil
+}
+
+func voiceSamples(sample []voiceText, maxRunes int) []VoiceSample {
+	out := make([]VoiceSample, 0, len(sample))
 	for _, t := range sample {
-		card.Samples = append(card.Samples, VoiceSample{
+		out = append(out, VoiceSample{
 			ID: t.id, Kind: t.kind, At: shortDateStr(t.pub),
-			Runes: len([]rune(t.text)), Text: excerpt(t.text, p.MaxRunes),
+			Runes: len([]rune(t.text)), Text: excerpt(t.text, maxRunes),
 		})
 	}
-	return card, nil
+	return out
+}
+
+// fillSampleContexts дотягивает к образцам-репликам то, на что они отвечают.
+// Цель ответа берётся из слоя comment_reply (настоящая цель с мобильной версии) и
+// только при его отсутствии — из parent_id, который указывает на корень ВЕТКИ, а
+// не на адресата. Ни того, ни другого нет — значит реплика первого уровня, и
+// отвечает она самой заметке.
+func (s *Store) fillSampleContexts(ctx context.Context, samples []VoiceSample) error {
+	ids := make([]int64, 0, len(samples))
+	for _, sm := range samples {
+		if sm.Kind == "comments" {
+			ids = append(ids, sm.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	got, err := s.sampleContexts(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range samples {
+		if c, ok := got[samples[i].ID]; ok && c.text != "" {
+			samples[i].Context = excerpt(c.text, voiceContextRunes)
+			samples[i].ContextAuthor = c.author
+		}
+	}
+	return nil
+}
+
+type voiceCtx struct{ text, author string }
+
+func (s *Store) sampleContexts(ctx context.Context, ids []int64) (map[int64]voiceCtx, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id,
+		       COALESCE(p.text,''), COALESCE(pu.name,''),
+		       COALESCE(n.text,''), COALESCE(nu.name,'')
+		FROM comments c
+		LEFT JOIN comment_reply r ON r.comment_id = c.id
+		LEFT JOIN comments p ON p.id = COALESCE(r.reply_to, NULLIF(c.parent_id,0))
+		LEFT JOIN users pu ON pu.id = p.author_id
+		LEFT JOIN notes n ON n.id = c.note_id
+		LEFT JOIN users nu ON nu.id = n.author_id
+		WHERE c.id IN (`+intList(ids)+`)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	got := map[int64]voiceCtx{}
+	for rows.Next() {
+		var id int64
+		var pText, pAuthor, nText, nAuthor string
+		if err := rows.Scan(&id, &pText, &pAuthor, &nText, &nAuthor); err != nil {
+			return nil, err
+		}
+		got[id] = pickSampleContext(pText, pAuthor, nText, nAuthor)
+	}
+	return got, rows.Err()
+}
+
+func pickSampleContext(pText, pAuthor, nText, nAuthor string) voiceCtx {
+	if pText == "" {
+		author := nAuthor + " (заметка)"
+		if nAuthor == "" {
+			author = "аноним (заметка)"
+		}
+		return voiceCtx{html.UnescapeString(nText), author}
+	}
+	if pAuthor == "" {
+		pAuthor = "аноним"
+	}
+	return voiceCtx{html.UnescapeString(pText), pAuthor}
+}
+
+// voiceContextRunes — потолок контекста образца. Реплика короткая, и длинный
+// контекст перевесил бы в промпте сам образец.
+const voiceContextRunes = 300
+
+// voiceCorpus — корпус образцов, словаря и полосы. Он обязан совпадать с РОДОМ
+// текста, который пишем, а не со слоем атрибуции: у режима комментария эталон
+// жанра all, и по нему в промпт комментария попадали заметки (у Гадёныша —
+// 378-рунная заметка среди шести образцов), а словарь возглавляли формулы его
+// заметочного формата («клуб пятничных неудачников объявляется открытым»).
+// Пустой Kind — прежнее поведение по жанру, для `voice card`.
+func voiceCorpus(p VoiceCardParams, notes, comments []voiceText) []voiceText {
+	switch p.Kind {
+	case "comments":
+		return comments
+	case "notes":
+		return notes
+	}
+	if p.Genre == GenreAll {
+		return append(append([]voiceText{}, notes...), comments...)
+	}
+	return notes
+}
+
+// voiceAutoSamples — сколько образцов брать, когда число не задано. Манера
+// коротких текстов из шести примеров не читается: на медиане 87 рун это ~500 рун
+// на весь промпт. Считаем по медиане корпуса, а не по роду: у автора длинных
+// комментариев не должно быть двадцати четырёх образцов зря.
+func voiceAutoSamples(corpus []voiceText) int {
+	lens := make([]int, 0, len(corpus))
+	for _, t := range corpus {
+		lens = append(lens, len([]rune(t.text)))
+	}
+	switch med := medianInt(lens); {
+	case med == 0:
+		return 6
+	case med < 150:
+		return 24
+	case med < 400:
+		return 12
+	default:
+		return 6
+	}
 }
 
 // voiceTexts — последние limit текстов жанра по анкетам личности. Свежие первыми:
@@ -840,10 +974,7 @@ func measureRhythm(texts []voiceText) VoiceRhythm {
 // коллизии (флаг Collision). forEachWord требует букв ≥2 — «и», «в», «не»
 // невидимы (это пробел слоя funcwords, не наш).
 func (s *Store) distinctiveWords(ctx context.Context, corpus []voiceText, genre string, top int) ([]VoiceWord, map[string]int, string, error) {
-	counts := map[string]int{}
-	for _, t := range corpus {
-		forEachWord(t.text, func(w []rune) { counts[string(w)]++ })
-	}
+	counts, docs := wordCounts(corpus)
 	idf, dims, err := s.loadLexisIDF(ctx, genre)
 	if err != nil {
 		return nil, counts, "", err
@@ -858,10 +989,15 @@ func (s *Store) distinctiveWords(ctx context.Context, corpus []voiceText, genre 
 	}
 	words := make([]VoiceWord, 0, len(counts))
 	for w, c := range counts {
+		// Слово из одного текста — не привычка, а разовая тема: в список оно
+		// попадает только высоким tf·idf и тянет генерацию в пересказ образца.
+		if docs[w] < 2 && len(corpus) > 2 {
+			continue
+		}
 		b := hashWordRunes([]rune(w)) % uint64(dims)
 		wIDF := float64(idf[b])
 		words = append(words, VoiceWord{
-			Word: w, Count: c, IDF: round2(wIDF),
+			Word: w, Count: c, Docs: docs[w], IDF: round2(wIDF),
 			TFIDF:     round2((1 + math.Log(float64(c))) * wIDF),
 			Collision: bucketWords[b] > 1,
 		})
@@ -876,6 +1012,82 @@ func (s *Store) distinctiveWords(ctx context.Context, corpus []voiceText, genre 
 		words = words[:top]
 	}
 	return words, counts, "", nil
+}
+
+// wordCounts — слова корпуса: сколько раз всего и в скольких разных текстах.
+// Разметка сайта снимается: из «[color=red]» forEachWord достаёт «color» и «red»,
+// и такие токены возглавляли список характерных слов, хотя это не слова автора, а
+// теги. Частота разметки в промпт идёт отдельной строкой измерений.
+func wordCounts(corpus []voiceText) (counts, docs map[string]int) {
+	counts, docs = map[string]int{}, map[string]int{}
+	for _, t := range corpus {
+		seen := map[string]bool{}
+		forEachWord(stripSiteMarkup(t.text), func(w []rune) {
+			s := string(w)
+			counts[s]++
+			if !seen[s] {
+				seen[s] = true
+				docs[s]++
+			}
+		})
+	}
+	return counts, docs
+}
+
+// siteMarkupRe — теги сайта: [b]…[/b], [color=red], :::smile:::.
+var siteMarkupRe = regexp.MustCompile(`\[[^\[\]\n]{1,40}\]|:::[^:\s]{1,40}:::`)
+
+func stripSiteMarkup(text string) string { return siteMarkupRe.ReplaceAllString(text, " ") }
+
+// vocabRate — слов из списка характерных на 100 слов текста. Норма автора против
+// той же величины у черновика — прямая мера набивки: модель, получив список,
+// склонна насыпать его вместо манеры (см. отрицательный styleZ при
+// положительном lexZ в живых замерах).
+func vocabRate(corpus []voiceText, vocab []VoiceWord) float64 {
+	if len(vocab) == 0 {
+		return 0
+	}
+	in := make(map[string]bool, len(vocab))
+	for _, v := range vocab {
+		in[v.Word] = true
+	}
+	var hits, total int
+	for _, t := range corpus {
+		forEachWord(stripSiteMarkup(t.text), func(w []rune) {
+			total++
+			if in[string(w)] {
+				hits++
+			}
+		})
+	}
+	if total == 0 {
+		return 0
+	}
+	return round2(100 * float64(hits) / float64(total))
+}
+
+// VocabUse — та же мера для одного текста (черновика) плюс абсолютное число
+// попаданий. Без него короткая реплика отбраковывалась бы за одно уместное слово:
+// на 20 словах это сразу 5 на 100.
+func VocabUse(text string, vocab []VoiceWord) (rate float64, hits int) {
+	if len(vocab) == 0 {
+		return 0, 0
+	}
+	in := make(map[string]bool, len(vocab))
+	for _, v := range vocab {
+		in[v.Word] = true
+	}
+	var total int
+	forEachWord(stripSiteMarkup(text), func(w []rune) {
+		total++
+		if in[string(w)] {
+			hits++
+		}
+	})
+	if total == 0 {
+		return 0, hits
+	}
+	return round2(100 * float64(hits) / float64(total)), hits
 }
 
 // --- разрез корпуса ---
@@ -1041,7 +1253,13 @@ func WriteVoiceBrief(w io.Writer, c *VoiceCard, kind string) error {
 		for _, v := range c.Vocab {
 			ws = append(ws, v.Word)
 		}
-		fmt.Fprintf(w, "Характерные слова: %s\n", strings.Join(ws, ", "))
+		// Список подаётся НЕ как цель: набивка характерных слов поднимает
+		// лексический косинус, обрушивая стилевой (живые замеры: styleZ < 0 при
+		// lexZ > 0). Поэтому рядом идёт норма самого автора и потолок.
+		fmt.Fprintf(w, "Привычные слова автора (НЕ список обязательных — берётся только то, "+
+			"что ложится само): %s\n", strings.Join(ws, ", "))
+		fmt.Fprintf(w, "Сам автор употребляет их %.2f на 100 слов — держись этой нормы, "+
+			"насыпать их больше значит выдать подделку.\n", c.VocabRate)
 	} else if c.VocabNote != "" {
 		fmt.Fprintf(w, "Характерные слова: %s\n", c.VocabNote)
 	}

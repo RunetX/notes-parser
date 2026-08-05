@@ -64,9 +64,11 @@ func voiceGenFixture(t *testing.T) (*Store, *VoiceCard) {
 		}
 		id++
 	}
-	// У цели много заметок: один текст полосы — малая доля профиля.
+	// У цели много заметок: один текст полосы — малая доля профиля. Длину держим
+	// выше voiceShortNgrams, иначе полоса честно откажется как шумная (и тесты
+	// цикла мерили бы не то, что задумано).
 	for i := 0; i < 60; i++ {
-		save(1, sea, 3+i%4)
+		save(1, sea, 5+i%4)
 	}
 	for i := 0; i < 20; i++ {
 		save(2, town, 3+i%3)
@@ -122,7 +124,9 @@ func TestVoiceSchemaHasNoArrayConstraints(t *testing.T) {
 func TestGenerateVoiceScoresAndStamps(t *testing.T) {
 	ctx := context.Background()
 	s, card := voiceGenFixture(t)
-	body := strings.Repeat("закат море горизонт волны песок чайки ", 4)
+	// Слова автора, но в другом порядке: длина в коридоре, а 5-граммы слов не
+	// совпадают с образцами (иначе черновик выбыл бы как пересказ).
+	body := strings.Repeat("море закат чайки волны берег тишина ", 8)
 	gen := &fakeGen{replies: []string{draftsJSON(body, body+"тишина вечер")}}
 
 	run, err := s.GenerateVoice(ctx, gen, card, noteRequest(), testNow)
@@ -169,7 +173,7 @@ func TestGenerateVoiceFeedbackRound(t *testing.T) {
 	// Длину держим в коридоре автора (иначе отбраковка случится ДО скоринга и
 	// дифф не дойдёт до атрибуции), а лексику берём чужую — такой черновик
 	// проходит валидацию и честно проигрывает по рангу.
-	weak := strings.Repeat("ипотека кредит банк ставка процент квартира ремонт документы очередь ", 3)
+	weak := strings.Repeat("ипотека кредит банк ставка процент квартира ремонт документы очередь ", 5)
 	gen := &fakeGen{replies: []string{draftsJSON(weak)}}
 
 	req := noteRequest()
@@ -200,7 +204,9 @@ func TestGenerateVoiceFeedbackRound(t *testing.T) {
 func TestGenerateVoiceRejects(t *testing.T) {
 	ctx := context.Background()
 	s, card := voiceGenFixture(t)
-	good := strings.Repeat("закат море горизонт волны песок чайки ", 4)
+	// Длина в коридоре автора, чтобы каждый случай отбраковывался своей причиной,
+	// а не длиной (порядок проверок в validateDraft — длина первой).
+	good := strings.Repeat("море закат чайки волны берег тишина ", 8)
 
 	cases := []struct {
 		name string
@@ -293,6 +299,96 @@ func TestBandRefusesContaminatedProfile(t *testing.T) {
 	}
 }
 
+// TestVocabStuffingRejected — набивка характерных слов отбраковывается ДО
+// скоринга: иначе она поднимает лексический косинус, не воспроизведя манеру, и
+// цикл обратной связи учится именно набивать.
+func TestVocabStuffingRejected(t *testing.T) {
+	cases := []struct {
+		name          string
+		draft, author float64
+		hits          int
+		want          bool
+	}{
+		{"норма", 1.2, 1.0, 5, false},
+		{"вдвое выше нормы, но мало в абсолюте", 2.0, 1.0, 5, false},
+		{"набивка", 12.0, 1.0, 6, true},
+		{"нормы автора нет", 20.0, 0, 6, false},
+		{"короткая реплика: доля высокая, попаданий два", 10.0, 1.0, 2, false},
+	}
+	for _, c := range cases {
+		got := vocabStuffing(c.draft, c.author, c.hits) != ""
+		if got != c.want {
+			t.Errorf("%s: отбраковка=%v, ожидалось %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestVocabDiffIsTwoSided — дифф говорит про НОРМУ автора в обе стороны. Прежняя
+// формулировка «не использованы характерные слова автора» была прямым заказом на
+// набивку.
+func TestVocabDiffIsTwoSided(t *testing.T) {
+	card := &VoiceCard{VocabRate: 2.0, Vocab: []VoiceWord{{Word: "тока"}, {Word: "щас"}}}
+	over := vocabDiff(VoiceDraft{VocabRate: 9, Rendered: "тока щас тока"}, card)
+	if len(over) == 0 || !strings.Contains(over[0], "СЛИШКОМ много") {
+		t.Errorf("перебор не назван перебором: %v", over)
+	}
+	under := vocabDiff(VoiceDraft{VocabRate: 0, Rendered: "совершенно нейтральный текст"}, card)
+	if len(under) == 0 || !strings.Contains(under[0], "нейтрально") {
+		t.Errorf("недобор не назван: %v", under)
+	}
+	if got := vocabDiff(VoiceDraft{VocabRate: 2.1}, card); len(got) != 0 {
+		t.Errorf("норма не должна попадать в дифф: %v", got)
+	}
+	if got := vocabDiff(VoiceDraft{VocabRate: 9}, &VoiceCard{}); len(got) != 0 {
+		t.Errorf("без нормы автора судить не о чем: %v", got)
+	}
+}
+
+// TestSamplesBlockShowsReplyContext — образец реплики подаётся парой «на что
+// отвечает → что ответил».
+func TestSamplesBlockShowsReplyContext(t *testing.T) {
+	var b strings.Builder
+	writeSamplesBlock(&b, []VoiceSample{
+		{ID: 1, Kind: "comments", Runes: 20, Text: "ответ цели",
+			Context: "чужая реплика", ContextAuthor: "Собеседник"},
+		{ID: 2, Kind: "notes", Runes: 40, Text: "заметка без контекста"},
+	})
+	out := b.String()
+	if !strings.Contains(out, "[Собеседник]: чужая реплика") || !strings.Contains(out, "→ ответ цели") {
+		t.Errorf("пара «на что отвечает → ответ» не собрана:\n%s", out)
+	}
+	if strings.Contains(out, "[]: ") {
+		t.Errorf("у образца без контекста появилась пустая шапка:\n%s", out)
+	}
+}
+
+// TestBandUnusableReasons — полоса обязана отказываться не только при
+// контаминации: квантиль выглядит убедительно и тогда, когда мерить нечем.
+// Числа второй и третьей строки — с живого замера комментариев 2026-08-05.
+func TestBandUnusableReasons(t *testing.T) {
+	cases := []struct {
+		name     string
+		band     VoiceBand
+		unusable bool
+		mentions string
+	}{
+		{"годная", VoiceBand{N: 30, ShortTexts: 4, Median: 400, Of: 9215}, false, ""},
+		{"половина полосы короче порога", VoiceBand{N: 30, ShortTexts: 26, Median: 400, Of: 9215}, true, "короче порога"},
+		{"медиана в хвосте списка", VoiceBand{N: 30, ShortTexts: 0, Median: 8391, Of: 9215}, true, "медиана полосы"},
+		{"контаминация", VoiceBand{N: 30, Contamination: 0.25, Median: 10, Of: 9215}, true, "контаминация"},
+		{"ровно на границе короткого", VoiceBand{N: 30, ShortTexts: 15, Median: 400, Of: 9215}, false, ""},
+	}
+	for _, c := range cases {
+		why := bandUnusableWhy(c.band)
+		if (why != "") != c.unusable {
+			t.Errorf("%s: непригодна=%v (%q), ожидалось %v", c.name, why != "", why, c.unusable)
+		}
+		if c.mentions != "" && !strings.Contains(why, c.mentions) {
+			t.Errorf("%s: причина %q не называет %q", c.name, why, c.mentions)
+		}
+	}
+}
+
 // TestBandQuantileEdges — крайние случаи меры «лучше скольких настоящих текстов».
 func TestBandQuantileEdges(t *testing.T) {
 	b := VoiceBand{N: 4, Ranks: []int{2, 5, 9, 40}, Usable: true}
@@ -365,6 +461,73 @@ func TestLoadVoiceThreadUsesReplyTarget(t *testing.T) {
 	}
 	if !self {
 		t.Error("собственная реплика цели в ветке не помечена")
+	}
+}
+
+// TestLoadVoiceNoteThreadTopLevel — комментарий первого уровня: адресата нет,
+// в контекст идут только корневые реплики, обращение не подставляется.
+func TestLoadVoiceNoteThreadTopLevel(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	users := []User{{ID: 1, Name: "Автор"}, {ID: 2, Name: "Первый"}, {ID: 3, Name: "Второй"}}
+	note := Note{ID: 100, AuthorID: 1, Text: "текст заметки"}
+	comments := []Comment{
+		{ID: 10, NoteID: 100, ParentID: 0, AuthorID: 2, Text: "корневая реплика"},
+		{ID: 11, NoteID: 100, ParentID: 10, AuthorID: 3, Text: "реплика внутри ветки"},
+		{ID: 12, NoteID: 100, ParentID: 0, AuthorID: 3, Text: "своя корневая реплика"},
+	}
+	if _, err := s.SaveGrab(ctx, note, comments, users, testNow); err != nil {
+		t.Fatal(err)
+	}
+	th, err := s.LoadVoiceNoteThread(ctx, 100, []int64{3}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th.ReplyToID != 0 || th.AddresseeNick != "" {
+		t.Errorf("у комментария первого уровня не должно быть адресата: replyTo=%d nick=%q",
+			th.ReplyToID, th.AddresseeNick)
+	}
+	if th.NoteAuthor != "Автор" {
+		t.Errorf("автор заметки = %q", th.NoteAuthor)
+	}
+	var ids []int64
+	for _, m := range th.Branch {
+		ids = append(ids, m.ID)
+		if m.Target {
+			t.Errorf("реплика %d помечена целью, хотя отвечаем заметке", m.ID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != 10 || ids[1] != 12 {
+		t.Errorf("в контексте реплики %v, ожидались только корневые [10 12]", ids)
+	}
+	if !th.SelfInBranch {
+		t.Error("собственная корневая реплика цели не помечена")
+	}
+}
+
+// TestVoiceTopLevelPromptDiffers — у комментария первого уровня и промпт, и
+// сборка отличаются от ответа в ветке: обращение не подставляется, задание
+// формулируется иначе, системный промпт другой.
+func TestVoiceTopLevelPromptDiffers(t *testing.T) {
+	th := &VoiceThread{
+		NoteID: 100, NoteAuthor: "Автор", NoteText: "текст заметки",
+		Branch: []VoiceThreadMsg{{ID: 10, Author: "Первый", Text: "корневая реплика"}},
+	}
+	card := &VoiceCard{Comments: VoiceShape{AddressPrefix: 1}}
+	if got := renderDraft("тело", card, VoiceRequest{Mode: VoiceModeComment, Thread: th}); got != "тело" {
+		t.Errorf("обращение подставилось там, где адресата нет: %q", got)
+	}
+	var b strings.Builder
+	writeThreadBlock(&b, th)
+	block := b.String()
+	if !strings.Contains(block, "первого уровня") || strings.Contains(block, "отвечаем на эту") {
+		t.Errorf("задание сформулировано как ответ в ветке:\n%s", block)
+	}
+	if !strings.Contains(block, "Уже сказанное") {
+		t.Errorf("корневые реплики не поданы как уже сказанное:\n%s", block)
+	}
+	if systemFor(VoiceModeComment, th) == systemFor(VoiceModeComment, &VoiceThread{ReplyToID: 5}) {
+		t.Error("системный промпт для комментария первого уровня совпал с промптом ответа в ветке")
 	}
 }
 

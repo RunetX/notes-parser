@@ -60,6 +60,10 @@ type VoiceDraft struct {
 	Rejected string  `json:"rejected,omitempty"` // непустое — черновик выбыл, причина
 	Copy     float64 `json:"copy"`               // пересечение с образцами
 
+	// VocabRate — слов из списка характерных на 100 слов. Против VoiceCard.VocabRate
+	// (нормы самого автора) это прямая мера набивки.
+	VocabRate float64 `json:"vocab_rate"`
+
 	Score        VoiceScore  `json:"score"`
 	Quantile     float64     `json:"quantile"` // доля реальных текстов, узнанных ХУЖЕ
 	Control      *VoiceScore `json:"control,omitempty"`
@@ -110,6 +114,10 @@ const voiceSystemBase = `Ты — исследовательский инстр�
   частотой, что в измерениях. Markdown (**, ##, ---, обратные кавычки, списки
   дефисом) запрещён.
 - Пиши обычным текстом, без HTML и без экранирования.
+- Не приглаживай регистр. Образцы показывают, как человек пишет на самом деле:
+  если он груб, коряв, нарочно пишет с ошибками и рубит фразу — воспроизводи это.
+  Гладкий литературный текст с симметричной шуткой в конце — самый частый провал
+  имитации: он не похож ни на кого конкретного.
 - Варианты должны различаться СОДЕРЖАНИЕМ, а не косметикой.`
 
 const voiceSystemNote = voiceSystemBase + `
@@ -122,6 +130,12 @@ const voiceSystemComment = voiceSystemBase + `
 Пишешь КОММЕНТАРИЙ в живую ветку. Отвечаешь той реплике, что помечена
 «← отвечаем на эту». Обращение «Ник,» в начале НЕ пиши — его подставит сам
 инструмент. Комментарий короткий: держись медианы длины из измерений.`
+
+const voiceSystemCommentTop = voiceSystemBase + `
+
+Пишешь КОММЕНТАРИЙ первого уровня — реплику к самой заметке, а не ответ
+кому-то из уже написавших. Обращений по нику в начале не пиши вовсе: адресата
+здесь нет. Комментарий короткий: держись медианы длины из измерений.`
 
 // voiceSchema — structured outputs Claude API. Ограничений массива (minItems/
 // maxItems) здесь быть не должно: API их не поддерживает и отвечает 400
@@ -164,7 +178,7 @@ func (s *Store) GenerateVoice(ctx context.Context, gen JSONGenerator, card *Voic
 		return nil, fmt.Errorf("voice: неизвестный режим %q (note|comment)", req.Mode)
 	}
 	if req.Mode == VoiceModeComment && req.Thread == nil {
-		return nil, fmt.Errorf("voice: для комментария нужен контекст ветки (-reply-to)")
+		return nil, fmt.Errorf("voice: для комментария нужен контекст (-reply-to или -note)")
 	}
 	kind := shapeKind(req.Mode)
 
@@ -274,7 +288,16 @@ type voiceJudge struct {
 func (j *voiceJudge) judge(text, idea string) VoiceDraft {
 	d := VoiceDraft{Text: strings.TrimSpace(text), Idea: idea}
 	d.Copy = CopyOverlap(d.Text, j.samples)
+	rate, hits := VocabUse(d.Text, j.card.Vocab)
+	d.VocabRate = rate
 	if why := validateDraft(d.Text, j.card, j.req, j.kind, d.Copy); why != "" {
+		d.Rejected = why
+		return d
+	}
+	// Набивка характерных слов — не стилистическая придирка, а обход самой меры:
+	// такой черновик поднимает лексический косинус, не воспроизведя манеру.
+	// Отбраковываем ДО скоринга, иначе цикл обратной связи учится набивать.
+	if why := vocabStuffing(rate, j.card.VocabRate, hits); why != "" {
 		d.Rejected = why
 		return d
 	}
@@ -301,7 +324,7 @@ func (j *voiceJudge) runRounds(ctx context.Context, gen JSONGenerator) error {
 	var feedback string
 	for r := 1; r <= maxRounds(j.req.Rounds); r++ {
 		prompt := buildVoicePrompt(j.card, j.req, j.kind, feedback)
-		raw, err := gen.GenerateJSON(ctx, systemFor(j.req.Mode), prompt, voiceSchema)
+		raw, err := gen.GenerateJSON(ctx, systemFor(j.req.Mode, j.req.Thread), prompt, voiceSchema)
 		if err != nil {
 			return fmt.Errorf("раунд %d: %w", r, err)
 		}
@@ -330,6 +353,33 @@ func (j *voiceJudge) runRounds(ctx context.Context, gen JSONGenerator) error {
 	}
 	return nil
 }
+
+// vocabStuffing — черновик набит характерными словами против нормы автора?
+// Потолок относительный (норма × VocabStuffFactor) плюс абсолютный порог, чтобы
+// автор с нормой 0,3 на 100 слов не отбраковывался за одно уместное слово в
+// короткой реплике.
+func vocabStuffing(draft, author float64, hits int) string {
+	if author <= 0 || draft <= vocabStuffFloor || hits < vocabStuffMinHits {
+		return ""
+	}
+	if draft > author*VocabStuffFactor {
+		return fmt.Sprintf("набивка характерных слов: %.1f на 100 слов против %.2f у автора "+
+			"(потолок ×%.0f)", draft, author, VocabStuffFactor)
+	}
+	return ""
+}
+
+// VocabStuffFactor — во сколько раз черновику позволено превысить норму автора по
+// характерным словам. Три — с запасом на короткий текст, где одно слово даёт
+// большую долю.
+const VocabStuffFactor = 3.0
+
+// vocabStuffFloor — ниже этой доли считать набивкой нечего.
+const vocabStuffFloor = 3.0
+
+// vocabStuffMinHits — и меньше трёх попаданий тоже: на реплике в 20 слов одно
+// уместное слово даёт 5 на 100, а это не набивка.
+const vocabStuffMinHits = 3
 
 // validateDraft — проверки ДО скоринга. Брак не «поправляем», а отбраковываем:
 // принять испорченный черновик значит замерить не то.
@@ -423,9 +473,10 @@ func draftDiff(d VoiceDraft, card *VoiceCard, kind string, band VoiceBand) []str
 	if sh.NoFinalPunct >= 0.4 && got.NoFinalPunct == 0 {
 		out = append(out, fmt.Sprintf("точка в конце стоит, а автор её не ставит в %s текстов", pct(sh.NoFinalPunct)))
 	}
-	if miss := missingVocab(d.Rendered, card, 5); len(miss) > 0 {
-		out = append(out, "не использованы характерные слова автора: "+strings.Join(miss, ", "))
-	}
+	// Прежняя формулировка была «не использованы характерные слова автора: …» —
+	// то есть цикл прямо велел набивать список, а это и есть обход меры
+	// (styleZ падал, lexZ рос). Теперь дифф двусторонний и говорит про НОРМУ.
+	out = append(out, vocabDiff(d, card)...)
 	if alien, total := alienWords(d.Rendered, card, 5); len(alien) > 0 {
 		out = append(out, fmt.Sprintf("слов, которых у автора нет ни разу (%d из %d): %s",
 			total, countWords(d.Rendered), strings.Join(alien, ", ")))
@@ -436,6 +487,30 @@ func draftDiff(d VoiceDraft, card *VoiceCard, kind string, band VoiceBand) []str
 			d.Score.Rank, d.Score.Of, band.Min, band.Max, d.Quantile*100, topLabel(d.Score)))
 	}
 	return out
+}
+
+// vocabDiff — расхождение по характерным словам В ОБЕ СТОРОНЫ, считая нормой
+// частоту самого автора. Просить «добавь характерных слов» без нормы значит
+// заказывать набивку.
+func vocabDiff(d VoiceDraft, card *VoiceCard) []string {
+	if card.VocabRate <= 0 {
+		return nil
+	}
+	switch {
+	case d.VocabRate > card.VocabRate*1.5:
+		return []string{fmt.Sprintf("характерных слов %.1f на 100 при норме автора %.2f — "+
+			"их СЛИШКОМ много, набивка выдаёт подделку; оставь только те, что легли сами",
+			d.VocabRate, card.VocabRate)}
+	case d.VocabRate < card.VocabRate*0.5:
+		miss := missingVocab(d.Rendered, card, 5)
+		s := fmt.Sprintf("характерных слов %.1f на 100 при норме автора %.2f — речь звучит нейтрально",
+			d.VocabRate, card.VocabRate)
+		if len(miss) > 0 {
+			s += "; из его привычных: " + strings.Join(miss, ", ")
+		}
+		return []string{s}
+	}
+	return nil
 }
 
 func topLabel(sc VoiceScore) string {
@@ -541,19 +616,53 @@ func buildVoicePrompt(card *VoiceCard, req VoiceRequest, kind, feedback string) 
 	}
 	fmt.Fprintf(&b, "Вариантов: %d.\n", draftsOf(req))
 
-	if len(card.Samples) > 0 {
-		b.WriteString("\n=== ОБРАЗЦЫ АВТОРА (манера — да, содержание и обороты — нет) ===\n")
-		for i, sm := range card.Samples {
-			fmt.Fprintf(&b, "--- образец %d (%d рун) ---\n%s\n", i+1, sm.Runes, sm.Text)
-		}
-	}
+	writeSamplesBlock(&b, card.Samples)
 	if feedback != "" {
 		b.WriteString(feedback)
 	}
 	return b.String()
 }
 
+// writeSamplesBlock — образцы автора. У реплики образец подаётся ПАРОЙ «на что
+// отвечает → что ответил»: короткая реплика в отрыве от чужих слов не показывает
+// манеру, а именно в цеплянии за чужие слова она и состоит.
+func writeSamplesBlock(b *strings.Builder, samples []VoiceSample) {
+	if len(samples) == 0 {
+		return
+	}
+	b.WriteString("\n=== ОБРАЗЦЫ АВТОРА (манера — да, содержание и обороты — нет) ===\n")
+	for i, sm := range samples {
+		fmt.Fprintf(b, "--- образец %d (%d рун) ---\n", i+1, sm.Runes)
+		if sm.Context != "" {
+			fmt.Fprintf(b, "[%s]: %s\n→ ", sm.ContextAuthor, sm.Context)
+		}
+		fmt.Fprintf(b, "%s\n", sm.Text)
+	}
+}
+
 func writeThreadBlock(b *strings.Builder, th *VoiceThread) {
+	// Два случая: ответ в ветке (ReplyToID != 0) и комментарий первого уровня к
+	// самой заметке. У второго нет ни адресата, ни помеченной реплики, а корневые
+	// реплики других идут как «уже сказанное» — иначе модель пишет то, что в
+	// треде уже прозвучало.
+	if th.ReplyToID == 0 {
+		b.WriteString("\n=== ЗАМЕТКА, К КОТОРОЙ ПИШЕШЬ ===\n")
+		fmt.Fprintf(b, "Заметка «%s»:\n%s\n", th.NoteAuthor, th.NoteText)
+		if len(th.Branch) > 0 {
+			b.WriteString("\nУже сказанное в треде (не повторять, но можно спорить):\n")
+			for _, m := range th.Branch {
+				mark := ""
+				if m.Self {
+					mark = "   ← это реплика самого автора, чью манеру воспроизводим"
+				}
+				fmt.Fprintf(b, "[%s] %s%s\n", m.Author, m.Text, mark)
+			}
+		}
+		b.WriteString("\n=== ЗАДАНИЕ ===\nНапиши КОММЕНТАРИЙ к самой заметке — " +
+			"первого уровня, не ответ конкретной реплике. Обращения по нику не писать.\n")
+		return
+	}
+
 	b.WriteString("\n=== ВЕТКА, В КОТОРУЮ ПИШЕШЬ ===\n")
 	fmt.Fprintf(b, "Заметка «%s»:\n%s\n\n", th.NoteAuthor, th.NoteText)
 	for _, m := range th.Branch {
@@ -598,6 +707,52 @@ type VoiceThreadMsg struct {
 	At       string `json:"at,omitempty"`
 	Target   bool   `json:"target,omitempty"`
 	Self     bool   `json:"self,omitempty"`
+}
+
+// LoadVoiceNoteThread собирает контекст комментария ПЕРВОГО уровня — к самой
+// заметке, а не в ветку. Адресата у такого комментария нет, поэтому обращение по
+// нику не подставляется; корневые реплики других грузятся как «уже сказанное».
+func (s *Store) LoadVoiceNoteThread(ctx context.Context, noteID int64, selfIDs []int64, limit int) (*VoiceThread, error) {
+	note, ok, err := s.LoadNote(ctx, noteID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("voice: заметка %d не найдена в архиве (заведите её grab %d)", noteID, noteID)
+	}
+	th := &VoiceThread{NoteID: noteID, NoteText: excerpt(note.Text, 1500), NoteAuthor: "аноним"}
+	if note.Author != nil {
+		th.NoteAuthor = note.Author.Name
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id, c.author_id, COALESCE(u.name,''), c.text, COALESCE(c.published_at,'')
+		FROM comments c LEFT JOIN users u ON u.id = c.author_id
+		WHERE c.note_id = ? AND c.parent_id = 0
+		ORDER BY c.id LIMIT ?`, noteID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	self := map[int64]bool{}
+	for _, id := range selfIDs {
+		self[id] = true
+	}
+	for rows.Next() {
+		var m VoiceThreadMsg
+		var at string
+		if err := rows.Scan(&m.ID, &m.AuthorID, &m.Author, &m.Text, &at); err != nil {
+			return nil, err
+		}
+		m.At = shortDateStr(at)
+		m.Text = excerpt(m.Text, 400)
+		m.Self = self[m.AuthorID]
+		if m.Self {
+			th.SelfInBranch = true
+		}
+		th.Branch = append(th.Branch, m)
+	}
+	return th, rows.Err()
 }
 
 // LoadVoiceThread собирает контекст ответа на комментарий replyToID.
@@ -682,11 +837,17 @@ func shapeOf(card *VoiceCard, kind string) VoiceShape {
 	return card.Notes
 }
 
-func systemFor(mode string) string {
-	if mode == VoiceModeComment {
-		return voiceSystemComment
+// systemFor — системный промпт под режим. У комментария их два: ответ в ветке и
+// комментарий первого уровня к заметке (там нет ни адресата, ни помеченной
+// реплики, и правило про обращение звучит наоборот).
+func systemFor(mode string, th *VoiceThread) string {
+	if mode != VoiceModeComment {
+		return voiceSystemNote
 	}
-	return voiceSystemNote
+	if th != nil && th.ReplyToID == 0 {
+		return voiceSystemCommentTop
+	}
+	return voiceSystemComment
 }
 
 func draftsOf(req VoiceRequest) int {

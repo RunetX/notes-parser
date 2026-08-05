@@ -180,6 +180,130 @@ func TestBuildVoiceCardEndToEnd(t *testing.T) {
 	}
 }
 
+// TestVoiceCorpusFollowsKind — корпус образцов и словаря идёт от РОДА текста, а не
+// от жанра эталона: у комментария жанр `all`, и без этого в промпт комментария
+// попадали заметки автора (живой замер: 378-рунная заметка среди шести образцов).
+func TestVoiceCorpusFollowsKind(t *testing.T) {
+	notes := []voiceText{{id: 1, kind: "notes", text: "длинная заметка про всё"}}
+	comments := []voiceText{{id: 2, kind: "comments", text: "короткая реплика"}}
+
+	cases := []struct {
+		name  string
+		p     VoiceCardParams
+		wantN int // сколько текстов в корпусе
+		kind  string
+	}{
+		{"комментарий при жанре all", VoiceCardParams{Genre: GenreAll, Kind: "comments"}, 1, "comments"},
+		{"заметка при жанре all", VoiceCardParams{Genre: GenreAll, Kind: "notes"}, 1, "notes"},
+		{"card: как раньше по жанру", VoiceCardParams{Genre: GenreAll}, 2, ""},
+		{"card при жанре notes", VoiceCardParams{Genre: GenreNotes}, 1, "notes"},
+	}
+	for _, c := range cases {
+		got := voiceCorpus(c.p, notes, comments)
+		if len(got) != c.wantN {
+			t.Errorf("%s: в корпусе %d текстов, ожидалось %d", c.name, len(got), c.wantN)
+			continue
+		}
+		if c.kind != "" && got[0].kind != c.kind {
+			t.Errorf("%s: род корпуса %q, ожидался %q", c.name, got[0].kind, c.kind)
+		}
+	}
+}
+
+// TestVoiceAutoSamples — число образцов считается по медиане корпуса: на коротких
+// репликах шести примеров мало, чтобы манера вообще проявилась.
+func TestVoiceAutoSamples(t *testing.T) {
+	mk := func(runes, n int) []voiceText {
+		var out []voiceText
+		for i := 0; i < n; i++ {
+			out = append(out, voiceText{id: int64(i + 1), text: strings.Repeat("х", runes)})
+		}
+		return out
+	}
+	cases := []struct {
+		runes, want int
+	}{{80, 24}, {300, 12}, {900, 6}}
+	for _, c := range cases {
+		if got := voiceAutoSamples(mk(c.runes, 50)); got != c.want {
+			t.Errorf("при медиане %d рун образцов %d, ожидалось %d", c.runes, got, c.want)
+		}
+	}
+	if got := voiceAutoSamples(nil); got != 6 {
+		t.Errorf("на пустом корпусе образцов %d, ожидалось 6", got)
+	}
+}
+
+// TestVocabIgnoresSiteMarkupAndSingleUse — из «[color=red]» forEachWord достаёт
+// «color» и «red», и эти токены возглавляли список характерных слов; слово из
+// одного текста — разовая тема, а не привычка.
+func TestVocabIgnoresSiteMarkupAndSingleUse(t *testing.T) {
+	corpus := []voiceText{
+		{id: 1, text: "[color=red]ага[/color] погода дрянь :::smile:::"},
+		{id: 2, text: "[color=red]ага[/color] погода опять"},
+		{id: 3, text: "погода разовоеслово"},
+	}
+	counts, docs := wordCounts(corpus)
+	for _, bad := range []string{"color", "red", "smile"} {
+		if counts[bad] > 0 {
+			t.Errorf("токен разметки %q попал в словарь (%d)", bad, counts[bad])
+		}
+	}
+	if counts["погода"] != 3 || docs["погода"] != 3 {
+		t.Errorf("погода: count=%d docs=%d, ожидалось 3/3", counts["погода"], docs["погода"])
+	}
+	if docs["разовоеслово"] != 1 {
+		t.Errorf("разовоеслово: docs=%d, ожидалось 1", docs["разовоеслово"])
+	}
+
+	// Норма набивки считается по тому же чистому тексту.
+	vocab := []VoiceWord{{Word: "погода"}, {Word: "ага"}}
+	if r := vocabRate(corpus, vocab); r <= 0 {
+		t.Errorf("норма характерных слов = %v, ожидалась положительная", r)
+	}
+	if r, hits := VocabUse("погода погода погода ага", vocab); r != 100 || hits != 4 {
+		t.Errorf("текст целиком из характерных слов дал %v при %d попаданиях, ожидалось 100/4", r, hits)
+	}
+}
+
+// TestSampleContextIsReplyTarget — контекст образца берётся из настоящей цели
+// ответа (comment_reply), а не из parent_id (тот указывает на корень ВЕТКИ);
+// у реплики первого уровня контекст — сама заметка.
+func TestSampleContextIsReplyTarget(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	users := []User{{ID: 1, Name: "Цель"}, {ID: 2, Name: "КореньВетки"}, {ID: 3, Name: "НастоящийАдресат"}}
+	note := Note{ID: 100, AuthorID: 2, Text: "текст заметки"}
+	comments := []Comment{
+		{ID: 10, NoteID: 100, ParentID: 0, AuthorID: 2, Text: "корень ветки"},
+		{ID: 11, NoteID: 100, ParentID: 10, AuthorID: 3, Text: "настоящая цель ответа"},
+		{ID: 12, NoteID: 100, ParentID: 10, AuthorID: 1, Text: "ответ цели"},
+		{ID: 13, NoteID: 100, ParentID: 0, AuthorID: 1, Text: "реплика первого уровня"},
+	}
+	if _, err := s.SaveGrab(ctx, note, comments, users, testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveReplyTree(ctx, 100, map[int64]int64{12: 11}); err != nil {
+		t.Fatal(err)
+	}
+	samples := []VoiceSample{
+		{ID: 12, Kind: "comments"},
+		{ID: 13, Kind: "comments"},
+	}
+	if err := s.fillSampleContexts(ctx, samples); err != nil {
+		t.Fatal(err)
+	}
+	if samples[0].Context != "настоящая цель ответа" {
+		t.Errorf("контекст ответа = %q, ожидалась настоящая цель, а не корень ветки", samples[0].Context)
+	}
+	if samples[0].ContextAuthor != "НастоящийАдресат" {
+		t.Errorf("автор контекста = %q", samples[0].ContextAuthor)
+	}
+	if samples[1].Context != "текст заметки" || !strings.Contains(samples[1].ContextAuthor, "заметка") {
+		t.Errorf("реплика первого уровня отвечает заметке, а контекст = %q (%q)",
+			samples[1].Context, samples[1].ContextAuthor)
+	}
+}
+
 // TestBuildVoiceCardWithoutLexisLayer — без lexis-слоя карта строится, словарь
 // пуст, и причина названа (контракт «сигнал недоступен», а не ошибка).
 func TestBuildVoiceCardWithoutLexisLayer(t *testing.T) {

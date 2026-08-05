@@ -158,7 +158,8 @@ func usage() {
   lovegw personas [-db archive.db] [-config config.json] [-tg-user id] [-active-days N] [-limit N] gender
   lovegw personas [-db archive.db] [-out dir] [-genre notes|all] [-recent N] [-samples N] [-band N] [-seed N] [-top-words N] voice card <p<id>|u<id>|user_id>   # читаемая карта манеры письма
   lovegw personas [-db archive.db] [-config config.json] [-topic "…"] [-drafts N] [-rounds N] [-control p<id>] [-accept F] [-max-copy F] voice note <p<id>|u<id>|user_id>      # заметка в манере автора + замкнутый цикл через атрибуцию
-  lovegw personas [-db archive.db] [-config config.json] -reply-to <comment_id> [-drafts N] [-rounds N] [-control p<id>] voice comment <p<id>|u<id>|user_id>                   # реплика в живую ветку`)
+  lovegw personas [-db archive.db] [-config config.json] -reply-to <comment_id> [-drafts N] [-rounds N] [-control p<id>] voice comment <p<id>|u<id>|user_id>                   # реплика в живую ветку
+  lovegw personas [-db archive.db] [-config config.json] -note <note_id> [-drafts N] [-rounds N] [-control p<id>] voice comment <p<id>|u<id>|user_id>                          # комментарий первого уровня к заметке`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.

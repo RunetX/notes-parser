@@ -35,6 +35,7 @@ type voiceOpts struct {
 
 	topic   string
 	replyTo int64
+	noteID  int64
 	drafts  int
 	rounds  int
 	accept  float64
@@ -65,13 +66,28 @@ func personasVoice(ctx context.Context, ar *archive.Store, args []string, o voic
 	}
 }
 
+// voiceThread — контекст для комментария: ответ в ветке (-reply-to) или реплика
+// первого уровня к заметке (-note). Анкеты личности передаются как «свои», чтобы
+// её собственные реплики в этом же треде попали в промпт помеченными.
+func voiceThread(ctx context.Context, ar *archive.Store, card *archive.VoiceCard, o voiceOpts) (*archive.VoiceThread, error) {
+	ids := make([]int64, 0, len(card.Accounts))
+	for _, a := range card.Accounts {
+		ids = append(ids, a.ID)
+	}
+	if o.replyTo != 0 {
+		return ar.LoadVoiceThread(ctx, o.replyTo, ids, voiceBranchLimit)
+	}
+	return ar.LoadVoiceNoteThread(ctx, o.noteID, ids, voiceBranchLimit)
+}
+
 // voiceGenerate — генерация с замкнутым циклом. Конфиг нужен только здесь: карта
 // строится и без ключа к модели.
 func voiceGenerate(ctx context.Context, ar *archive.Store, token, mode string, o voiceOpts) error {
 	// Дешёвые проверки аргументов — до конфига и ключа: иначе на забытый
 	// -reply-to инструмент жалуется на API-ключ, и причина не видна.
-	if mode == archive.VoiceModeComment && o.replyTo == 0 {
-		return fmt.Errorf("personas voice comment: нужен -reply-to <id комментария, которому отвечаем>")
+	if mode == archive.VoiceModeComment && o.replyTo == 0 && o.noteID == 0 {
+		return fmt.Errorf("personas voice comment: нужен -reply-to <id комментария, которому отвечаем> " +
+			"или -note <id заметки> для комментария первого уровня")
 	}
 	cfg, err := config.Load(o.cfgPath)
 	if err != nil {
@@ -93,11 +109,7 @@ func voiceGenerate(ctx context.Context, ar *archive.Store, token, mode string, o
 		Control: o.control, Model: client.Model(),
 	}
 	if mode == archive.VoiceModeComment {
-		ids := make([]int64, 0, len(card.Accounts))
-		for _, a := range card.Accounts {
-			ids = append(ids, a.ID)
-		}
-		if req.Thread, err = ar.LoadVoiceThread(ctx, o.replyTo, ids, voiceBranchLimit); err != nil {
+		if req.Thread, err = voiceThread(ctx, ar, card, o); err != nil {
 			return err
 		}
 	}
@@ -153,6 +165,8 @@ func voiceDraftFile(run *archive.VoiceRun) string {
 
 func printVoiceRun(w *os.File, run *archive.VoiceRun, req archive.VoiceRequest) {
 	fmt.Fprintf(w, "\nvoice %s %s «%s» — эталон %s\n", run.Mode, run.Identity, run.Label, run.Genre)
+	fmt.Fprintf(w, "  образцов %d (%s), характерных слов у автора %.2f на 100\n",
+		len(run.Card.Samples), voiceKind(run.Mode), run.Card.VocabRate)
 	printBand(w, "полоса цели", run.Band)
 	if run.Control != nil {
 		printBand(w, "полоса контроля "+run.Control.Identity, *run.Control)
@@ -197,8 +211,8 @@ func printDraft(w *os.File, n int, d archive.VoiceDraft) {
 	fmt.Fprintf(w, "  #%d  %d рун, 3-грамм %d | ранг %d из %d (лучше %.0f%% реальных) | топ-1 «%s»(%d)%s\n",
 		n, d.Score.Runes, d.Score.Ngrams, d.Score.Rank, d.Score.Of, d.Quantile*100,
 		d.Score.TopName, d.Score.TopID, selfMark(d.Score.Self))
-	fmt.Fprintf(w, "      styleZ %.2f | lexZ %.2f | копирование %.0f%%\n",
-		d.Score.StyleZ, d.Score.LexZ, d.Copy*100)
+	fmt.Fprintf(w, "      styleZ %.2f | lexZ %.2f | копирование %.0f%% | характерных слов %.1f на 100\n",
+		d.Score.StyleZ, d.Score.LexZ, d.Copy*100, d.VocabRate)
 	if d.Control != nil {
 		// Квантили двух личностей несопоставимы напрямую: у одного автора его
 		// собственные тексты узнаются медианно на 2-м месте, у другого на 400-м,
@@ -232,12 +246,29 @@ func voiceGenre(o voiceOpts, sub string) string {
 	return archive.GenreNotes
 }
 
+// voiceKind — РОД текста, который пишем. Отдельно от жанра эталона: у режима
+// комментария эталон `all`, но учиться манере он обязан на комментариях.
+func voiceKind(sub string) string {
+	switch sub {
+	case "note":
+		return "notes"
+	case "comment":
+		return "comments"
+	default:
+		return "" // card — как раньше, по жанру
+	}
+}
+
 func voiceParams(o voiceOpts, sub string) archive.VoiceCardParams {
 	p := archive.VoiceCardDefaults()
 	p.Genre = voiceGenre(o, sub)
+	p.Kind = voiceKind(sub)
 	if o.recent >= 0 {
 		p.Recent = o.recent
 	}
+	// Флаг не задан — число образцов считает карта по медиане корпуса: шести
+	// примеров на коротких репликах не хватает, чтобы манера вообще проявилась.
+	p.Samples = -1
 	if o.samples >= 0 {
 		p.Samples = o.samples
 	}

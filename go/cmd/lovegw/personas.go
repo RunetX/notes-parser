@@ -64,7 +64,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	topK := fs.Int("top-k", 2, "сколько ближайших по стилю на автора (stylometry cluster)")
 	maxPairs := fs.Int("max-pairs", 500, "предел числа пар стиля (stylometry cluster)")
 	top := fs.Int("top", 8, "сколько собеседников в каждую сторону (portrait) / кандидатов (attribute)")
-	noteID := fs.Int64("note", 0, "id заметки архива как текст запроса (attribute; авторская — режим валидации)")
+	noteID := fs.Int64("note", 0, "id заметки архива: текст запроса (attribute) / заметка, к которой пишем комментарий первого уровня (voice comment)")
 	lexWeight := fs.Float64("lex-weight", 0.5, "вес лексики в комбинированном скоре [0..1] (attribute)")
 	authorIdent := fs.String("author", "", "пакетный режим: прогнать все заметки личности p<id>|u<id>|user_id (attribute)")
 	notesList := fs.String("notes", "", "id заметок через запятую — калибровка отпечатка автора (calibrate)")
@@ -225,7 +225,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasVoice(ctx, ar, fs.Args()[1:], voiceOpts{
 			cfgPath: *cfgPath, outDir: *outDir, genre: gen, genreSet: *genre != "",
 			recent: *recent, samples: *samples, band: *band, seed: *seed, topWords: *topWords,
-			topic: *topic, replyTo: *replyTo, drafts: *drafts, rounds: *rounds,
+			topic: *topic, replyTo: *replyTo, noteID: *noteID, drafts: *drafts, rounds: *rounds,
 			accept: *accept, maxCopy: *maxCopy, control: *control,
 			lexWeight: *lexWeight, activeDays: *activeDays, minAuthorNotes: *minAuthorNotes,
 		})

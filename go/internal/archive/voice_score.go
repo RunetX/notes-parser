@@ -185,14 +185,43 @@ func (s *Store) BuildVoiceBand(ctx context.Context, identity, kind string, held 
 	}
 	b.Contamination = round4(medianFloat(contam))
 	fillBandQuantiles(&b)
-	if b.Contamination > BandContaminationMax {
-		b.Why = fmt.Sprintf("контаминация %.1f%%: один текст полосы — такая доля стиль-профиля автора, "+
-			"полоса была бы оптимистична настолько, что сравнивать с ней нельзя", b.Contamination*100)
+	if why := bandUnusableWhy(b); why != "" {
+		b.Why = why
 		return b, nil
 	}
 	b.Usable = true
 	return b, nil
 }
+
+// bandUnusableWhy — почему полосу нельзя считать эталоном; "" значит можно.
+// Все три причины про одно: квантиль полосы выглядит убедительно ВСЕГДА, даже
+// когда мерить нечем, поэтому отказ должен быть явным.
+func bandUnusableWhy(b VoiceBand) string {
+	switch {
+	case b.Contamination > BandContaminationMax:
+		return fmt.Sprintf("контаминация %.1f%%: один текст полосы — такая доля стиль-профиля автора, "+
+			"полоса была бы оптимистична настолько, что сравнивать с ней нельзя", b.Contamination*100)
+
+	// Полоса из коротких текстов — шум, а не эталон. Живой замер на комментариях
+	// (2026-08-05): 26 из 30 текстов ниже порога, медиана ранга 8391 из 9215, а
+	// вердикт печатал «принят, лучше 83% реальных».
+	case b.ShortTexts*2 > b.N:
+		return fmt.Sprintf("%d из %d текстов полосы короче порога объёма (%d 3-грамм): "+
+			"ранги таких текстов шумят, и квантиль по ним ничего не значит",
+			b.ShortTexts, b.N, voiceShortNgrams)
+
+	// Медиана в дальней части списка означает, что слой не узнаёт и собственные
+	// тексты автора: «лучше половины полосы» достигается тогда любым текстом на
+	// этом языке.
+	case b.Of > 0 && float64(b.Median) > bandMedianMaxShare*float64(b.Of):
+		return fmt.Sprintf("медиана полосы %d из %d: слой не узнаёт и настоящие тексты автора "+
+			"в этом жанре, эталона нет", b.Median, b.Of)
+	}
+	return ""
+}
+
+// bandMedianMaxShare — докуда медиана полосы ещё считается эталоном.
+const bandMedianMaxShare = 0.5
 
 // voiceShortNgrams — ниже этого объёма запроса ранжирование заметно шумит (тот же
 // порог, что печатает personas attribute).
