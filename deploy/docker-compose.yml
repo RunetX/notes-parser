@@ -1,4 +1,4 @@
-# Развёртывание lovegw одним сервисом. Запускать из каталога deploy/.
+# Развёртывание lovegw двумя сервисами. Запускать из каталога deploy/.
 # Хост-требование: российский IP (сайт love.ngs.ru отдаёт 403 c не-RU IP).
 # Telegram при этом идёт через SOCKS5-прокси (см. telegram_proxy / LOVEGW_TG_PROXY).
 
@@ -10,16 +10,29 @@ services:
     container_name: lovegw
     restart: unless-stopped
     volumes:
-      # БД SQLite живёт в named volume, а не в bind-mount с хоста: на Windows
-      # bind-mount не даёт надёжных блокировок/fsync, и база регулярно
-      # приходила в «database disk image is malformed» (29 и 30 июля 2026).
-      # Том должен быть записываем uid 65532 (distroless nonroot).
-      # Доступ к файлу: docker cp lovegw:/data/lovegw.db .
-      - lovegw-data:/data
+      # БД SQLite и файлы дайджеста лежат в ./data на хосте. Bind-mount годится
+      # на Linux; порча базы («database disk image is malformed», 29 и 30 июля
+      # 2026) случалась на Windows-хосте, где bind-mount не даёт надёжных
+      # блокировок/fsync — там нужен named volume.
+      # Каталог должен быть записываем uid 65532 (distroless nonroot):
+      #   mkdir -p data && sudo chown -R 65532:65532 data
+      - ./data:/data
       - ./config.json:/config.json:ro # конфиг: каналы, подпись, прокси; токены можно вынести в env
     # Секреты можно держать не в config.json, а в env (перебивают конфиг):
     # env_file:
     #   - ./secrets.env
 
-volumes:
-  lovegw-data:
+  # Наблюдатель за действиями модерации: та же картинка, отдельная БД
+  # (data/modwatch.db), только чтение сайта. Боевую БД не трогает, поэтому
+  # переживает любые операции с демоном. Из конфига берёт лишь параметры
+  # сайта и уровень лога — токены ему не нужны.
+  modwatch:
+    build:
+      context: ../go # тот же образ, что и у демона; вторая сборка идёт из кэша
+    image: lovegw:latest
+    container_name: lovegw-modwatch
+    restart: unless-stopped
+    command: ["modwatch", "-config", "/config.json", "-db", "/data/modwatch.db", "watch"]
+    volumes:
+      - ./data:/data
+      - ./config.json:/config.json:ro

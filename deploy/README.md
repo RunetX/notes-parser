@@ -1,9 +1,13 @@
 # Развёртывание lovegw
 
 Контейнеризация и деплой демона (M7). Образ — статичный distroless (~100 МБ:
-~23 МБ бинарник плюс статический `ffmpeg` для распознавания голосовых), один
-процесс: зеркало ленты + мост ответов + ЛС-бот РюмкинЪ (+ бот личной переписки,
-если задан `talks_token`).
+~23 МБ бинарник плюс статический `ffmpeg` для распознавания голосовых). Из него
+поднимаются два сервиса:
+
+- `lovegw` — сам демон: зеркало ленты + мост ответов + ЛС-бот РюмкинЪ (+ бот
+  личной переписки, если задан `talks_token`);
+- `modwatch` — наблюдатель за действиями модерации (только чтение сайта, своя
+  БД `data/modwatch.db`, см. шаг 10). Не нужен для работы зеркала.
 
 ## Требования к хосту
 
@@ -26,9 +30,22 @@ git push        # чтобы на хосте в клоне были все ко�
 ## Шаг 1 — подготовить хост
 
 ```sh
-apt-get update && apt-get install -y docker.io docker-compose-plugin git
+apt-get update && apt-get install -y docker.io docker-compose-plugin git sqlite3
 systemctl enable --now docker
 ```
+
+Сразу проверить три вещи, от которых зависит всё остальное:
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' https://love.ngs.ru/notes/   # ждём 200; 403 — IP не российский
+curl -sS -o /dev/null -w '%{http_code}\n' --socks5-hostname \
+  'socks5://ЛОГИН:ПАРОЛЬ@ХОСТ:ПОРТ' https://api.telegram.org/          # прокси виден с этого хоста
+docker pull golang:1.26                                                # реестры доступны?
+```
+
+Docker Hub и gcr.io с российских адресов отдают образы не всегда. Если `pull`
+не проходит — образ не собирается на хосте, а везётся готовым (см. «Вариант без
+git/исходников на хосте»).
 
 ## Шаг 2 — получить код
 
@@ -45,18 +62,31 @@ git clone git@github.com:RunetX/notes-parser.git && cd notes-parser/deploy
 в `config.json` (chmod 600) или в `secrets.env` (env перебивает конфиг, см.
 `secrets.env.example`).
 
-С рабочей машины по scp:
+С рабочей машины по scp (`data/` — bind-mount, файлы видны с хоста как есть):
 
 ```sh
-scp go/config.json     user@ХОСТ:~/notes-parser/deploy/config.json
-scp go/data/lovegw.db  user@ХОСТ:~/notes-parser/deploy/data/lovegw.db  # см. cutover ниже
+ssh user@ХОСТ 'mkdir -p ~/notes-parser/deploy/data'
+scp go/config.json      user@ХОСТ:~/notes-parser/deploy/config.json
+scp go/data/lovegw.db*  user@ХОСТ:~/notes-parser/deploy/data/   # .db и .db-wal; см. cutover ниже
 ```
 
-На хосте — права:
+На хосте — права. Внутри контейнера процесс работает под `nonroot` (uid 65532),
+поэтому владельцем должен быть он, а не root: `chmod 600` от root даёт
+`doctor: конфиг — open /config.json: permission denied`.
 
 ```sh
-chmod 600 config.json
-mkdir -p data && sudo chown -R 65532:65532 data   # том пишет nonroot (uid 65532)
+sudo chown 65532:65532 config.json && chmod 600 config.json
+sudo chown -R 65532:65532 data
+```
+
+**Если включён MAX** (`messengers.max.enabled`), до сборки образа положите PEM-ы
+Минцифры в `go/internal/maxx/cacert/` — в distroless нет российского корневого
+CA, и TLS к `platform-api2.max.ru` не поднимется (см. README там же):
+
+```sh
+cd go/internal/maxx/cacert
+curl -sSo russian_trusted_root_ca.pem https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt
+curl -sSo russian_trusted_sub_ca.pem  https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt
 ```
 
 ## Шаг 4 — собрать и запустить
@@ -70,9 +100,18 @@ docker compose logs -f
 
 Демон хранит всё в SQLite (`data/lovegw.db`): id постов/тредов, сессии, подписки.
 
-1. **Перенести существующую БД (рекомендуется):** скопировать рабочий
-   `data/lovegw.db` в `deploy/data/` **до первого старта** — мост и отслеживание
-   заметок продолжатся бесшовно, ничего не перепостится. (chown 65532:65532.)
+1. **Перенести существующую БД (рекомендуется):** остановить старый экземпляр,
+   скопировать рабочий `data/lovegw.db` **вместе с `data/lovegw.db-wal`** в
+   `deploy/data/` **до первого старта** — мост и отслеживание заметок продолжатся
+   бесшовно, ничего не перепостится. (`-shm` не копируем, он пересоздаётся;
+   chown 65532:65532.) Перед стартом убедиться, что файл доехал целым:
+
+   ```sh
+   sqlite3 data/lovegw.db "PRAGMA integrity_check;"   # ждём ok
+   ```
+
+   Два живых экземпляра на одном токене дадут `409` на getUpdates и дубли в
+   канале — старый демон должен быть выключен и лишён автозапуска.
 2. **Старт с чистой БД:** первый запуск с `-seed`, чтобы текущие заметки ленты
    запомнились **без** постинга (иначе улетят пачкой как «новые»):
 
@@ -143,21 +182,15 @@ docker compose run --rm lovegw doctor -config /config.json
 Секция `digest` в `config.json` (`"enabled": true`; слот по умолчанию —
 пятница 19:00 Нск). Демон в слот выпуска строит черновик и материалы в
 `/data/digest/` и шлёт админу ЛС; публикация — за админом после правки
-LLM-рубрик. `/data` — named volume (не bind-mount, см. комментарий в
-compose), поэтому файлы достаём/возвращаем через `docker cp` в работающий
-контейнер демона:
+LLM-рубрик. `data/` — bind-mount, поэтому файлы правятся прямо на хосте:
 
 ```sh
-docker cp lovegw:/data/digest/digest-<неделя>.draft.txt .
-docker cp lovegw:/data/digest/digest-<неделя>.materials.md .
-vi digest-<неделя>.draft.txt                        # вставить рубрики из materials.md
-docker cp digest-<неделя>.draft.txt lovegw:/data/digest/
+cd deploy/data/digest
+sudo vi digest-<неделя>.draft.txt                   # вставить рубрики из materials.md
+cd ../..
 docker compose run --rm lovegw digest -config /config.json preview
 docker compose run --rm lovegw digest -config /config.json publish
 ```
-
-(Альтернатива — правка прямо в томе от root:
-`sudo vi "$(docker volume inspect deploy_lovegw-data -f '{{.Mountpoint}}')/digest/…"`.)
 
 Публикация идемпотентна (message_targets) — безопасна при работающем демоне;
 `-force` публикует «сухой» выпуск без LLM-рубрик. Пропущенный слот (демон
@@ -201,15 +234,47 @@ docker compose run --rm lovegw digest -config /config.json publish
 ошибка в логах; про неверный ключ или пустой баланс админ получает ЛС один раз.
 Откат — `"enabled": false` и рестарт: гейт работает как раньше.
 
+## Шаг 10 — наблюдатель за модерацией (опционально)
+
+Сервис `modwatch` из того же образа пишет в **отдельную** `data/modwatch.db`
+моменты, которых нет в архиве: заметка исчезла из ленты, комментарий исчез из
+треда, появилась иллюстрация, закрыли комментарии. Только чтение сайта, боевую
+БД не трогает, с работающим демоном совместим. Токены ему не нужны — из
+конфига берёт лишь параметры сайта и уровень лога.
+
+```sh
+docker compose up -d modwatch                        # поднять
+docker compose logs -f modwatch                      # логи
+docker compose run --rm modwatch modwatch -config /config.json -db /data/modwatch.db -once   # разовый проход
+docker compose run --rm modwatch modwatch -db /data/modwatch.db status                       # наполнение БД
+docker compose stop modwatch                         # выключить, зеркала не касается
+```
+
+Перенос существующей `modwatch.db` — как у боевой: копировать вместе с `-wal`,
+`chown 65532:65532`. Наблюдатель ходит на сайт независимо от зеркала, поэтому
+суммарный темп запросов к love.ngs.ru складывается из обоих сервисов.
+
 ## Эксплуатация
 
 ```sh
-docker compose logs -f                       # логи
+docker compose logs -f                       # логи обоих сервисов
+docker compose logs -f lovegw                # только демон
 git pull && docker compose up -d --build     # обновление (рестарт crash-safe)
 docker compose down                          # остановка
 ```
 
+Бэкап состояния (bind-mount — файл виден с хоста, копия консистентна на живой БД):
+
+```sh
+sqlite3 deploy/data/lovegw.db ".backup '/root/backups/lovegw-$(date +%F).db'"
+```
+
 ## Вариант без git/исходников на хосте
+
+Нужен, когда на хосте недоступны реестры (Docker Hub и gcr.io с российских
+адресов отдают образы не всегда) или когда VPS слишком слаб для сборки: базовые
+слои занимают ~1.7 ГБ диска, а компиляция `modernc.org/sqlite` берёт ~520 МБ
+RSS — на машине с 1 ГБ RAM без swap это OOM.
 
 Собрать образ на рабочей машине и перенести бинарём образа:
 
@@ -221,6 +286,19 @@ docker save lovegw:latest | gzip | ssh user@ХОСТ 'gunzip | docker load'
 
 затем перенести только `deploy/` (scp) + `config.json` + `data/`, и
 `docker compose up -d` (без `--build` — образ уже загружен).
+
+Промежуточный вариант — собрать на хосте и сразу убрать базовые слои:
+
+```sh
+docker build -t lovegw:latest ../go && docker image prune -f && docker builder prune -af
+```
+
+Исходники без git тоже переносятся чисто — `git archive` отдаёт только
+отслеживаемые файлы, без `data/`, бинарников и `config.json`:
+
+```sh
+git archive --format=tar HEAD go deploy | ssh user@ХОСТ 'mkdir -p ~/notes-parser && tar -x -C ~/notes-parser'
+```
 
 ## Вариант без compose — systemd
 

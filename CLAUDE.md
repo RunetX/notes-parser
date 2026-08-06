@@ -59,8 +59,15 @@ messages, and all user-facing bot strings are in Russian.
   `distroless/static`, ~100 MB: a ~23 MB binary plus a static `ffmpeg` copied in
   for ASR; tzdata baked in via `time/tzdata`). `deploy/` has
   `docker-compose.yml` + systemd unit + runbook; config mounts as `/config.json`,
-  DB in the `/data` volume, secrets via env
-  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`).
+  state in `deploy/data` bind-mounted to `/data` (owned by uid 65532 — distroless
+  runs as `nonroot`), secrets via env
+  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`). Compose runs **two**
+  services off one image: `lovegw` (the daemon) and `modwatch` (the watcher, its
+  own `data/modwatch.db`, site read-only). A named volume is only needed on a
+  Windows host, where bind-mount corrupted the DB; on Linux the files sit on the
+  host, which makes a backup a plain `sqlite3 .backup`. With MAX enabled, the
+  Минцифры PEMs must be in `go/internal/maxx/cacert/` **before** the build — the
+  distroless image carries no Russian root CA.
 - The site is behind DDoS-Guard geoblocking — non-RU IPs get 403, so crawl/run
   (and the deployed daemon) must run from a Russian IP. Telegram Bot API, blocked
   from inside Russia, is routed through a SOCKS5 proxy (`telegram_proxy`); the
