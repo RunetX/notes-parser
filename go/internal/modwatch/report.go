@@ -10,13 +10,14 @@ import (
 
 // ReportOptions — параметры сверки «кто был на площадке в момент действия».
 type ReportOptions struct {
-	Since, Until time.Time     // границы по времени обнаружения события
-	Kinds        []string      // виды событий (пусто — все)
-	Window       time.Duration // расширение окна события в обе стороны
-	Controls     int           // сколько контрольных окон на событие
-	Seed         int64         // зерно выбора контрольных окон (воспроизводимость)
-	MinHits      int           // не показывать тех, кто совпал реже
-	Top          int           // сколько строк вернуть (0 — все)
+	Since, Until   time.Time     // границы по времени обнаружения события
+	Kinds          []string      // виды событий (пусто — все)
+	MinAge, MaxAge time.Duration // возраст объекта к моменту действия (0 — без границы)
+	Window         time.Duration // расширение окна события в обе стороны
+	Controls       int           // сколько контрольных окон на событие
+	Seed           int64         // зерно выбора контрольных окон (воспроизводимость)
+	MinHits        int           // не показывать тех, кто совпал реже
+	Top            int           // сколько строк вернуть (0 — все)
 }
 
 // Значения по умолчанию для отчёта.
@@ -78,7 +79,10 @@ func (s *Store) Analyze(ctx context.Context, opt ReportOptions) (Report, error) 
 	}
 	rep := Report{Controls: opt.Controls}
 
-	events, err := s.Events(ctx, opt.Since, opt.Until, opt.Kinds, 0)
+	events, err := s.Events(ctx, EventFilter{
+		Since: opt.Since, Until: opt.Until, Kinds: opt.Kinds,
+		MinAge: opt.MinAge, MaxAge: opt.MaxAge,
+	})
 	if err != nil || len(events) == 0 {
 		return rep, err
 	}

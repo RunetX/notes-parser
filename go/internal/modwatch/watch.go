@@ -23,13 +23,16 @@ type Site interface {
 // Значения по умолчанию: сайт опрашивается щадяще, но так, чтобы удаление
 // ловилось с точностью до пары минут — иначе окно присутствия размывается и
 // статистика теряет силу.
+// Охват выставлен по замеру: при 5 мин / 6 тредов / 3 страницах наблюдатель
+// ловил 63 % реплик сайта, а удаление комментария видно только внутри охвата.
+// Текущие значения дают ~90 % при ~15 запросах в минуту.
 const (
 	DefaultFeedInterval   = 90 * time.Second
-	DefaultThreadInterval = 5 * time.Minute
+	DefaultThreadInterval = 3 * time.Minute
 	DefaultWindow         = 48 * time.Hour
-	DefaultDepth          = 6 * time.Hour
-	DefaultMaxThreads     = 6
-	DefaultMaxPages       = 3
+	DefaultDepth          = 12 * time.Hour
+	DefaultMaxThreads     = 10
+	DefaultMaxPages       = 4
 )
 
 // Watcher — цикл наблюдения.
@@ -164,6 +167,7 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 		if present[id] || id < minID {
 			continue
 		}
+		age, idle := w.eventContext(ctx, id, row.PublishedAt, now)
 		if err := w.Store.AddEvent(ctx, Event{
 			Kind:       KindNoteGone,
 			RefID:      id,
@@ -171,6 +175,8 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 			PrevSeen:   row.LastSeen,
 			DetectedAt: now,
 			Details:    describeNote(row),
+			Age:        age,
+			Idle:       idle,
 		}); err != nil {
 			return err
 		}
@@ -184,48 +190,61 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 
 // applyNote записывает состояние заметки и заводит события по изменениям шапки.
 func (w *Watcher) applyNote(ctx context.Context, now time.Time, st NoteState, prev NoteRow, seen bool) error {
-	switch {
-	case !seen:
+	kinds := headerChanges(st, prev, seen)
+	for _, kind := range kinds {
+		prevSeen := prev.LastSeen
+		if kind == KindNotePublished {
+			prevSeen = now
+		}
+		age, idle := w.eventContext(ctx, st.ID, st.PublishedAt, now)
+		if kind == KindNotePublished {
+			idle = Unknown // тред ещё пуст — «тишина» бессмысленна
+		}
 		if err := w.Store.AddEvent(ctx, Event{
-			Kind: KindNotePublished, RefID: st.ID, NoteID: st.ID,
-			PrevSeen: now, DetectedAt: now,
+			Kind: kind, RefID: st.ID, NoteID: st.ID,
+			PrevSeen: prevSeen, DetectedAt: now,
 			Details: describeNote(NoteRow{NoteState: st}),
+			Age:     age, Idle: idle,
 		}); err != nil {
 			return err
-		}
-	default:
-		if prev.Images == 0 && st.Images > 0 {
-			if err := w.Store.AddEvent(ctx, Event{
-				Kind: KindImageAdded, RefID: st.ID, NoteID: st.ID,
-				PrevSeen: prev.LastSeen, DetectedAt: now,
-				Details: describeNote(NoteRow{NoteState: st}),
-			}); err != nil {
-				return err
-			}
-		}
-		if !prev.CommentsClosed && st.CommentsClosed {
-			if err := w.Store.AddEvent(ctx, Event{
-				Kind: KindCommentsClosed, RefID: st.ID, NoteID: st.ID,
-				PrevSeen: prev.LastSeen, DetectedAt: now,
-				Details: describeNote(NoteRow{NoteState: st}),
-			}); err != nil {
-				return err
-			}
-		}
-		if prev.CommentsClosed && !st.CommentsClosed {
-			if err := w.Store.AddEvent(ctx, Event{
-				Kind: KindCommentsOpened, RefID: st.ID, NoteID: st.ID,
-				PrevSeen: prev.LastSeen, DetectedAt: now,
-				Details: describeNote(NoteRow{NoteState: st}),
-			}); err != nil {
-				return err
-			}
 		}
 	}
 	if err := w.Store.SaveNote(ctx, now, st); err != nil {
 		return err
 	}
 	return w.saveAuthor(ctx, now, st.AuthorID, st.AuthorName)
+}
+
+// headerChanges — что изменилось в шапке заметки с прошлого опроса.
+func headerChanges(st NoteState, prev NoteRow, seen bool) []string {
+	if !seen {
+		return []string{KindNotePublished}
+	}
+	var kinds []string
+	if prev.Images == 0 && st.Images > 0 {
+		kinds = append(kinds, KindImageAdded)
+	}
+	if !prev.CommentsClosed && st.CommentsClosed {
+		kinds = append(kinds, KindCommentsClosed)
+	}
+	if prev.CommentsClosed && !st.CommentsClosed {
+		kinds = append(kinds, KindCommentsOpened)
+	}
+	return kinds
+}
+
+// eventContext — возраст объекта к моменту действия и тишина в треде перед ним.
+// Обе величины нужны, чтобы отличать руку от автоматики: у сайтового таймера
+// возраст один и тот же, у человека — какой придётся.
+func (w *Watcher) eventContext(ctx context.Context, noteID int64, published, now time.Time) (age, idle time.Duration) {
+	age, idle = Unknown, Unknown
+	if !published.IsZero() && now.After(published) {
+		age = now.Sub(published)
+	}
+	if last, ok := w.Store.LastCommentAt(ctx, noteID); ok && now.After(last) {
+		idle = now.Sub(last)
+	}
+	return age, idle
 }
 
 // saveAuthor обновляет ник и заводит событие при переименовании.
@@ -243,6 +262,7 @@ func (w *Watcher) saveAuthor(ctx context.Context, now time.Time, id int64, name 
 	return w.Store.AddEvent(ctx, Event{
 		Kind: KindNickChanged, RefID: id, PrevSeen: now, DetectedAt: now,
 		Details: prev + " → " + name,
+		Age:     Unknown, Idle: Unknown,
 	})
 }
 
@@ -273,6 +293,39 @@ func (w *Watcher) pollThread(ctx context.Context, note NoteRow, now time.Time) e
 	if err != nil {
 		return err
 	}
+	seen, minID, err := w.fetchThread(ctx, note, now)
+	if err != nil {
+		return err
+	}
+	for id, row := range known {
+		if seen[id] || id < minID {
+			continue
+		}
+		age, idle := w.eventContext(ctx, note.ID, row.PublishedAt, now)
+		if err := w.Store.AddEvent(ctx, Event{
+			Kind:       KindCommentGone,
+			RefID:      id,
+			NoteID:     note.ID,
+			PrevSeen:   row.LastSeen,
+			DetectedAt: now,
+			Details:    row.AuthorName + ": " + row.TextHead,
+			Age:        age,
+			Idle:       idle,
+		}); err != nil {
+			return err
+		}
+		if err := w.Store.MarkCommentGone(ctx, id, now); err != nil {
+			return err
+		}
+		w.log().Info("комментарий исчез", "note", note.ID, "comment", id, "автор", row.AuthorName)
+	}
+	return w.Store.SetNotePolled(ctx, note.ID, now)
+}
+
+// fetchThread листает свежие страницы треда, записывая всё увиденное, и
+// возвращает множество увиденных id вместе с самым старым из них — границей
+// охвата, глубже которой судить об исчезновении нельзя.
+func (w *Watcher) fetchThread(ctx context.Context, note NoteRow, now time.Time) (map[int64]bool, int64, error) {
 	idStr := strconv.FormatInt(note.ID, 10)
 	seen := make(map[int64]bool)
 	var minID int64 = math.MaxInt64
@@ -281,26 +334,13 @@ func (w *Watcher) pollThread(ctx context.Context, note NoteRow, now time.Time) e
 		comments, header, err := w.Site.Thread(ctx, idStr, page)
 		if err != nil {
 			if page == 1 {
-				return err
+				return nil, minID, err
 			}
 			break // конец пейджера — не ошибка
 		}
 		if page == 1 && header != nil {
-			st := NoteState{
-				ID:             note.ID,
-				AuthorID:       note.AuthorID,
-				AuthorName:     note.AuthorName,
-				TextHead:       header.Text,
-				Images:         len(header.Images),
-				CommentsClosed: header.CommentsClosed,
-				PublishedAt:    header.PublishedAt,
-			}
-			if id, err := strconv.ParseInt(header.AuthorID, 10, 64); err == nil && id != 0 {
-				st.AuthorID = id
-				st.AuthorName = header.AuthorName
-			}
-			if err := w.applyNote(ctx, now, st, note, true); err != nil {
-				return err
+			if err := w.applyHeader(ctx, note, header, now); err != nil {
+				return nil, minID, err
 			}
 		}
 		if len(comments) == 0 {
@@ -314,45 +354,49 @@ func (w *Watcher) pollThread(ctx context.Context, note NoteRow, now time.Time) e
 			if oldest.IsZero() || c.PublishedAt.Before(oldest) {
 				oldest = c.PublishedAt
 			}
-			authorID, _ := strconv.ParseInt(c.AuthorID, 10, 64)
-			if err := w.Store.SaveComment(ctx, now, CommentState{
-				ID:          c.ID,
-				NoteID:      note.ID,
-				AuthorID:    authorID,
-				AuthorName:  c.AuthorName,
-				TextHead:    c.Text,
-				PublishedAt: c.PublishedAt,
-			}); err != nil {
-				return err
-			}
-			if err := w.saveAuthor(ctx, now, authorID, c.AuthorName); err != nil {
-				return err
+			if err := w.saveComment(ctx, note.ID, c, now); err != nil {
+				return nil, minID, err
 			}
 		}
 		if !oldest.IsZero() && now.Sub(oldest) > w.Depth {
 			break
 		}
 	}
-	for id, row := range known {
-		if seen[id] || id < minID {
-			continue
-		}
-		if err := w.Store.AddEvent(ctx, Event{
-			Kind:       KindCommentGone,
-			RefID:      id,
-			NoteID:     note.ID,
-			PrevSeen:   row.LastSeen,
-			DetectedAt: now,
-			Details:    row.AuthorName + ": " + row.TextHead,
-		}); err != nil {
-			return err
-		}
-		if err := w.Store.MarkCommentGone(ctx, id, now); err != nil {
-			return err
-		}
-		w.log().Info("комментарий исчез", "note", note.ID, "comment", id, "автор", row.AuthorName)
+	return seen, minID, nil
+}
+
+// applyHeader обновляет заметку по шапке страницы комментариев: только там
+// видна дата публикации, без которой не посчитать возраст события.
+func (w *Watcher) applyHeader(ctx context.Context, note NoteRow, header *love.Note, now time.Time) error {
+	st := NoteState{
+		ID:             note.ID,
+		AuthorID:       note.AuthorID,
+		AuthorName:     note.AuthorName,
+		TextHead:       header.Text,
+		Images:         len(header.Images),
+		CommentsClosed: header.CommentsClosed,
+		PublishedAt:    header.PublishedAt,
 	}
-	return w.Store.SetNotePolled(ctx, note.ID, now)
+	if id, err := strconv.ParseInt(header.AuthorID, 10, 64); err == nil && id != 0 {
+		st.AuthorID = id
+		st.AuthorName = header.AuthorName
+	}
+	return w.applyNote(ctx, now, st, note, true)
+}
+
+func (w *Watcher) saveComment(ctx context.Context, noteID int64, c love.Comment, now time.Time) error {
+	authorID, _ := strconv.ParseInt(c.AuthorID, 10, 64)
+	if err := w.Store.SaveComment(ctx, now, CommentState{
+		ID:          c.ID,
+		NoteID:      noteID,
+		AuthorID:    authorID,
+		AuthorName:  c.AuthorName,
+		TextHead:    c.Text,
+		PublishedAt: c.PublishedAt,
+	}); err != nil {
+		return err
+	}
+	return w.saveAuthor(ctx, now, authorID, c.AuthorName)
 }
 
 func describeNote(r NoteRow) string {

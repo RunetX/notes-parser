@@ -19,6 +19,8 @@ import (
 const (
 	defaultModwatchPath = "data/modwatch.db"
 	modwatchDBUsage     = "путь к modwatch.db"
+	flagAgeMin          = "age-min"
+	flagAgeMax          = "age-max"
 	momentUsage         = "момент: 2026-08-05, «2026-08-05 14:30» или длительность назад (72h)"
 )
 
@@ -167,10 +169,13 @@ func modwatchEvents(ctx context.Context, args []string) error {
 	dbPath := fs.String("db", defaultModwatchPath, modwatchDBUsage)
 	since := fs.String("since", "", "с какого момента — "+momentUsage)
 	until := fs.String("until", "", "по какой момент — "+momentUsage)
-	kinds := fs.String("kind", "", "виды событий через запятую (по умолчанию — модераторские)")
+	kinds := fs.String("kind", "", "виды событий через запятую (пусто — все)")
+	minAge := fs.Duration(flagAgeMin, 0, "только события над объектом старше указанного возраста")
+	maxAge := fs.Duration(flagAgeMax, 0, "только события над объектом моложе указанного возраста (проверка таймером)")
 	limit := fs.Int("limit", 200, "сколько строк показать")
 	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"db": true, "since": true, "until": true, "kind": true, "limit": true,
+		"db": true, "since": true, "until": true, "kind": true,
+		flagAgeMin: true, flagAgeMax: true, "limit": true,
 	})); err != nil {
 		return err
 	}
@@ -188,21 +193,29 @@ func modwatchEvents(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	events, err := store.Events(ctx, from, to, splitKinds(*kinds), *limit)
+	events, err := store.Events(ctx, modwatch.EventFilter{
+		Since: from, Until: to, Kinds: splitKinds(*kinds),
+		MinAge: *minAge, MaxAge: *maxAge, Limit: *limit,
+	})
 	if err != nil {
 		return err
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "когда (±)\tвид\tзаметка\tобъект\tчто")
+	fmt.Fprintln(tw, "когда (±)\tвид\tвозраст\tтишина\tреплик\tзаметка\tобъект\tчто")
 	for _, e := range events {
-		fmt.Fprintf(tw, "%s (±%s)\t%s\t%d\t%d\t%s\n",
+		fmt.Fprintf(tw, "%s (±%s)\t%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
 			fmtTime(e.DetectedAt), e.DetectedAt.Sub(e.PrevSeen).Round(time.Second),
-			e.Kind, e.NoteID, e.RefID, e.Details)
+			e.Kind, fmtDur(e.Age), fmtDur(e.Idle), e.Size, e.NoteID, e.RefID, e.Details)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	fmt.Printf("\nвсего событий: %d\n", len(events))
+	fmt.Println(`«возраст» — сколько прожил объект до действия, «тишина» — сколько не писали
+в треде перед ним, «реплик» — сколько их там к тому моменту знал наблюдатель
+(оценка снизу: глубже охвата он не смотрит). Автоматика повторяется по одному и
+тому же признаку — по возрасту или по числу реплик; выпавшее из этой кучи и есть
+рука. Отсечь таймер: -age-max <срок минус запас>.`)
 	return nil
 }
 
@@ -212,6 +225,8 @@ func modwatchReport(ctx context.Context, args []string) error {
 	since := fs.String("since", "", "с какого момента — "+momentUsage)
 	until := fs.String("until", "", "по какой момент — "+momentUsage)
 	kinds := fs.String("kind", strings.Join(moderationKinds, ","), "виды событий через запятую")
+	minAge := fs.Duration(flagAgeMin, 0, "только события над объектом старше указанного возраста")
+	maxAge := fs.Duration(flagAgeMax, 0, "только события над объектом моложе указанного возраста (отсечь автоматику по таймеру)")
 	window := fs.Duration("presence-window", modwatch.DefaultPresenceWindow, "расширение окна события в обе стороны")
 	controls := fs.Int("controls", modwatch.DefaultControls, "контрольных окон на событие")
 	seed := fs.Int64("seed", 1, "зерно выбора контрольных окон")
@@ -239,6 +254,7 @@ func modwatchReport(ctx context.Context, args []string) error {
 	}
 	rep, err := store.Analyze(ctx, modwatch.ReportOptions{
 		Since: from, Until: to, Kinds: splitKinds(*kinds),
+		MinAge: *minAge, MaxAge: *maxAge,
 		Window: *window, Controls: *controls, Seed: *seed,
 		MinHits: *minHits, Top: *top,
 	})
@@ -274,8 +290,11 @@ func modwatchReport(ctx context.Context, args []string) error {
 }
 
 // moderationKinds — виды событий, которые по умолчанию считаются действием
-// модерации. note_published и nick_changed сюда не входят: первое случается и
-// без человека (заметка без картинки публикуется сама), второе — редкое.
+// модерации. Закрытие комментариев оставлено в наборе намеренно: сайт метит
+// «не актуальна» и сам, но закрывают и руками, а отделяется одно от другого не
+// исключением вида, а проверкой возраста (-age-max). note_published и
+// nick_changed не входят: первое случается и без человека, второе редкое и
+// опосредованное; оба доступны явным -kind.
 var moderationKinds = []string{
 	modwatch.KindNoteGone, modwatch.KindCommentGone,
 	modwatch.KindImageAdded, modwatch.KindCommentsClosed,
@@ -313,4 +332,19 @@ func fmtTime(t time.Time) string {
 		return "—"
 	}
 	return t.Local().Format("2006-01-02 15:04")
+}
+
+// fmtDur печатает длительность коротко: 4ч15м, 9м, «—» для неизвестной.
+func fmtDur(d time.Duration) string {
+	if d < 0 {
+		return "—"
+	}
+	switch {
+	case d >= time.Hour:
+		return fmt.Sprintf("%dч%02dм", int(d.Hours()), int(d.Minutes())%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dм", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dс", int(d.Seconds()))
+	}
 }

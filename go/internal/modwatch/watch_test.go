@@ -54,7 +54,7 @@ func newTestWatcher(t *testing.T, site Site) (*Watcher, *Store, *time.Time) {
 
 func kindsOf(t *testing.T, s *Store, kind string) []Event {
 	t.Helper()
-	ev, err := s.Events(context.Background(), time.Time{}, time.Time{}, []string{kind}, 0)
+	ev, err := s.Events(context.Background(), EventFilter{Kinds: []string{kind}})
 	if err != nil {
 		t.Fatalf("чтение событий: %v", err)
 	}
@@ -189,6 +189,56 @@ func TestCommentDeletionVsCoverage(t *testing.T) {
 	gone := kindsOf(t, store, KindCommentGone)
 	if len(gone) != 1 || gone[0].RefID != 5 || gone[0].NoteID != 300 {
 		t.Fatalf("ожидалось удаление комментария 5 в заметке 300, получено %+v", gone)
+	}
+}
+
+// Событие должно нести возраст объекта и тишину перед действием: без них не
+// отличить сайтовый таймер («не актуальна» на одном и том же возрасте) от руки.
+func TestEventCarriesAgeAndIdle(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{pages: map[string][][]love.Comment{}, headers: map[string]*love.Note{}}
+	w, store, now := newTestWatcher(t, site)
+	base := *now
+
+	site.feed = []love.Note{feedNote("500", 0, false), feedNote("499", 0, false)}
+	header := feedNote("500", 0, false)
+	header.PublishedAt = base.Add(-2 * time.Hour)
+	site.headers["500"] = &header
+	site.pages["500"] = [][]love.Comment{{comment(90, "11", base.Add(-30*time.Minute))}}
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("первый опрос: %v", err)
+	}
+
+	*now = now.Add(2 * time.Minute)
+	site.feed = []love.Note{feedNote("499", 0, false)} // 500 снесли, более старая на месте
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("второй опрос: %v", err)
+	}
+	gone := kindsOf(t, store, KindNoteGone)
+	if len(gone) != 1 {
+		t.Fatalf("ожидалось одно удаление, получено %d", len(gone))
+	}
+	if want := 2*time.Hour + 2*time.Minute; gone[0].Age != want {
+		t.Fatalf("возраст заметки %v, ожидалось %v", gone[0].Age, want)
+	}
+	if want := 32 * time.Minute; gone[0].Idle != want {
+		t.Fatalf("тишина перед действием %v, ожидалось %v", gone[0].Idle, want)
+	}
+
+	// Фильтр по возрасту — это и есть проверка таймером.
+	young, err := store.Events(ctx, EventFilter{Kinds: []string{KindNoteGone}, MaxAge: time.Hour})
+	if err != nil {
+		t.Fatalf("выборка молодых: %v", err)
+	}
+	if len(young) != 0 {
+		t.Fatalf("двухчасовая заметка попала в выборку моложе часа: %+v", young)
+	}
+	old, err := store.Events(ctx, EventFilter{Kinds: []string{KindNoteGone}, MinAge: time.Hour})
+	if err != nil {
+		t.Fatalf("выборка старых: %v", err)
+	}
+	if len(old) != 1 {
+		t.Fatalf("фильтр по нижней границе возраста потерял событие: %+v", old)
 	}
 }
 

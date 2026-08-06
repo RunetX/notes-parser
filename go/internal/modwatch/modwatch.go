@@ -94,7 +94,14 @@ type Event struct {
 	PrevSeen   time.Time // объект точно был на месте
 	DetectedAt time.Time // объекта точно уже нет
 	Details    string
+	Age        time.Duration // возраст объекта к моменту действия; Unknown — не знаем
+	Idle       time.Duration // тишина в треде перед действием; Unknown — не знаем
+	Size       int           // известных реплик в треде к моменту действия (снизу: глубже охвата мы не видели)
 }
+
+// Unknown — значение Age/Idle, когда исходная дата неизвестна (например,
+// заметка исчезла раньше, чем мы дотянулись до её шапки с датой публикации).
+const Unknown = time.Duration(-1)
 
 // Presence — реплика как след присутствия человека в минуту X.
 type Presence struct {
@@ -133,8 +140,22 @@ func Open(ctx context.Context, path string) (*Store, error) {
 // Close закрывает соединение.
 func (s *Store) Close() error { return s.db.Close() }
 
+// migrateV2SQL — контекст события: возраст объекта и «тишина» перед действием.
+//
+// Нужен, чтобы отличать руку от автоматики. Сайт сам метит заметку «не
+// актуальна» — такие закрытия кучкуются на одном возрасте (таймер), а закрытое
+// вручную выпадает из этой кучи. Тот же контекст полезен и для сносов: заметку
+// убирают либо сразу, либо утренней зачисткой — это разные сюжеты.
+const migrateV2SQL = `
+ALTER TABLE events ADD COLUMN age_sec  INTEGER;  -- возраст объекта к моменту действия
+ALTER TABLE events ADD COLUMN idle_sec INTEGER;  -- сколько в треде было тихо до действия
+`
+
 func (s *Store) migrate(ctx context.Context) error {
-	migrations := []string{schemaSQL} // v1 — базовая схема
+	migrations := []string{
+		schemaSQL,    // v1 — базовая схема
+		migrateV2SQL, // v2 — возраст объекта и тишина перед действием
+	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("чтение user_version: %w", err)
@@ -359,34 +380,72 @@ func (s *Store) SaveUser(ctx context.Context, now time.Time, id int64, name stri
 // AddEvent записывает событие; повтор того же события игнорируется.
 func (s *Store) AddEvent(ctx context.Context, e Event) error {
 	_, err := s.db.ExecContext(ctx, `
-        INSERT OR IGNORE INTO events (kind, ref_id, note_id, prev_seen_at, detected_at, details)
-        VALUES (?, ?, ?, ?, ?, ?)`,
-		e.Kind, e.RefID, e.NoteID, ts(e.PrevSeen), ts(e.DetectedAt), e.Details)
+        INSERT OR IGNORE INTO events (kind, ref_id, note_id, prev_seen_at, detected_at, details, age_sec, idle_sec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.Kind, e.RefID, e.NoteID, ts(e.PrevSeen), ts(e.DetectedAt), e.Details,
+		secs(e.Age), secs(e.Idle))
 	return err
 }
 
-// Events возвращает события за период (пустые границы — без ограничения).
-func (s *Store) Events(ctx context.Context, since, until time.Time, kinds []string, limit int) ([]Event, error) {
-	q := `SELECT id, kind, ref_id, note_id, prev_seen_at, detected_at, details FROM events WHERE 1=1`
+// EventFilter — отбор событий. Нулевые поля — без ограничения.
+type EventFilter struct {
+	Since, Until   time.Time
+	Kinds          []string
+	MinAge, MaxAge time.Duration // возраст объекта к моменту действия
+	Limit          int
+}
+
+// Events возвращает события по фильтру, от старых к новым.
+//
+// Фильтр по возрасту — это и есть проверка «таймером»: автоматика срабатывает
+// на одном и том же возрасте, поэтому `-age-max` отсекает её и оставляет
+// действия, сделанные раньше срока, то есть руками. События без известного
+// возраста (age_sec IS NULL) при заданной границе не проходят: молча выдавать
+// их за ручные нельзя.
+func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
+	// age_sec/idle_sec появились в v2; у событий, записанных раньше, они пустые,
+	// поэтому считаем их на лету из того, что и так лежит в таблицах.
+	q := `SELECT * FROM (
+            SELECT e.id, e.kind, e.ref_id, e.note_id, e.prev_seen_at, e.detected_at, e.details,
+                   COALESCE(e.age_sec, CAST((julianday(e.detected_at) - julianday(
+                       CASE WHEN e.kind = '` + KindCommentGone + `'
+                            THEN (SELECT c.published_at FROM comments c WHERE c.id = e.ref_id)
+                            ELSE (SELECT n.published_at FROM notes   n WHERE n.id = e.note_id)
+                       END)) * 86400 AS INTEGER)) AS age_sec,
+                   COALESCE(e.idle_sec, CAST((julianday(e.detected_at) - julianday(
+                       (SELECT MAX(c2.published_at) FROM comments c2 WHERE c2.note_id = e.note_id)
+                   )) * 86400 AS INTEGER)) AS idle_sec,
+                   (SELECT COUNT(*) FROM comments c3
+                     WHERE c3.note_id = e.note_id AND c3.published_at <= e.detected_at) AS size
+              FROM events e
+          ) WHERE 1=1`
 	var args []any
-	if !since.IsZero() {
+	if !f.Since.IsZero() {
 		q += " AND detected_at >= ?"
-		args = append(args, ts(since))
+		args = append(args, ts(f.Since))
 	}
-	if !until.IsZero() {
+	if !f.Until.IsZero() {
 		q += " AND detected_at <= ?"
-		args = append(args, ts(until))
+		args = append(args, ts(f.Until))
 	}
-	if len(kinds) > 0 {
-		q += " AND kind IN (" + strings.TrimSuffix(strings.Repeat("?,", len(kinds)), ",") + ")"
-		for _, k := range kinds {
+	if len(f.Kinds) > 0 {
+		q += " AND kind IN (" + strings.TrimSuffix(strings.Repeat("?,", len(f.Kinds)), ",") + ")"
+		for _, k := range f.Kinds {
 			args = append(args, k)
 		}
 	}
+	if f.MinAge > 0 {
+		q += " AND age_sec >= ?"
+		args = append(args, int64(f.MinAge.Seconds()))
+	}
+	if f.MaxAge > 0 {
+		q += " AND age_sec <= ?"
+		args = append(args, int64(f.MaxAge.Seconds()))
+	}
 	q += " ORDER BY detected_at"
-	if limit > 0 {
+	if f.Limit > 0 {
 		q += " LIMIT ?"
-		args = append(args, limit)
+		args = append(args, f.Limit)
 	}
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -397,14 +456,45 @@ func (s *Store) Events(ctx context.Context, since, until time.Time, kinds []stri
 	for rows.Next() {
 		var e Event
 		var prev, det string
-		if err := rows.Scan(&e.ID, &e.Kind, &e.RefID, &e.NoteID, &prev, &det, &e.Details); err != nil {
+		var age, idle sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Kind, &e.RefID, &e.NoteID, &prev, &det, &e.Details, &age, &idle, &e.Size); err != nil {
 			return nil, err
 		}
 		e.PrevSeen = parseTS(prev)
 		e.DetectedAt = parseTS(det)
+		e.Age, e.Idle = dur(age), dur(idle)
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// LastCommentAt — время последней известной реплики в заметке.
+func (s *Store) LastCommentAt(ctx context.Context, noteID int64) (time.Time, bool) {
+	var at sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(published_at) FROM comments WHERE note_id = ?`, noteID).Scan(&at); err != nil {
+		return time.Time{}, false
+	}
+	if !at.Valid {
+		return time.Time{}, false
+	}
+	t := parseTS(at.String)
+	return t, !t.IsZero()
+}
+
+// secs переводит длительность в секунды для БД; Unknown → NULL.
+func secs(d time.Duration) any {
+	if d < 0 {
+		return nil
+	}
+	return int64(d.Seconds())
+}
+
+func dur(v sql.NullInt64) time.Duration {
+	if !v.Valid {
+		return Unknown
+	}
+	return time.Duration(v.Int64) * time.Second
 }
 
 // PresenceLog возвращает следы присутствия (все увиденные реплики) за период,
