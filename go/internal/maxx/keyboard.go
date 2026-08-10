@@ -49,6 +49,19 @@ func (m *Mirror) EditMessage(ctx context.Context, userID int64, messageID, text 
 	}
 }
 
+// SetCommands публикует меню команд бота (dmbot.Transport). У MAX это свойство
+// самого бота (PATCH /me/commands), а не чата, поэтому вызов разовый.
+func (m *Mirror) SetCommands(ctx context.Context, cmds []kbd.Command) {
+	list := make([]model.BotCommand, 0, len(cmds))
+	for _, c := range cmds {
+		list = append(list, model.BotCommand{Name: c.Name, Description: c.Description})
+	}
+	if _, err := m.api.Bots.PatchCommands(ctx, model.BotPatchCommands{Commands: list}); err != nil {
+		// Не фатально: команды просто не появятся в меню клиента.
+		m.log.Warn("меню команд MAX не опубликовано", "err", err)
+	}
+}
+
 // maxKeyboard переводит общую клавиатуру в максовскую; пустая — nil.
 func maxKeyboard(kb *kbd.Keyboard) *model.Keyboard {
 	if kb.Empty() {

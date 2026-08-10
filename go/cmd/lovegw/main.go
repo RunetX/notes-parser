@@ -506,6 +506,22 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		}
 	}
 
+	// Меню команд в клиентах мессенджеров. После подключения talks-роутера:
+	// от него зависит, попадут ли в список /talks и /talk. Сбой не фатален —
+	// сами команды работают и без меню, поэтому ошибку логирует транспорт.
+	if dm != nil {
+		dm.PublishCommands(ctx)
+	}
+	if tgTalks != nil && tgTalks != dm {
+		tgTalks.PublishCommands(ctx)
+	}
+	if maxDM != nil {
+		maxDM.PublishCommands(ctx)
+	}
+	if maxTalksDM != nil {
+		maxTalksDM.PublishCommands(ctx)
+	}
+
 	// Планировщик дайджеста: в слот выпуска готовит черновик (LLM заполняет
 	// рубрики, если настроен) и либо публикует сам (auto_publish), либо
 	// зовёт админа — премодерация через lovegw digest publish.

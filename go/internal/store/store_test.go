@@ -143,7 +143,7 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kws) != 2 || kws[0] != "Барон" || kws[1] != "Граф" { // ORDER BY keyword
+	if len(kws) != 2 || kws[0].Keyword != "Барон" || kws[1].Keyword != "Граф" { // ORDER BY keyword
 		t.Errorf("подписки пользователя 42: %v", kws)
 	}
 
@@ -157,8 +157,27 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	}
 	// Подписка другого пользователя на «Граф» не затронута.
 	kws, _ = st.SubscriptionsByUser(ctx, MessengerTelegram, 99)
-	if len(kws) != 1 || kws[0] != "Граф" {
+	if len(kws) != 1 || kws[0].Keyword != "Граф" {
 		t.Errorf("подписки пользователя 99: %v", kws)
+	}
+	if kws[0].ID == 0 {
+		t.Error("выборка по пользователю должна заполнять id: по нему отписывает кнопка")
+	}
+
+	// Снятие по id: чужую подписку по нему снять нельзя.
+	foreign := kws[0].ID
+	if _, ok, err := st.RemoveSubscriptionByID(ctx, MessengerTelegram, 42, foreign); err != nil || ok {
+		t.Errorf("id чужой подписки не должен срабатывать: ok=%v err=%v", ok, err)
+	}
+	if _, ok, _ := st.RemoveSubscriptionByID(ctx, MessengerMax, 99, foreign); ok {
+		t.Error("id из другого мессенджера не должен срабатывать")
+	}
+	kw, ok, err := st.RemoveSubscriptionByID(ctx, MessengerTelegram, 99, foreign)
+	if err != nil || !ok || kw != "Граф" {
+		t.Errorf("снятие по id: %q ok=%v err=%v", kw, ok, err)
+	}
+	if _, ok, _ := st.RemoveSubscriptionByID(ctx, MessengerTelegram, 99, foreign); ok {
+		t.Error("повторное снятие по id должно вернуть false")
 	}
 }
 

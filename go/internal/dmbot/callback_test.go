@@ -3,6 +3,7 @@ package dmbot
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -285,6 +286,155 @@ func TestCallbackTalksOnlyRejectsForeignVerbs(t *testing.T) {
 	if state, _ := st.DialogState(ctx, store.MessengerTelegram+":talks", uid); state != "" {
 		t.Errorf("бот переписки не должен заводить состояний: %q", state)
 	}
+}
+
+// Подписки кнопками: список с «✖» на каждую, снятие перерисовывает список на
+// месте, «Добавить» заводит слово диалогом.
+func TestCallbackSubscriptionsFlow(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	for _, kw := range []string{"Граф", "Барон"} {
+		if _, err := st.AddSubscription(ctx, store.MessengerTelegram, kw, uid); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubs, "")))
+	got := buttonTexts(tr.lastKB())
+	if len(got) != 3 { // две подписки + «Добавить»
+		t.Fatalf("кнопки списка подписок: %v", got)
+	}
+
+	// Снимаем первую подписку её же кнопкой.
+	subs, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbUnsub, strconv.FormatInt(subs[0].ID, 10))))
+	left, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
+	if len(left) != 1 || left[0].Keyword != "Граф" {
+		t.Fatalf("после отписки осталось: %+v", left)
+	}
+	edit := tr.lastEdit()
+	if !strings.Contains(edit.text, "Граф") || strings.Contains(edit.text, "Барон") {
+		t.Errorf("список перерисован на месте: %q", edit.text)
+	}
+	// Повторный тап по той же кнопке безвреден.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbUnsub, strconv.FormatInt(subs[0].ID, 10))))
+	if again, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid); len(again) != 1 {
+		t.Errorf("повторная отписка изменила список: %+v", again)
+	}
+
+	// «Добавить» — слово диалогом, а не аргументом команды.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubAdd, "")))
+	if state, _ := st.DialogState(ctx, store.MessengerTelegram, uid); state != stateAwaitSubscription {
+		t.Fatalf("состояние после «Добавить»: %q", state)
+	}
+	l.HandleText(ctx, uid, "mid.1", "Мавр")
+	after, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
+	if len(after) != 2 {
+		t.Fatalf("подписка словом из диалога: %+v", after)
+	}
+	if state, _ := st.DialogState(ctx, store.MessengerTelegram, uid); state != "" {
+		t.Errorf("состояние после ввода слова: %q", state)
+	}
+}
+
+// Список диалогов: кнопка на диалог, перелистывание правит то же сообщение,
+// нажатие открывает диалог (дальше текст уходит собеседнику).
+func TestCallbackTalksPaging(t *testing.T) {
+	ctx := context.Background()
+	const uid = 42
+	st := openTestStore(t)
+	l, tr := newTestTalksLogic(t, st, store.MessengerTelegram)
+	router := &fakeRouter{ret: true}
+	l.SetTalkRouter(router)
+
+	var firstPeer int64
+	for i := range talksPageSize + 3 {
+		id, err := st.UpsertTalkPeer(ctx, store.TalkPeer{
+			Messenger: store.MessengerTelegram, OwnerUserID: uid,
+			PassportID: strconv.Itoa(i), Nick: "Собеседник " + strconv.Itoa(i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			firstPeer = id
+		}
+	}
+
+	// Из меню список приходит новым сообщением: меню — пульт, его не затираем.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbTalks, "")))
+	first := buttonTexts(tr.lastKB())
+	if len(first) != talksPageSize+1 { // страница + «Вперёд»
+		t.Fatalf("кнопки первой страницы: %v", first)
+	}
+	if len(tr.edits) != 0 {
+		t.Errorf("открытие списка из меню не должно править сообщение: %+v", tr.edits)
+	}
+
+	// Перелистывание — правка уже показанного списка.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbTalks, "1")))
+	edit := tr.lastEdit()
+	if len(buttonTexts(edit.kb)) != 3+1 { // остаток + «Назад»
+		t.Fatalf("кнопки второй страницы: %v", buttonTexts(edit.kb))
+	}
+	if !strings.Contains(edit.text, "Страница 2") {
+		t.Errorf("номер страницы: %q", edit.text)
+	}
+
+	// Страница за краем не должна ронять — показываем первую.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbTalks, "99")))
+	if got := buttonTexts(tr.lastEdit().kb); len(got) != talksPageSize+1 {
+		t.Errorf("страница за краем: %v", got)
+	}
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbTalk, strconv.FormatInt(firstPeer, 10))))
+	if state, _ := st.DialogState(ctx, store.MessengerTelegram+":talks", uid); state != statePMPrefix+strconv.FormatInt(firstPeer, 10) {
+		t.Fatalf("состояние после открытия диалога: %q", state)
+	}
+	l.HandleText(ctx, uid, "mid.1", "привет")
+	if len(router.calls) != 1 || router.calls[0].peerID != firstPeer {
+		t.Errorf("текст ушёл в открытый диалог: %+v", router.calls)
+	}
+}
+
+// Меню команд публикуется под роль бота; админская /news в него не попадает.
+func TestPublishCommandsByRole(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	l, tr, _, _ := newTestLogic(t, store.MessengerTelegram)
+	l.PublishCommands(ctx)
+	names := commandNames(tr.commands)
+	for _, want := range []string{"start", "login", "add_note", "mysubs", "cancel"} {
+		if !strings.Contains(names, want) {
+			t.Errorf("в меню бота команд нет /%s: %s", want, names)
+		}
+	}
+	if strings.Contains(names, "news") {
+		t.Errorf("админская /news в меню не значится: %s", names)
+	}
+	if strings.Contains(names, "talks") {
+		t.Errorf("без роутера переписки /talks в меню нет: %s", names)
+	}
+	l.SetTalkRouter(&fakeRouter{ret: true})
+	l.PublishCommands(ctx)
+	if !strings.Contains(commandNames(tr.commands), "talks") {
+		t.Errorf("с роутером /talks должна появиться: %s", commandNames(tr.commands))
+	}
+
+	talks, talksTr := newTestTalksLogic(t, st, store.MessengerTelegram)
+	talks.PublishCommands(ctx)
+	if names := commandNames(talksTr.commands); strings.Contains(names, "login") {
+		t.Errorf("меню бота переписки: %s", names)
+	}
+}
+
+func commandNames(cmds []kbd.Command) string {
+	names := make([]string, 0, len(cmds))
+	for _, c := range cmds {
+		names = append(names, c.Name)
+	}
+	return strings.Join(names, " ")
 }
 
 // Главное меню под роль бота: у переписки своё, у бота команд «Переписка»

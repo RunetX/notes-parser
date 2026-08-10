@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -194,23 +195,43 @@ func (s *Store) RemoveSubscription(ctx context.Context, messenger, keyword strin
 	return affected > 0, nil
 }
 
-// SubscriptionsByUser возвращает ключевые слова, на которые подписан пользователь.
-func (s *Store) SubscriptionsByUser(ctx context.Context, messenger string, userID int64) ([]string, error) {
+// SubscriptionsByUser возвращает подписки пользователя вместе с id строк: по
+// id снимает подписку кнопка (само слово в payload кнопки не влезает — там
+// 64 байта, а кириллица стоит по два на знак).
+func (s *Store) SubscriptionsByUser(ctx context.Context, messenger string, userID int64) ([]Subscription, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT keyword FROM subscriptions WHERE messenger = ? AND user_id = ? ORDER BY keyword`, messenger, userID)
+		SELECT id, keyword FROM subscriptions
+		WHERE messenger = ? AND user_id = ? ORDER BY keyword`, messenger, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var keywords []string
+	var subs []Subscription
 	for rows.Next() {
-		var kw string
-		if err := rows.Scan(&kw); err != nil {
+		sub := Subscription{Messenger: messenger, UserID: userID}
+		if err := rows.Scan(&sub.ID, &sub.Keyword); err != nil {
 			return nil, err
 		}
-		keywords = append(keywords, kw)
+		subs = append(subs, sub)
 	}
-	return keywords, rows.Err()
+	return subs, rows.Err()
+}
+
+// RemoveSubscriptionByID снимает подписку по id строки и возвращает снятое
+// слово. Мессенджер и пользователь в условии обязательны: id приезжает из
+// кнопки, и чужую подписку по нему снять быть не должно.
+func (s *Store) RemoveSubscriptionByID(ctx context.Context, messenger string, userID, id int64) (string, bool, error) {
+	var keyword string
+	err := s.db.QueryRowContext(ctx, `
+		DELETE FROM subscriptions WHERE id = ? AND messenger = ? AND user_id = ?
+		RETURNING keyword`, id, messenger, userID).Scan(&keyword)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("delete subscription %d: %w", id, err)
+	}
+	return keyword, true, nil
 }
 
 // KnownNoteIDs возвращает id всех известных заметок (для фильтра ленты).

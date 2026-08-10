@@ -37,6 +37,8 @@ type Transport interface {
 	// кнопки. Текст обязателен: в MAX клавиатура — вложение сообщения, и снять
 	// её отдельно, как editMessageReplyMarkup, там нечем.
 	EditMessage(ctx context.Context, userID int64, messageID, text string, kb *kbd.Keyboard)
+	// SetCommands публикует меню команд бота (разовый вызов на старте).
+	SetCommands(ctx context.Context, cmds []kbd.Command)
 }
 
 type Logic struct {
@@ -164,9 +166,9 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 	case "/unsubscribe":
 		l.handleUnsubscribe(ctx, userID, commandArg(text))
 	case "/mysubs":
-		l.handleMySubs(ctx, userID)
+		l.handleMySubs(ctx, userID, nil)
 	case "/talks":
-		l.handleTalks(ctx, userID)
+		l.showTalks(ctx, userID, 0, nil)
 	case "/talk":
 		l.handleTalkOpen(ctx, userID, commandArg(text))
 	case "/news":
@@ -178,8 +180,9 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 	}
 }
 
-// handleTalks показывает список диалогов личной переписки сайта.
-func (l *Logic) handleTalks(ctx context.Context, userID int64) {
+// showTalks показывает страницу списка диалогов кнопками «открыть». cb != nil
+// — перелистывание правит то же сообщение, а не сыплет новыми.
+func (l *Logic) showTalks(ctx context.Context, userID int64, page int, cb *kbd.Callback) {
 	if l.talks == nil {
 		l.tr.Send(ctx, userID, "Личная переписка сайта не подключена.")
 		return
@@ -199,12 +202,21 @@ func (l *Logic) handleTalks(ctx context.Context, userID int64) {
 		l.tr.Send(ctx, userID, msg)
 		return
 	}
+	shown, page, pages := talksPage(peers, page)
 	var b strings.Builder
-	b.WriteString("Ваши диалоги (ответить: реплай на сообщение или /talk <номер>):\n")
-	for _, p := range peers {
+	b.WriteString("Ваши диалоги (открыть — кнопкой, ответить — реплаем на сообщение):\n")
+	for _, p := range shown {
 		fmt.Fprintf(&b, "#%d %s\n", p.ID, nickOrPassport(p))
 	}
-	l.tr.Send(ctx, userID, b.String())
+	if pages > 1 {
+		fmt.Fprintf(&b, "Страница %d из %d", page+1, pages)
+	}
+	kb := talksKeyboard(shown, page, pages)
+	if cb == nil {
+		l.tr.SendKeyboard(ctx, userID, b.String(), kb)
+		return
+	}
+	l.replace(ctx, userID, *cb, b.String(), kb)
 }
 
 // handleTalkOpen «залипает» на диалоге: следующие сообщения уйдут собеседнику.
@@ -237,9 +249,10 @@ func (l *Logic) handleCancel(ctx context.Context, userID int64) {
 
 // handleSubscribe подписывает пользователя на ключевое слово: как только в
 // новом комментарии встретится это слово, придёт уведомление со ссылкой.
+// Без аргумента — спрашиваем слово диалогом, а не отчитываем за синтаксис.
 func (l *Logic) handleSubscribe(ctx context.Context, userID int64, keyword string) {
 	if keyword == "" {
-		l.tr.Send(ctx, userID, "Укажите слово: /subscribe <ключевое слово>")
+		l.askSubscription(ctx, userID)
 		return
 	}
 	added, err := l.st.AddSubscription(ctx, l.messenger, keyword, userID)
@@ -274,19 +287,25 @@ func (l *Logic) handleUnsubscribe(ctx context.Context, userID int64, keyword str
 	}
 }
 
-// handleMySubs показывает список ключевых слов пользователя.
-func (l *Logic) handleMySubs(ctx context.Context, userID int64) {
-	keywords, err := l.st.SubscriptionsByUser(ctx, l.messenger, userID)
+// handleMySubs показывает список подписок кнопками: у каждой своя «✖», внизу
+// «Добавить». cb != nil — список перерисовывается на месте (после снятия
+// подписки), иначе шлётся новым сообщением.
+func (l *Logic) handleMySubs(ctx context.Context, userID int64, cb *kbd.Callback) {
+	subs, err := l.st.SubscriptionsByUser(ctx, l.messenger, userID)
 	if err != nil {
 		l.log.Error("список подписок", "user", userID, "err", err)
 		l.tr.Send(ctx, userID, msgInternalError)
 		return
 	}
-	if len(keywords) == 0 {
-		l.tr.Send(ctx, userID, "У вас нет подписок. Добавить: /subscribe <слово>")
+	text := "Ваши подписки:\n• " + strings.Join(subKeywords(subs), "\n• ")
+	if len(subs) == 0 {
+		text = "У вас нет подписок: я уведомлю, когда в комментарии встретится ваше слово."
+	}
+	if cb == nil {
+		l.tr.SendKeyboard(ctx, userID, text, subsKeyboard(subs))
 		return
 	}
-	l.tr.Send(ctx, userID, "Ваши подписки:\n• "+strings.Join(keywords, "\n• "))
+	l.replace(ctx, userID, *cb, text, subsKeyboard(subs))
 }
 
 func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messageID, text string) {
@@ -317,6 +336,10 @@ func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messa
 		// Ждали нажатия, а пришёл текст: подсказываем, а не роняем «Не понимаю».
 		l.tr.SendKeyboard(ctx, userID, "Сначала выберите: от своего имени или анонимно.",
 			noteKindKeyboard())
+	case stateAwaitSubscription:
+		_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
+		l.handleSubscribe(ctx, userID, strings.TrimSpace(text))
+		l.handleMySubs(ctx, userID, nil)
 	case stateAwaitCredentials:
 		l.tryLogin(ctx, userID, messageID, text)
 	case stateAwaitNote:

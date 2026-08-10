@@ -76,7 +76,7 @@ func TestMigrateV3ToV4(t *testing.T) {
 	if _, valid, err := st.SessionCookies(ctx, MessengerTelegram, 42); err != nil || !valid {
 		t.Errorf("сессия после миграции: valid=%v err=%v", valid, err)
 	}
-	if kws, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 42); len(kws) != 1 || kws[0] != "Граф" {
+	if kws, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 42); len(kws) != 1 || kws[0].Keyword != "Граф" {
 		t.Errorf("подписки после миграции: %v", kws)
 	}
 	if s, _ := st.DialogState(ctx, MessengerTelegram, 42); s != "await_note" {

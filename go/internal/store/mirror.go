@@ -113,7 +113,10 @@ func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
 }
 
 // Subscription — подписка на ключевое слово в конкретном мессенджере.
+// ID заполняется только выборкой по пользователю (SubscriptionsByUser): по
+// нему кнопка снимает подписку, не таща слово в payload.
 type Subscription struct {
+	ID        int64
 	Messenger string
 	Keyword   string
 	UserID    int64

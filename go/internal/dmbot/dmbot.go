@@ -30,6 +30,9 @@ const (
 	// состояние, а не пустота между командой и нажатием: иначе набранный вместо
 	// нажатия текст получил бы «Не понимаю».
 	stateAwaitNoteKind = "await_note_kind"
+	// stateAwaitSubscription — ждём ключевое слово подписки (кнопка «Добавить»
+	// или /subscribe без аргумента).
+	stateAwaitSubscription = "await_subscription"
 	// statePMPrefix + <peer_id> — залипание на диалоге talks (/talk): текст без
 	// команды уходит выбранному собеседнику.
 	statePMPrefix = "pm:"
@@ -48,10 +51,11 @@ const (
 // Приглашения к вводу. Вынесены в константы: к ним ведут две дороги — команда
 // и нажатие кнопки, и текст должен быть один.
 const (
-	msgAskCredentials = "Для входа на сайт отправьте логин и пароль через пробел"
-	msgAskNote        = "Отправьте текст заметки"
-	msgAskAnonNote    = "Отправьте текст анонимной заметки"
-	msgAskNoteKind    = "Заметка от своего имени или анонимно?"
+	msgAskCredentials  = "Для входа на сайт отправьте логин и пароль через пробел"
+	msgAskNote         = "Отправьте текст заметки"
+	msgAskAnonNote     = "Отправьте текст анонимной заметки"
+	msgAskNoteKind     = "Заметка от своего имени или анонимно?"
+	msgAskSubscription = "Пришлите слово: уведомлю, когда оно встретится в комментарии."
 )
 
 // SiteAuth — то, что боту нужно от клиента сайта.
@@ -127,6 +131,10 @@ func (d *Bot) SetTalkRouter(r TalkRouter) {
 
 // SetNews подключает публикацию новостей проекта админом (/news).
 func (d *Bot) SetNews(svc *news.Service, adminID int64) { d.logic.SetNews(svc, adminID) }
+
+// PublishCommands публикует меню команд бота. Зовётся после SetTalkRouter:
+// от него зависит, попадут ли в список /talks и /talk.
+func (d *Bot) PublishCommands(ctx context.Context) { d.logic.PublishCommands(ctx) }
 
 // SetReplyRouter подключает только маршрутизацию реплаев, без команд. Нужен
 // боту команд, когда переписку ведёт отдельный бот: ЛС, доставленные раньше,
@@ -293,6 +301,17 @@ func (t tgTransport) EditMessage(ctx context.Context, userID int64, messageID, t
 		// Штатные отказы: «message is not modified» на повторном нажатии той же
 		// кнопки и слишком старое сообщение. Обоим место в debug.
 		t.log.Debug("правка сообщения не прошла", "user", userID, "msg", messageID, "err", err)
+	}
+}
+
+func (t tgTransport) SetCommands(ctx context.Context, cmds []kbd.Command) {
+	list := make([]models.BotCommand, 0, len(cmds))
+	for _, c := range cmds {
+		list = append(list, models.BotCommand{Command: c.Name, Description: c.Description})
+	}
+	if _, err := t.b.SetMyCommands(ctx, &bot.SetMyCommandsParams{Commands: list}); err != nil {
+		// Не фатально: команды просто не появятся в меню клиента.
+		t.log.Warn("меню команд не опубликовано", "err", err)
 	}
 }
 

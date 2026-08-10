@@ -16,12 +16,13 @@ import (
 // fakeTransport собирает отправленные ЛС, удалённые сообщения, показанные
 // клавиатуры, ответы на нажатия и правки сообщений.
 type fakeTransport struct {
-	mu      sync.Mutex
-	sent    []string
-	deleted []string
-	kbs     []sentKB   // отправленные сообщения с кнопками
-	answers []string   // тосты ответов на нажатия ("" — молча)
-	edits   []editedKB // правки сообщений
+	mu       sync.Mutex
+	sent     []string
+	deleted  []string
+	kbs      []sentKB   // отправленные сообщения с кнопками
+	answers  []string   // тосты ответов на нажатия ("" — молча)
+	edits    []editedKB // правки сообщений
+	commands []kbd.Command
 }
 
 // sentKB — сообщение с кнопками; editedKB — правка уже отправленного.
@@ -67,6 +68,12 @@ func (f *fakeTransport) EditMessage(_ context.Context, _ int64, messageID, text 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, editedKB{messageID: messageID, text: text, kb: kb})
+}
+
+func (f *fakeTransport) SetCommands(_ context.Context, cmds []kbd.Command) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commands = cmds
 }
 
 func (f *fakeTransport) lastSent() string {
