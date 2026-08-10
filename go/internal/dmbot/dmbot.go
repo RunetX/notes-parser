@@ -15,6 +15,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/news"
 	"lovegw/internal/store"
 )
@@ -25,6 +26,10 @@ const (
 	stateAwaitNote        = "await_note"
 	stateAwaitAnonNote    = "await_anon_note"
 	stateAwaitNews        = "await_news"
+	// stateAwaitNoteKind — заметка ждёт выбора авторства кнопкой. Отдельное
+	// состояние, а не пустота между командой и нажатием: иначе набранный вместо
+	// нажатия текст получил бы «Не понимаю».
+	stateAwaitNoteKind = "await_note_kind"
 	// statePMPrefix + <peer_id> — залипание на диалоге talks (/talk): текст без
 	// команды уходит выбранному собеседнику.
 	statePMPrefix = "pm:"
@@ -38,6 +43,15 @@ const (
 const (
 	msgInternalError  = "Внутренняя ошибка, попробуйте позже"
 	msgUnknownCommand = "Неизвестная команда. Наберите /start"
+)
+
+// Приглашения к вводу. Вынесены в константы: к ним ведут две дороги — команда
+// и нажатие кнопки, и текст должен быть один.
+const (
+	msgAskCredentials = "Для входа на сайт отправьте логин и пароль через пробел"
+	msgAskNote        = "Отправьте текст заметки"
+	msgAskAnonNote    = "Отправьте текст анонимной заметки"
+	msgAskNoteKind    = "Заметка от своего имени или анонимно?"
 )
 
 // SiteAuth — то, что боту нужно от клиента сайта.
@@ -187,6 +201,11 @@ func (d *Bot) NotifyHTML(ctx context.Context, tgUserID int64, html string) {
 
 // handle обрабатывает входящее ЛС.
 func (d *Bot) handle(ctx context.Context, u *models.Update) {
+	// Нажатие кнопки — до проверки на сообщение: у callback_query его нет.
+	if u.CallbackQuery != nil {
+		d.handleCallback(ctx, u.CallbackQuery)
+		return
+	}
 	msg := u.Message
 	if msg == nil || msg.Chat.Type != models.ChatTypePrivate || msg.Text == "" {
 		return
@@ -198,6 +217,21 @@ func (d *Bot) handle(ctx context.Context, u *models.Update) {
 		return
 	}
 	d.logic.HandleText(ctx, msg.Chat.ID, strconv.Itoa(msg.ID), msg.Text)
+}
+
+// handleCallback обрабатывает нажатие кнопки. Сообщение с клавиатурой приходит
+// как MaybeInaccessibleMessage: у слишком старого доступен только id, и тогда
+// правку текста пропускаем — роутер отвечает нажавшему в любом случае.
+func (d *Bot) handleCallback(ctx context.Context, cq *models.CallbackQuery) {
+	var msgID string
+	if m := cq.Message.Message; m != nil {
+		msgID = strconv.Itoa(m.ID)
+	}
+	d.logic.HandleCallback(ctx, cq.From.ID, kbd.Callback{
+		AnswerID:  cq.ID,
+		MessageID: msgID,
+		Payload:   cq.Data,
+	})
 }
 
 // tgTransport — телеграм-транспорт диалогового ядра.
@@ -222,6 +256,61 @@ func (t tgTransport) DeleteMessage(ctx context.Context, userID int64, messageID 
 		// Не критично: у бота может не быть права удалять, или сообщение старое.
 		t.log.Debug("не удалось удалить сообщение с логином", "user", userID, "err", err)
 	}
+}
+
+func (t tgTransport) SendKeyboard(ctx context.Context, userID int64, text string, kb *kbd.Keyboard) {
+	if _, err := t.b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:      userID,
+		Text:        text,
+		ReplyMarkup: tgMarkup(kb),
+	}); err != nil {
+		t.log.Warn("отправка ЛС с кнопками не удалась", "user", userID, "err", err)
+	}
+}
+
+func (t tgTransport) AnswerCallback(ctx context.Context, cb kbd.Callback, toast string) {
+	if _, err := t.b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
+		CallbackQueryID: cb.AnswerID,
+		Text:            toast,
+	}); err != nil {
+		// Нажатие живёт недолго: протухший callback_query — обычное дело.
+		t.log.Debug("ответ на нажатие не прошёл", "err", err)
+	}
+}
+
+func (t tgTransport) EditMessage(ctx context.Context, userID int64, messageID, text string, kb *kbd.Keyboard) {
+	id, err := strconv.Atoi(messageID)
+	if err != nil {
+		t.log.Error("не телеграмный id сообщения", "id", messageID)
+		return
+	}
+	if _, err := t.b.EditMessageText(ctx, &bot.EditMessageTextParams{
+		ChatID:      userID,
+		MessageID:   id,
+		Text:        text,
+		ReplyMarkup: tgMarkup(kb),
+	}); err != nil {
+		// Штатные отказы: «message is not modified» на повторном нажатии той же
+		// кнопки и слишком старое сообщение. Обоим место в debug.
+		t.log.Debug("правка сообщения не прошла", "user", userID, "msg", messageID, "err", err)
+	}
+}
+
+// tgMarkup переводит общую клавиатуру в телеграмную. Пустая — нетипизированный
+// nil: reply_markup с omitempty пропадёт из запроса, и Telegram снимет кнопки.
+func tgMarkup(kb *kbd.Keyboard) models.ReplyMarkup {
+	if kb.Empty() {
+		return nil
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, len(kb.Rows))
+	for _, row := range kb.Rows {
+		btns := make([]models.InlineKeyboardButton, 0, len(row))
+		for _, b := range row {
+			btns = append(btns, models.InlineKeyboardButton{Text: b.Text, CallbackData: b.Payload})
+		}
+		rows = append(rows, btns)
+	}
+	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 // command вычленяет команду из начала сообщения (учитывает форму /cmd@botname).
@@ -257,7 +346,8 @@ func startMessage(talksOnly, withTalks bool) string {
 /talk <номер> — писать в выбранный диалог
 /cancel — выйти из диалога
 Ответить на входящее ЛС можно просто реплаем.
-Вход на сайт, заметки и подписки — у основного бота (там же /login).`
+Вход на сайт, заметки и подписки — у основного бота (там же /login).
+То же самое — кнопками ниже.`
 	}
 	msg := `Привет! Меня зовут РюмкинЪ. Я умею:
 /login — войти на сайт НГС.Лав
@@ -270,5 +360,5 @@ func startMessage(talksOnly, withTalks bool) string {
 	if withTalks {
 		msg += "\n/talks — мои личные диалоги на сайте\n/talk <номер> — писать в выбранный диалог"
 	}
-	return msg
+	return msg + "\nТо же самое — кнопками ниже."
 }

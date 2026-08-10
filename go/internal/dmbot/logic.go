@@ -15,16 +15,28 @@ import (
 	"strings"
 	"time"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/love"
 	"lovegw/internal/news"
 	"lovegw/internal/store"
 )
 
-// Transport — отправка и удаление личных сообщений в мессенджере.
-// Id сообщений строковые (Telegram — число строкой, MAX — mid).
+// Transport — отправка и удаление личных сообщений в мессенджере, плюс
+// кнопки под сообщением. Id сообщений строковые (Telegram — число строкой,
+// MAX — mid).
 type Transport interface {
 	Send(ctx context.Context, userID int64, text string)
 	DeleteMessage(ctx context.Context, userID int64, messageID string)
+	// SendKeyboard — сообщение с кнопками; текст без разметки, как у Send.
+	SendKeyboard(ctx context.Context, userID int64, text string, kb *kbd.Keyboard)
+	// AnswerCallback гасит «спиннер» у нажавшего. Зовётся ДО работы: публикация
+	// в каналы идёт через лимитеры и занимает секунды, а нажатие к тому времени
+	// протухнет. Пустой toast — ответить молча.
+	AnswerCallback(ctx context.Context, cb kbd.Callback, toast string)
+	// EditMessage переписывает уже отправленное сообщение; kb == nil — убрать
+	// кнопки. Текст обязателен: в MAX клавиатура — вложение сообщения, и снять
+	// её отдельно, как editMessageReplyMarkup, там нечем.
+	EditMessage(ctx context.Context, userID int64, messageID, text string, kb *kbd.Keyboard)
 }
 
 type Logic struct {
@@ -92,10 +104,12 @@ func NewTalksLogic(st *store.Store, tr Transport, messenger string, log *slog.Lo
 	}
 }
 
-// Greet шлёт приветствие со списком команд (на /start и первое открытие
-// диалога — bot_started в MAX).
+// Greet шлёт приветствие со списком команд и главным меню кнопками (на /start
+// и первое открытие диалога — bot_started в MAX). Список команд остаётся: он и
+// справка, и обратная совместимость для тех, кто привык набирать.
 func (l *Logic) Greet(ctx context.Context, userID int64) {
-	l.tr.Send(ctx, userID, startMessage(l.talksOnly, l.talks != nil))
+	l.tr.SendKeyboard(ctx, userID, startMessage(l.talksOnly, l.talks != nil),
+		mainMenu(l.talksOnly, l.talks != nil))
 }
 
 // HandleText обрабатывает входящее ЛС. messageID нужен для удаления
@@ -136,13 +150,13 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.Greet(ctx, userID)
 	case "/login":
 		l.setState(ctx, userID, stateAwaitCredentials)
-		l.tr.Send(ctx, userID, "Для входа на сайт отправьте логин и пароль через пробел")
+		l.tr.SendKeyboard(ctx, userID, msgAskCredentials, cancelKeyboard())
 	case "/add_note":
-		l.setState(ctx, userID, stateAwaitNote)
-		l.tr.Send(ctx, userID, "Отправьте текст заметки")
+		l.askNoteKind(ctx, userID)
 	case "/add_anonymous_note":
+		// Прямая дорога для тех, кто привык: вопрос об авторстве пропускаем.
 		l.setState(ctx, userID, stateAwaitAnonNote)
-		l.tr.Send(ctx, userID, "Отправьте текст анонимной заметки")
+		l.tr.SendKeyboard(ctx, userID, msgAskAnonNote, cancelKeyboard())
 	case "/status":
 		l.handleStatus(ctx, userID)
 	case "/subscribe":
@@ -210,7 +224,9 @@ func (l *Logic) handleTalkOpen(ctx context.Context, userID int64, arg string) {
 		return
 	}
 	l.setState(ctx, userID, statePMPrefix+strconv.FormatInt(peerID, 10))
-	l.tr.Send(ctx, userID, "Пишу в диалог с "+nickOrPassport(peer)+". Следующие сообщения уйдут ему. /cancel — выйти.")
+	l.tr.SendKeyboard(ctx, userID,
+		"Пишу в диалог с "+nickOrPassport(peer)+". Следующие сообщения уйдут ему. /cancel — выйти.",
+		cancelKeyboard())
 }
 
 // handleCancel выходит из залипшего диалога (и любого другого состояния).
@@ -297,6 +313,10 @@ func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messa
 		return
 	}
 	switch state {
+	case stateAwaitNoteKind:
+		// Ждали нажатия, а пришёл текст: подсказываем, а не роняем «Не понимаю».
+		l.tr.SendKeyboard(ctx, userID, "Сначала выберите: от своего имени или анонимно.",
+			noteKindKeyboard())
 	case stateAwaitCredentials:
 		l.tryLogin(ctx, userID, messageID, text)
 	case stateAwaitNote:

@@ -11,6 +11,7 @@ import (
 
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
 
@@ -53,6 +54,7 @@ type ReplyBridge interface {
 // DMLogic — диалоговый ЛС-движок (реализуется dmbot.Logic).
 type DMLogic interface {
 	HandleText(ctx context.Context, userID int64, messageID, text string)
+	HandleCallback(ctx context.Context, userID int64, cb kbd.Callback)
 	Greet(ctx context.Context, userID int64)
 }
 
@@ -68,6 +70,8 @@ func (m *Mirror) Dispatch(bridge ReplyBridge, dm DMLogic) UpdateHandler {
 			}
 		case model.UpdateMessageCreated:
 			m.dispatchMessage(ctx, u, bridge, dm)
+		case model.UpdateMessageCallback:
+			m.dispatchCallback(ctx, u, dm)
 		default:
 			// Наблюдательность на debug-уровне: платформа развивается
 			// (нативные комментарии каналов и т.п.), новые типы апдейтов
@@ -111,6 +115,42 @@ func (m *Mirror) dispatchMessage(ctx context.Context, u model.Update, bridge Rep
 			"chat", msg.Recipient.ChatID, "chat_type", msg.Recipient.ChatType,
 			"mid", msg.Body.Mid, "link", linkInfo(msg.Link))
 	}
+}
+
+// dispatchCallback отдаёт нажатие кнопки ЛС-движку. Нажавшего берём из
+// callback.user: для message_callback SDK кладёт в update.user_id ПОЛУЧАТЕЛЯ
+// сообщения с клавиатурой, а update.user не заполняет вовсе. Пустой mid —
+// рабочий случай: сообщение с кнопкой могли удалить.
+//
+// Маркер поллинга не персистится намеренно (см. шапку файла), так что после
+// рестарта нажатие может приехать повторно — обработчики нажатий поэтому
+// идемпотентны по dialog_states.
+func (m *Mirror) dispatchCallback(ctx context.Context, u model.Update, dm DMLogic) {
+	if dm == nil || u.Callback == nil {
+		return
+	}
+	var mid string
+	var chatType model.ChatType
+	if u.Message != nil {
+		mid, chatType = u.Message.Body.Mid, u.Message.Recipient.ChatType
+	}
+	// Кнопки этого эпика живут только в диалогах. Нажатие под постом канала
+	// (эпик B) сюда ещё не приходит — подсвечиваем, как прочие апдейты.
+	// Пустой тип считаем диалогом: он теряется вместе с удалённым сообщением.
+	if chatType != "" && chatType != model.ChatTypeDialog {
+		m.log.Debug("нажатие MAX вне диалога", "chat", u.ChatID, "chat_type", chatType)
+		return
+	}
+	userID := u.Callback.User.UserID
+	if userID == 0 {
+		m.log.Warn("нажатие MAX без пользователя", "mid", mid)
+		return
+	}
+	dm.HandleCallback(ctx, userID, kbd.Callback{
+		AnswerID:  u.Callback.CallbackID,
+		MessageID: mid,
+		Payload:   u.Callback.Payload,
+	})
 }
 
 // linkInfo — краткое описание связки сообщения для debug-лога.

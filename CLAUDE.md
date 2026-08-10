@@ -98,7 +98,13 @@ messages, and all user-facing bot strings are in Russian.
     are `go:embed`-ded from `maxx/cacert/` when present at build time (see the
     README there), otherwise the host trust store is used. `updates.go` runs
     long polling (`GetUpdates(marker)`) and dispatches: discussion-chat
-    replies → `bridge.Core`, dialog messages → `dmbot.Logic`. The mirror bot
+    replies → `bridge.Core`, dialog messages and button presses → `dmbot.Logic`.
+    Нажатия (`message_callback`, ветка `dispatchCallback`): нажавшего берём из
+    `callback.user` — в `update.user_id` SDK кладёт ПОЛУЧАТЕЛЯ сообщения, а
+    `update.user` для этого типа не заполняет вовсе; пустой mid (сообщение
+    удалили) — рабочий случай. Клавиатуры и правка сообщений — `keyboard.go`;
+    снять одну клавиатуру, как `editMessageReplyMarkup`, в MAX нечем: и правка,
+    и ответ на нажатие принимают тело сообщения целиком. The mirror bot
     always covers channel, discussion chat and DM commands; only the site's
     personal correspondence (talks) can move to a second bot via
     `messengers.max.talks_token` (the legacy `max.dm_token` is migrated to it
@@ -195,10 +201,25 @@ messages, and all user-facing bot strings are in Russian.
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
     `/add_anonymous_note`, `/status`, `/subscribe`, `/unsubscribe`, `/mysubs`.
     Плюс админская `/news` (`SetNews`, пакет `news`): текст → превью →
-    подтверждение словом «да» → пост в каналы. Она видна только
+    подтверждение кнопкой «Опубликовать» (слово «да» осталось запасным путём) →
+    пост в каналы. Она видна только
     `messengers.<m>.admin_user_id`, в `/start` не значится, черновик ждёт
     подтверждения прямо в `dialog_states` (`news:<id>\n<html>`) и переживает
     рестарт; при сбое канала состояние остаётся под повтор.
+    Кнопки (`callback.go`, общие типы в листовом пакете `kbd`): `/start` даёт
+    главное меню, `/add_note` спрашивает авторство (`await_note_kind`), у
+    каждого приглашения есть «Отмена». Нажатия разбирает `HandleCallback` —
+    зеркало `HandleText`: таблица глаголов (что ответить, кому доступен, что
+    делает), payload `1:<verb>[:<arg>]` только ASCII и не длиннее 64 байт
+    (предел Telegram), ответ мессенджеру всегда в роутере и **до** работы —
+    публикация в каналы идёт секунды, за это время нажатие протухнет.
+    **Идемпотентность держится на `dialog_states`**, отдельной таблицы
+    обработанных нажатий нет и не нужно: у нажатия нет побочного эффекта,
+    который нельзя вывести из состояния, а дедуп по payload сломал бы штатный
+    повтор `/news` после сбоя канала. Единственная настоящая гонка —
+    параллельные апдейты Telegram (`go-telegram/bot` запускает обработчик в
+    горутине) на read-then-write внутри `news.Publish`; закрыта мьютексом по
+    пользователю (`lockUser`), тест на два одновременных нажатия это стережёт.
     `NewTalksLogic` is the second role — a talks-only bot (`/talks`, `/talk`,
     reply→site delivery, admin alerts) that keeps its own `dialog_states`
     namespace (`<messenger>:talks`) so a stuck `pm:<id>` cannot break the

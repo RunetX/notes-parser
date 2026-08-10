@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/news"
 )
 
@@ -35,9 +36,9 @@ func (l *Logic) handleNews(ctx context.Context, userID int64) {
 		return
 	}
 	l.setState(ctx, userID, stateAwaitNews)
-	l.tr.Send(ctx, userID, "Отправьте текст новости проекта — я опубликую его в каналах.\n"+
+	l.tr.SendKeyboard(ctx, userID, "Отправьте текст новости проекта — я опубликую его в каналах.\n"+
 		`Разметка: <b>жирный</b>, <i>наклонный</i>, <a href="ссылка">текст</a>; `+
-		"остальные < и > экранируйте как &lt; и &gt;.")
+		"остальные < и > экранируйте как &lt; и &gt;.", cancelKeyboard())
 }
 
 // draftNews принимает текст новости: проверяет разметку, показывает, как
@@ -50,17 +51,18 @@ func (l *Logic) draftNews(ctx context.Context, userID int64, text string) {
 	}
 	html, err := news.Prepare(text)
 	if err != nil {
-		l.tr.Send(ctx, userID, "Так публиковать нельзя: "+err.Error()+
-			"\nПришлите исправленный текст или /cancel.")
+		// Состояние не сбрасываем — админ пришлёт исправленный текст.
+		l.tr.SendKeyboard(ctx, userID, "Так публиковать нельзя: "+err.Error()+
+			"\nПришлите исправленный текст или отмените.", cancelKeyboard())
 		return
 	}
 	id := news.NewID(time.Now())
 	l.setState(ctx, userID, stateNewsPrefix+id+"\n"+html)
-	l.tr.Send(ctx, userID, "Новость "+id+", в каналы уйдёт так:\n\n"+html+
-		"\n\nПубликуем? Ответьте «да» — или /cancel, чтобы отменить.")
+	l.tr.SendKeyboard(ctx, userID, "Новость "+id+", в каналы уйдёт так:\n\n"+html+
+		"\n\nПубликуем?", newsKeyboard(id))
 }
 
-// confirmNews публикует подтверждённую новость. При сбое части каналов
+// confirmNews публикует подтверждённую словом новость. При сбое части каналов
 // состояние остаётся: повторное «да» досылает только те, куда не ушло (id
 // новости тот же, уже опубликованные каналы пропускаются).
 func (l *Logic) confirmNews(ctx context.Context, userID int64, id, html, answer string) {
@@ -73,15 +75,55 @@ func (l *Logic) confirmNews(ctx context.Context, userID int64, id, html, answer 
 		l.tr.Send(ctx, userID, "Отменил, новость не опубликована.")
 		return
 	}
-	results := l.news.Publish(ctx, id, html)
-	report := news.Report(results)
-	if news.Failed(results) {
-		l.tr.Send(ctx, userID, report+
-			"\n\nОтветьте «да» ещё раз, чтобы дослать оставшееся, или /cancel.")
+	report, done := l.publishNews(ctx, userID, id, html)
+	if !done {
+		report += "\n\nОтветьте «да» ещё раз, чтобы дослать оставшееся, или /cancel."
+	}
+	l.tr.Send(ctx, userID, report)
+}
+
+// cbNews публикует новость нажатием «Опубликовать». Черновик берём из
+// состояния, а не из payload: в кнопке едет только id, и он должен совпасть —
+// иначе это нажатие на протухшую кнопку от прошлого черновика.
+func (l *Logic) cbNews(ctx context.Context, userID int64, cb kbd.Callback, id string) {
+	if !l.isNewsAdmin(userID) {
+		l.replace(ctx, userID, cb, msgNewsOff, nil)
 		return
 	}
+	state, err := l.st.DialogState(ctx, l.stateNS, userID)
+	if err != nil {
+		l.log.Error("чтение состояния диалога", "user", userID, "err", err)
+		l.tr.Send(ctx, userID, msgInternalError)
+		return
+	}
+	stateID, html, ok := parseNewsState(state)
+	if !ok || stateID != id {
+		// Уже опубликовали (состояние снято) или кнопка от прошлого черновика.
+		l.replace(ctx, userID, cb, "Этот черновик уже неактуален.", nil)
+		return
+	}
+	report, done := l.publishNews(ctx, userID, id, html)
+	if !done {
+		// Кнопку оставляем: это и есть механизм повтора — досылаем каналы,
+		// куда новость не ушла.
+		l.replace(ctx, userID, cb, report+"\n\nНажмите «Опубликовать» ещё раз, чтобы дослать оставшееся.",
+			newsKeyboard(id))
+		return
+	}
+	l.replace(ctx, userID, cb, report, nil)
+}
+
+// publishNews — общий кусок обеих дорог (слово «да» и кнопка). done == false
+// означает, что часть каналов не приняла новость и черновик оставлен под
+// повтор: id тот же, уже опубликованные каналы пропускаются.
+func (l *Logic) publishNews(ctx context.Context, userID int64, id, html string) (report string, done bool) {
+	results := l.news.Publish(ctx, id, html)
+	report = news.Report(results)
+	if news.Failed(results) {
+		return report, false
+	}
 	_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
-	l.tr.Send(ctx, userID, "Готово:\n"+report)
+	return "Готово:\n" + report, true
 }
 
 // dropNewsState снимает зависший черновик: новости успели выключить (или

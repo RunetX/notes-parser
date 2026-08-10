@@ -36,7 +36,25 @@ type fakeMax struct {
 	rejectReplyTo string // реплай на этот mid отвергать 400 (сообщение удалили)
 	rejected      int
 
+	answers []answeredCallback // POST /answers — ответы на нажатия
+	edits   []editedMessage    // PUT /messages — правки сообщений
+
 	markerSeen atomic.Int64 // последний маркер, переданный в GET /updates
+
+	// updatesBody — что отдать первым ответом GET /updates вместо дефолтного
+	// message_created (нажатия проверяем на сыром JSON, а не на model.Update).
+	updatesBody string
+}
+
+type answeredCallback struct {
+	callbackID string
+	rawBody    map[string]any
+}
+
+type editedMessage struct {
+	messageID string
+	body      model.NewMessageBody
+	rawBody   map[string]any
 }
 
 type sentMessage struct {
@@ -88,6 +106,32 @@ func (f *fakeMax) server() *httptest.Server {
 		resp.Message.Body.Mid = fmt.Sprintf("mid.%06d", f.seq)
 		_ = json.NewEncoder(w).Encode(resp)
 	})
+	mux.HandleFunc("PUT /messages", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		var body model.NewMessageBody
+		raw := map[string]any{}
+		data, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(data, &body); err != nil {
+			f.t.Errorf("разбор правки: %v", err)
+		}
+		_ = json.Unmarshal(data, &raw)
+		f.edits = append(f.edits, editedMessage{
+			messageID: r.URL.Query().Get("message_id"), body: body, rawBody: raw,
+		})
+		_ = json.NewEncoder(w).Encode(model.SimpleQueryResult{Success: true})
+	})
+	mux.HandleFunc("POST /answers", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		raw := map[string]any{}
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &raw)
+		f.answers = append(f.answers, answeredCallback{
+			callbackID: r.URL.Query().Get("callback_id"), rawBody: raw,
+		})
+		_ = json.NewEncoder(w).Encode(model.SimpleQueryResult{Success: true})
+	})
 	srv := httptest.NewServer(mux)
 	mux.HandleFunc("GET /updates", func(w http.ResponseWriter, r *http.Request) {
 		marker, _ := strconv.ParseInt(r.URL.Query().Get("marker"), 10, 64)
@@ -95,6 +139,10 @@ func (f *fakeMax) server() *httptest.Server {
 			f.markerSeen.Store(marker)
 		}
 		if marker == 0 {
+			if f.updatesBody != "" {
+				_, _ = w.Write([]byte(f.updatesBody))
+				return
+			}
 			// Первый вызов: один апдейт message_created, маркер = 2.
 			_, _ = w.Write([]byte(`{"updates":[{"update_type":"message_created",` +
 				`"timestamp":1,"message":{"recipient":{"chat_id":200,"chat_type":"chat"},` +

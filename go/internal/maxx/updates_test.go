@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
+
+	"lovegw/internal/kbd"
 )
 
 type fakeBridge struct {
@@ -18,14 +20,25 @@ func (f *fakeBridge) ProcessReply(_ context.Context, replyMsgID string, _ int64,
 }
 
 type fakeDM struct {
-	texts  []string
-	greets int
+	texts     []string
+	greets    int
+	callbacks []dmCallback
+}
+
+// dmCallback — нажатие, как его увидел ЛС-движок.
+type dmCallback struct {
+	userID int64
+	cb     kbd.Callback
 }
 
 func (f *fakeDM) HandleText(_ context.Context, _ int64, _, text string) {
 	f.texts = append(f.texts, text)
 }
 func (f *fakeDM) Greet(context.Context, int64) { f.greets++ }
+
+func (f *fakeDM) HandleCallback(_ context.Context, userID int64, cb kbd.Callback) {
+	f.callbacks = append(f.callbacks, dmCallback{userID: userID, cb: cb})
+}
 
 func chatMsg(chatID int64, chatType model.ChatType, mid, text string, isBot bool) model.Update {
 	u := model.Update{UpdateType: model.UpdateMessageCreated}
@@ -105,6 +118,82 @@ func TestDispatchTalksBot(t *testing.T) {
 	}
 	if len(dm.texts) != 1 || dm.texts[0] != "/talks" {
 		t.Errorf("ЛС в движок переписки: %v", dm.texts)
+	}
+}
+
+// Нажатие кнопки приезжает СЫРЫМ JSON через поллинг: именно разбор в SDK
+// (FromRaw) кладёт в update.user_id получателя сообщения, а не нажавшего, и
+// собранный руками model.Update этот путь не проверяет. В теле специально
+// разные user_id у recipient и у callback.user.
+func TestDispatchCallbackFromRawJSON(t *testing.T) {
+	f := &fakeMax{t: t, updatesBody: `{"updates":[{"update_type":"message_callback",` +
+		`"timestamp":1,"callback":{"callback_id":"cb-1","payload":"1:note:anon",` +
+		`"user":{"user_id":777,"name":"Мария"}},` +
+		`"message":{"recipient":{"chat_id":555,"chat_type":"dialog","user_id":555},` +
+		`"body":{"mid":"mid.kb1","text":"Заметка от своего имени или анонимно?"},` +
+		`"sender":{"user_id":1,"is_bot":true}}}],"marker":2}`}
+	m := newTestMirror(t, f)
+	dm := &fakeDM{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Start(ctx, m.Dispatch(nil, dm))
+	}()
+	deadline := time.After(2 * time.Second)
+	for len(dm.callbacks) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("нажатие не доехало до ЛС-движка")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+
+	got := dm.callbacks[0]
+	if got.userID != 777 {
+		t.Errorf("нажавший должен браться из callback.user: %d", got.userID)
+	}
+	if got.cb.AnswerID != "cb-1" || got.cb.Payload != "1:note:anon" || got.cb.MessageID != "mid.kb1" {
+		t.Errorf("нажатие: %+v", got.cb)
+	}
+}
+
+// Нажатие вне диалога (кнопка под постом канала — эпик B) ЛС-движка не касается.
+func TestDispatchCallbackOutsideDialog(t *testing.T) {
+	m := &Mirror{discussionChatID: -200, log: slog.Default()}
+	dm := &fakeDM{}
+	u := model.Update{UpdateType: model.UpdateMessageCallback, ChatID: 100}
+	u.Callback = &model.Callback{CallbackID: "cb-2", Payload: "1:subs", User: model.User{UserID: 777}}
+	u.Message = &model.MessageUpdate{
+		Recipient: model.Recipient{ChatID: 100, ChatType: model.ChatTypeChat},
+		Body:      model.MessageBody{Mid: "mid.post"},
+	}
+
+	m.Dispatch(nil, dm)(context.Background(), u)
+
+	if len(dm.callbacks) != 0 {
+		t.Errorf("нажатие из канала не для ЛС-движка: %+v", dm.callbacks)
+	}
+}
+
+// Сообщение с кнопкой удалили: mid пустой, но нажатие всё равно обрабатывается —
+// роутер ответит нажавшему, просто не станет править сообщение.
+func TestDispatchCallbackDeletedMessage(t *testing.T) {
+	m := &Mirror{log: slog.Default()}
+	dm := &fakeDM{}
+	u := model.Update{UpdateType: model.UpdateMessageCallback}
+	u.Callback = &model.Callback{CallbackID: "cb-3", Payload: "1:cancel", User: model.User{UserID: 777}}
+
+	m.Dispatch(nil, dm)(context.Background(), u)
+
+	if len(dm.callbacks) != 1 {
+		t.Fatalf("нажатий: %d", len(dm.callbacks))
+	}
+	if got := dm.callbacks[0]; got.userID != 777 || got.cb.MessageID != "" {
+		t.Errorf("нажатие с удалённым сообщением: %+v", got)
 	}
 }
 

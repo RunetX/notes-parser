@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
 	"lovegw/internal/news"
@@ -13,8 +14,10 @@ import (
 
 const newsAdminID = 777
 
-// fakeChannel — канал-приёмник новостей.
+// fakeChannel — канал-приёмник новостей. Мьютекс нужен для проверки двойного
+// нажатия из двух горутин: в Telegram апдейты обрабатываются параллельно.
 type fakeChannel struct {
+	mu    sync.Mutex
 	name  string
 	posts []string
 	fail  error
@@ -23,11 +26,27 @@ type fakeChannel struct {
 func (c *fakeChannel) Name() string { return c.name }
 
 func (c *fakeChannel) PostChannelHTML(_ context.Context, html string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.fail != nil {
 		return "", c.fail
 	}
 	c.posts = append(c.posts, html)
 	return "mid.1", nil
+}
+
+// postCount — сколько раз новость реально ушла в канал.
+func (c *fakeChannel) postCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.posts)
+}
+
+// setFail переключает канал в отказ и обратно.
+func (c *fakeChannel) setFail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.fail = err
 }
 
 // newNewsLogic — бот команд с подключённой публикацией новостей.

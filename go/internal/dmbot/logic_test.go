@@ -6,36 +6,117 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
 
-// fakeTransport собирает отправленные ЛС и удалённые сообщения.
+// fakeTransport собирает отправленные ЛС, удалённые сообщения, показанные
+// клавиатуры, ответы на нажатия и правки сообщений.
 type fakeTransport struct {
+	mu      sync.Mutex
 	sent    []string
 	deleted []string
+	kbs     []sentKB   // отправленные сообщения с кнопками
+	answers []string   // тосты ответов на нажатия ("" — молча)
+	edits   []editedKB // правки сообщений
+}
+
+// sentKB — сообщение с кнопками; editedKB — правка уже отправленного.
+type sentKB struct {
+	text string
+	kb   *kbd.Keyboard
+}
+
+type editedKB struct {
+	messageID string
+	text      string
+	kb        *kbd.Keyboard
 }
 
 func (f *fakeTransport) Send(_ context.Context, _ int64, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sent = append(f.sent, text)
 }
 
 func (f *fakeTransport) DeleteMessage(_ context.Context, _ int64, messageID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, messageID)
 }
 
+// SendKeyboard пишет текст и в sent — проверкам содержимого всё равно, было
+// ли у сообщения меню.
+func (f *fakeTransport) SendKeyboard(_ context.Context, _ int64, text string, kb *kbd.Keyboard) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, text)
+	f.kbs = append(f.kbs, sentKB{text: text, kb: kb})
+}
+
+func (f *fakeTransport) AnswerCallback(_ context.Context, _ kbd.Callback, toast string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answers = append(f.answers, toast)
+}
+
+func (f *fakeTransport) EditMessage(_ context.Context, _ int64, messageID, text string, kb *kbd.Keyboard) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, editedKB{messageID: messageID, text: text, kb: kb})
+}
+
 func (f *fakeTransport) lastSent() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.sent) == 0 {
 		return ""
 	}
 	return f.sent[len(f.sent)-1]
 }
 
+// lastKB — клавиатура последнего сообщения с кнопками.
+func (f *fakeTransport) lastKB() *kbd.Keyboard {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.kbs) == 0 {
+		return nil
+	}
+	return f.kbs[len(f.kbs)-1].kb
+}
+
+// lastEdit — последняя правка сообщения.
+func (f *fakeTransport) lastEdit() editedKB {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.edits) == 0 {
+		return editedKB{}
+	}
+	return f.edits[len(f.edits)-1]
+}
+
+// buttonTexts — подписи всех кнопок клавиатуры подряд.
+func buttonTexts(kb *kbd.Keyboard) []string {
+	if kb.Empty() {
+		return nil
+	}
+	var out []string
+	for _, row := range kb.Rows {
+		for _, b := range row {
+			out = append(out, b.Text)
+		}
+	}
+	return out
+}
+
 // fakeSite отвечает на логин фиксированной кукой.
 type fakeSite struct {
-	loginCalls int
-	noteTexts  []string
+	loginCalls    int
+	noteTexts     []string
+	lastAnonymous bool
 }
 
 func (f *fakeSite) Login(_ context.Context, login, password string) ([]*http.Cookie, error) {
@@ -43,8 +124,9 @@ func (f *fakeSite) Login(_ context.Context, login, password string) ([]*http.Coo
 	return []*http.Cookie{{Name: "sid", Value: login + ":" + password}}, nil
 }
 
-func (f *fakeSite) PostNote(_ context.Context, _ []*http.Cookie, text string, _ bool) error {
+func (f *fakeSite) PostNote(_ context.Context, _ []*http.Cookie, text string, anonymous bool) error {
 	f.noteTexts = append(f.noteTexts, text)
+	f.lastAnonymous = anonymous
 	return nil
 }
 
@@ -99,8 +181,11 @@ func TestLogicLoginFlowMax(t *testing.T) {
 		t.Errorf("статус после входа: %q", tr.lastSent())
 	}
 
-	// Публикация заметки по сохранённой сессии.
+	// Публикация заметки по сохранённой сессии: команда спрашивает авторство,
+	// выбор делается кнопкой.
 	l.HandleText(ctx, uid, "mid.5", "/add_note")
+	l.HandleCallback(ctx, uid, kbd.Callback{
+		AnswerID: "cb.1", MessageID: "mid.kb", Payload: kbd.Pack(verbNote, argNoteOwn)})
 	l.HandleText(ctx, uid, "mid.6", "текст заметки")
 	if len(site.noteTexts) != 1 || site.noteTexts[0] != "текст заметки" {
 		t.Errorf("заметка на сайт: %v", site.noteTexts)
