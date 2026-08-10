@@ -56,6 +56,11 @@ type DMLogic interface {
 	HandleText(ctx context.Context, userID int64, messageID, text string)
 	HandleCallback(ctx context.Context, userID int64, cb kbd.Callback)
 	Greet(ctx context.Context, userID int64)
+	// AllowsOutsideDialog — можно ли исполнять этот payload вне диалога.
+	// Белый список держит ядро: вне диалога живёт только кнопка под постом
+	// канала. Иначе ЛС-глаголы (вход, заметки, переписка) стали бы доступны
+	// нажатием на кнопку под чужим сообщением.
+	AllowsOutsideDialog(payload string) bool
 }
 
 // Dispatch собирает обработчик апдейтов: реплаи из чата обсуждения — мосту,
@@ -134,12 +139,19 @@ func (m *Mirror) dispatchCallback(ctx context.Context, u model.Update, dm DMLogi
 	if u.Message != nil {
 		mid, chatType = u.Message.Body.Mid, u.Message.Recipient.ChatType
 	}
-	// Кнопки этого эпика живут только в диалогах. Нажатие под постом канала
-	// (эпик B) сюда ещё не приходит — подсвечиваем, как прочие апдейты.
-	// Пустой тип считаем диалогом: он теряется вместе с удалённым сообщением.
+	// Вне диалога живут только публичные кнопки — «Подписаться» под постом
+	// канала. Пустой тип считаем диалогом: он теряется вместе с удалённым
+	// сообщением.
 	if chatType != "" && chatType != model.ChatTypeDialog {
-		m.log.Debug("нажатие MAX вне диалога", "chat", u.ChatID, "chat_type", chatType)
-		return
+		if !dm.AllowsOutsideDialog(u.Callback.Payload) {
+			m.log.Debug("нажатие MAX вне диалога отброшено",
+				"chat", u.ChatID, "chat_type", chatType)
+			return
+		}
+		// Сообщение с кнопкой — чужой пост канала. Правка его нажатием
+		// недопустима, поэтому mid гасим здесь, на входе: ядро ответит новым
+		// сообщением в ЛС, даже если обработчик об этом забудет.
+		mid = ""
 	}
 	userID := u.Callback.User.UserID
 	if userID == 0 {

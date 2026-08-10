@@ -36,7 +36,9 @@ type sinkCall struct {
 	noteID   string
 	comID    int64
 	userID   int64
-	keyword  string
+	subKind  string // вид сработавшей подписки (kind == "notify")
+	target   string // цель сработавшей подписки
+	postID   string // пост заметки в канале (уведомление о новой заметке)
 	threadID string // корень треда (kind == "comment")
 	replyTo  string // сообщение адресата реплики, "" — отвечаем корню
 }
@@ -75,10 +77,11 @@ func (f *fakeSink) PostNoteImage(_ context.Context, _ string, imageURL string, _
 	return f.id(), nil
 }
 
-func (f *fakeSink) NotifySubscriber(_ context.Context, userID int64, keyword string, n store.Note, c store.Comment, _, _ string) error {
-	f.calls = append(f.calls, sinkCall{kind: "notify", noteID: n.ID, comID: c.ID,
-		userID: userID, keyword: keyword})
-	return nil
+// notify — ЛС-бот мессенджера (Config.SubNotify). Пишем в тот же журнал
+// вызовов: приёмник уведомления больше не шлёт, но проверять их удобно рядом.
+func (f *fakeSink) notify(_ context.Context, userID int64, ev SubEvent) {
+	f.calls = append(f.calls, sinkCall{kind: "notify", noteID: ev.Note.ID, comID: ev.Comment.ID,
+		userID: userID, subKind: ev.Sub.Kind, target: ev.Sub.Target, postID: ev.PostMsgID})
 }
 
 // threadSink — приёмник, открывающий тред сам (как MAX).
@@ -139,6 +142,7 @@ func newTestMirrorAlert(t *testing.T, site *fakeSite, sink *fakeSink, seed bool,
 		FeedInterval: time.Minute,
 		SeedFirst:    seed,
 		AlertSend:    alertSend,
+		SubNotify:    map[string]SubNotify{sink.Name(): sink.notify},
 	}, slog.Default())
 	return m, st
 }
@@ -427,6 +431,27 @@ func TestClosedNoteStaysTracked(t *testing.T) {
 	}
 }
 
+// notifies отбирает из журнала приёмника только уведомления подписчикам.
+func notifies(calls []sinkCall) []sinkCall {
+	var out []sinkCall
+	for _, c := range calls {
+		if c.kind == "notify" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// subscribe заводит подписку прямо в сторе (кнопки — забота dmbot).
+func subscribe(t *testing.T, st *store.Store, kind, target string, userID int64) {
+	t.Helper()
+	if _, err := st.AddSubscription(context.Background(), store.Subscription{
+		Messenger: store.MessengerTelegram, UserID: userID, Kind: kind, Target: target,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNotifySubscribersOnKeyword(t *testing.T) {
 	ctx := context.Background()
 	site := &fakeSite{
@@ -438,24 +463,141 @@ func TestNotifySubscribersOnKeyword(t *testing.T) {
 	sink := &fakeSink{}
 	m, st := newTestMirror(t, site, sink, false)
 	m.feedCycle(ctx, false)
-	st.AddSubscription(ctx, store.MessengerTelegram, "рюмк", 42)
+	subscribe(t, st, store.SubKeyword, "рюмк", 42)
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
 
 	n, _ := st.NoteByID(ctx, "n1")
 	m.pollComments(ctx, n)
 
-	var notified []sinkCall
-	for _, c := range sink.calls {
-		if c.kind == "notify" {
-			notified = append(notified, c)
-		}
-	}
+	notified := notifies(sink.calls)
 	if len(notified) != 1 || notified[0].userID != 42 {
-		t.Errorf("уведомления: %v", notified)
+		t.Fatalf("уведомления: %v", notified)
 	}
-	// Сработавшее слово доходит до приёмника — из него собирается текст ЛС.
-	if len(notified) == 1 && notified[0].keyword != "рюмк" {
-		t.Errorf("ключевое слово в уведомлении: %q", notified[0].keyword)
+	// Сработавшая подписка доходит целиком — из неё собирается повод в ЛС.
+	if notified[0].subKind != store.SubKeyword || notified[0].target != "рюмк" {
+		t.Errorf("подписка в уведомлении: %+v", notified[0])
+	}
+}
+
+// Подписка на комментарии заметки бьёт по её треду и только по нему.
+func TestNotifySubscribersOnNoteComments(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes: []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{
+			"n1": {{ID: 1, AuthorName: "А", Text: "без ключевых слов"}},
+		},
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false)
+	subscribe(t, st, store.SubNoteComments, "n1", 42)
+	subscribe(t, st, store.SubNoteComments, "n2", 43) // чужая заметка
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
+
+	n, _ := st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+
+	notified := notifies(sink.calls)
+	if len(notified) != 1 || notified[0].userID != 42 || notified[0].subKind != store.SubNoteComments {
+		t.Errorf("уведомления: %+v", notified)
+	}
+}
+
+// Один комментарий — одно ЛС на человека, даже если сработали две подписки;
+// побеждает подписка на заметку: она точнее, слово могло совпасть случайно.
+func TestNotifySubscribersDedup(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes: []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{
+			"n1": {{ID: 1, AuthorName: "А", Text: "выпьем рюмку чая"}},
+		},
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false)
+	subscribe(t, st, store.SubKeyword, "рюмк", 42)
+	subscribe(t, st, store.SubNoteComments, "n1", 42)
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
+
+	n, _ := st.NoteByID(ctx, "n1")
+	m.pollComments(ctx, n)
+
+	notified := notifies(sink.calls)
+	if len(notified) != 1 {
+		t.Fatalf("на один комментарий должно уйти одно ЛС: %+v", notified)
+	}
+	if notified[0].subKind != store.SubNoteComments {
+		t.Errorf("выиграть должна подписка на заметку: %+v", notified[0])
+	}
+}
+
+// Новая заметка автора: ЛС уходит с ссылкой на пост канала, у анонима — нет,
+// и повторный обход ленты дублей не делает.
+func TestNotifyAuthorSubscribersOnNewNote(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{
+		{ID: "n1", AuthorID: "515996", AuthorName: "Ягода", Text: "т"},
+		{ID: "n2", AuthorID: "0", AuthorName: "Аноним", Text: "т"},
+	}}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	subscribe(t, st, store.SubAuthorNotes, "515996", 42)
+	subscribe(t, st, store.SubAuthorNotes, "0", 43) // подписка на анонима не сработает
+
+	m.feedCycle(ctx, false)
+
+	notified := notifies(sink.calls)
+	if len(notified) != 1 || notified[0].userID != 42 || notified[0].noteID != "n1" {
+		t.Fatalf("уведомления о новой заметке: %+v", notified)
+	}
+	if notified[0].postID == "" {
+		t.Error("ссылка на пост канала строится по его id — он обязан доехать")
+	}
+	if notified[0].comID != 0 {
+		t.Error("у повода «новая заметка» комментария нет")
+	}
+
+	m.feedCycle(ctx, false)
+	if len(notifies(sink.calls)) != 1 {
+		t.Errorf("повторный обход ленты не должен слать второе ЛС: %+v", notifies(sink.calls))
+	}
+}
+
+// В seed-режиме заметки только фиксируются — рассылать по ним нечего.
+func TestSeedDoesNotNotifyAuthorSubscribers(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n1", AuthorID: "515996", Text: "т"}}}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, true)
+	subscribe(t, st, store.SubAuthorNotes, "515996", 42)
+
+	m.feedCycle(ctx, true)
+
+	if len(notifies(sink.calls)) != 0 {
+		t.Errorf("seed не должен уведомлять: %+v", notifies(sink.calls))
+	}
+}
+
+// Архивация снимает подписки на комментарии заметки — новых уже не будет.
+func TestArchiveDropsNoteSubscriptions(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n1", Text: "т"}}}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.feedCycle(ctx, false)
+	subscribe(t, st, store.SubNoteComments, "n1", 42)
+	subscribe(t, st, store.SubKeyword, "рюмк", 42)
+
+	m.archiveNote(ctx, "n1", time.Now(), "тест")
+
+	left, err := st.SubscriptionsByUser(ctx, store.MessengerTelegram, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].Kind != store.SubKeyword {
+		t.Errorf("после архивации должно остаться только слово: %+v", left)
 	}
 }
 

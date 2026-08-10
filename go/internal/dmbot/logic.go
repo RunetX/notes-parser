@@ -149,6 +149,13 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 	}
 	switch cmd {
 	case "/start":
+		// Deep-link из-под поста канала: аргумент несёт id заметки. Чужой и
+		// пустой payload — обычное приветствие, ругаться на ссылку прошлого
+		// релиза незачем.
+		if noteID, ok := kbd.ParseStartSub(commandArg(text)); ok && !l.talksOnly {
+			l.offerSubscribe(ctx, userID, noteID)
+			return
+		}
 		l.Greet(ctx, userID)
 	case "/login":
 		l.setState(ctx, userID, stateAwaitCredentials)
@@ -255,17 +262,62 @@ func (l *Logic) handleSubscribe(ctx context.Context, userID int64, keyword strin
 		l.askSubscription(ctx, userID)
 		return
 	}
-	added, err := l.st.AddSubscription(ctx, l.messenger, keyword, userID)
-	if err != nil {
-		l.log.Error("подписка", "user", userID, "err", err)
-		l.tr.Send(ctx, userID, msgInternalError)
+	l.addSubscription(ctx, userID, kbd.Callback{}, store.SubKeyword, keyword,
+		"Подписал на «"+keyword+"». Уведомлю, когда слово встретится в комментарии.",
+		"Вы уже подписаны на «"+keyword+"».")
+}
+
+// addSubscription — общий хвост всех подписок: предел один на все виды, и
+// проверяет его стор (одной транзакцией, чтобы параллельные нажатия его не
+// обошли). Непустой cb.MessageID — ответ правит наше же сообщение с выбором.
+func (l *Logic) addSubscription(ctx context.Context, userID int64, cb kbd.Callback,
+	kind, target, okMsg, dupMsg string) {
+	added, err := l.st.AddSubscription(ctx, store.Subscription{
+		Messenger: l.messenger, UserID: userID, Kind: kind, Target: target,
+	})
+	msg := okMsg
+	switch {
+	case errors.Is(err, store.ErrSubscriptionLimit):
+		msg = msgSubLimit
+	case err != nil:
+		l.log.Error("подписка", "user", userID, "kind", kind, "err", err)
+		msg = msgInternalError
+	case !added:
+		msg = dupMsg
+	}
+	if cb.MessageID == "" {
+		l.tr.Send(ctx, userID, msg)
 		return
 	}
-	if added {
-		l.tr.Send(ctx, userID, "Подписал на «"+keyword+"». Уведомлю, когда слово встретится в комментарии.")
-	} else {
-		l.tr.Send(ctx, userID, "Вы уже подписаны на «"+keyword+"».")
+	l.replace(ctx, userID, cb, msg, nil)
+}
+
+// noteForSubscription достаёт заметку, по которой нажали кнопку подписки.
+func (l *Logic) noteForSubscription(ctx context.Context, userID int64, noteID string) (store.Note, bool) {
+	n, err := l.st.NoteByID(ctx, noteID)
+	if errors.Is(err, store.ErrNotFound) {
+		l.tr.Send(ctx, userID, msgNoteGone)
+		return store.Note{}, false
 	}
+	if err != nil {
+		l.log.Error("заметка для подписки", "user", userID, "note", noteID, "err", err)
+		l.tr.Send(ctx, userID, msgInternalError)
+		return store.Note{}, false
+	}
+	return n, true
+}
+
+// offerSubscribe показывает выбор «на автора / на эту заметку». Единая дорога
+// для трёх входов: кнопка под постом MAX, deep-link Telegram и /start с
+// payload. Всегда новым сообщением: под кнопкой в канале лежит чужой пост.
+func (l *Logic) offerSubscribe(ctx context.Context, userID int64, noteID string) {
+	n, ok := l.noteForSubscription(ctx, userID, noteID)
+	if !ok {
+		return
+	}
+	l.tr.SendKeyboard(ctx, userID,
+		msgAskSubKind+"\n\n"+shorten(oneLine(n.AuthorName+": "+n.Text), subLineRunes),
+		subKindKeyboard(n))
 }
 
 // handleUnsubscribe снимает подписку на ключевое слово.
@@ -274,7 +326,7 @@ func (l *Logic) handleUnsubscribe(ctx context.Context, userID int64, keyword str
 		l.tr.Send(ctx, userID, "Укажите слово: /unsubscribe <ключевое слово>")
 		return
 	}
-	removed, err := l.st.RemoveSubscription(ctx, l.messenger, keyword, userID)
+	removed, err := l.st.RemoveSubscription(ctx, l.messenger, userID, store.SubKeyword, keyword)
 	if err != nil {
 		l.log.Error("отписка", "user", userID, "err", err)
 		l.tr.Send(ctx, userID, msgInternalError)
@@ -297,9 +349,12 @@ func (l *Logic) handleMySubs(ctx context.Context, userID int64, cb *kbd.Callback
 		l.tr.Send(ctx, userID, msgInternalError)
 		return
 	}
-	text := "Ваши подписки:\n• " + strings.Join(subKeywords(subs), "\n• ")
+	text := fmt.Sprintf("Ваши подписки (%d из %d):\n• ", len(subs), store.SubscriptionLimit) +
+		strings.Join(subLines(subs), "\n• ")
 	if len(subs) == 0 {
-		text = "У вас нет подписок: я уведомлю, когда в комментарии встретится ваше слово."
+		text = "У вас нет подписок. Я умею уведомлять о слове в комментариях, о новых " +
+			"заметках автора и о комментариях к выбранной заметке — кнопка «🔔 Подписаться» " +
+			"есть под каждой заметкой в канале."
 	}
 	if cb == nil {
 		l.tr.SendKeyboard(ctx, userID, text, subsKeyboard(subs))

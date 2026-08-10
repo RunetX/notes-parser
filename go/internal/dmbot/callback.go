@@ -15,6 +15,7 @@ package dmbot
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 
 	"lovegw/internal/kbd"
@@ -29,11 +30,17 @@ const (
 	verbStatus = "status"
 	verbSubs   = "subs"
 	verbSubAdd = "subadd" // добавить подписку: спросить слово диалогом
-	verbUnsub  = "unsub"  // аргумент — id строки подписки (слово в payload не влезет)
+	verbUnsub  = "unsub"  // аргумент — id строки подписки (цель в payload не влезет)
 	verbTalks  = "talks"  // аргумент — номер страницы списка диалогов
 	verbTalk   = "talk"   // аргумент — id собеседника
 	verbCancel = "cancel"
 	verbNews   = "news" // аргумент — id черновика новости
+	// Подписка по заметке. Первый глагол приезжает с кнопки под постом канала —
+	// он единственный публичный (см. поле public); остальные два уже из ЛС.
+	verbSubscribe   = kbd.VerbSubscribe // аргумент — id заметки
+	verbSubAuthor   = "suba"            // аргумент — id заметки: подписать на её автора
+	verbSubComments = "subc"            // аргумент — id заметки: подписать на её комментарии
+	verbUnsubOne    = "unsub1"          // аргумент — id подписки: снятие прямо из уведомления
 )
 
 const (
@@ -45,9 +52,12 @@ const (
 	msgStaleButton = "Кнопка устарела, наберите /start"
 	msgCancelled   = "Отменено."
 	btnCancel      = "✖ Отмена"
+	btnUnsubOne    = "🔕 Отписаться"
 	// buttonTextRunes — потолок подписи кнопки: длинное слово подписки растянет
 	// клавиатуру и в узком клиенте обрежется как попало.
 	buttonTextRunes = 24
+	// subLineRunes — потолок цитаты заметки в строке списка подписок.
+	subLineRunes = 48
 	// talksPageSize — диалогов на странице списка.
 	talksPageSize = 8
 )
@@ -58,22 +68,38 @@ const (
 type verbHandler struct {
 	ack   string // тост нажавшему ("" — ответить молча)
 	talks bool   // доступен ли боту переписки
-	fn    func(l *Logic, ctx context.Context, userID int64, cb kbd.Callback, arg string)
+	// public — доступен ли вне диалога. Такую кнопку видят все читатели канала,
+	// поэтому обработчик не вправе трогать сообщение, под которым она висит
+	// (это чужой пост), и отвечает всегда новым сообщением в ЛС.
+	public bool
+	fn     func(l *Logic, ctx context.Context, userID int64, cb kbd.Callback, arg string)
 }
 
-// callbackVerbs — таблица, а не switch: у кнопки три свойства (что ответить,
-// кому доступна, что делает), и таблица не даёт забыть ни одного.
+// callbackVerbs — таблица, а не switch: у кнопки четыре свойства (что ответить,
+// кому доступна, где доступна, что делает), и таблица не даёт забыть ни одного.
 var callbackVerbs = map[string]verbHandler{
-	verbLogin:  {fn: (*Logic).cbLogin},
-	verbNote:   {fn: (*Logic).cbNote},
-	verbStatus: {fn: (*Logic).cbStatus},
-	verbSubs:   {fn: (*Logic).cbSubs},
-	verbSubAdd: {fn: (*Logic).cbSubAdd},
-	verbUnsub:  {ack: "Отписал", fn: (*Logic).cbUnsub},
-	verbTalks:  {talks: true, fn: (*Logic).cbTalks},
-	verbTalk:   {talks: true, fn: (*Logic).cbTalk},
-	verbCancel: {ack: "Отменил", talks: true, fn: (*Logic).cbCancel},
-	verbNews:   {ack: "Публикую…", fn: (*Logic).cbNews},
+	verbLogin:       {fn: (*Logic).cbLogin},
+	verbNote:        {fn: (*Logic).cbNote},
+	verbStatus:      {fn: (*Logic).cbStatus},
+	verbSubs:        {fn: (*Logic).cbSubs},
+	verbSubAdd:      {fn: (*Logic).cbSubAdd},
+	verbUnsub:       {ack: "Отписал", fn: (*Logic).cbUnsub},
+	verbTalks:       {talks: true, fn: (*Logic).cbTalks},
+	verbTalk:        {talks: true, fn: (*Logic).cbTalk},
+	verbCancel:      {ack: "Отменил", talks: true, fn: (*Logic).cbCancel},
+	verbNews:        {ack: "Публикую…", fn: (*Logic).cbNews},
+	verbSubscribe:   {ack: "Открыл выбор в личке", public: true, fn: (*Logic).cbSubscribe},
+	verbSubAuthor:   {ack: "Подписал", fn: (*Logic).cbSubAuthor},
+	verbSubComments: {ack: "Подписал", fn: (*Logic).cbSubComments},
+	verbUnsubOne:    {ack: "Отписал", fn: (*Logic).cbUnsubOne},
+}
+
+// AllowsOutsideDialog — разрешён ли payload вне диалога. Спрашивает транспорт
+// (maxx) про нажатие из канала: иначе ЛС-глаголы — вход, заметки, переписка —
+// стали бы доступны нажатием на кнопку под чужим сообщением.
+func (l *Logic) AllowsOutsideDialog(payload string) bool {
+	verb, _, ok := kbd.Parse(payload)
+	return ok && callbackVerbs[verb].public
 }
 
 // HandleCallback обрабатывает нажатие кнопки — зеркало HandleText. Ответить
@@ -173,6 +199,55 @@ func (l *Logic) cbUnsub(ctx context.Context, userID int64, cb kbd.Callback, arg 
 	l.handleMySubs(ctx, userID, &cb)
 }
 
+// cbSubscribe — кнопка «Подписаться» под постом канала: показываем выбор вида.
+// Сообщение под кнопкой — пост канала, а не наше, поэтому ответ всегда уходит
+// новым сообщением в ЛС (transport гасит и MessageID, но правило держим явно).
+func (l *Logic) cbSubscribe(ctx context.Context, userID int64, _ kbd.Callback, arg string) {
+	l.offerSubscribe(ctx, userID, arg)
+}
+
+// cbSubAuthor подписывает на заметки автора этой заметки.
+func (l *Logic) cbSubAuthor(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	n, ok := l.noteForSubscription(ctx, userID, arg)
+	if !ok {
+		return
+	}
+	if n.AuthorID == "" || n.AuthorID == "0" {
+		l.replace(ctx, userID, cb, "Заметка анонимная — на автора подписать не могу.", nil)
+		return
+	}
+	l.addSubscription(ctx, userID, cb, store.SubAuthorNotes, n.AuthorID,
+		"Подписал на заметки автора "+n.AuthorName+". Как появится новая — пришлю ссылку.",
+		"Вы уже подписаны на заметки автора "+n.AuthorName+".")
+}
+
+// cbSubComments подписывает на комментарии этой заметки.
+func (l *Logic) cbSubComments(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	n, ok := l.noteForSubscription(ctx, userID, arg)
+	if !ok {
+		return
+	}
+	title := shorten(oneLine(n.AuthorName+": "+n.Text), subLineRunes)
+	l.addSubscription(ctx, userID, cb, store.SubNoteComments, n.ID,
+		"Подписал на комментарии заметки «"+title+"». Пока заметка живая, буду "+
+			"присылать новые; уйдёт в архив — сниму подписку сам.",
+		"Вы уже подписаны на комментарии заметки «"+title+"».")
+}
+
+// cbUnsubOne снимает подписку прямо из уведомления. Сообщение не правим: текст
+// со ссылкой на комментарий ещё пригодится, а в MAX снять одну клавиатуру, не
+// переписав тело целиком, нечем. Повторное нажатие безвредно.
+func (l *Logic) cbUnsubOne(ctx context.Context, userID int64, _ kbd.Callback, arg string) {
+	id, err := strconv.ParseInt(arg, 10, 64)
+	if err != nil {
+		l.log.Debug("нажатие отписки с нечисловым id", "user", userID, "arg", arg)
+		return
+	}
+	if _, _, err := l.st.RemoveSubscriptionByID(ctx, l.messenger, userID, id); err != nil {
+		l.log.Error("отписка из уведомления", "user", userID, "sub", id, "err", err)
+	}
+}
+
 // cbTalks — список диалогов; аргумент — номер страницы. Без аргумента список
 // открывают из главного меню, и он приходит новым сообщением: меню — пульт,
 // его затирать нельзя. Перелистывание правит уже показанный список.
@@ -245,26 +320,84 @@ func (l *Logic) askSubscription(ctx context.Context, userID int64) {
 	l.tr.SendKeyboard(ctx, userID, msgAskSubscription, cancelKeyboard())
 }
 
-// subKeywords — слова подписок для текстового списка.
-func subKeywords(subs []store.Subscription) []string {
+// subIcon — вид подписки одним знаком: список из трёх видов иначе не читается.
+func subIcon(kind string) string {
+	switch kind {
+	case store.SubAuthorNotes:
+		return "✍️"
+	case store.SubNoteComments:
+		return "💬"
+	default:
+		return "🔔"
+	}
+}
+
+// subTarget — как назвать цель подписки. Label считает стор одним запросом;
+// пусто — заметка удалена или автор не виден, тогда честно показываем номер.
+func subTarget(s store.Subscription) string {
+	if s.Label != "" {
+		return s.Label
+	}
+	switch s.Kind {
+	case store.SubAuthorNotes:
+		return "автор #" + s.Target
+	case store.SubNoteComments:
+		return "заметка #" + s.Target
+	default:
+		return s.Target
+	}
+}
+
+// subLines — строки текстового списка подписок.
+func subLines(subs []store.Subscription) []string {
 	out := make([]string, 0, len(subs))
 	for _, s := range subs {
-		out = append(out, s.Keyword)
+		switch s.Kind {
+		case store.SubAuthorNotes:
+			out = append(out, subIcon(s.Kind)+" заметки автора "+subTarget(s))
+		case store.SubNoteComments:
+			out = append(out, subIcon(s.Kind)+" комментарии к заметке «"+
+				shorten(subTarget(s), subLineRunes)+"»")
+		default:
+			out = append(out, subIcon(s.Kind)+" слово «"+s.Target+"»")
+		}
 	}
 	return out
 }
 
-// subsKeyboard — по кнопке «✖» на подписку и «Добавить» внизу. Слово в подписи
-// обрезаем: в кнопку не влезет комментарий целиком, а payload несёт id.
+// subsKeyboard — по кнопке «✖» на подписку и «Добавить» внизу. Подпись
+// обрезаем: цель в кнопку целиком не влезет, а payload несёт id строки.
 func subsKeyboard(subs []store.Subscription) *kbd.Keyboard {
 	kb := kbd.New()
 	for _, s := range subs {
 		kb.Row(kbd.Button{
-			Text:    "✖ " + shorten(s.Keyword, buttonTextRunes),
+			Text:    "✖ " + subIcon(s.Kind) + " " + shorten(subTarget(s), buttonTextRunes),
 			Payload: kbd.Pack(verbUnsub, strconv.FormatInt(s.ID, 10)),
 		})
 	}
 	return kb.Row(kbd.Button{Text: "➕ Добавить", Payload: kbd.Pack(verbSubAdd, "")})
+}
+
+// subKindKeyboard — выбор вида подписки по заметке. У анонимной заметки
+// подписывать не на кого: вариант «на автора» просто не появляется (пустая
+// строка кнопок клавиатурой игнорируется).
+func subKindKeyboard(n store.Note) *kbd.Keyboard {
+	var row []kbd.Button
+	if n.AuthorID != "" && n.AuthorID != "0" {
+		row = append(row, kbd.Button{Text: "✍️ На автора", Payload: kbd.Pack(verbSubAuthor, n.ID)})
+	}
+	row = append(row, kbd.Button{Text: "💬 На эту заметку", Payload: kbd.Pack(verbSubComments, n.ID)})
+	return kbd.New().Row(row...).Row(kbd.Button{Text: btnCancel, Payload: kbd.Pack(verbCancel, "")})
+}
+
+// UnsubKeyboard — кнопка «Отписаться» под уведомлением подписчика.
+// Экспортируется для runDaemon: текст уведомления собирает композер
+// мессенджера, а глагол кнопки — наш.
+func UnsubKeyboard(subID int64) *kbd.Keyboard {
+	return kbd.New().Row(kbd.Button{
+		Text:    btnUnsubOne,
+		Payload: kbd.Pack(verbUnsubOne, strconv.FormatInt(subID, 10)),
+	})
 }
 
 // talksPage нарезает список диалогов на страницу. Возвращает саму страницу,
@@ -311,6 +444,12 @@ func shorten(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit-1]) + "…"
+}
+
+// oneLine сводит текст в одну строку: заметка в подписи и в списке подписок
+// упоминается одной строкой, а в ней бывают абзацы.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // mainMenu — главное меню бота. У бота переписки своё, короткое: вход, заметки

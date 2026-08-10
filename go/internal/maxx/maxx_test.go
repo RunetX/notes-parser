@@ -18,6 +18,7 @@ import (
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
 	"golang.org/x/time/rate"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
 
@@ -291,7 +292,8 @@ func attachmentOf(t *testing.T, sent sentMessage, at model.AttachmentType) model
 	return model.Attachment{}
 }
 
-// Кнопка «Обсудить» на посте канала: ссылка чата снимается один раз (кэш).
+// Кнопки на посте канала: «Обсудить» (ссылка чата снимается один раз, кэш) и
+// «Подписаться» (нажатие приходит этому же боту — он и зеркало, и ЛС).
 func TestPostNoteDiscussButton(t *testing.T) {
 	f := &fakeMax{t: t}
 	m := newTestMirror(t, f)
@@ -303,12 +305,16 @@ func TestPostNoteDiscussButton(t *testing.T) {
 		}
 	}
 	kb := attachmentOf(t, f.last(), model.AttachInlineKeyboard)
-	if len(kb.Payload.Buttons) != 1 || len(kb.Payload.Buttons[0]) != 1 {
+	if len(kb.Payload.Buttons) != 1 || len(kb.Payload.Buttons[0]) != 2 {
 		t.Fatalf("клавиатура: %+v", kb.Payload.Buttons)
 	}
 	btn := kb.Payload.Buttons[0][0]
 	if btn.Type != model.ButtonLink || btn.URL != "https://max.ru/join/test-chat-link" {
-		t.Errorf("кнопка: %+v", btn)
+		t.Errorf("кнопка «Обсудить»: %+v", btn)
+	}
+	sub := kb.Payload.Buttons[0][1]
+	if sub.Type != model.ButtonCallback || sub.Payload != "1:sub:n2" {
+		t.Errorf("кнопка «Подписаться»: %+v", sub)
 	}
 	if f.chatGets != 1 {
 		t.Errorf("GetChat должен вызываться один раз (кэш), было %d", f.chatGets)
@@ -464,10 +470,10 @@ func TestComposeSubNotice(t *testing.T) {
 		AuthorLink:  "https://love.ngs.ru/profile/1",
 		PublishedAt: time.Date(2026, 7, 30, 14, 5, 0, 0, time.UTC),
 		Text:        "выпьем рюмку чая & закусим"}
-	got := composeSubNotice("рюмк", n, c, "https://max.ru/c/200/AZ-t-FzlEyg")
+	got := ComposeSubNotice("🔔 Ключевое слово «рюмк»", n, c, "https://max.ru/c/200/AZ-t-FzlEyg")
 
 	for _, want := range []string{
-		"<b>рюмк</b>",
+		"<b>🔔 Ключевое слово «рюмк»</b>",
 		`<a href="https://love.ngs.ru/profile/1">Виктор &lt;3, 45 лет</a>`,
 		"Мария: Ищу того, кто пьёт чай",
 		"(30.07 14:05)",
@@ -489,8 +495,9 @@ func TestNotifySubscriberDeepLink(t *testing.T) {
 
 	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "т"}
 	c := store.Comment{ID: 7, AuthorName: "Виктор", Text: "выпьем рюмку чая"}
-	err := m.NotifySubscriber(context.Background(), 7, "рюмк", n, c,
-		"mid.ffffb9b4e305e2e5019fadf85ce51328", "mid.ffffb9b4e305e2e5019fadf85ce51329")
+	link := m.SubCommentLink(n, c.ID, "mid.ffffb9b4e305e2e5019fadf85ce51329")
+	err := m.NotifyHTML(context.Background(), 7,
+		ComposeSubNotice("🔔 Ключевое слово «рюмк»", n, c, link), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,11 +519,53 @@ func TestNotifySubscriberFallsBackToSite(t *testing.T) {
 
 	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "т"}
 	c := store.Comment{ID: 7, AuthorName: "Виктор", Text: "выпьем рюмку чая"}
-	if err := m.NotifySubscriber(context.Background(), 7, "рюмк", n, c, "", "странный-mid"); err != nil {
+	link := m.SubCommentLink(n, c.ID, "странный-mid")
+	if err := m.NotifyHTML(context.Background(), 7,
+		ComposeSubNotice("🔔 Ключевое слово «рюмк»", n, c, link), nil); err != nil {
 		t.Fatal(err)
 	}
 	want := `<a href="https://love.ngs.ru/notes/312818/#anchor-7">Открыть комментарий</a>`
 	if !strings.Contains(f.last().body.Text, want) {
 		t.Errorf("нет запасной ссылки на сайт:\n%s", f.last().body.Text)
+	}
+}
+
+// Повод «новая заметка автора»: комментария нет, цитируем саму заметку, ссылка
+// ведёт на пост канала, а под сообщением — кнопка «Отписаться».
+func TestNotifyAuthorNoteWithUnsubButton(t *testing.T) {
+	f := &fakeMax{t: t}
+	m := newTestMirror(t, f)
+	m.limiters[7] = rate.NewLimiter(rate.Inf, 1)
+
+	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "Ищу того,\nкто пьёт чай"}
+	link := m.SubNoteLink(n, "mid.ffffb9b4e305e2e5019fadf85ce51329")
+	kb := kbd.New().Row(kbd.Button{Text: "🔕 Отписаться", Payload: kbd.Pack("unsub1", "5")})
+	if err := m.NotifyHTML(context.Background(), 7,
+		ComposeSubNotice("✍️ Новая заметка автора Мария", n, store.Comment{}, link), kb); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.last()
+	for _, want := range []string{
+		"<b>✍️ Новая заметка автора Мария</b>",
+		"Ищу того,\nкто пьёт чай",
+		// Ссылка на пост — в канал (id 100), а не в чат обсуждения.
+		`<a href="https://max.ru/c/100/AZ-t-FzlEyk">Открыть заметку</a>`,
+	} {
+		if !strings.Contains(sent.body.Text, want) {
+			t.Errorf("нет %q в:\n%s", want, sent.body.Text)
+		}
+	}
+	at := attachmentOf(t, sent, model.AttachInlineKeyboard)
+	if len(at.Payload.Buttons) != 1 || at.Payload.Buttons[0][0].Payload != "1:unsub1:5" {
+		t.Errorf("кнопка отписки: %+v", at.Payload.Buttons)
+	}
+}
+
+// Заметка ещё не запощена (или mid непонятный) — ведём на сайт.
+func TestSubNoteLinkFallsBackToSite(t *testing.T) {
+	m := newTestMirror(t, &fakeMax{t: t})
+	n := store.Note{ID: "312818"}
+	if got := m.SubNoteLink(n, ""); got != "https://love.ngs.ru/notes/312818/" {
+		t.Errorf("запасная ссылка на заметку: %q", got)
 	}
 }

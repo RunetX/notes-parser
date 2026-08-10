@@ -20,6 +20,7 @@ import (
 	"github.com/go-telegram/bot/models"
 	"golang.org/x/time/rate"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
 
@@ -30,6 +31,9 @@ const (
 	groupSendInterval   = 3200 * time.Millisecond
 	dmSendInterval      = time.Second
 )
+
+// btnSubscribe — подпись кнопки под постом канала (в MAX она же).
+const btnSubscribe = "🔔 Подписаться"
 
 // Mirror — телеграм-сторона зеркала: постинг заметок в канал, комментариев
 // в группу обсуждения, уведомлений подписчикам в ЛС.
@@ -49,8 +53,11 @@ type Mirror struct {
 
 	// onVoice — необязательный хук распознавания голосовых (nil — фича
 	// выключена). Ставится до старта поллинга, читается из его горутин.
+	// subBot — юзернейм ЛС-бота для кнопки «Подписаться» под постом канала
+	// (пусто — кнопки нет). Ставится там же и тем же замком.
 	vmu     sync.Mutex
 	onVoice func(ctx context.Context, u *models.Update)
+	subBot  string
 
 	// mediaCache: (тип, URL медиа) → Telegram file_id. Одинаковые аватары (один
 	// автор комментирует много раз) грузим в Telegram один раз, дальше — по
@@ -131,6 +138,33 @@ func (m *Mirror) voiceHook() func(ctx context.Context, u *models.Update) {
 	return m.onVoice
 }
 
+// SetSubscribeBot задаёт юзернейм ЛС-бота (без «@») для кнопки «Подписаться»
+// под постами канала. Вызывается до Start; пусто — кнопки нет.
+func (m *Mirror) SetSubscribeBot(username string) {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	m.subBot = username
+}
+
+// subscribeMarkup — кнопка «Подписаться» под постом канала. Это URL-кнопка, а
+// не callback: постер-бот и РюмкинЪ — разные боты, нажатие пришло бы постеру, а
+// он в ЛС писать не может. Deep-link заодно решает главное ограничение
+// Telegram — бот не пишет первым тому, кто его не запускал: переход открывает
+// РюмкинЪ и сам стартует его.
+func (m *Mirror) subscribeMarkup(n store.Note) models.ReplyMarkup {
+	m.vmu.Lock()
+	bot := m.subBot
+	m.vmu.Unlock()
+	payload := kbd.StartSub(n.ID)
+	if bot == "" || payload == "" {
+		// Нетипизированный nil: reply_markup с omitempty пропадёт из запроса.
+		return nil
+	}
+	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+		{Text: btnSubscribe, URL: "https://t.me/" + bot + "?start=" + payload},
+	}}}
+}
+
 // Start запускает long polling; блокируется до отмены контекста.
 func (m *Mirror) Start(ctx context.Context) { m.b.Start(ctx) }
 
@@ -146,14 +180,16 @@ func (m *Mirror) Me(ctx context.Context) (*models.User, error) { return m.b.GetM
 // текстом без аватара. Контент заметки не режем ни при каких условиях.
 func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error) {
 	text := ComposeNoteMessage(m.baseURL, m.signature, n)
+	markup := m.subscribeMarkup(n)
 
 	if len(avatar) > 0 && visibleNoteLen(m.signature, n) <= captionLimit {
 		msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
-				ChatID:    m.channelID,
-				Photo:     m.mediaInput(mediaPhoto, n.AuthorAvatarURL, avatar, "avatar.jpg"),
-				Caption:   text,
-				ParseMode: models.ParseModeHTML,
+				ChatID:      m.channelID,
+				Photo:       m.mediaInput(mediaPhoto, n.AuthorAvatarURL, avatar, "avatar.jpg"),
+				Caption:     text,
+				ParseMode:   models.ParseModeHTML,
+				ReplyMarkup: markup,
 			})
 		})
 		if err == nil {
@@ -168,6 +204,7 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 			ChatID:             m.channelID,
 			Text:               text,
 			ParseMode:          models.ParseModeHTML,
+			ReplyMarkup:        markup,
 			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
 		})
 	})
@@ -341,34 +378,9 @@ func photoFileID(msg *models.Message) string {
 	return ""
 }
 
-// NotifySubscriber шлёт подписчику ЛС о комментарии с его ключевым словом:
-// сработавшее слово, автор комментария, под какой заметкой и выдержка текста
-// — плюс deep-link на сам комментарий в треде.
-// threadID/commentMsgID — id корня треда и сообщения комментария (строками).
-func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) error {
-	root, err := parseMessageID(threadID)
-	if err != nil {
-		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
-	}
-	msgID, err := parseMessageID(commentMsgID)
-	if err != nil {
-		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
-	}
-	text := ComposeSubNotice(keyword, n, c,
-		DeepLink(m.discussionChatID, int64(msgID), int64(root)))
-	_, err = send(ctx, m, userID, func(ctx context.Context) (*models.Message, error) {
-		return m.b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID:             userID,
-			Text:               text,
-			ParseMode:          models.ParseModeHTML,
-			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
-		})
-	})
-	if err != nil {
-		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
-	}
-	return nil
-}
+// ParseMessageID разбирает телеграмный id сообщения из строкового вида
+// message_targets — нужен снаружи, чтобы собрать deep-link уведомления.
+func ParseMessageID(s string) (int, error) { return parseMessageID(s) }
 
 // parseMessageID разбирает телеграмный id сообщения из строкового вида
 // message_targets (id мессенджеров хранятся непрозрачными строками).
@@ -610,13 +622,22 @@ const (
 	subNoticeNoteLimit    = 120
 )
 
-// ComposeSubNotice собирает HTML уведомления подписчика: сработавшее слово,
-// кто написал (ссылкой на профиль автора комментария), под чьей заметкой и
-// выдержка текста. Раньше уходил один голый URL — по нему нельзя было понять
-// ни автора, ни повод.
-func ComposeSubNotice(keyword string, n store.Note, c store.Comment, link string) string {
+// ComposeSubNotice собирает HTML уведомления подписчика: повод (reason —
+// готовая строка от mirror.SubEvent), кто написал (ссылкой на профиль автора
+// комментария), под чьей заметкой и выдержка текста. Раньше уходил один голый
+// URL — по нему нельзя было понять ни автора, ни повод.
+// Нулевой комментарий (c.ID == 0) — повод «новая заметка автора»: цитировать
+// нечего, показываем саму заметку.
+func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "🔔 Ключевое слово <b>%s</b>\n\n", html.EscapeString(keyword))
+	fmt.Fprintf(&b, "<b>%s</b>\n\n", html.EscapeString(reason))
+
+	if c.ID == 0 {
+		fmt.Fprintf(&b, "<b>%s</b>:\n%s", html.EscapeString(n.AuthorName),
+			html.EscapeString(truncateRunes(n.Text, subNoticeCommentLimit)))
+		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", link)
+		return b.String()
+	}
 
 	author := html.EscapeString(c.AuthorName)
 	if c.AuthorAge != "" {
@@ -650,9 +671,20 @@ func truncateRunes(s string, limit int) string {
 }
 
 // DeepLink строит ссылку t.me/c/... на комментарий в треде группы обсуждения.
-// Внутренний id чата выводится из полного id отбрасыванием префикса -100
-// (в Python-версии был захардкожен).
 func DeepLink(discussionChatID, commentMsgID, threadRootID int64) string {
-	internal := strings.TrimPrefix(strconv.FormatInt(discussionChatID, 10), "-100")
-	return fmt.Sprintf("https://t.me/c/%s/%d?thread=%d", internal, commentMsgID, threadRootID)
+	return fmt.Sprintf("https://t.me/c/%s/%d?thread=%d",
+		internalChatID(discussionChatID), commentMsgID, threadRootID)
+}
+
+// ChannelDeepLink — ссылка на пост канала: уведомление о новой заметке автора
+// ведёт на сам пост, а не в тред (в Telegram тред к этому моменту ещё не
+// пойман — его ловит bridge по автофорварду).
+func ChannelDeepLink(channelID, msgID int64) string {
+	return fmt.Sprintf("https://t.me/c/%s/%d", internalChatID(channelID), msgID)
+}
+
+// internalChatID — внутренний id чата: полный id без префикса -100
+// (в Python-версии был захардкожен).
+func internalChatID(chatID int64) string {
+	return strings.TrimPrefix(strconv.FormatInt(chatID, 10), "-100")
 }

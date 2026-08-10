@@ -184,6 +184,34 @@ CREATE TABLE asr_usage (
 );
 `
 
+// migrateV7SQL — типизированные подписки (эпик B): вместо одного keyword — пара
+// kind + target. Пересборка таблицы, как в v4, но id переносятся ЯВНО: они
+// уехали в payload кнопок «✖» («1:unsub:<id>») в чужую историю чатов, и после
+// переезда старое нажатие обязано означать ту же подписку. Старый UNIQUE
+// (messenger, keyword, user_id) строго сильнее нового при kind='keyword', так
+// что конфликтов на переносе быть не может. Откат бинарника после v7 невозможен
+// (старый код читает колонку keyword) — как и после v4.
+const migrateV7SQL = `
+CREATE TABLE subscriptions_v7 (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    messenger TEXT    NOT NULL DEFAULT 'telegram',
+    user_id   INTEGER NOT NULL,
+    kind      TEXT    NOT NULL CHECK (kind IN ('keyword','author_notes','note_comments')),
+    target    TEXT    NOT NULL,   -- слово / notes.author_id / notes.id
+    UNIQUE (messenger, user_id, kind, target)
+);
+INSERT INTO subscriptions_v7 (id, messenger, user_id, kind, target)
+SELECT id, messenger, user_id, 'keyword', keyword FROM subscriptions;
+DROP TABLE subscriptions;
+ALTER TABLE subscriptions_v7 RENAME TO subscriptions;
+
+-- Кому слать: точечно на каждую новую заметку и на каждый новый комментарий.
+-- Выборку по пользователю и подсчёт под предел обслуживает префикс UNIQUE.
+CREATE INDEX idx_subscriptions_target ON subscriptions(kind, target);
+-- Имя автора в строке /mysubs берётся из его последней заметки.
+CREATE INDEX idx_notes_author ON notes(author_id);
+`
+
 // migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
 // migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
@@ -194,6 +222,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV4SQL, // v4 — message_targets и измерение messenger (гейт MAX)
 		migrateV5SQL, // v5 — личные сообщения сайта (talks)
 		migrateV6SQL, // v6 — кэш расшифровок и суточная квота ASR
+		migrateV7SQL, // v7 — типизированные подписки (kind/target)
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

@@ -147,13 +147,22 @@ const (
 	subNoticeNoteLimit    = 120
 )
 
-// composeSubNotice собирает HTML уведомления подписчика: сработавшее слово,
-// кто написал (ссылкой на профиль), под чьей заметкой и выдержка текста.
-// Раньше уходила строка «Новый комментарий…» с одной ссылкой — по ней нельзя
-// было понять ни автора, ни повод. Порт tgx.ComposeSubNotice.
-func composeSubNotice(keyword string, n store.Note, c store.Comment, link string) string {
+// ComposeSubNotice собирает HTML уведомления подписчика: повод (reason —
+// готовая строка от mirror.SubEvent), кто написал (ссылкой на профиль), под
+// чьей заметкой и выдержка текста. Раньше уходила строка «Новый комментарий…»
+// с одной ссылкой — по ней нельзя было понять ни автора, ни повод.
+// Нулевой комментарий (c.ID == 0) — повод «новая заметка автора»: цитировать
+// нечего, показываем саму заметку. Порт tgx.ComposeSubNotice.
+func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "🔔 Ключевое слово <b>%s</b>\n\n", html.EscapeString(keyword))
+	fmt.Fprintf(&b, "<b>%s</b>\n\n", html.EscapeString(reason))
+
+	if c.ID == 0 {
+		fmt.Fprintf(&b, "<b>%s</b>:\n%s", html.EscapeString(n.AuthorName),
+			html.EscapeString(truncateRunes(n.Text, subNoticeCommentLimit)))
+		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", link)
+		return b.String()
+	}
 
 	author := html.EscapeString(c.AuthorName)
 	if c.AuthorAge != "" {

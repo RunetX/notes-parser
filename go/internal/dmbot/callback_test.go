@@ -41,6 +41,8 @@ func TestCallbackAlwaysAnswers(t *testing.T) {
 		kbd.Pack(verbLogin, ""), kbd.Pack(verbNote, ""), kbd.Pack(verbNote, argNoteOwn),
 		kbd.Pack(verbNote, argNoteAnon), kbd.Pack(verbStatus, ""), kbd.Pack(verbSubs, ""),
 		kbd.Pack(verbTalks, ""), kbd.Pack(verbCancel, ""), kbd.Pack(verbNews, "20260804-193012"),
+		kbd.Pack(verbSubscribe, "312886"), kbd.Pack(verbSubAuthor, "312886"),
+		kbd.Pack(verbSubComments, "312886"), kbd.Pack(verbUnsubOne, "1"),
 		"1:неизвестный-глагол", "2:login", "мусор", "",
 	}
 	for _, p := range payloads {
@@ -295,7 +297,9 @@ func TestCallbackSubscriptionsFlow(t *testing.T) {
 	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
 	const uid = 42
 	for _, kw := range []string{"Граф", "Барон"} {
-		if _, err := st.AddSubscription(ctx, store.MessengerTelegram, kw, uid); err != nil {
+		if _, err := st.AddSubscription(ctx, store.Subscription{
+			Messenger: store.MessengerTelegram, UserID: uid, Kind: store.SubKeyword, Target: kw,
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -310,7 +314,7 @@ func TestCallbackSubscriptionsFlow(t *testing.T) {
 	subs, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
 	l.HandleCallback(ctx, uid, press(kbd.Pack(verbUnsub, strconv.FormatInt(subs[0].ID, 10))))
 	left, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
-	if len(left) != 1 || left[0].Keyword != "Граф" {
+	if len(left) != 1 || left[0].Target != "Граф" {
 		t.Fatalf("после отписки осталось: %+v", left)
 	}
 	edit := tr.lastEdit()
@@ -335,6 +339,133 @@ func TestCallbackSubscriptionsFlow(t *testing.T) {
 	}
 	if state, _ := st.DialogState(ctx, store.MessengerTelegram, uid); state != "" {
 		t.Errorf("состояние после ввода слова: %q", state)
+	}
+}
+
+// seedNote кладёт заметку в стор — по ней нажимают кнопку под постом канала.
+func seedNote(t *testing.T, st *store.Store, id, authorID, authorName, text string) {
+	t.Helper()
+	if _, err := st.InsertNote(context.Background(), store.Note{
+		ID: id, AuthorID: authorID, AuthorName: authorName, Text: text,
+		Status: store.StatusPosted, FirstSeenAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Кнопка «Подписаться» под постом: бот спрашивает вид подписки. У анонимной
+// заметки подписывать не на кого — вариант «на автора» не предлагается.
+func TestCallbackSubscribeOfferFlow(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	seedNote(t, st, "312886", "515996", "Ягода", "Купила вчера кота")
+	seedNote(t, st, "312887", "0", "Аноним", "Тайна")
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubscribe, "312886")))
+	got := buttonTexts(tr.lastKB())
+	if len(got) != 3 { // автор + заметка + «Отмена»
+		t.Fatalf("кнопки выбора: %v", got)
+	}
+	if !strings.Contains(tr.lastSent(), "Ягода: Купила вчера кота") {
+		t.Errorf("в приглашении нет заметки: %q", tr.lastSent())
+	}
+	// Нажатие приходит из канала — правим не пост, а отвечаем новым сообщением.
+	if len(tr.edits) != 0 {
+		t.Errorf("выбор не должен править сообщение с кнопкой: %+v", tr.edits)
+	}
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubscribe, "312887")))
+	if got := buttonTexts(tr.lastKB()); len(got) != 2 { // только заметка + «Отмена»
+		t.Errorf("у анонимной заметки не должно быть кнопки автора: %v", got)
+	}
+
+	// Заметки нет — честно говорим об этом и кнопок не даём.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubscribe, "999999")))
+	if !strings.Contains(tr.lastSent(), "Не нашёл эту заметку") {
+		t.Errorf("неизвестная заметка: %q", tr.lastSent())
+	}
+}
+
+// Выбор вида заводит подписку нужного вида; повтор говорит «уже подписаны», а
+// у анонимной заметки автор недоступен.
+func TestCallbackSubscribeAuthorAndNote(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	seedNote(t, st, "312886", "515996", "Ягода", "Купила вчера кота")
+	seedNote(t, st, "312887", "0", "Аноним", "Тайна")
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubAuthor, "312886")))
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubComments, "312886")))
+	subs, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
+	if len(subs) != 2 {
+		t.Fatalf("подписки: %+v", subs)
+	}
+	if subs[0].Kind != store.SubAuthorNotes || subs[0].Target != "515996" {
+		t.Errorf("подписка на автора: %+v", subs[0])
+	}
+	if subs[1].Kind != store.SubNoteComments || subs[1].Target != "312886" {
+		t.Errorf("подписка на заметку: %+v", subs[1])
+	}
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubAuthor, "312886")))
+	if !strings.Contains(tr.lastEdit().text, "уже подписаны") {
+		t.Errorf("повтор подписки: %q", tr.lastEdit().text)
+	}
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbSubAuthor, "312887")))
+	if again, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid); len(again) != 2 {
+		t.Errorf("на анонима подписываться не на кого: %+v", again)
+	}
+}
+
+// «Отписаться» из уведомления: подписка снимается, но само уведомление не
+// правится — текст со ссылкой ещё нужен, а в MAX клавиатуру снять нечем.
+func TestCallbackUnsubFromNotice(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	if _, err := st.AddSubscription(ctx, store.Subscription{
+		Messenger: store.MessengerTelegram, UserID: uid,
+		Kind: store.SubNoteComments, Target: "312886",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	subs, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid)
+
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbUnsubOne, strconv.FormatInt(subs[0].ID, 10))))
+
+	if left, _ := st.SubscriptionsByUser(ctx, store.MessengerTelegram, uid); len(left) != 0 {
+		t.Errorf("подписка не снята: %+v", left)
+	}
+	if len(tr.answers) != 1 || tr.answers[0] != "Отписал" {
+		t.Errorf("ответ на нажатие: %v", tr.answers)
+	}
+	if len(tr.edits) != 0 || len(tr.sent) != 0 {
+		t.Errorf("уведомление трогать не надо: edits=%+v sent=%+v", tr.edits, tr.sent)
+	}
+	// Повторное нажатие безвредно: подписки уже нет.
+	l.HandleCallback(ctx, uid, press(kbd.Pack(verbUnsubOne, strconv.FormatInt(subs[0].ID, 10))))
+	if len(tr.answers) != 2 {
+		t.Errorf("повтор должен так же отвечать: %v", tr.answers)
+	}
+}
+
+// Вне диалога живёт только кнопка под постом канала — иначе ЛС-глаголы стали бы
+// доступны нажатием на чужое сообщение.
+func TestAllowsOutsideDialog(t *testing.T) {
+	l, _, _, _ := newTestLogic(t, store.MessengerMax)
+	if !l.AllowsOutsideDialog(kbd.Pack(verbSubscribe, "312886")) {
+		t.Error("кнопка под постом обязана проходить")
+	}
+	for _, p := range []string{
+		kbd.Pack(verbSubs, ""), kbd.Pack(verbLogin, ""), kbd.Pack(verbUnsubOne, "1"),
+		kbd.Pack(verbSubAuthor, "312886"), kbd.Pack(verbNews, "1"), "мусор", "",
+	} {
+		if l.AllowsOutsideDialog(p) {
+			t.Errorf("payload не должен проходить вне диалога: %q", p)
+		}
 	}
 }
 

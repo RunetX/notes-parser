@@ -112,19 +112,38 @@ func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
 	return tx.Commit()
 }
 
-// Subscription — подписка на ключевое слово в конкретном мессенджере.
-// ID заполняется только выборкой по пользователю (SubscriptionsByUser): по
-// нему кнопка снимает подписку, не таща слово в payload.
+// Виды подписок. Цель (Target) у каждого своя, отсюда и раздельные ветки
+// срабатывания в зеркале.
+const (
+	SubKeyword      = "keyword"       // слово в тексте нового комментария
+	SubAuthorNotes  = "author_notes"  // новые заметки автора (target — notes.author_id)
+	SubNoteComments = "note_comments" // новые комментарии заметки (target — notes.id)
+)
+
+// SubscriptionLimit — потолок числа подписок на пользователя, все виды вместе.
+const SubscriptionLimit = 50
+
+// ErrSubscriptionLimit — подписка не заведена: у пользователя уже предел.
+var ErrSubscriptionLimit = errors.New("превышен предел числа подписок")
+
+// Subscription — подписка пользователя в конкретном мессенджере.
 type Subscription struct {
 	ID        int64
 	Messenger string
-	Keyword   string
 	UserID    int64
+	Kind      string // Sub*
+	Target    string // слово / author_id / note_id
+	// Label — человеческая подпись цели: само слово, имя автора, «автор: текст
+	// заметки». Заполняет только SubscriptionsByUser (одним запросом, без
+	// N+1); пусто — цель в notes не нашлась (заметка удалена, автор не виден).
+	Label string
 }
 
-// Subscriptions возвращает все подписки (всех мессенджеров).
+// Subscriptions возвращает все подписки (всех мессенджеров и видов). ID
+// выбирается всегда: он нужен кнопке «Отписаться» в самом уведомлении.
 func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT messenger, keyword, user_id FROM subscriptions`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, messenger, user_id, kind, target FROM subscriptions`)
 	if err != nil {
 		return nil, err
 	}
@@ -132,10 +151,46 @@ func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
 	var subs []Subscription
 	for rows.Next() {
 		var sub Subscription
-		if err := rows.Scan(&sub.Messenger, &sub.Keyword, &sub.UserID); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.Messenger, &sub.UserID, &sub.Kind, &sub.Target); err != nil {
 			return nil, err
 		}
 		subs = append(subs, sub)
 	}
 	return subs, rows.Err()
+}
+
+// SubscribersByTarget — подписчики конкретной цели в мессенджере. Новая заметка
+// автора бьёт точечно по индексу, а не вычиткой всей таблицы: заметок в день
+// единицы, а подписок со временем будут тысячи.
+func (s *Store) SubscribersByTarget(ctx context.Context, messenger, kind, target string) ([]Subscription, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id FROM subscriptions
+		WHERE messenger = ? AND kind = ? AND target = ?
+		ORDER BY user_id`, messenger, kind, target)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subs []Subscription
+	for rows.Next() {
+		sub := Subscription{Messenger: messenger, Kind: kind, Target: target}
+		if err := rows.Scan(&sub.ID, &sub.UserID); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
+// RemoveNoteSubscriptions снимает подписки на комментарии заметки во всех
+// мессенджерах: заметка ушла в архив, новых комментариев по ней не будет, а
+// строка вечно ела бы предел и висела бы в /mysubs обманкой.
+func (s *Store) RemoveNoteSubscriptions(ctx context.Context, noteID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM subscriptions WHERE kind = ? AND target = ?`, SubNoteComments, noteID)
+	if err != nil {
+		return 0, fmt.Errorf("снятие подписок на заметку %s: %w", noteID, err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }

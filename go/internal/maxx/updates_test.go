@@ -23,7 +23,11 @@ type fakeDM struct {
 	texts     []string
 	greets    int
 	callbacks []dmCallback
+	// public — payload'ы, разрешённые вне диалога (белый список держит ядро).
+	public map[string]bool
 }
+
+func (f *fakeDM) AllowsOutsideDialog(payload string) bool { return f.public[payload] }
 
 // dmCallback — нажатие, как его увидел ЛС-движок.
 type dmCallback struct {
@@ -161,21 +165,36 @@ func TestDispatchCallbackFromRawJSON(t *testing.T) {
 	}
 }
 
-// Нажатие вне диалога (кнопка под постом канала — эпик B) ЛС-движка не касается.
+// Вне диалога проходят только публичные кнопки — «Подписаться» под постом
+// канала. И приезжает она с ПУСТЫМ mid: сообщение под кнопкой — чужой пост,
+// править его нажатием нельзя, ответ должен уйти новым сообщением в ЛС.
 func TestDispatchCallbackOutsideDialog(t *testing.T) {
-	m := &Mirror{discussionChatID: -200, log: slog.Default()}
-	dm := &fakeDM{}
-	u := model.Update{UpdateType: model.UpdateMessageCallback, ChatID: 100}
-	u.Callback = &model.Callback{CallbackID: "cb-2", Payload: "1:subs", User: model.User{UserID: 777}}
-	u.Message = &model.MessageUpdate{
-		Recipient: model.Recipient{ChatID: 100, ChatType: model.ChatTypeChat},
-		Body:      model.MessageBody{Mid: "mid.post"},
+	channelPress := func(payload string) model.Update {
+		u := model.Update{UpdateType: model.UpdateMessageCallback, ChatID: 100}
+		u.Callback = &model.Callback{CallbackID: "cb-2", Payload: payload, User: model.User{UserID: 777}}
+		u.Message = &model.MessageUpdate{
+			Recipient: model.Recipient{ChatID: 100, ChatType: model.ChatTypeChat},
+			Body:      model.MessageBody{Mid: "mid.post"},
+		}
+		return u
 	}
 
-	m.Dispatch(nil, dm)(context.Background(), u)
+	m := &Mirror{discussionChatID: -200, log: slog.Default()}
+	dm := &fakeDM{public: map[string]bool{"1:sub:312886": true}}
+	m.Dispatch(nil, dm)(context.Background(), channelPress("1:sub:312886"))
 
-	if len(dm.callbacks) != 0 {
-		t.Errorf("нажатие из канала не для ЛС-движка: %+v", dm.callbacks)
+	if len(dm.callbacks) != 1 {
+		t.Fatalf("публичное нажатие должно дойти до ЛС-движка: %+v", dm.callbacks)
+	}
+	if got := dm.callbacks[0]; got.userID != 777 || got.cb.MessageID != "" {
+		t.Errorf("mid поста канала обязан гаситься на входе: %+v", got)
+	}
+
+	// ЛС-глагол из канала по-прежнему отбрасывается.
+	dm2 := &fakeDM{}
+	m.Dispatch(nil, dm2)(context.Background(), channelPress("1:subs"))
+	if len(dm2.callbacks) != 0 {
+		t.Errorf("ЛС-глагол из канала не для ЛС-движка: %+v", dm2.callbacks)
 	}
 }
 

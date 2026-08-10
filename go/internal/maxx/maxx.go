@@ -18,6 +18,7 @@ import (
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
 	"golang.org/x/time/rate"
 
+	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
 
@@ -33,6 +34,12 @@ const (
 // документирует retry_after; уточнить по живым логам (бриф, R2).
 // Переменная — для подмены в тестах.
 var retryAfter = 5 * time.Second
+
+// Подписи кнопок под постом канала.
+const (
+	btnDiscuss   = "💬 Обсудить"
+	btnSubscribe = "🔔 Подписаться"
+)
 
 // longPollTimeout — серверное удержание GET /updates. Должно быть заметно
 // меньше клиентского HTTP-таймаута (30 c в SDK и MintsifraClient), иначе
@@ -127,7 +134,7 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 		SetFormat(model.FormatHTML).
 		SetDisableLinkPreview(true)
 	m.attachImage(ctx, msg, n.AuthorAvatarURL, avatar, "аватар автора")
-	m.attachDiscussButton(ctx, msg, n.ID)
+	m.attachNoteButtons(ctx, msg, n)
 
 	mid, err := m.send(ctx, m.channelID, msg)
 	if err != nil {
@@ -136,14 +143,29 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 	return mid, nil
 }
 
-// attachDiscussButton добавляет к посту канала кнопку «Обсудить» (замена
-// телеграмного автофорварда как точки входа в тред). Если корень ветки заметки
-// уже известен — ссылка ведёт прямо в неё, иначе в чат целиком по ссылке-
-// приглашению (она снимается через GetChat один раз; при ошибке пост уходит
-// без кнопки — попробуем на следующем).
-func (m *Mirror) attachDiscussButton(ctx context.Context, msg *maxbot.Message, noteID string) {
+// attachNoteButtons вешает на пост канала ряд кнопок: «Обсудить» (ссылка в
+// ветку заметки или в чат целиком) и «Подписаться» (нажатие приходит этому же
+// боту — в MAX он и зеркало, и ЛС). Ссылочные кнопки пакет kbd сознательно не
+// держит, поэтому клавиатуру собираем сразу в модели MAX, а payload — через
+// kbd.Pack: разбирает его общее диалоговое ядро.
+func (m *Mirror) attachNoteButtons(ctx context.Context, msg *maxbot.Message, n store.Note) {
+	kb := model.NewKeyboard()
+	row := kb.AddRow()
+	if link := m.discussLink(ctx, n.ID); link != "" {
+		row.AddLink(btnDiscuss, link)
+	}
+	// Кнопка подписки от чата обсуждения не зависит: даже когда ссылка не
+	// снялась, подписаться можно (раньше пост уходил вовсе без клавиатуры).
+	row.AddCallBack(btnSubscribe, kbd.Pack(kbd.VerbSubscribe, n.ID))
+	msg.AddKeyboard(kb)
+}
+
+// discussLink — куда ведёт «Обсудить»: прямо в ветку заметки, если её корень уже
+// известен, иначе в чат целиком по ссылке-приглашению (она снимается через
+// GetChat один раз; при ошибке кнопки не будет — попробуем на следующем посте).
+func (m *Mirror) discussLink(ctx context.Context, noteID string) string {
 	if m.discussionChatID == 0 {
-		return
+		return ""
 	}
 	// Корень нужен ровно один раз — на этот пост; дальше он живёт в
 	// message_targets, а карта не должна расти вместе с лентой.
@@ -152,25 +174,20 @@ func (m *Mirror) attachDiscussButton(ctx context.Context, msg *maxbot.Message, n
 	delete(m.noteThreads, noteID)
 	m.lmu.Unlock()
 	if deep := MessageLink(m.discussionChatID, thread); deep != "" {
-		kb := model.NewKeyboard()
-		kb.AddRow().AddLink("💬 Обсудить", deep)
-		msg.AddKeyboard(kb)
-		return
+		return deep
 	}
-	if link == "" {
-		chat, err := m.api.Chats.GetChat(ctx, m.discussionChatID)
-		if err != nil || chat.Link == "" {
-			m.log.Warn("ссылка чата обсуждения не снята, пост без кнопки", "err", err)
-			return
-		}
-		link = chat.Link
-		m.lmu.Lock()
-		m.discussionLink = link
-		m.lmu.Unlock()
+	if link != "" {
+		return link
 	}
-	kb := model.NewKeyboard()
-	kb.AddRow().AddLink("💬 Обсудить", link)
-	msg.AddKeyboard(kb)
+	chat, err := m.api.Chats.GetChat(ctx, m.discussionChatID)
+	if err != nil || chat.Link == "" {
+		m.log.Warn("ссылка чата обсуждения не снята, пост без кнопки «Обсудить»", "err", err)
+		return ""
+	}
+	m.lmu.Lock()
+	m.discussionLink = chat.Link
+	m.lmu.Unlock()
+	return chat.Link
 }
 
 // StartThread — «ручной автофорвард»: копия заметки в чат обсуждения, её mid
@@ -253,23 +270,39 @@ func (m *Mirror) PostNoteImage(ctx context.Context, threadID, imageURL string, i
 	return mid, nil
 }
 
-// NotifySubscriber шлёт подписчику ЛС о комментарии с его ключевым словом:
-// слово, автор, заметка и выдержка текста — плюс deep-link на сам комментарий
-// в чате обсуждения. Запасной вариант, если mid непонятного вида или чата
-// обсуждения нет, — ссылка на комментарий на сайте (анкер — anchor-<id>).
-func (m *Mirror) NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, _, commentMsgID string) error {
-	link := m.chatMessageLink(commentMsgID)
-	if link == "" {
-		link = fmt.Sprintf("%s/notes/%s/#anchor-%d", m.baseURL, n.ID, c.ID)
+// NotifyHTML шлёт ЛС с HTML-разметкой и необязательными кнопками — уведомление
+// подписчика с «Отписаться». Текст собирает ComposeSubNotice, ссылку — тот, кто
+// знает повод; сюда приходит готовое сообщение.
+func (m *Mirror) NotifyHTML(ctx context.Context, userID int64, text string, kb *kbd.Keyboard) error {
+	msg := maxbot.NewMessage().SetUser(userID).SetText(text).SetFormat(model.FormatHTML)
+	if mk := maxKeyboard(kb); mk != nil {
+		msg.AddKeyboard(mk)
 	}
-	msg := maxbot.NewMessage().
-		SetUser(userID).
-		SetText(composeSubNotice(keyword, n, c, link)).
-		SetFormat(model.FormatHTML)
 	if _, err := m.send(ctx, userID, msg); err != nil {
 		return fmt.Errorf("уведомление подписчика %d: %w", userID, err)
 	}
 	return nil
+}
+
+// SubCommentLink — ссылка на комментарий в чате обсуждения. Запасной вариант,
+// если mid непонятного вида или чата обсуждения нет, — ссылка на комментарий на
+// сайте (анкер — anchor-<id>).
+func (m *Mirror) SubCommentLink(n store.Note, commentID int64, commentMsgID string) string {
+	if link := m.chatMessageLink(commentMsgID); link != "" {
+		return link
+	}
+	return fmt.Sprintf("%s/notes/%s/#anchor-%d", m.baseURL, n.ID, commentID)
+}
+
+// SubNoteLink — ссылка на пост заметки в канале (повод «новая заметка автора»),
+// с тем же запасным вариантом — сама заметка на сайте.
+func (m *Mirror) SubNoteLink(n store.Note, postMsgID string) string {
+	if postMsgID != "" {
+		if link := MessageLink(m.channelID, postMsgID); link != "" {
+			return link
+		}
+	}
+	return fmt.Sprintf("%s/notes/%s/", m.baseURL, n.ID)
 }
 
 // SendText шлёт обычное текстовое сообщение (алерты админу, doctor).

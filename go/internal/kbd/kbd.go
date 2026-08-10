@@ -4,7 +4,9 @@
 // maxx.Mirror) переводят её в формат своего API. Пакет листовой намеренно:
 // иначе транспорту пришлось бы импортировать диалоговое ядро. Ссылочные кнопки
 // сюда не поднимаются — «💬 Обсудить» живёт в maxx и мессенджер-агностичной
-// не бывает.
+// не бывает. А вот формат payload'а сюда поднимается весь, включая аргумент
+// deep-link'а «/start» (StartSub): кладёт его постер, разбирает диалоговое
+// ядро — ровно та же пара сторон, что у Pack/Parse.
 package kbd
 
 import "strings"
@@ -83,6 +85,44 @@ func Parse(payload string) (verb, arg string, ok bool) {
 
 // Fits — влезает ли payload в предел мессенджера.
 func Fits(payload string) bool { return len(payload) <= PayloadLimit }
+
+// VerbSubscribe — глагол кнопки «Подписаться» под постом канала. Он здесь, а не
+// в dmbot, потому что кладёт его транспорт (maxx собирает клавиатуру поста), а
+// разбирает диалоговое ядро — оба и так ходят сюда за Pack/Parse.
+const VerbSubscribe = "sub"
+
+// startSubPrefix — префикс payload'а deep-link'а «подписаться на заметку».
+const startSubPrefix = "sub_"
+
+// StartSub — payload ссылки t.me/<бот>?start=<payload>: кнопка под постом
+// канала ведёт в ЛС и приносит с собой id заметки. Так обходится главное
+// ограничение Telegram — бот не пишет первым тому, кто его не запускал.
+// Пусто — id не годится в payload: Telegram разрешает там только
+// [A-Za-z0-9_-] и не больше 64 знаков.
+func StartSub(noteID string) string {
+	if noteID == "" || len(startSubPrefix)+len(noteID) > PayloadLimit {
+		return ""
+	}
+	for _, r := range noteID {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return startSubPrefix + noteID
+}
+
+// ParseStartSub — id заметки из payload'а /start. ok == false — payload не наш
+// (обычный /start, ссылка чужого релиза, мусор): такой игнорируют молча.
+func ParseStartSub(payload string) (noteID string, ok bool) {
+	rest, found := strings.CutPrefix(payload, startSubPrefix)
+	if !found || rest == "" {
+		return "", false
+	}
+	if StartSub(rest) == "" {
+		return "", false
+	}
+	return rest, true
+}
 
 // Command — пункт меню команд бота: Telegram показывает его по «/», MAX — в
 // своём списке команд. Name без ведущего слэша.

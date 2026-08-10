@@ -76,7 +76,7 @@ func TestMigrateV3ToV4(t *testing.T) {
 	if _, valid, err := st.SessionCookies(ctx, MessengerTelegram, 42); err != nil || !valid {
 		t.Errorf("сессия после миграции: valid=%v err=%v", valid, err)
 	}
-	if kws, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 42); len(kws) != 1 || kws[0].Keyword != "Граф" {
+	if kws, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 42); len(kws) != 1 || kws[0].Target != "Граф" {
 		t.Errorf("подписки после миграции: %v", kws)
 	}
 	if s, _ := st.DialogState(ctx, MessengerTelegram, 42); s != "await_note" {
@@ -243,5 +243,65 @@ func TestMigrateV5ToV6(t *testing.T) {
 	}
 	if ok, err := st.TryReserveASR(ctx, MessengerTelegram, 42, "2026-08-02", 30, 60); err != nil || !ok {
 		t.Errorf("квота после миграции: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestMigrateV6ToV7 строит базу версии 6 и проверяет переезд подписок на пару
+// kind/target. Главное здесь — сохранённые id: они уехали в payload кнопок «✖»
+// в чужую историю чатов, и после миграции старое нажатие обязано снимать ту же
+// подписку, а не соседнюю.
+func TestMigrateV6ToV7(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v6.db")
+
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{schemaSQL, migrateV2SQL, migrateV3SQL, migrateV4SQL, migrateV5SQL, migrateV6SQL} {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := []string{
+		`INSERT INTO subscriptions (id, messenger, keyword, user_id) VALUES (7, 'telegram', 'Граф', 42)`,
+		`INSERT INTO subscriptions (id, messenger, keyword, user_id) VALUES (9, 'max', 'рюмк', 42)`,
+		`INSERT INTO asr_transcripts (messenger, file_key, text, duration_sec, created_at)
+		 VALUES ('telegram', 'AgADXQ', 'расшифровка', 12, '2026-08-02T00:00:00Z')`,
+		`PRAGMA user_version = 6`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	subs, err := st.SubscriptionsByUser(ctx, MessengerTelegram, 42)
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("подписки после миграции: %+v %v", subs, err)
+	}
+	if subs[0].ID != 7 || subs[0].Kind != SubKeyword || subs[0].Target != "Граф" {
+		t.Errorf("перенос подписки: %+v", subs[0])
+	}
+	// Чужой мессенджер не потерялся и не перепутал id.
+	all, err := st.Subscriptions(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("все подписки: %+v %v", all, err)
+	}
+	for _, s := range all {
+		if s.ID == 0 || s.Kind != SubKeyword {
+			t.Errorf("подписка без id или вида: %+v", s)
+		}
+	}
+	// v6-регресс: кэш расшифровок пережил пересборку соседней таблицы.
+	if text, ok, err := st.Transcript(ctx, MessengerTelegram, "AgADXQ"); err != nil || !ok || text != "расшифровка" {
+		t.Errorf("кэш ASR после v7: %q ok=%v err=%v", text, ok, err)
 	}
 }

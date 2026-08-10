@@ -1,6 +1,9 @@
 package kbd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPackParse(t *testing.T) {
 	cases := []struct {
@@ -44,6 +47,30 @@ func TestPackFits(t *testing.T) {
 	// Свободный текст в payload не кладут: вот почему.
 	if Fits(Pack("subs", "очень длинное ключевое слово подписки на весь твит")) {
 		t.Error("кириллический аргумент не должен влезать в предел")
+	}
+}
+
+// Payload deep-link'а «/start»: Telegram разрешает там только [A-Za-z0-9_-],
+// поэтому id заметки — единственный допустимый аргумент.
+func TestStartSubRoundTrip(t *testing.T) {
+	payload := StartSub("312886")
+	if payload != "sub_312886" {
+		t.Fatalf("payload: %q", payload)
+	}
+	if id, ok := ParseStartSub(payload); !ok || id != "312886" {
+		t.Errorf("разбор: %q ok=%v", id, ok)
+	}
+	for _, bad := range []string{"", "sub_", "start", "sub_n1", "sub_312886x", "sub_-1"} {
+		if _, ok := ParseStartSub(bad); ok {
+			t.Errorf("чужой payload принят: %q", bad)
+		}
+	}
+	// Нечисловой id и длинный аргумент кнопку не получают вовсе.
+	if StartSub("n1") != "" {
+		t.Error("нечисловой id не годится в payload")
+	}
+	if StartSub(strings.Repeat("9", PayloadLimit)) != "" {
+		t.Error("payload сверх предела Telegram не должен собираться")
 	}
 }
 

@@ -2,9 +2,11 @@ package dmbot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -220,6 +222,84 @@ func TestLogicSubscriptionsPerMessenger(t *testing.T) {
 	subs, _ := st.Subscriptions(ctx)
 	if len(subs) != 1 || subs[0].Messenger != store.MessengerMax {
 		t.Errorf("подписки: %+v", subs)
+	}
+}
+
+// Deep-link из-под поста канала: /start приносит id заметки и сразу спрашивает
+// вид подписки. Обычный /start и чужой payload — прежнее приветствие.
+func TestStartPayloadOpensSubscribeOffer(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	seedNote(t, st, "312886", "515996", "Ягода", "Купила вчера кота")
+
+	l.HandleText(ctx, uid, "mid.1", "/start sub_312886")
+	if !strings.Contains(tr.lastSent(), msgAskSubKind) {
+		t.Errorf("deep-link не открыл выбор подписки: %q", tr.lastSent())
+	}
+
+	for _, text := range []string{"/start", "/start мусор", "/start sub_"} {
+		l.HandleText(ctx, uid, "mid.2", text)
+		if strings.Contains(tr.lastSent(), msgAskSubKind) {
+			t.Errorf("%q должен давать приветствие: %q", text, tr.lastSent())
+		}
+	}
+}
+
+// Список показывает все три вида — по виду видно, откуда придёт уведомление.
+func TestMySubsShowsAllKinds(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	seedNote(t, st, "312886", "515996", "Ягода", "Купила вчера кота")
+	for _, sub := range []store.Subscription{
+		{Kind: store.SubKeyword, Target: "рюмк"},
+		{Kind: store.SubAuthorNotes, Target: "515996"},
+		{Kind: store.SubNoteComments, Target: "312886"},
+	} {
+		sub.Messenger, sub.UserID = store.MessengerTelegram, uid
+		if _, err := st.AddSubscription(ctx, sub); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	l.HandleText(ctx, uid, "mid.1", "/mysubs")
+
+	text := tr.lastSent()
+	for _, want := range []string{
+		"(3 из 50)", "слово «рюмк»", "заметки автора Ягода", "комментарии к заметке «Ягода: Купила",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("нет %q в списке:\n%s", want, text)
+		}
+	}
+	if got := buttonTexts(tr.lastKB()); len(got) != 4 { // три «✖» + «Добавить»
+		t.Errorf("кнопки списка: %v", got)
+	}
+}
+
+// Предел числа подписок один на все виды, и о нём говорят человеческим текстом.
+func TestSubscriptionLimitMessage(t *testing.T) {
+	ctx := context.Background()
+	l, tr, _, st := newTestLogic(t, store.MessengerTelegram)
+	const uid = 42
+	for i := range store.SubscriptionLimit {
+		if _, err := st.AddSubscription(ctx, store.Subscription{
+			Messenger: store.MessengerTelegram, UserID: uid,
+			Kind: store.SubKeyword, Target: fmt.Sprintf("слово-%d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	l.HandleText(ctx, uid, "mid.1", "/subscribe лишнее")
+
+	if !strings.Contains(tr.lastSent(), "не держу") {
+		t.Errorf("отказ по пределу: %q", tr.lastSent())
+	}
+	// Текст отказа называет реальный предел, а не выдуманный.
+	if !strings.Contains(msgSubLimit, strconv.Itoa(store.SubscriptionLimit)) {
+		t.Errorf("предел в тексте разошёлся со стором: %q", msgSubLimit)
 	}
 }
 

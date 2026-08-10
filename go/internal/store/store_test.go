@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -124,18 +126,21 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)
 
-	added, err := st.AddSubscription(ctx, MessengerTelegram, "Граф", 42)
+	word := func(messenger, target string, userID int64) Subscription {
+		return Subscription{Messenger: messenger, UserID: userID, Kind: SubKeyword, Target: target}
+	}
+	added, err := st.AddSubscription(ctx, word(MessengerTelegram, "Граф", 42))
 	if err != nil || !added {
 		t.Fatalf("первая подписка: added=%v err=%v", added, err)
 	}
-	added, _ = st.AddSubscription(ctx, MessengerTelegram, "Граф", 42)
+	added, _ = st.AddSubscription(ctx, word(MessengerTelegram, "Граф", 42))
 	if added {
 		t.Error("дубль подписки должен игнорироваться")
 	}
-	if _, err := st.AddSubscription(ctx, MessengerTelegram, "Барон", 42); err != nil {
+	if _, err := st.AddSubscription(ctx, word(MessengerTelegram, "Барон", 42)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddSubscription(ctx, MessengerTelegram, "Граф", 99); err != nil {
+	if _, err := st.AddSubscription(ctx, word(MessengerTelegram, "Граф", 99)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -143,21 +148,21 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kws) != 2 || kws[0].Keyword != "Барон" || kws[1].Keyword != "Граф" { // ORDER BY keyword
+	if len(kws) != 2 || kws[0].Target != "Барон" || kws[1].Target != "Граф" { // ORDER BY label
 		t.Errorf("подписки пользователя 42: %v", kws)
 	}
 
-	removed, err := st.RemoveSubscription(ctx, MessengerTelegram, "Граф", 42)
+	removed, err := st.RemoveSubscription(ctx, MessengerTelegram, 42, SubKeyword, "Граф")
 	if err != nil || !removed {
 		t.Fatalf("удаление: removed=%v err=%v", removed, err)
 	}
-	removed, _ = st.RemoveSubscription(ctx, MessengerTelegram, "Граф", 42)
+	removed, _ = st.RemoveSubscription(ctx, MessengerTelegram, 42, SubKeyword, "Граф")
 	if removed {
 		t.Error("повторное удаление должно вернуть false")
 	}
 	// Подписка другого пользователя на «Граф» не затронута.
 	kws, _ = st.SubscriptionsByUser(ctx, MessengerTelegram, 99)
-	if len(kws) != 1 || kws[0].Keyword != "Граф" {
+	if len(kws) != 1 || kws[0].Target != "Граф" {
 		t.Errorf("подписки пользователя 99: %v", kws)
 	}
 	if kws[0].ID == 0 {
@@ -172,12 +177,118 @@ func TestSubscriptionsAddListRemove(t *testing.T) {
 	if _, ok, _ := st.RemoveSubscriptionByID(ctx, MessengerMax, 99, foreign); ok {
 		t.Error("id из другого мессенджера не должен срабатывать")
 	}
-	kw, ok, err := st.RemoveSubscriptionByID(ctx, MessengerTelegram, 99, foreign)
-	if err != nil || !ok || kw != "Граф" {
-		t.Errorf("снятие по id: %q ok=%v err=%v", kw, ok, err)
+	sub, ok, err := st.RemoveSubscriptionByID(ctx, MessengerTelegram, 99, foreign)
+	if err != nil || !ok || sub.Target != "Граф" || sub.Kind != SubKeyword {
+		t.Errorf("снятие по id: %+v ok=%v err=%v", sub, ok, err)
 	}
 	if _, ok, _ := st.RemoveSubscriptionByID(ctx, MessengerTelegram, 99, foreign); ok {
 		t.Error("повторное снятие по id должно вернуть false")
+	}
+}
+
+// TestSubscriptionsAllKinds — три вида живут рядом и не путаются: одна и та же
+// цель у разных видов — разные подписки, а подписи целей приходят из notes.
+func TestSubscriptionsAllKinds(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+
+	if _, err := st.InsertNote(ctx, Note{
+		ID: "312886", AuthorID: "515996", AuthorName: "Ягода",
+		Text: "Купила вчера кота", Status: StatusPosted, FirstSeenAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []Subscription{
+		{Messenger: MessengerTelegram, UserID: 42, Kind: SubKeyword, Target: "312886"},
+		{Messenger: MessengerTelegram, UserID: 42, Kind: SubAuthorNotes, Target: "515996"},
+		{Messenger: MessengerTelegram, UserID: 42, Kind: SubNoteComments, Target: "312886"},
+	} {
+		if added, err := st.AddSubscription(ctx, sub); err != nil || !added {
+			t.Fatalf("подписка %+v: added=%v err=%v", sub, added, err)
+		}
+	}
+
+	subs, err := st.SubscriptionsByUser(ctx, MessengerTelegram, 42)
+	if err != nil || len(subs) != 3 {
+		t.Fatalf("подписки: %+v %v", subs, err)
+	}
+	// Порядок: слова → авторы → заметки.
+	if subs[0].Kind != SubKeyword || subs[1].Kind != SubAuthorNotes || subs[2].Kind != SubNoteComments {
+		t.Errorf("порядок видов: %+v", subs)
+	}
+	if subs[0].Label != "312886" {
+		t.Errorf("подпись слова — само слово: %q", subs[0].Label)
+	}
+	if subs[1].Label != "Ягода" {
+		t.Errorf("подпись автора из notes: %q", subs[1].Label)
+	}
+	if subs[2].Label != "Ягода: Купила вчера кота" {
+		t.Errorf("подпись заметки из notes: %q", subs[2].Label)
+	}
+
+	// Неизвестная цель — пустая подпись, а не пропавшая строка.
+	if _, err := st.AddSubscription(ctx, Subscription{
+		Messenger: MessengerTelegram, UserID: 43, Kind: SubNoteComments, Target: "999999",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orphan, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 43)
+	if len(orphan) != 1 || orphan[0].Label != "" {
+		t.Errorf("подписка на неизвестную заметку: %+v", orphan)
+	}
+
+	// Точечная выборка подписчиков цели — ей пользуется рассылка по автору.
+	authors, err := st.SubscribersByTarget(ctx, MessengerTelegram, SubAuthorNotes, "515996")
+	if err != nil || len(authors) != 1 || authors[0].UserID != 42 {
+		t.Errorf("подписчики автора: %+v %v", authors, err)
+	}
+	if none, _ := st.SubscribersByTarget(ctx, MessengerMax, SubAuthorNotes, "515996"); len(none) != 0 {
+		t.Errorf("чужой мессенджер не должен попадать в выборку: %+v", none)
+	}
+
+	// Архивация заметки снимает подписки на её комментарии — и только их.
+	n, err := st.RemoveNoteSubscriptions(ctx, "312886")
+	if err != nil || n != 1 {
+		t.Fatalf("снятие подписок на заметку: n=%d err=%v", n, err)
+	}
+	left, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 42)
+	if len(left) != 2 {
+		t.Errorf("после архивации должны остаться слово и автор: %+v", left)
+	}
+}
+
+// TestSubscriptionLimit — предел общий на все виды и держится в сторе, чтобы
+// его не обошли параллельные нажатия.
+func TestSubscriptionLimit(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+
+	for i := range SubscriptionLimit {
+		sub := Subscription{
+			Messenger: MessengerTelegram, UserID: 42,
+			Kind: SubKeyword, Target: fmt.Sprintf("слово-%d", i),
+		}
+		if added, err := st.AddSubscription(ctx, sub); err != nil || !added {
+			t.Fatalf("подписка %d: added=%v err=%v", i, added, err)
+		}
+	}
+	over := Subscription{Messenger: MessengerTelegram, UserID: 42, Kind: SubKeyword, Target: "лишнее"}
+	if _, err := st.AddSubscription(ctx, over); !errors.Is(err, ErrSubscriptionLimit) {
+		t.Fatalf("подписка сверх предела: err=%v", err)
+	}
+	subs, _ := st.SubscriptionsByUser(ctx, MessengerTelegram, 42)
+	if len(subs) != SubscriptionLimit {
+		t.Errorf("отказ не должен оставлять строку: %d", len(subs))
+	}
+	// Повтор уже имеющейся подписки на пределе — не ошибка: ничего не растёт.
+	dup := Subscription{Messenger: MessengerTelegram, UserID: 42, Kind: SubKeyword, Target: "слово-0"}
+	if added, err := st.AddSubscription(ctx, dup); err != nil || added {
+		t.Errorf("дубль на пределе: added=%v err=%v", added, err)
+	}
+	// Предел на пользователя, а не на таблицу.
+	other := Subscription{Messenger: MessengerTelegram, UserID: 43, Kind: SubKeyword, Target: "своё"}
+	if added, err := st.AddSubscription(ctx, other); err != nil || !added {
+		t.Errorf("подписка другого пользователя: added=%v err=%v", added, err)
 	}
 }
 

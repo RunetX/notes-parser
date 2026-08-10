@@ -6,6 +6,7 @@ package dmbot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -46,7 +47,14 @@ const (
 const (
 	msgInternalError  = "Внутренняя ошибка, попробуйте позже"
 	msgUnknownCommand = "Неизвестная команда. Наберите /start"
+	msgNoteGone       = "Не нашёл эту заметку — возможно, она уже ушла из ленты."
+	msgSubLimit       = "Больше " + subLimitText + " подписок я не держу. Снимите лишние: /mysubs"
 )
+
+// subLimitText — предел числа подписок для текста отказа: держим его строкой,
+// чтобы сообщение оставалось константой (значение — store.SubscriptionLimit,
+// сходство стережёт тест).
+const subLimitText = "50"
 
 // Приглашения к вводу. Вынесены в константы: к ним ведут две дороги — команда
 // и нажатие кнопки, и текст должен быть один.
@@ -55,7 +63,9 @@ const (
 	msgAskNote         = "Отправьте текст заметки"
 	msgAskAnonNote     = "Отправьте текст анонимной заметки"
 	msgAskNoteKind     = "Заметка от своего имени или анонимно?"
-	msgAskSubscription = "Пришлите слово: уведомлю, когда оно встретится в комментарии."
+	msgAskSubKind      = "На что подписать?"
+	msgAskSubscription = "Пришлите слово: уведомлю, когда оно встретится в комментарии.\n" +
+		"На автора или на конкретную заметку подписывает кнопка «🔔 Подписаться» под постом в канале."
 )
 
 // SiteAuth — то, что боту нужно от клиента сайта.
@@ -185,6 +195,17 @@ func (d *Bot) Confirm(ctx context.Context, userID int64, msgID string, ok bool) 
 	}
 }
 
+// Username — юзернейм бота (getMe), без «@». Нужен постеру канала: под каждой
+// заметкой он вешает deep-link в этот ЛС. Ошибка не фатальна — просто не будет
+// кнопки.
+func (d *Bot) Username(ctx context.Context) (string, error) {
+	me, err := d.b.GetMe(ctx)
+	if err != nil {
+		return "", fmt.Errorf("getMe ЛС-бота: %w", err)
+	}
+	return me.Username, nil
+}
+
 // Notify отправляет пользователю личное сообщение (используется мостом
 // для уведомлений о протухшей сессии и подписок).
 func (d *Bot) Notify(ctx context.Context, tgUserID int64, text string) {
@@ -193,14 +214,16 @@ func (d *Bot) Notify(ctx context.Context, tgUserID int64, text string) {
 	}
 }
 
-// NotifyHTML отправляет личное сообщение с HTML-разметкой (уведомление
-// подписчика: имя автора ссылкой, выдержка комментария). Превью ссылок
-// выключено — иначе телеграм подтягивает карточку сайта под каждым уведомлением.
-func (d *Bot) NotifyHTML(ctx context.Context, tgUserID int64, html string) {
+// NotifyHTML отправляет личное сообщение с HTML-разметкой и необязательными
+// кнопками (уведомление подписчика: имя автора ссылкой, выдержка комментария и
+// «Отписаться»). Превью ссылок выключено — иначе телеграм подтягивает карточку
+// сайта под каждым уведомлением.
+func (d *Bot) NotifyHTML(ctx context.Context, tgUserID int64, html string, kb *kbd.Keyboard) {
 	if _, err := d.b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:             tgUserID,
 		Text:               html,
 		ParseMode:          models.ParseModeHTML,
+		ReplyMarkup:        tgMarkup(kb),
 		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
 	}); err != nil {
 		d.log.Warn("уведомление пользователя не отправлено", "user", tgUserID, "err", err)

@@ -170,24 +170,44 @@ func (s *Store) UpsertSession(ctx context.Context, messenger string, userID int6
 	return nil
 }
 
-// AddSubscription добавляет подписку на ключевое слово.
-func (s *Store) AddSubscription(ctx context.Context, messenger, keyword string, userID int64) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO subscriptions (messenger, keyword, user_id) VALUES (?, ?, ?)`,
-		messenger, keyword, userID)
+// AddSubscription добавляет подписку с проверкой предела. Порядок «вставить →
+// посчитать → откатить» держит предел честным при параллельных нажатиях и не
+// отказывает на повторной подписке, когда предел уже выбран.
+// false, nil — такая подписка уже была; ErrSubscriptionLimit — предел.
+func (s *Store) AddSubscription(ctx context.Context, sub Subscription) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO subscriptions (messenger, user_id, kind, target)
+		VALUES (?, ?, ?, ?)`, sub.Messenger, sub.UserID, sub.Kind, sub.Target)
 	if err != nil {
 		return false, fmt.Errorf("insert subscription: %w", err)
 	}
-	affected, _ := res.RowsAffected()
-	return affected > 0, nil
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return false, tx.Commit() // дубль: предел тут ни при чём
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM subscriptions WHERE messenger = ? AND user_id = ?`,
+		sub.Messenger, sub.UserID).Scan(&n); err != nil {
+		return false, fmt.Errorf("подсчёт подписок: %w", err)
+	}
+	if n > SubscriptionLimit {
+		return false, ErrSubscriptionLimit // откат делает defer
+	}
+	return true, tx.Commit()
 }
 
-// RemoveSubscription убирает подписку пользователя на ключевое слово.
-// Возвращает true, если строка действительно была удалена.
-func (s *Store) RemoveSubscription(ctx context.Context, messenger, keyword string, userID int64) (bool, error) {
+// RemoveSubscription убирает подписку пользователя по цели (/unsubscribe
+// <слово>). Возвращает true, если строка действительно была удалена.
+func (s *Store) RemoveSubscription(ctx context.Context, messenger string, userID int64, kind, target string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		DELETE FROM subscriptions WHERE messenger = ? AND keyword = ? AND user_id = ?`,
-		messenger, keyword, userID)
+		DELETE FROM subscriptions
+		WHERE messenger = ? AND user_id = ? AND kind = ? AND target = ?`,
+		messenger, userID, kind, target)
 	if err != nil {
 		return false, fmt.Errorf("delete subscription: %w", err)
 	}
@@ -195,13 +215,29 @@ func (s *Store) RemoveSubscription(ctx context.Context, messenger, keyword strin
 	return affected > 0, nil
 }
 
-// SubscriptionsByUser возвращает подписки пользователя вместе с id строк: по
-// id снимает подписку кнопка (само слово в payload кнопки не влезает — там
-// 64 байта, а кириллица стоит по два на знак).
+// subLabelSQL — человеческая подпись цели подписки. Считается в запросе, иначе
+// список из полусотни строк превратился бы в N+1 обращений за именем автора и
+// текстом заметки.
+const subLabelSQL = `
+	CASE s.kind
+	  WHEN 'author_notes'  THEN COALESCE((SELECT n.author_name FROM notes n
+	                                      WHERE n.author_id = s.target
+	                                      ORDER BY n.first_seen_at DESC LIMIT 1), '')
+	  WHEN 'note_comments' THEN COALESCE((SELECT n.author_name || ': ' || n.text
+	                                      FROM notes n WHERE n.id = s.target), '')
+	  ELSE s.target
+	END`
+
+// SubscriptionsByUser возвращает подписки пользователя вместе с id строк и
+// готовой подписью цели: по id снимает подписку кнопка (цель в payload не
+// влезает — там 64 байта, а кириллица стоит по два на знак).
 func (s *Store) SubscriptionsByUser(ctx context.Context, messenger string, userID int64) ([]Subscription, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, keyword FROM subscriptions
-		WHERE messenger = ? AND user_id = ? ORDER BY keyword`, messenger, userID)
+		SELECT s.id, s.kind, s.target, `+subLabelSQL+` AS label
+		FROM subscriptions s
+		WHERE s.messenger = ? AND s.user_id = ?
+		ORDER BY CASE s.kind WHEN 'keyword' THEN 0 WHEN 'author_notes' THEN 1 ELSE 2 END,
+		         label`, messenger, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +245,7 @@ func (s *Store) SubscriptionsByUser(ctx context.Context, messenger string, userI
 	var subs []Subscription
 	for rows.Next() {
 		sub := Subscription{Messenger: messenger, UserID: userID}
-		if err := rows.Scan(&sub.ID, &sub.Keyword); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.Kind, &sub.Target, &sub.Label); err != nil {
 			return nil, err
 		}
 		subs = append(subs, sub)
@@ -217,21 +253,22 @@ func (s *Store) SubscriptionsByUser(ctx context.Context, messenger string, userI
 	return subs, rows.Err()
 }
 
-// RemoveSubscriptionByID снимает подписку по id строки и возвращает снятое
-// слово. Мессенджер и пользователь в условии обязательны: id приезжает из
-// кнопки, и чужую подписку по нему снять быть не должно.
-func (s *Store) RemoveSubscriptionByID(ctx context.Context, messenger string, userID, id int64) (string, bool, error) {
-	var keyword string
+// RemoveSubscriptionByID снимает подписку по id строки и возвращает снятую:
+// подтверждение формулируется по виду и цели. Мессенджер и пользователь в
+// условии обязательны: id приезжает из кнопки, и чужую подписку по нему снять
+// быть не должно.
+func (s *Store) RemoveSubscriptionByID(ctx context.Context, messenger string, userID, id int64) (Subscription, bool, error) {
+	sub := Subscription{ID: id, Messenger: messenger, UserID: userID}
 	err := s.db.QueryRowContext(ctx, `
 		DELETE FROM subscriptions WHERE id = ? AND messenger = ? AND user_id = ?
-		RETURNING keyword`, id, messenger, userID).Scan(&keyword)
+		RETURNING kind, target`, id, messenger, userID).Scan(&sub.Kind, &sub.Target)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return Subscription{}, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("delete subscription %d: %w", id, err)
+		return Subscription{}, false, fmt.Errorf("delete subscription %d: %w", id, err)
 	}
-	return keyword, true, nil
+	return sub, true, nil
 }
 
 // KnownNoteIDs возвращает id всех известных заметок (для фильтра ленты).

@@ -196,7 +196,12 @@ func ImportSubscribers(ctx context.Context, st *store.Store, r io.Reader) (Stats
 				fmt.Sprintf("подписка пропущена: key=%q value=%d", sub.Key, int64(sub.Value)))
 			continue
 		}
-		added, err := st.AddSubscription(ctx, store.MessengerTelegram, sub.Key, int64(sub.Value))
+		added, err := st.AddSubscription(ctx, store.Subscription{
+			Messenger: store.MessengerTelegram,
+			UserID:    int64(sub.Value),
+			Kind:      store.SubKeyword,
+			Target:    sub.Key,
+		})
 		if err != nil {
 			return stats, err
 		}

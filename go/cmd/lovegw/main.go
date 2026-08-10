@@ -29,7 +29,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -310,15 +309,21 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
 		// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
 		if dm != nil {
-			subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) {
-				root, err1 := strconv.ParseInt(threadID, 10, 64)
-				msgID, err2 := strconv.ParseInt(commentMsgID, 10, 64)
-				if err1 != nil || err2 != nil {
-					log.Warn("уведомление подписчика: не телеграмные id", "thread", threadID, "msg", commentMsgID)
-					return
-				}
-				link := tgx.DeepLink(tgCfg.DiscussionChatID, msgID, root)
-				dm.NotifyHTML(ctx, userID, tgx.ComposeSubNotice(keyword, n, c, link))
+			subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, ev mirror.SubEvent) {
+				link := subLinkTG(tgCfg, ev, cfg.Site.BaseURL, log)
+				dm.NotifyHTML(ctx, userID,
+					tgx.ComposeSubNotice(ev.Reason(), ev.Note, ev.Comment, link),
+					dmbot.UnsubKeyboard(ev.Sub.ID))
+			}
+		}
+
+		// Юзернейм РюмкинЪ нужен постеру: под заметкой он вешает deep-link в
+		// этот ЛС. Не снялся — просто не будет кнопки.
+		if dm != nil {
+			if name, err := dm.Username(ctx); err != nil {
+				log.Warn("юзернейм ЛС-бота не снят, кнопки подписки под заметками не будет", "err", err)
+			} else {
+				tg.SetSubscribeBot(name)
 			}
 		}
 
@@ -385,8 +390,13 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			})
 		}
 		// Подписки — функция бота зеркала: он же принимает /subscribe.
-		subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) {
-			if err := mx.NotifySubscriber(ctx, userID, keyword, n, c, threadID, commentMsgID); err != nil {
+		subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, ev mirror.SubEvent) {
+			link := mx.SubNoteLink(ev.Note, ev.PostMsgID)
+			if ev.IsComment() {
+				link = mx.SubCommentLink(ev.Note, ev.Comment.ID, ev.MsgID)
+			}
+			text := maxx.ComposeSubNotice(ev.Reason(), ev.Note, ev.Comment, link)
+			if err := mx.NotifyHTML(ctx, userID, text, dmbot.UnsubKeyboard(ev.Sub.ID)); err != nil {
 				log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
 			}
 		}
@@ -616,6 +626,26 @@ func fanOutAlerts(alerters []func(ctx context.Context, text string)) func(ctx co
 			send(ctx, text)
 		}
 	}
+}
+
+// subLinkTG — ссылка в уведомлении подписчику: на сам комментарий в треде или,
+// у повода «новая заметка автора», на пост канала. Не разобрали id (тред ещё не
+// пойман, пост не ушёл) — ведём на сайт, уведомление без ссылки бесполезно.
+func subLinkTG(tgCfg config.Messenger, ev mirror.SubEvent, siteBase string, log *slog.Logger) string {
+	if ev.IsComment() {
+		root, err1 := tgx.ParseMessageID(ev.ThreadID)
+		msgID, err2 := tgx.ParseMessageID(ev.MsgID)
+		if err1 == nil && err2 == nil {
+			return tgx.DeepLink(tgCfg.DiscussionChatID, int64(msgID), int64(root))
+		}
+		log.Warn("уведомление подписчика: не телеграмные id",
+			"thread", ev.ThreadID, "msg", ev.MsgID)
+		return fmt.Sprintf("%s/notes/%s/#anchor-%d", siteBase, ev.Note.ID, ev.Comment.ID)
+	}
+	if postID, err := tgx.ParseMessageID(ev.PostMsgID); err == nil {
+		return tgx.ChannelDeepLink(tgCfg.ChannelID, int64(postID))
+	}
+	return fmt.Sprintf("%s/notes/%s/", siteBase, ev.Note.ID)
 }
 
 // cmdImport переносит состояние старой Python-версии в SQLite.

@@ -38,13 +38,43 @@ type Sink interface {
 	PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error)
 	PostComment(ctx context.Context, n store.Note, threadID, replyToID string, c store.Comment, avatar []byte) (string, error)
 	PostNoteImage(ctx context.Context, threadID, imageURL string, image []byte) (string, error)
-	NotifySubscriber(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string) error
+	// Уведомления подписчикам приёмник не шлёт: ЛС пишет только тот бот,
+	// которого пользователь сам запускал (SubNotify). Постер канала первым
+	// написать не может, так что запасного пути тут не бывает.
 }
 
-// SubNotify уведомляет подписчика о комментарии с ключевым словом.
-// keyword — сработавшее слово подписки (в тексте уведомления видно, почему
-// оно пришло). threadID/commentMsgID — id в мессенджере подписки (для deep-link).
-type SubNotify func(ctx context.Context, userID int64, keyword string, n store.Note, c store.Comment, threadID, commentMsgID string)
+// SubEvent — повод для ЛС подписчику. Комментарий нулевой (Comment.ID == 0) у
+// повода «новая заметка автора»: цитировать ещё нечего, и ссылка ведёт на пост
+// заметки. Id сообщений — в том мессенджере, чья подписка сработала.
+type SubEvent struct {
+	Sub       store.Subscription // ID — для кнопки «Отписаться», Kind/Target — для повода
+	Note      store.Note
+	Comment   store.Comment
+	ThreadID  string // корень треда заметки ("" — ещё не пойман)
+	MsgID     string // сообщение комментария ("" у новой заметки)
+	PostMsgID string // пост заметки в канале ("" у комментария)
+}
+
+// IsComment — повод про комментарий (иначе про новую заметку автора).
+func (e SubEvent) IsComment() bool { return e.Comment.ID != 0 }
+
+// Reason — первая строка уведомления: почему оно пришло. Текст, а не HTML:
+// разметку накладывает композер мессенджера, он же экранирует.
+func (e SubEvent) Reason() string {
+	switch e.Sub.Kind {
+	case store.SubAuthorNotes:
+		return "✍️ Новая заметка автора " + e.Note.AuthorName
+	case store.SubNoteComments:
+		return "💬 Новый комментарий к заметке, на которую вы подписаны"
+	default:
+		return "🔔 Ключевое слово «" + e.Sub.Target + "»"
+	}
+}
+
+// SubNotify шлёт подписчику ЛС о событии. Задаётся по имени мессенджера;
+// мессенджер без записи подписчиков не уведомляет вовсе (о чём зеркало
+// предупреждает на старте).
+type SubNotify func(ctx context.Context, userID int64, ev SubEvent)
 
 // ThreadStarter — приёмник, умеющий сам открыть тред обсуждения заметки
 // (MAX: «ручной автофорвард» — копия заметки в чат обсуждения). Если тред
@@ -70,10 +100,9 @@ type Mirror struct {
 }
 
 // Config — параметры зеркала. AlertSend (может быть nil) шлёт админу
-// уведомления о дрейфе вёрстки и блокировке сайта. SubNotify (может быть nil)
-// задаёт по имени мессенджера отправку уведомления подписчику о комментарии
-// с ключевым словом — заданная запись идёт вместо Sink.NotifySubscriber
-// (чтобы слать через ЛС-бота, которого пользователь точно запускал).
+// уведомления о дрейфе вёрстки и блокировке сайта. SubNotify задаёт по имени
+// мессенджера отправку ЛС подписчику — им всегда занимается бот, которого
+// пользователь запускал сам, а не постер канала.
 type Config struct {
 	// NotesLimit — сколько заметок брать из ленты на холодном старте (seed
 	// или пустая БД) и сколько максимум подхватывать за один обход при
@@ -89,6 +118,12 @@ type Config struct {
 func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.Logger) *Mirror {
 	if log == nil {
 		log = slog.Default()
+	}
+	for _, sink := range sinks {
+		if cfg.SubNotify[sink.Name()] == nil {
+			log.Warn("подписчиков этого мессенджера уведомлять некому: нет ЛС-бота",
+				"sink", sink.Name())
+		}
 	}
 	return &Mirror{
 		st:           st,
@@ -325,6 +360,11 @@ func (m *Mirror) postNote(ctx context.Context, n store.Note) bool {
 			continue
 		}
 		m.log.Info("заметка запощена", "note", n.ID, "sink", sink.Name(), "message_id", msgID)
+		// Ровно здесь, а не в ingestNewNote: ссылка на пост нужна своя в каждом
+		// мессенджере. Приёмник, уже получивший пост, сюда не доходит (проверка
+		// message_targets выше), так что ретрай дублей не шлёт, а seed молчит —
+		// он до postNote не добирается вовсе.
+		m.notifyAuthorSubscribers(ctx, sink, n, msgID)
 	}
 	if !allPosted {
 		return false
@@ -412,6 +452,14 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 func (m *Mirror) archiveNote(ctx context.Context, noteID string, now time.Time, reason string) {
 	if err := m.st.SetNoteArchived(ctx, noteID, now); err != nil {
 		m.log.Error("архивирование", "note", noteID, "err", err)
+	}
+	// Подписки на комментарии архивной заметки снимаем молча: новых
+	// комментариев по ней не будет никогда, а строка вечно ела бы предел и
+	// висела бы в /mysubs обманкой (о чём предупреждаем при подписке).
+	if n, err := m.st.RemoveNoteSubscriptions(ctx, noteID); err != nil {
+		m.log.Error("снятие подписок на архивную заметку", "note", noteID, "err", err)
+	} else if n > 0 {
+		m.log.Info("подписки на комментарии архивной заметки сняты", "note", noteID, "count", n)
 	}
 	m.log.Info(reason, "note", noteID)
 }
@@ -693,24 +741,59 @@ func isRealAvatar(url string) bool {
 	return strings.HasPrefix(url, "http") && !strings.Contains(url, "/static/")
 }
 
-// notifySubscribers шлёт ЛС подписчикам этого мессенджера, чьё ключевое
-// слово встретилось в тексте комментария. При заданном subNotify мессенджера
-// (ЛС-бот) — шлём через него, иначе — через сам приёмник.
+// notifySubscribers шлёт ЛС подписчикам этого мессенджера, которых касается
+// новый комментарий: подписка на комментарии этой заметки и подписка на слово
+// в её тексте. Один комментарий — одно ЛС на человека: сработавшие подписки
+// схлопываются по пользователю, и при совпадении выигрывает подписка на
+// заметку. Она точнее: заметку человек выбрал сам, слово могло совпасть
+// случайно, и отписываться из уведомления он захочет именно от заметки.
 func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscription,
 	sink Sink, n store.Note, c store.Comment, threadID, commentMsgID string) {
-	for _, sub := range subs {
-		if sub.Messenger != sink.Name() || !strings.Contains(c.Text, sub.Keyword) {
-			continue
-		}
-		if notify := m.subNotify[sink.Name()]; notify != nil {
-			notify(ctx, sub.UserID, sub.Keyword, n, c, threadID, commentMsgID)
-			continue
-		}
-		if err := sink.NotifySubscriber(ctx, sub.UserID, sub.Keyword, n, c, threadID, commentMsgID); err != nil {
-			m.log.Warn("уведомление подписчика не удалось",
-				"user", sub.UserID, "sink", sink.Name(), "err", err)
+	sent := make(map[int64]bool, len(subs))
+	for _, kind := range []string{store.SubNoteComments, store.SubKeyword} {
+		for _, sub := range subs {
+			if sub.Messenger != sink.Name() || sub.Kind != kind || sent[sub.UserID] {
+				continue
+			}
+			if kind == store.SubNoteComments && sub.Target != n.ID {
+				continue
+			}
+			if kind == store.SubKeyword && !strings.Contains(c.Text, sub.Target) {
+				continue
+			}
+			sent[sub.UserID] = true
+			m.deliver(ctx, sink, sub.UserID, SubEvent{
+				Sub: sub, Note: n, Comment: c, ThreadID: threadID, MsgID: commentMsgID,
+			})
 		}
 	}
+}
+
+// notifyAuthorSubscribers — новая заметка автора ушла в канал этого приёмника:
+// шлём ЛС подписчикам автора. У анонимной заметки (author_id «0») подписчиков
+// нет по построению — вариант «на автора» под ней не предлагается.
+func (m *Mirror) notifyAuthorSubscribers(ctx context.Context, sink Sink, n store.Note, postMsgID string) {
+	if n.AuthorID == "" || n.AuthorID == "0" {
+		return
+	}
+	subs, err := m.st.SubscribersByTarget(ctx, sink.Name(), store.SubAuthorNotes, n.AuthorID)
+	if err != nil {
+		m.log.Error("чтение подписок на автора", "note", n.ID, "err", err)
+		return
+	}
+	for _, sub := range subs {
+		m.deliver(ctx, sink, sub.UserID, SubEvent{Sub: sub, Note: n, PostMsgID: postMsgID})
+	}
+}
+
+// deliver отдаёт событие ЛС-боту мессенджера.
+func (m *Mirror) deliver(ctx context.Context, sink Sink, userID int64, ev SubEvent) {
+	notify := m.subNotify[sink.Name()]
+	if notify == nil {
+		m.log.Debug("уведомление подписчика некому отдать", "sink", sink.Name(), "user", userID)
+		return
+	}
+	notify(ctx, userID, ev)
 }
 
 // PollInterval — адаптивный интервал опроса комментариев: свежие и живые
