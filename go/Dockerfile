@@ -7,9 +7,17 @@ FROM golang:1.26 AS build
 WORKDIR /src
 # Кэш модулей отдельным слоем — не тянем зависимости при правках кода.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lovegw ./cmd/lovegw
+# Кэш-маунты BuildKit переживают сборку: без них go build каждый раз
+# компилирует всё дерево зависимостей заново (на боевом VPS с 1 vCPU это
+# ~25 минут, из них львиная доля — anthropic-sdk-go). С кэшем пересборка после
+# правки кода компилирует только изменившиеся пакеты.
+# Кэш живёт в BuildKit на хосте, поэтому `docker builder prune -a` его сносит —
+# при чистке диска сносить только образы (см. deploy/README.md).
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lovegw ./cmd/lovegw
 
 # ---- ffmpeg ----
 # Конвертер голосовых для ASR. Бинарник статичный, поэтому едет в distroless
