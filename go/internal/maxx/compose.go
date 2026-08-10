@@ -4,39 +4,141 @@ package maxx
 // теги (<b>, <a href>) совпадают с используемыми, поэтому перенос дословный,
 // включая экранирование (сырой текст в HTML-режиме — латентный баг
 // Python-версии). Отличие от tgx: ветвления «влезает в подпись» нет — текст
-// и вложение в MAX живут в одном сообщении; комментарий не режем — лимит
-// длины сообщения MAX не задокументирован (бриф, R2).
+// и вложение в MAX живут в одном сообщении.
 
 import (
 	"fmt"
 	"html"
 	"strings"
 
+	"lovegw/internal/chantext"
 	"lovegw/internal/store"
 )
 
-// ComposeNoteMessage собирает HTML-текст поста заметки.
-func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
-	name := html.EscapeString(n.AuthorName)
-	var b strings.Builder
-	if n.AuthorID == "" || n.AuthorID == "0" {
-		fmt.Fprintf(&b, "<b>%s:</b>\n", name)
-	} else {
-		fmt.Fprintf(&b, `<b><a href="%s/profile/%s">%s:</a></b>%s`, baseURL, n.AuthorID, name, "\n")
+// Предел одного сообщения MAX. Меряется ГОТОВАЯ строка вместе с разметкой, а не
+// видимый текст: на комментарий с текстом в 4472 знака сервер ответил
+// «Field 'text' size (4549) must be at most 4000», а 4549 — ровно длина
+// собранного HTML (12 + ссылка 35 + 2 + имя 9 + 2 + возраст 7 + 9 + перевод
+// строки + текст). Этим MAX отличается от Telegram, который считает видимую
+// длину, — бюджет tgx сюда не переносится.
+//
+// Цена промаха несимметрична: зеркало шлёт комментарии треда строго по порядку
+// и обрывается на первой ошибке, поэтому одно непринятое сообщение — вечная
+// пробка (заметка 312886, 06.08.2026: 389 комментариев в Telegram против 18 в
+// MAX). Отсюда запас в сто единиц и подсчёт в UTF-16.
+const (
+	messageLimit  = 4000
+	messageBudget = messageLimit - 100
+)
+
+// apiLen — длина строки так, как её считает MAX: в кодовых единицах UTF-16.
+// Чем именно меряет сервер — рунами или единицами — неизвестно; единиц всегда
+// не меньше, поэтому уложившись в них, укладываемся в любом случае. На
+// кириллице и латинице обе меры совпадают, расходятся только на эмодзи.
+func apiLen(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF { // вне BMP — суррогатная пара
+			n++
+		}
 	}
-	b.WriteString(html.EscapeString(n.Text))
-	if signature != "" {
-		b.WriteString("\n\n")
-		b.WriteString(signature)
-	}
-	return b.String()
+	return n
 }
 
-// ComposeCommentMessage собирает HTML комментария с заголовком-ссылкой автора.
+// escapeFit экранирует сырой текст, укладывая результат в budget единиц. Руна
+// добавляется вместе со своим экранированием целиком, поэтому сущность
+// (&amp;) не может разорваться пополам — обрезать уже экранированную строку
+// было бы нельзя именно по этой причине. Обрезанное помечается многоточием.
+func escapeFit(text string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	esc := html.EscapeString(text)
+	if apiLen(esc) <= budget {
+		return esc
+	}
+	const ellipsis = "…"
+	room := budget - apiLen(ellipsis)
+	var b strings.Builder
+	used := 0
+	for _, r := range text {
+		piece := html.EscapeString(string(r))
+		n := apiLen(piece)
+		if used+n > room {
+			break
+		}
+		b.WriteString(piece)
+		used += n
+	}
+	// Пробелы в хвосте безопасно снимать: сущность кончается на «;», а не на
+	// пробеле, так что разметку это не заденет.
+	return strings.TrimRight(b.String(), " \t\n") + ellipsis
+}
+
+// fitHTML укладывает в бюджет уже готовый HTML (дайджест, новости, доставка
+// личной переписки) — там разметку ставили не мы и рвать её нельзя.
+// chantext.Truncate режет по ВИДИМЫМ рунам и сам закрывает теги, а MAX считает
+// сырую строку; прямой формулы между этими мерами нет, потому что разметка
+// приходится на заранее неизвестные места. Поэтому подбираем видимую длину
+// двоичным поиском по фактической длине результата.
+//
+// Второе значение — признак того, что кусок текста потерян. Для дайджеста это
+// не мелочь (выпуск режется по живому), поэтому вызывающий обязан сказать об
+// этом в лог: молча терять раздел выпуска хуже, чем шумно.
+func fitHTML(s string) (string, bool) {
+	if apiLen(s) <= messageBudget {
+		return s, false
+	}
+	lo, hi, best := 0, chantext.VisibleLen(s), ""
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if cand := chantext.Truncate(s, mid); apiLen(cand) <= messageBudget {
+			best, lo = cand, mid+1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best == "" {
+		// Разметка не оставила места под текст — случай теоретический, но
+		// молчать нельзя: пустой текст сервер не примет, и выйдет та же пробка.
+		return "…", true
+	}
+	return best, true
+}
+
+// Потолок видимых полей автора в шапке: имя и возраст приходят с сайта, и без
+// потолка непомерно длинный ник съел бы весь бюджет сообщения.
+const authorFieldLimit = 100
+
+// ComposeNoteMessage собирает HTML-текст поста заметки. Текст заметки сайтом не
+// ограничен, поэтому укладывается в бюджет MAX; шапка и подпись в бюджет
+// заложены.
+func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
+	name := html.EscapeString(truncateRunes(n.AuthorName, authorFieldLimit))
+	var head strings.Builder
+	if n.AuthorID == "" || n.AuthorID == "0" {
+		fmt.Fprintf(&head, "<b>%s:</b>\n", name)
+	} else {
+		fmt.Fprintf(&head, `<b><a href="%s/profile/%s">%s:</a></b>%s`, baseURL, n.AuthorID, name, "\n")
+	}
+	tail := ""
+	if signature != "" {
+		tail = "\n\n" + signature
+	}
+	return head.String() + escapeFit(n.Text, messageBudget-apiLen(head.String())-apiLen(tail)) + tail
+}
+
+// ComposeCommentMessage собирает HTML комментария с заголовком-ссылкой автора,
+// укладывая результат в бюджет MAX: непринятое сообщение остановило бы очередь
+// комментариев заметки навсегда.
 func ComposeCommentMessage(c store.Comment) string {
-	return fmt.Sprintf(`<b><a href="%s">%s, %s:</a></b>%s%s`,
-		c.AuthorLink, html.EscapeString(c.AuthorName), html.EscapeString(c.AuthorAge),
-		"\n", html.EscapeString(c.Text))
+	head := fmt.Sprintf(`<b><a href="%s">%s, %s:</a></b>%s`,
+		c.AuthorLink,
+		html.EscapeString(truncateRunes(c.AuthorName, authorFieldLimit)),
+		html.EscapeString(truncateRunes(c.AuthorAge, authorFieldLimit)),
+		"\n")
+	return head + escapeFit(c.Text, messageBudget-apiLen(head))
 }
 
 // Выдержки в уведомлении подписчика: длиннее сайт всё равно покажет по ссылке.

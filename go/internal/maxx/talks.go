@@ -24,8 +24,14 @@ func (m *Mirror) SetTalkRouter(r TalkReplyRouter) { m.talks = r }
 // SendPM доставляет входящее ЛС в личный диалог пользователя (talks.PMTransport).
 // Возвращает mid — по нему message_targets свяжет реплай с диалогом. Разметка
 // HTML: сервер MAX разбирает format=html в text+markup (как в постах зеркала).
+// Длину письма сайт не ограничивает, поэтому укладываем в бюджет MAX: иначе
+// недоставленное ЛС встанет пробкой так же, как встал бы комментарий.
 func (m *Mirror) SendPM(ctx context.Context, userID int64, html string) (string, error) {
-	msg := maxbot.NewMessage().SetUser(userID).SetText(html).SetFormat(model.FormatHTML)
+	text, cut := fitHTML(html)
+	if cut {
+		m.log.Warn("входящее ЛС обрезано под предел сообщения MAX", "user", userID)
+	}
+	msg := maxbot.NewMessage().SetUser(userID).SetText(text).SetFormat(model.FormatHTML)
 	return m.send(ctx, userID, msg)
 }
 

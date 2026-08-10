@@ -279,11 +279,18 @@ func (m *Mirror) SendText(ctx context.Context, userID int64, text string) error 
 }
 
 // PostChannelHTML постит произвольный HTML-текст в канал без превью ссылок
-// (публикация дайджеста). Возвращает mid сообщения.
+// (публикация дайджеста). Возвращает mid сообщения. Бюджет chantext (3500
+// ВИДИМЫХ рун) для MAX недостаточен: сервер считает строку вместе с разметкой,
+// а у выпуска с полусотней ссылок разметка весит больше пятисот знаков.
 func (m *Mirror) PostChannelHTML(ctx context.Context, html string) (string, error) {
+	text, cut := fitHTML(html)
+	if cut {
+		m.log.Warn("текст поста в канал MAX обрезан под предел сообщения",
+			"было", apiLen(html), "стало", apiLen(text), "предел", messageLimit)
+	}
 	msg := maxbot.NewMessage().
 		SetChat(m.channelID).
-		SetText(html).
+		SetText(text).
 		SetFormat(model.FormatHTML).
 		SetDisableLinkPreview(true)
 	mid, err := m.send(ctx, m.channelID, msg)
