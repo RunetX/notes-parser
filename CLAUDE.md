@@ -82,6 +82,12 @@ messages, and all user-facing bot strings are in Russian.
   `message_targets` keyed by `(messenger, kind, ref_id)` with TEXT ids (MAX
   uses string mids); user tables carry a `messenger` column. Telegram values
   are mirrored write-through into the legacy `tg_*` columns for one release.
+  Since v7 `subscriptions` is typed — `kind ∈ {keyword, author_notes,
+  note_comments}` + `target` (word / `notes.author_id` / `notes.id`), row ids
+  preserved across the migration because they live in the payload of «✖»
+  buttons in users' chat history. `AddSubscription` enforces
+  `SubscriptionLimit` (50 per user, all kinds together) inside a transaction —
+  one place covers all four entry points.
 - **All site markup selectors live in one const block** in
   `internal/love/parse.go`; a required selector that matches nothing returns a
   typed `MarkupError` (markup-drift detection), while an empty comments page is
@@ -131,6 +137,17 @@ messages, and all user-facing bot strings are in Russian.
     the root too, or the note's queue would stall forever.
     `mirror.Config.AlertSend` DMs the
     admin after 3 consecutive markup-drift or 403 failures and again on recovery.
+    Subscriber DMs are described by `SubEvent` (subscription + note + optional
+    comment + message ids) and delivered **only** through `Config.SubNotify` —
+    the bot the user actually started; `Sink` has no `NotifySubscriber`, because
+    a channel poster cannot DM anyone first. A new note fires
+    `author_notes` subscriptions from inside `postNote`, right after
+    `SetTarget(TargetNotePost)` — that is where the per-sink post id exists, and
+    it gets seed-silence and retry-dedup for free. One comment sends **one** DM
+    per person: matches collapse by user, `note_comments` beating `keyword`
+    (the note was chosen deliberately, the word may have matched by accident).
+    Archiving a note drops subscriptions to its comments — no further comments
+    will ever arrive.
   - `bridge` — reply→site comment: messenger-agnostic `Core` (at-most-once
     via `processed_replies`, per messenger) + the Telegram handler with
     auto-forward capture (linking a channel post to its discussion thread).
@@ -219,11 +236,27 @@ messages, and all user-facing bot strings are in Russian.
     затирают никогда (список диалогов из меню приходит новым сообщением, а
     перелистывание уже правит его), одноразовый выбор превращается в
     приглашение, список подписок перерисовывается на месте.
+    Подписка по заметке (эпик B) заводится кнопкой «🔔 Подписаться» под постом
+    канала; она несёт id заметки, а вид («✍️ На автора» / «💬 На эту заметку»)
+    спрашивается уже в ЛС — `offerSubscribe`, единая дорога для трёх входов.
+    В Telegram это **URL-кнопка** `t.me/<РюмкинЪ>?start=sub_<id>`
+    (`kbd.StartSub`, разбор в ветке `/start`): постер и РюмкинЪ — разные боты,
+    постер в ЛС писать не может, а deep-link заодно стартует бота у того, кто
+    его не запускал. В MAX бот один, поэтому там callback-кнопка рядом с
+    «💬 Обсудить». У анонимной заметки кнопка есть (подписка на её комментарии
+    осмысленна), но вариант «на автора» не предлагается.
     Нажатия разбирает `HandleCallback` —
-    зеркало `HandleText`: таблица глаголов (что ответить, кому доступен, что
-    делает), payload `1:<verb>[:<arg>]` только ASCII и не длиннее 64 байт
-    (предел Telegram), ответ мессенджеру всегда в роутере и **до** работы —
-    публикация в каналы идёт секунды, за это время нажатие протухнет.
+    зеркало `HandleText`: таблица глаголов (что ответить, кому доступен, где
+    доступен, что делает), payload `1:<verb>[:<arg>]` только ASCII и не длиннее
+    64 байт (предел Telegram), ответ мессенджеру всегда в роутере и **до**
+    работы — публикация в каналы идёт секунды, за это время нажатие протухнет.
+    Свойство `public` (единственный такой глагол — `kbd.VerbSubscribe`)
+    разрешает нажатие вне диалога; его спрашивает `maxx` через
+    `AllowsOutsideDialog`, и там же гасит mid — сообщение под кнопкой это чужой
+    пост канала, править его нельзя. Кнопка «🔕 Отписаться» в ЛС-уведомлении
+    (`UnsubKeyboard`, глагол `unsub1`) отвечает только тостом и сообщение не
+    правит: текст со ссылкой ещё нужен, а в MAX снять одну клавиатуру, не
+    переписав тело целиком, нечем.
     **Идемпотентность держится на `dialog_states`**, отдельной таблицы
     обработанных нажатий нет и не нужно: у нажатия нет побочного эффекта,
     который нельзя вывести из состояния, а дедуп по payload сломал бы штатный
