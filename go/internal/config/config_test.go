@@ -140,6 +140,20 @@ func TestLoadASRDefaults(t *testing.T) {
 	}
 }
 
+// Слот дайджеста по умолчанию — суббота 09:00 Нск. Пин намеренный: день и час
+// заданы ровно здесь (в digest мёртвые константы-дубли убраны), и молчаливый
+// переезд слота сдвинул бы ещё и шов недели — см. комментарий digest.DefaultTZ.
+func TestLoadDigestSlotDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"site": {"base_url": "https://love.ngs.ru"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Digest
+	if d.Enabled || d.Weekday != 6 || d.Hour != 9 || d.TZ != "Asia/Novosibirsk" {
+		t.Errorf("дефолты дайджеста: %+v (ждали выключен, сб 09:00 Нск)", d)
+	}
+}
+
 // Секция asr читается из JSON, env перебивает её.
 func TestLoadASREnvOverrides(t *testing.T) {
 	t.Setenv("LOVEGW_ASR_ENABLED", "true")

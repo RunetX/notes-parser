@@ -26,8 +26,8 @@
   },
   "digest": {
     "enabled": false,
-    "weekday": 5,
-    "hour": 19,
+    "weekday": 6,
+    "hour": 9,
     "tz": "Asia/Novosibirsk",
     "out_dir": "",
     "auto_publish": false

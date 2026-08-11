@@ -88,8 +88,8 @@ type LLM struct {
 // Digest — еженедельный дайджест. Планировщик демона в слот выпуска строит
 // черновик и материалы (LLM-рубрики заполняет Claude, если настроена секция
 // llm) и либо публикует сам (auto_publish), либо зовёт админа в ЛС —
-// премодерация через lovegw digest publish. Дефолты слота — пятница 19:00
-// Asia/Novosibirsk.
+// премодерация через lovegw digest publish. Дефолты слота — суббота 09:00
+// Asia/Novosibirsk (почему не вечер пятницы — см. digest.DefaultTZ).
 type Digest struct {
 	Enabled bool   `json:"enabled"`
 	Weekday int    `json:"weekday"` // день слота: 0=воскресенье … 6=суббота
@@ -159,9 +159,10 @@ func Load(path string) (*Config, error) {
 		// talks по умолчанию admin-only и read-only (безопасный старт);
 		// включение и allow_send — явно в конфиге.
 		Talks: Talks{AdminOnly: true},
-		// Слот дайджеста: пятница 19:00 Нск (дефолты пакета digest);
-		// включение — явно в конфиге.
-		Digest: Digest{Weekday: 5, Hour: 19, TZ: "Asia/Novosibirsk"},
+		// Слот дайджеста: суббота 09:00 Нск — единственное место, где день и
+		// час дефолта заданы (обоснование — в комментарии digest.DefaultTZ).
+		// Включение — явно в конфиге.
+		Digest: Digest{Weekday: 6, Hour: 9, TZ: "Asia/Novosibirsk"},
 		// ASR по умолчанию выключен; лимиты — консервативные, чтобы
 		// случайное включение не вылилось в счёт от провайдера.
 		ASR: ASR{
