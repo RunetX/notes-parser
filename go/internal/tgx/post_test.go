@@ -2,14 +2,13 @@ package tgx
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-telegram/bot"
-	"github.com/go-telegram/bot/models"
 	"golang.org/x/time/rate"
 
 	"lovegw/internal/store"
@@ -46,9 +45,9 @@ func postMirror(t *testing.T, subBot string) (*Mirror, func() map[string]string)
 	return m, func() map[string]string { return last }
 }
 
-// Под постом канала — URL-кнопка в ЛС-бота: постер писать в личку не может, а
-// переход по deep-link'у заодно стартует бота у того, кто его не запускал.
-func TestPostNoteSubscribeButton(t *testing.T) {
+// Вход в подписку — ссылка в подвале поста, а НЕ inline-кнопка: своя
+// клавиатура вытесняет родную кнопку «Комментарии» под постом канала.
+func TestPostNoteSubscribeLink(t *testing.T) {
 	m, last := postMirror(t, "ryumkin_bot")
 
 	if _, err := m.PostNote(context.Background(),
@@ -56,31 +55,16 @@ func TestPostNoteSubscribeButton(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, ok := last()["reply_markup"]
-	if !ok {
-		t.Fatalf("нет клавиатуры в запросе: %+v", last())
+	if _, ok := last()["reply_markup"]; ok {
+		t.Errorf("клавиатуры у поста быть не должно: %+v", last())
 	}
-	var markup models.InlineKeyboardMarkup
-	if err := json.Unmarshal([]byte(raw), &markup); err != nil {
-		t.Fatalf("клавиатура %q: %v", raw, err)
-	}
-	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 {
-		t.Fatalf("клавиатура: %+v", markup.InlineKeyboard)
-	}
-	btn := markup.InlineKeyboard[0][0]
-	if btn.Text != btnSubscribe {
-		t.Errorf("подпись кнопки: %q", btn.Text)
-	}
-	if want := "https://t.me/ryumkin_bot?start=sub_312886"; btn.URL != want {
-		t.Errorf("ссылка кнопки: %q", btn.URL)
-	}
-	// Кнопка ведёт в ЛС, а не в канал: callback_data у неё быть не должно.
-	if btn.CallbackData != "" {
-		t.Errorf("кнопка должна быть ссылочной: %q", btn.CallbackData)
+	want := `<a href="https://t.me/ryumkin_bot?start=sub_312886">` + linkSubscribe + `</a>`
+	if got := last()["text"]; !strings.Contains(got, want) {
+		t.Errorf("нет ссылки подписки в тексте:\n%s", got)
 	}
 }
 
-// Юзернейм не снялся (getMe не прошёл) — пост уходит как раньше, без кнопки.
+// Юзернейм не снялся (getMe не прошёл) — пост уходит как раньше, без ссылки.
 func TestPostNoteWithoutSubscribeBot(t *testing.T) {
 	m, last := postMirror(t, "")
 
@@ -89,14 +73,14 @@ func TestPostNoteWithoutSubscribeBot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := last()["reply_markup"]; ok {
-		t.Errorf("без юзернейма клавиатуры быть не должно: %+v", last())
+	if got := last()["text"]; strings.Contains(got, "t.me/") {
+		t.Errorf("без юзернейма ссылки быть не должно:\n%s", got)
 	}
 }
 
 // Нечисловой id заметки в payload не годится (Telegram разрешает в аргументе
-// /start только [A-Za-z0-9_-]) — тогда кнопки тоже нет.
-func TestPostNoteNonNumericIDHasNoButton(t *testing.T) {
+// /start только [A-Za-z0-9_-]) — тогда ссылки тоже нет.
+func TestPostNoteNonNumericIDHasNoLink(t *testing.T) {
 	m, last := postMirror(t, "ryumkin_bot")
 
 	if _, err := m.PostNote(context.Background(),
@@ -104,8 +88,8 @@ func TestPostNoteNonNumericIDHasNoButton(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := last()["reply_markup"]; ok {
-		t.Errorf("кнопки с негодным payload быть не должно: %+v", last())
+	if got := last()["text"]; strings.Contains(got, "t.me/") {
+		t.Errorf("ссылки с негодным payload быть не должно:\n%s", got)
 	}
 }
 

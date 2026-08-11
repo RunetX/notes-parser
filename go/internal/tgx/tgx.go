@@ -32,8 +32,9 @@ const (
 	dmSendInterval      = time.Second
 )
 
-// btnSubscribe — подпись кнопки под постом канала (в MAX она же).
-const btnSubscribe = "🔔 Подписаться"
+// linkSubscribe — подпись ссылки «Подписаться» в подвале поста канала (в MAX
+// это кнопка с тем же текстом).
+const linkSubscribe = "🔔 Подписаться"
 
 // Mirror — телеграм-сторона зеркала: постинг заметок в канал, комментариев
 // в группу обсуждения, уведомлений подписчикам в ЛС.
@@ -53,8 +54,8 @@ type Mirror struct {
 
 	// onVoice — необязательный хук распознавания голосовых (nil — фича
 	// выключена). Ставится до старта поллинга, читается из его горутин.
-	// subBot — юзернейм ЛС-бота для кнопки «Подписаться» под постом канала
-	// (пусто — кнопки нет). Ставится там же и тем же замком.
+	// subBot — юзернейм ЛС-бота для ссылки «Подписаться» в подвале поста
+	// канала (пусто — ссылки нет). Ставится там же и тем же замком.
 	vmu     sync.Mutex
 	onVoice func(ctx context.Context, u *models.Update)
 	subBot  string
@@ -138,31 +139,35 @@ func (m *Mirror) voiceHook() func(ctx context.Context, u *models.Update) {
 	return m.onVoice
 }
 
-// SetSubscribeBot задаёт юзернейм ЛС-бота (без «@») для кнопки «Подписаться»
-// под постами канала. Вызывается до Start; пусто — кнопки нет.
+// SetSubscribeBot задаёт юзернейм ЛС-бота (без «@») для ссылки «Подписаться»
+// в подвале постов канала. Вызывается до Start; пусто — ссылки нет.
 func (m *Mirror) SetSubscribeBot(username string) {
 	m.vmu.Lock()
 	defer m.vmu.Unlock()
 	m.subBot = username
 }
 
-// subscribeMarkup — кнопка «Подписаться» под постом канала. Это URL-кнопка, а
-// не callback: постер-бот и РюмкинЪ — разные боты, нажатие пришло бы постеру, а
-// он в ЛС писать не может. Deep-link заодно решает главное ограничение
-// Telegram — бот не пишет первым тому, кто его не запускал: переход открывает
-// РюмкинЪ и сам стартует его.
-func (m *Mirror) subscribeMarkup(n store.Note) models.ReplyMarkup {
+// subscribeLink — deep-link «Подписаться» для подвала поста канала; пусто —
+// подписаться из канала нельзя (юзернейм не снялся или id заметки не годится
+// в payload).
+//
+// Именно ссылка в тексте, а не inline-кнопка: своя клавиатура у поста
+// вытесняет родную кнопку «Комментарии» — Telegram рисует их в одном месте и
+// показывает что-то одно, а вход в обсуждение нужнее.
+//
+// Deep-link (а не callback) потому, что постер-бот и РюмкинЪ — разные боты:
+// нажатие пришло бы постеру, а он в ЛС писать не может. Заодно снимается
+// главное ограничение Telegram — бот не пишет первым тому, кто его не
+// запускал: переход открывает РюмкинЪ и сам стартует его.
+func (m *Mirror) subscribeLink(n store.Note) string {
 	m.vmu.Lock()
 	bot := m.subBot
 	m.vmu.Unlock()
 	payload := kbd.StartSub(n.ID)
 	if bot == "" || payload == "" {
-		// Нетипизированный nil: reply_markup с omitempty пропадёт из запроса.
-		return nil
+		return ""
 	}
-	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
-		{Text: btnSubscribe, URL: "https://t.me/" + bot + "?start=" + payload},
-	}}}
+	return "https://t.me/" + bot + "?start=" + payload
 }
 
 // Start запускает long polling; блокируется до отмены контекста.
@@ -179,17 +184,16 @@ func (m *Mirror) Me(ctx context.Context) (*models.User, error) { return m.b.GetM
 // текст влезает в подпись к фото — постим фото с подписью; иначе полным
 // текстом без аватара. Контент заметки не режем ни при каких условиях.
 func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error) {
-	text := ComposeNoteMessage(m.baseURL, m.signature, n)
-	markup := m.subscribeMarkup(n)
+	subLink := m.subscribeLink(n)
+	text := ComposeNoteMessage(m.baseURL, m.signature, n, subLink)
 
-	if len(avatar) > 0 && visibleNoteLen(m.signature, n) <= captionLimit {
+	if len(avatar) > 0 && visibleNoteLen(m.signature, subLink, n) <= captionLimit {
 		msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
-				ChatID:      m.channelID,
-				Photo:       m.mediaInput(mediaPhoto, n.AuthorAvatarURL, avatar, "avatar.jpg"),
-				Caption:     text,
-				ParseMode:   models.ParseModeHTML,
-				ReplyMarkup: markup,
+				ChatID:    m.channelID,
+				Photo:     m.mediaInput(mediaPhoto, n.AuthorAvatarURL, avatar, "avatar.jpg"),
+				Caption:   text,
+				ParseMode: models.ParseModeHTML,
 			})
 		})
 		if err == nil {
@@ -204,7 +208,6 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 			ChatID:             m.channelID,
 			Text:               text,
 			ParseMode:          models.ParseModeHTML,
-			ReplyMarkup:        markup,
 			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: bot.True()},
 		})
 	})
@@ -554,8 +557,9 @@ func (m *Mirror) limiterFor(chatID int64) *rate.Limiter {
 
 // ComposeNoteMessage собирает HTML-текст поста заметки. Имя и текст
 // экранируются: в Python-версии сырой текст в parse_mode=HTML был
-// латентным багом (символы <, > и & ломали отправку).
-func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
+// латентным багом (символы <, > и & ломали отправку). subLink — deep-link
+// подписки для подвала (пусто — подвал только из подписи канала).
+func ComposeNoteMessage(baseURL, signature string, n store.Note, subLink string) string {
 	name := html.EscapeString(n.AuthorName)
 	var b strings.Builder
 	if n.AuthorID == "" || n.AuthorID == "0" {
@@ -564,20 +568,41 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 		fmt.Fprintf(&b, `<b><a href="%s/profile/%s">%s:</a></b>%s`, baseURL, n.AuthorID, name, "\n")
 	}
 	b.WriteString(html.EscapeString(n.Text))
-	if signature != "" {
+	sub := ""
+	if subLink != "" {
+		sub = fmt.Sprintf(`<a href="%s">%s</a>`, subLink, linkSubscribe)
+	}
+	if foot := noteFooter(signature, sub); foot != "" {
 		b.WriteString("\n\n")
-		b.WriteString(signature)
+		b.WriteString(foot)
 	}
 	return b.String()
+}
+
+// noteFooter — подвал поста: подпись канала и ссылка «Подписаться» одной
+// строкой. sub — готовая ссылка с разметкой либо (при подсчёте видимой длины)
+// один её текст; подпись приходит из конфига и уходит как есть.
+func noteFooter(signature, sub string) string {
+	switch {
+	case sub == "":
+		return signature
+	case signature == "":
+		return sub
+	}
+	return signature + " · " + sub
 }
 
 // visibleNoteLen — длина видимого текста поста заметки (без HTML-тегов), по
 // которой решаем, влезает ли он в подпись к фото (лимит Telegram captionLimit).
 // Ссылки/теги в лимит не считаются, поэтому оцениваем по именам и тексту.
-func visibleNoteLen(signature string, n store.Note) int {
+func visibleNoteLen(signature, subLink string, n store.Note) int {
 	l := len([]rune(n.AuthorName)) + len(":\n") + len([]rune(n.Text))
-	if signature != "" {
-		l += len("\n\n") + len([]rune(signature))
+	sub := ""
+	if subLink != "" {
+		sub = linkSubscribe // в лимит идёт видимый текст ссылки, не URL
+	}
+	if foot := noteFooter(signature, sub); foot != "" {
+		l += len("\n\n") + len([]rune(foot))
 	}
 	return l
 }

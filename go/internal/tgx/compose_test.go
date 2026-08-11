@@ -11,7 +11,7 @@ import (
 func TestComposeNoteMessage(t *testing.T) {
 	n := store.Note{ID: "1", AuthorID: "376712", AuthorName: "Мария <3",
 		Text: "Текст с <тегами> & амперсандом"}
-	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n)
+	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n, "")
 	want := `<b><a href="https://love.ngs.ru/profile/376712">Мария &lt;3:</a></b>` + "\n" +
 		"Текст с &lt;тегами&gt; &amp; амперсандом\n\n@grfmn"
 	if got != want {
@@ -19,9 +19,33 @@ func TestComposeNoteMessage(t *testing.T) {
 	}
 }
 
+// Подвал: подпись канала и ссылка подписки живут одной строкой, а без подписи
+// ссылка стоит одна. Видимая длина считается по тем же правилам — иначе пост
+// с аватаром уедет в подпись к фото и превысит лимит 1024.
+func TestComposeNoteMessageFooter(t *testing.T) {
+	n := store.Note{ID: "312818", AuthorID: "0", AuthorName: "Анонимно", Text: "т"}
+	link := "https://t.me/ryumkinbot?start=sub_312818"
+
+	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n, link)
+	if want := `@grfmn · <a href="` + link + `">` + linkSubscribe + `</a>`; !strings.HasSuffix(got, want) {
+		t.Errorf("подвал с подписью:\n%s", got)
+	}
+	if n := visibleNoteLen("@grfmn", link, n); n != len([]rune("Анонимно:\nт\n\n@grfmn · 🔔 Подписаться")) {
+		t.Errorf("видимая длина с подписью: %d", n)
+	}
+
+	got = ComposeNoteMessage("https://love.ngs.ru", "", n, link)
+	if want := "т\n\n" + `<a href="` + link + `">` + linkSubscribe + `</a>`; !strings.HasSuffix(got, want) {
+		t.Errorf("подвал без подписи:\n%s", got)
+	}
+	if n := visibleNoteLen("", link, n); n != len([]rune("Анонимно:\nт\n\n🔔 Подписаться")) {
+		t.Errorf("видимая длина без подписи: %d", n)
+	}
+}
+
 func TestComposeNoteMessageAnonymous(t *testing.T) {
 	n := store.Note{ID: "1", AuthorID: "0", AuthorName: "Анонимно", Text: "т"}
-	got := ComposeNoteMessage("https://love.ngs.ru", "", n)
+	got := ComposeNoteMessage("https://love.ngs.ru", "", n, "")
 	if got != "<b>Анонимно:</b>\nт" {
 		t.Errorf("got: %q", got)
 	}
