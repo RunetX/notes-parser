@@ -261,15 +261,17 @@ func modwatchReport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if rep.Events == 0 {
+	if rep.Occasions == 0 {
 		fmt.Println("событий для расчёта нет: либо наблюдение слишком короткое, либо не нашлось контрольных окон (нужно хотя бы двое суток наблюдения)")
 		if rep.EventsSkipped > 0 {
-			fmt.Printf("событий отброшено без контроля: %d\n", rep.EventsSkipped)
+			fmt.Printf("окказий отброшено без контроля: %d\n", rep.EventsSkipped)
 		}
 		return nil
 	}
-	fmt.Printf("наблюдение %s — %s, событий %d (без контроля %d), контрольных окон на событие %d\n",
-		fmtTime(rep.From), fmtTime(rep.To), rep.Events, rep.EventsSkipped, rep.Controls)
+	// Наблюдений столько, сколько окказий: чистка треда пачкой — один момент, а
+	// не N независимых совпадений (иначе z раздувается примерно в √N раз).
+	fmt.Printf("наблюдение %s — %s, событий %d в %d окказиях (без контроля %d), контрольных окон на окказию %d\n",
+		fmtTime(rep.From), fmtTime(rep.To), rep.Events, rep.Occasions, rep.EventsSkipped, rep.Controls)
 	fmt.Printf("людей в окне события в среднем %.1f, в контрольном %.1f\n\n", rep.AvgPresent, rep.AvgPresentCtrl)
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)

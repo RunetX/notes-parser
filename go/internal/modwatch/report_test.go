@@ -64,8 +64,8 @@ func TestAnalyzeSeparatesModeratorFromEverpresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("анализ: %v", err)
 	}
-	if rep.Events != eventsCnt {
-		t.Fatalf("в расчёт вошло %d событий из %d", rep.Events, eventsCnt)
+	if rep.Occasions != eventsCnt {
+		t.Fatalf("в расчёт вошло %d окказий из %d", rep.Occasions, eventsCnt)
 	}
 	var moder, always *ReportRow
 	for i := range rep.Rows {
@@ -93,6 +93,54 @@ func TestAnalyzeSeparatesModeratorFromEverpresent(t *testing.T) {
 	}
 	if moder.Name != "Подозреваемый" {
 		t.Fatalf("ник не подтянулся: %q", moder.Name)
+	}
+}
+
+// Чистка треда пачкой — один момент присутствия, а не N: наблюдатель видит все
+// пропажи разом и ставит им общий detected_at, поэтому окно у них одно и то же.
+// Считать их независимыми — раздувать z примерно в √N раз.
+func TestAnalyzeCollapsesBatchIntoOneOccasion(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "modwatch.db"))
+	if err != nil {
+		t.Fatalf("открытие БД: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	var id int64
+	save := func(user int64, at time.Time) {
+		id++
+		if err := store.SaveComment(ctx, at, CommentState{
+			ID: id, NoteID: 1, AuthorID: user, PublishedAt: at,
+		}); err != nil {
+			t.Fatalf("запись реплики: %v", err)
+		}
+	}
+	for m := 0; m < 5*24*60; m += 10 {
+		save(22, base.Add(time.Duration(m)*time.Minute)) // фон, чтобы контроль был непустым
+	}
+	at := base.AddDate(0, 0, 2).Add(13 * time.Hour)
+	save(11, at) // единственный, кто оказался рядом с чисткой
+	for i := 0; i < 5; i++ {
+		if err := store.AddEvent(ctx, Event{
+			Kind: KindCommentGone, RefID: int64(900 + i), NoteID: 1,
+			PrevSeen: at.Add(-time.Minute), DetectedAt: at.Add(time.Minute),
+		}); err != nil {
+			t.Fatalf("запись события: %v", err)
+		}
+	}
+	rep, err := store.Analyze(ctx, ReportOptions{Kinds: []string{KindCommentGone}, Controls: 4, Seed: 3})
+	if err != nil {
+		t.Fatalf("анализ: %v", err)
+	}
+	if rep.Events != 5 || rep.Occasions != 1 {
+		t.Fatalf("пачка не схлопнулась: событий %d, окказий %d", rep.Events, rep.Occasions)
+	}
+	for _, r := range rep.Rows {
+		if r.Hits > rep.Occasions {
+			t.Fatalf("u%d получил %d совпадений при %d окказиях", r.UserID, r.Hits, rep.Occasions)
+		}
 	}
 }
 
@@ -125,8 +173,8 @@ func TestAnalyzeWithoutControls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("анализ: %v", err)
 	}
-	if rep.Events != 0 || rep.EventsSkipped != 1 {
-		t.Fatalf("ожидалось 0 расчётных и 1 отброшенное событие, получено %d/%d", rep.Events, rep.EventsSkipped)
+	if rep.Occasions != 0 || rep.EventsSkipped != 1 {
+		t.Fatalf("ожидалось 0 расчётных и 1 отброшенная окказия, получено %d/%d", rep.Occasions, rep.EventsSkipped)
 	}
 	if len(rep.Rows) != 0 {
 		t.Fatalf("без контроля таблица должна быть пустой: %+v", rep.Rows)
