@@ -73,6 +73,12 @@ type Talks struct {
 	MaxRequestsPerMin int  `json:"max_requests_per_min"`
 	StoreText         bool `json:"store_text"`
 	RetentionDays     int  `json:"retention_days"`
+	// ExcludeUsers — кого поллер не обходит: мессенджер → id владельцев сессий.
+	// Отказ от доставки личной переписки, а не выход с сайта: сессия остаётся
+	// валидной и продолжает работать в мосте «ответ в чате → комментарий на
+	// сайте». Нужен, потому что гасить сессию нельзя, а читать за человека его
+	// ЛС (сайт при этом помечает их прочитанными) — можно только с его согласия.
+	ExcludeUsers map[string][]int64 `json:"exclude_users,omitempty"`
 }
 
 // LLM — онлайн-доступ к Claude API (Anthropic): автоматическая редактура

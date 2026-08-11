@@ -20,6 +20,12 @@ type fakeSite struct {
 	history    map[string][]love.TalkMessage
 	dialogsErr error
 	historyErr error
+	// markRead повторяет поведение боевого сайта: чтение истории гасит
+	// непрочитанное (собеседник видит «просмотрено»). В боевой разметке
+	// loadBuddiesList при этом НЕ отдаёт last-msg-id, поэтому в тестах с
+	// markRead поле LastMsgID оставляем пустым — как в жизни.
+	markRead     bool
+	historyCalls int // сколько раз дозабирали историю (бюджет запросов к сайту)
 
 	sent       []sentToSite
 	sendReturn love.TalkMessage
@@ -41,6 +47,14 @@ func (f *fakeSite) Dialogs(_ context.Context, _ []*http.Cookie, _ int) ([]love.T
 func (f *fakeSite) History(_ context.Context, _ []*http.Cookie, passportID, _ string, _ int) ([]love.TalkMessage, error) {
 	if f.historyErr != nil {
 		return nil, f.historyErr
+	}
+	f.historyCalls++
+	if f.markRead {
+		for i := range f.dialogs {
+			if f.dialogs[i].PassportID == passportID {
+				f.dialogs[i].Unread = 0
+			}
+		}
 	}
 	return f.history[passportID], nil
 }
@@ -185,12 +199,17 @@ func TestStoreTextFalseKeepsDBEmptyButDeliversText(t *testing.T) {
 	}
 }
 
+// Затык в мессенджере не должен съедать сообщение: сайт уже пометил его
+// прочитанным нашим же чтением истории, счётчик непрочитанных обнулился, и
+// прежний триггер (только дельта счётчика) не переспрашивал диалог никогда —
+// сообщение оставалось «просмотрено на сайте, но не доставлено».
 func TestDeliveryFailureIsRetried(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	seedSession(t, st, testOwner)
 	site := &fakeSite{
-		dialogs: []love.TalkDialog{{PassportID: "777", Nick: "Ника", LastMsgID: "m2"}},
+		markRead: true,
+		dialogs:  []love.TalkDialog{{PassportID: "777", Nick: "Ника", Unread: 2}},
 		history: map[string][]love.TalkMessage{
 			"777": {{SiteMsgID: "m1", Text: "раз"}, {SiteMsgID: "m2", Text: "два"}},
 		},
@@ -198,14 +217,145 @@ func TestDeliveryFailureIsRetried(t *testing.T) {
 	tr := &fakeTransport{name: store.MessengerTelegram, sendErr: errors.New("мессенджер недоступен")}
 	w := New(st, site, []PMTransport{tr}, testConfig(), nil)
 
-	w.pollOnce(ctx) // доставка падает, курсор не двигается
+	w.pollOnce(ctx) // доставка падает, курсор не двигается; сайт погасил непрочитанное
 	if len(tr.sent) != 0 {
 		t.Fatalf("при ошибке доставка не должна учитываться: %d", len(tr.sent))
 	}
+	if site.dialogs[0].Unread != 0 {
+		t.Fatal("предпосылка теста: чтение истории гасит непрочитанное на сайте")
+	}
 	tr.sendErr = nil
-	w.pollOnce(ctx) // повтор: оба доходят по разу
+	w.pollOnce(ctx) // нового на сайте нет — дозабор держится на недоставленном в БД
 	if len(tr.sent) != 2 {
 		t.Fatalf("после восстановления ожидалось 2 доставки, got %d", len(tr.sent))
+	}
+	// Всё доставлено — лишних дозаборов больше нет.
+	w.pollOnce(ctx)
+	if len(tr.sent) != 2 {
+		t.Fatalf("доставленное не должно слаться повторно: %d", len(tr.sent))
+	}
+}
+
+// Сайт гасит непрочитанное нашим чтением, поэтому следующее сообщение возвращает
+// счётчик к тому же значению, при котором мы читали в прошлый раз. Дельта его не
+// видит — спасает фиксация счётчика на каждом наблюдении.
+func TestNewMessageAfterSiteMarkedReadIsDelivered(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	site := &fakeSite{
+		markRead: true,
+		dialogs:  []love.TalkDialog{{PassportID: "777", Nick: "Ника", Unread: 1}},
+		history:  map[string][]love.TalkMessage{"777": {{SiteMsgID: "m1", Text: "раз"}}},
+	}
+	tr := &fakeTransport{name: store.MessengerTelegram}
+	w := New(st, site, []PMTransport{tr}, testConfig(), nil)
+
+	w.pollOnce(ctx)
+	w.pollOnce(ctx) // такт без новых: наблюдаем обнулённый счётчик
+
+	site.dialogs[0].Unread = 1 // пришло одно новое — счётчик снова «1», как и был при чтении
+	site.history["777"] = append(site.history["777"], love.TalkMessage{SiteMsgID: "m2", Text: "два"})
+	w.pollOnce(ctx)
+	if len(tr.sent) != 2 {
+		t.Fatalf("новое сообщение при том же значении счётчика должно доставляться, got %d", len(tr.sent))
+	}
+}
+
+// Тот же случай, но новое сообщение приходит ДО такта с обнулённым счётчиком —
+// фиксировать нечего, и диалог спасает только перепроверка залипшего счётчика.
+func TestStaleUnreadForcesRefetch(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	site := &fakeSite{
+		markRead: true,
+		dialogs:  []love.TalkDialog{{PassportID: "777", Nick: "Ника", Unread: 1}},
+		history:  map[string][]love.TalkMessage{"777": {{SiteMsgID: "m1", Text: "раз"}}},
+	}
+	tr := &fakeTransport{name: store.MessengerTelegram}
+	w := New(st, site, []PMTransport{tr}, testConfig(), nil)
+
+	w.pollOnce(ctx)
+	site.dialogs[0].Unread = 1 // новое пришло сразу после чтения
+	site.history["777"] = append(site.history["777"], love.TalkMessage{SiteMsgID: "m2", Text: "два"})
+	w.pollOnce(ctx)
+	if len(tr.sent) != 1 {
+		t.Fatalf("до истечения staleUnreadAfter лишних дозаборов нет: %d", len(tr.sent))
+	}
+	// Прошло больше staleUnreadAfter — счётчик перепроверяем живьём.
+	for id := range w.lastFetchAt {
+		w.lastFetchAt[id] = time.Now().Add(-staleUnreadAfter - time.Minute)
+	}
+	w.pollOnce(ctx)
+	if len(tr.sent) != 2 {
+		t.Fatalf("залипший счётчик должен приводить к дозабору, got %d", len(tr.sent))
+	}
+}
+
+// Постоянный отказ мессенджера (бота заблокировали, диалога с ним нет) повтором
+// не лечится: обход такого владельца прекращаем, иначе поллер каждый такт читает
+// его переписку на сайте и гасит ему непрочитанное впустую. Админу — одно
+// сообщение, не поток.
+func TestUnreachableUserStopsPolling(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	site := &fakeSite{
+		markRead: true,
+		dialogs:  []love.TalkDialog{{PassportID: "777", Nick: "Ника", Unread: 1}},
+		history:  map[string][]love.TalkMessage{"777": {{SiteMsgID: "m1", Text: "раз"}}},
+	}
+	tr := &fakeTransport{
+		name:    store.MessengerTelegram,
+		sendErr: errors.New("forbidden, Forbidden: bot was blocked by the user"),
+	}
+	var alerts []string
+	cfg := testConfig()
+	cfg.AlertSend = func(_ context.Context, text string) { alerts = append(alerts, text) }
+	w := New(st, site, []PMTransport{tr}, cfg, nil)
+
+	w.pollOnce(ctx)
+	historyCalls := site.historyCalls
+	w.pollOnce(ctx)
+	w.pollOnce(ctx)
+	if site.historyCalls != historyCalls {
+		t.Fatalf("после постоянного отказа сайт опрашивать не должны: %d → %d", historyCalls, site.historyCalls)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("админу ожидалось ровно одно сообщение, got %d: %v", len(alerts), alerts)
+	}
+	// Временный отказ — наоборот, повторяется (проверено в TestDeliveryFailureIsRetried).
+	if w.stopped {
+		t.Error("недоступность одного пользователя не должна ронять поллер целиком")
+	}
+}
+
+// Отказ от доставки: сессия живая (она нужна мосту «ответ в чате → комментарий
+// на сайте»), но переписку этого человека не читаем вовсе — иначе сайт пометит
+// её прочитанной, а в мессенджер ничего не уедет.
+func TestExcludedOwnerIsNotPolled(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	site := &fakeSite{
+		dialogs: []love.TalkDialog{{PassportID: "777", Nick: "Ника", Unread: 1}},
+		history: map[string][]love.TalkMessage{"777": {{SiteMsgID: "m1", Text: "раз"}}},
+	}
+	tr := &fakeTransport{name: store.MessengerTelegram}
+	cfg := testConfig()
+	cfg.AdminOnly = false
+	cfg.ExcludeUsers = map[string][]int64{store.MessengerTelegram: {testOwner}}
+	w := New(st, site, []PMTransport{tr}, cfg, nil)
+
+	w.pollOnce(ctx)
+	if site.historyCalls != 0 || len(tr.sent) != 0 {
+		t.Fatalf("исключённого владельца не опрашиваем: history=%d sent=%d", site.historyCalls, len(tr.sent))
+	}
+	// Сессия при этом остаётся валидной — её использует мост.
+	owners, err := st.SessionOwners(ctx, store.MessengerTelegram)
+	if err != nil || len(owners) != 1 {
+		t.Fatalf("сессия должна остаться живой: owners=%v err=%v", owners, err)
 	}
 }
 

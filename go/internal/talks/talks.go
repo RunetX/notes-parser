@@ -9,9 +9,11 @@ package talks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -50,7 +52,11 @@ type Config struct {
 	StoreText      bool             // false — текст в БД не пишем (приватность)
 	MaxReqPerMin   int              // бюджет запросов к сайту у поллера talks
 	ForbiddenLimit int              // подряд ошибок сайта → kill-switch (стоп поллера)
-	AlertSend      func(ctx context.Context, text string)
+	// ExcludeUsers — messenger → id владельцев сессий, чью переписку не носим в
+	// мессенджер (человек отказался от доставки). Сессия при этом живая: она
+	// нужна мосту «ответ в чате → комментарий на сайте».
+	ExcludeUsers map[string][]int64
+	AlertSend    func(ctx context.Context, text string)
 }
 
 // Ключи уведомлений админу.
@@ -58,6 +64,21 @@ const (
 	keyForbidden = "доступ к сайту talks (403)"
 	keyDrift     = "ошибка API talks"
 )
+
+// undeliveredWindow — сколько ещё пытаться дослать входящее, застрявшее из-за
+// сбоя мессенджера. Граница нужна: история сайта отдаёт только первую страницу
+// (20 сообщений), и уехавшее за неё живым дозабором уже не достать — без окна
+// такой хвост заставлял бы перезапрашивать диалог каждый такт вечно. Что старше
+// — только руками: `lovegw talks watch -backfill N`.
+const undeliveredWindow = 48 * time.Hour
+
+// staleUnreadAfter — как долго верить залипшему счётчику непрочитанных, прежде
+// чем перепроверить диалог живьём. Дельта счётчика слепа к случаю «сайт погасил
+// непрочитанное нашим же чтением истории, а потом пришло одно новое»: счётчик
+// возвращается к тому же значению, при котором мы читали, и новым не считается.
+// Один лишний запрос в четверть часа на диалог с непрочитанным — дешевле
+// потерянного сообщения; доставка дедуплицирована по message_targets.
+const staleUnreadAfter = 15 * time.Minute
 
 // Watcher — поллер talks и роутер ответов. Поллинг идёт в одной горутине
 // (Run); HandleReply зовётся из обработчиков апдейтов мессенджеров. Общее
@@ -77,8 +98,31 @@ type Watcher struct {
 	// lastUnread — последнее виденное число непрочитанных по peer.id: сигнал
 	// «есть новое» без mark-read (loadBuddiesList не отдаёт last-msg-id).
 	// Трогает только горутина Run — без мьютекса. Сбрасывается при рестарте
-	// (тогда один лишний дозабор на диалог, дальше по дельте).
+	// (тогда один лишний дозабор на диалог, дальше по дельте). Запоминаем счётчик
+	// и когда дозабора не было: чтение истории гасит непрочитанное на самом
+	// сайте, и без этой фиксации следующее сообщение вернуло бы unread к уже
+	// виденному значению — то есть новым бы не считалось.
 	lastUnread map[int64]int
+	// lastFetchAt — когда последний раз дозабирали историю диалога (страховка от
+	// залипшего счётчика, см. staleUnreadAfter). Тоже только из Run.
+	lastFetchAt map[int64]time.Time
+	// unreachable — владельцы сессий, кому доставлять некуда: заблокировали бота
+	// или ни разу не открывали с ним диалог (бот не пишет первым — а бот
+	// переписки для многих новый, они его и не запускали). Их обход прекращаем:
+	// читать чужую переписку, зная, что она никуда не уедет, — значит впустую
+	// гасить человеку непрочитанное на сайте. Живёт в памяти и снимается
+	// рестартом: после «/start» у бота человек чинится сам, ценой одной попытки.
+	unreachable map[ownerKey]bool
+	// excluded — отказавшиеся от доставки (Config.ExcludeUsers), развёрнутые в
+	// множество. В отличие от unreachable это решение человека, а не сбой:
+	// снимается только правкой конфига.
+	excluded map[ownerKey]bool
+}
+
+// ownerKey — владелец сессии в конкретном мессенджере (пространства id разные).
+type ownerKey struct {
+	messenger string
+	user      int64
 }
 
 // New создаёт поллер. transports — по одному на включённый мессенджер.
@@ -109,15 +153,29 @@ func New(st *store.Store, site SiteTalks, transports []PMTransport, cfg Config, 
 		burst = cfg.MaxReqPerMin
 	}
 	return &Watcher{
-		st:         st,
-		site:       site,
-		transports: transports,
-		cfg:        cfg,
-		alert:      alerts.New(cfg.AlertSend, cfg.ForbiddenLimit),
-		limiter:    rate.NewLimiter(rate.Every(time.Minute/time.Duration(cfg.MaxReqPerMin)), burst),
-		log:        log,
-		lastUnread: make(map[int64]int),
+		st:          st,
+		site:        site,
+		transports:  transports,
+		cfg:         cfg,
+		alert:       alerts.New(cfg.AlertSend, cfg.ForbiddenLimit),
+		limiter:     rate.NewLimiter(rate.Every(time.Minute/time.Duration(cfg.MaxReqPerMin)), burst),
+		log:         log,
+		lastUnread:  make(map[int64]int),
+		lastFetchAt: make(map[int64]time.Time),
+		unreachable: make(map[ownerKey]bool),
+		excluded:    excludedSet(cfg.ExcludeUsers),
 	}
+}
+
+// excludedSet разворачивает конфигурационные списки в множество владельцев.
+func excludedSet(byMessenger map[string][]int64) map[ownerKey]bool {
+	set := make(map[ownerKey]bool)
+	for messenger, users := range byMessenger {
+		for _, u := range users {
+			set[ownerKey{messenger, u}] = true
+		}
+	}
+	return set
 }
 
 // Run крутит поллер до отмены контекста (или срабатывания kill-switch).
@@ -175,12 +233,25 @@ func (w *Watcher) owners(ctx context.Context, messenger string) []int64 {
 		w.log.Error("список сессий talks", "messenger", messenger, "err", err)
 		return nil
 	}
-	if !w.cfg.AdminOnly {
-		return owners
+	if w.cfg.AdminOnly {
+		owners = onlyAdmin(owners, w.cfg.AdminIDs[messenger])
 	}
-	admin := w.cfg.AdminIDs[messenger]
+	live := make([]int64, 0, len(owners))
+	for _, o := range owners {
+		k := ownerKey{messenger, o}
+		if w.unreachable[k] || w.excluded[k] {
+			continue // доставлять некуда либо человек отказался от доставки
+		}
+		live = append(live, o)
+	}
+	return live
+}
+
+// onlyAdmin оставляет из владельцев одного админа (admin-only режим). admin=0 —
+// админ для мессенджера не задан, обходить некого.
+func onlyAdmin(owners []int64, admin int64) []int64 {
 	if admin == 0 {
-		return nil // admin-only, но админ для мессенджера не задан
+		return nil
 	}
 	for _, o := range owners {
 		if o == admin {
@@ -249,13 +320,9 @@ func (w *Watcher) processDialog(ctx context.Context, tr PMTransport, owner int64
 	if err != nil {
 		return false, false
 	}
-	// Сигнал новой активности: либо last-msg-id диалога сдвинулся (если сайт его
-	// отдаёт), либо выросло число непрочитанных (loadBuddiesList отдаёт только
-	// его). Без mark-read счётчик залипает, поэтому сравниваем с прошлым виденным.
-	byMsgID := d.LastMsgID != "" && d.LastMsgID != peer.CursorMsgID
-	byUnread := d.Unread > 0 && d.Unread != w.lastUnread[peerID]
-	if !byMsgID && !byUnread {
-		return false, false // новой активности нет; недоставленного тоже (курсор идёт лишь по доставленным)
+	if !w.needsFetch(ctx, messenger, peerID, peer, d) {
+		w.lastUnread[peerID] = d.Unread // фиксируем и без дозабора — см. коммент к полю
+		return false, false
 	}
 
 	if err := w.limiter.Wait(ctx); err != nil {
@@ -273,6 +340,7 @@ func (w *Watcher) processDialog(ctx context.Context, tr PMTransport, owner int64
 	}
 	w.onSiteOK(ctx)
 	w.lastUnread[peerID] = d.Unread // дозабор состоялся — запоминаем счётчик
+	w.lastFetchAt[peerID] = time.Now()
 
 	newCursor, cursorTime := peer.CursorMsgID, peer.LastEventAt
 	for _, m := range msgs {
@@ -298,6 +366,38 @@ func (w *Watcher) processDialog(ctx context.Context, tr PMTransport, owner int64
 	return fetched, active
 }
 
+// needsFetch решает, дозабирать ли историю диалога. Сигнал новой активности:
+// либо last-msg-id диалога сдвинулся (если сайт его отдаёт — loadBuddiesList
+// его НЕ отдаёт, поэтому в бою работает только вторая ветка), либо число
+// непрочитанных отличается от виденного в прошлый раз.
+//
+// Третья ветка — недоставленное: сбой мессенджера не должен съедать сообщение.
+// Курсор на нём стоит, но одного этого мало — дозабор запускают счётчики, а они
+// после чтения истории уже погашены (сайт помечает сообщения прочитанными), и
+// повторной попытки не наступало бы никогда. Поэтому спрашиваем БД: есть ли
+// входящее без записи в message_targets. Признак переживает и рестарт демона,
+// в отличие от любого флага в памяти.
+func (w *Watcher) needsFetch(ctx context.Context, messenger string, peerID int64, peer store.TalkPeer, d love.TalkDialog) bool {
+	if d.LastMsgID != "" && d.LastMsgID != peer.CursorMsgID {
+		return true
+	}
+	if d.Unread > 0 && d.Unread != w.lastUnread[peerID] {
+		return true
+	}
+	if d.Unread > 0 && time.Since(w.lastFetchAt[peerID]) >= staleUnreadAfter {
+		return true // счётчик залип на прежнем значении — см. staleUnreadAfter
+	}
+	pending, err := w.st.HasUndeliveredIncoming(ctx, messenger, peerID, time.Now().Add(-undeliveredWindow))
+	if err != nil {
+		w.log.Error("проверка недоставленных ЛС talks", "peer", peerID, "err", err)
+		return false
+	}
+	if pending {
+		w.log.Debug("в диалоге есть недоставленное ЛС — переспрашиваю историю", "peer", peerID)
+	}
+	return pending
+}
+
 // deliverOne доставляет одно входящее сообщение (идемпотентно по
 // message_targets). stop=true — доставка не удалась, курсор двигать нельзя.
 func (w *Watcher) deliverOne(ctx context.Context, tr PMTransport, owner int64, peer store.TalkPeer, m love.TalkMessage, rowID int64) (delivered, stop bool) {
@@ -310,12 +410,54 @@ func (w *Watcher) deliverOne(ctx context.Context, tr PMTransport, owner int64, p
 	msgID, err := tr.SendPM(ctx, owner, formatIncoming(w.cfg.BaseURL, peer, m))
 	if err != nil {
 		w.log.Warn("доставка ЛС talks не удалась", "user", owner, "err", err)
+		if isUnreachable(err) {
+			w.markUnreachable(ctx, tr.Name(), owner, err)
+		}
 		return false, true
 	}
 	if err := w.st.SetTarget(ctx, tr.Name(), store.TargetPMMessage, itoa(rowID), msgID, ""); err != nil {
 		w.log.Error("привязка доставленного ЛС talks", "err", err)
 	}
 	return true, false
+}
+
+// isUnreachable — отказ мессенджера, который повтором не лечится: пользователь
+// заблокировал бота или ни разу не открывал с ним диалог (первым бот писать не
+// может). Сравниваем строки, а не типизированные ошибки: SDK у мессенджеров
+// разные, общего кода отказа нет — в Telegram это «Forbidden: bot was blocked by
+// the user» и «Bad Request: chat not found», в MAX формулировки неизвестны.
+// Неопознанный отказ остаётся временным — его переспросят на следующем такте.
+func isUnreachable(err error) bool {
+	s := strings.ToLower(err.Error())
+	for _, m := range []string{
+		"blocked by the user",
+		"chat not found",
+		"user is deactivated",
+		"bot can't initiate conversation",
+	} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// markUnreachable снимает владельца сессии с обхода и один раз сообщает об этом
+// админу: сам пользователь уведомления не получит — доставлять ему как раз и
+// нечем.
+func (w *Watcher) markUnreachable(ctx context.Context, messenger string, owner int64, cause error) {
+	k := ownerKey{messenger, owner}
+	if w.unreachable[k] {
+		return
+	}
+	w.unreachable[k] = true
+	w.log.Warn("ЛС talks доставлять некуда — диалоги этого пользователя больше не опрашиваю",
+		"messenger", messenger, "user", owner, "err", cause)
+	if w.cfg.AlertSend != nil {
+		w.cfg.AlertSend(ctx, fmt.Sprintf(
+			"личная переписка не доставляется пользователю %d (%s): %v. Он заблокировал бота или не открывал с ним диалог; опрос его диалогов остановлен до рестарта демона.",
+			owner, messenger, cause))
+	}
 }
 
 // DeliverExisting принудительно доставляет последние perDialog ВХОДЯЩИХ из

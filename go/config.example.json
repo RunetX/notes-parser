@@ -57,7 +57,11 @@
     "max_dialogs_per_tick": 5,
     "max_requests_per_min": 6,
     "store_text": false,
-    "retention_days": 30
+    "retention_days": 30,
+    "exclude_users": {
+      "telegram": [],
+      "max": []
+    }
   },
   "notes_limit": 5,
   "signature": "@your_channel",

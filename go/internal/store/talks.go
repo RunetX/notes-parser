@@ -150,6 +150,28 @@ func (s *Store) InsertTalkMessage(ctx context.Context, m TalkMessage) (id int64,
 	return id, false, err
 }
 
+// HasUndeliveredIncoming — есть ли у диалога входящее, не уехавшее в мессенджер:
+// строка talks_messages без пары в message_targets. Строка пишется ДО попытки
+// доставки, поэтому сбой мессенджера виден в БД и переживает рестарт демона —
+// по этому признаку поллер переспрашивает историю, не дожидаясь нового
+// сообщения на сайте. since ограничивает окно: сообщение, уехавшее за первую
+// страницу истории сайта, дотянуть уже нечем (только `talks -backfill`), и без
+// границы оно заставляло бы перезапрашивать диалог вечно.
+func (s *Store) HasUndeliveredIncoming(ctx context.Context, messenger string, peerID int64, since time.Time) (bool, error) {
+	var found int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM talks_messages m
+			WHERE m.peer_id = ? AND m.direction = ? AND m.created_at >= ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM message_targets t
+				WHERE t.messenger = ? AND t.kind = ? AND t.ref_id = CAST(m.id AS TEXT)))`,
+		peerID, TalkIn, fmtTime(since), messenger, TargetPMMessage).Scan(&found); err != nil {
+		return false, fmt.Errorf("недоставленные ЛС peer=%d: %w", peerID, err)
+	}
+	return found == 1, nil
+}
+
 // TalkMessageByID возвращает сообщение по внутреннему id. ErrNotFound — нет.
 func (s *Store) TalkMessageByID(ctx context.Context, id int64) (TalkMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `

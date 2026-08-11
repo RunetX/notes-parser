@@ -456,6 +456,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				AllowSend:    cfg.Talks.AllowSend,
 				StoreText:    cfg.Talks.StoreText,
 				MaxReqPerMin: cfg.Talks.MaxRequestsPerMin,
+				ExcludeUsers: cfg.Talks.ExcludeUsers,
 				AlertSend:    fanOutAlerts(alerters),
 			}, log)
 			if tgTalks != nil {
