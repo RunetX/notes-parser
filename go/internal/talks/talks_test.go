@@ -332,6 +332,35 @@ func TestUnreachableUserStopsPolling(t *testing.T) {
 	}
 }
 
+// Формулировки отказов, по которым владельца снимают с обхода. Список строк —
+// единственное, что отделяет «человек недостижим» от «сеть моргнула», и MAX в
+// нём когда-то отсутствовал: его `dialog.not.found` не подходил под телеграмное
+// «chat not found», поэтому поллер месяцами читал переписку человека, гасил её
+// на сайте и не доставлял никуда. Тексты — с боя.
+func TestIsUnreachableKnowsBothMessengers(t *testing.T) {
+	unreachable := []string{
+		"forbidden, Forbidden: bot was blocked by the user",           // telegram
+		"bad request, Bad Request: chat not found",                    // telegram
+		"sending message failed: dialog.not.found : Dialog not found", // max
+	}
+	for _, s := range unreachable {
+		if !isUnreachable(errors.New(s)) {
+			t.Errorf("отказ должен считаться постоянным: %q", s)
+		}
+	}
+	// Временное недоразумение снимать с обхода нельзя: человек-то на месте.
+	temporary := []string{
+		"too many requests, retry after 5",
+		"context deadline exceeded",
+		"sending message failed: internal.error : Internal error",
+	}
+	for _, s := range temporary {
+		if isUnreachable(errors.New(s)) {
+			t.Errorf("отказ должен считаться временным: %q", s)
+		}
+	}
+}
+
 // Отказ от доставки: сессия живая (она нужна мосту «ответ в чате → комментарий
 // на сайте»), но переписку этого человека не читаем вовсе — иначе сайт пометит
 // её прочитанной, а в мессенджер ничего не уедет.

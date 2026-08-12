@@ -415,13 +415,19 @@ func (w *Watcher) deliverOne(ctx context.Context, tr PMTransport, owner int64, p
 // заблокировал бота или ни разу не открывал с ним диалог (первым бот писать не
 // может). Сравниваем строки, а не типизированные ошибки: SDK у мессенджеров
 // разные, общего кода отказа нет — в Telegram это «Forbidden: bot was blocked by
-// the user» и «Bad Request: chat not found», в MAX формулировки неизвестны.
-// Неопознанный отказ остаётся временным — его переспросят на следующем такте.
+// the user» и «Bad Request: chat not found», в MAX — код `dialog.not.found`
+// («sending message failed: dialog.not.found : Dialog not found», снято с боя
+// 12.08.2026). Цена промаха здесь не «одно потерянное сообщение», а поток:
+// нераспознанный отказ заставляет поллер читать переписку человека каждый такт,
+// сайт при каждом чтении помечает её прочитанной, а доставки нет — ЛС пропадают
+// молча. Неопознанный отказ всё же считаем временным: снять с обхода живого
+// человека хуже, чем лишний раз попробовать.
 func isUnreachable(err error) bool {
 	s := strings.ToLower(err.Error())
 	for _, m := range []string{
 		"blocked by the user",
 		"chat not found",
+		"dialog.not.found", // MAX: человек не открывал диалог с ботом
 		"user is deactivated",
 		"bot can't initiate conversation",
 	} {
