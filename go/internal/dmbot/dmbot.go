@@ -47,6 +47,7 @@ const (
 const (
 	msgInternalError  = "Внутренняя ошибка, попробуйте позже"
 	msgUnknownCommand = "Неизвестная команда. Наберите /start"
+	msgTalksOff       = "Личная переписка сайта не подключена."
 	msgNoteGone       = "Не нашёл эту заметку — возможно, она уже ушла из ленты."
 	msgSubLimit       = "Больше " + subLimitText + " подписок я не держу. Снимите лишние: /mysubs"
 )
@@ -141,6 +142,12 @@ func (d *Bot) SetTalkRouter(r TalkRouter) {
 
 // SetNews подключает публикацию новостей проекта админом (/news).
 func (d *Bot) SetNews(svc *news.Service, adminID int64) { d.logic.SetNews(svc, adminID) }
+
+// AskDelivery спрашивает, куда носить личные сообщения (зовёт поллер talks,
+// увидев один сайт-аккаунт в двух мессенджерах).
+func (d *Bot) AskDelivery(ctx context.Context, userID int64, current store.TalksOwner) {
+	d.logic.AskDelivery(ctx, userID, current)
+}
 
 // PublishCommands публикует меню команд бота. Зовётся после SetTalkRouter:
 // от него зависит, попадут ли в список /talks и /talk.
@@ -386,6 +393,7 @@ func startMessage(talksOnly, withTalks bool) string {
 		return `Привет! Я бот личной переписки НГС.Лав. Я умею:
 /talks — мои диалоги на сайте
 /talk <номер> — писать в выбранный диалог
+/delivery — куда присылать личные сообщения
 /cancel — выйти из диалога
 Ответить на входящее ЛС можно просто реплаем.
 Вход на сайт, заметки и подписки — у основного бота (там же /login).
@@ -400,7 +408,8 @@ func startMessage(talksOnly, withTalks bool) string {
 /unsubscribe <слово> — отписаться от слова
 /mysubs — мои подписки`
 	if withTalks {
-		msg += "\n/talks — мои личные диалоги на сайте\n/talk <номер> — писать в выбранный диалог"
+		msg += "\n/talks — мои личные диалоги на сайте\n/talk <номер> — писать в выбранный диалог" +
+			"\n/delivery — куда присылать личные сообщения"
 	}
 	return msg + "\nТо же самое — кнопками ниже."
 }

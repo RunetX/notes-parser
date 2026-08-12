@@ -87,7 +87,9 @@ messages, and all user-facing bot strings are in Russian.
   preserved across the migration because they live in the payload of «✖»
   buttons in users' chat history. `AddSubscription` enforces
   `SubscriptionLimit` (50 per user, all kinds together) inside a transaction —
-  one place covers all four entry points.
+  one place covers all four entry points. Since v8 `sessions` carries
+  `talks_delivery` / `talks_asked_at` — в какой мессенджер носить личные
+  сообщения (`internal/store/delivery.go`).
 - **All site markup selectors live in one const block** in
   `internal/love/parse.go`; a required selector that matches nothing returns a
   typed `MarkupError` (markup-drift detection), while an empty comments page is
@@ -216,10 +218,31 @@ messages, and all user-facing bot strings are in Russian.
     (api.anthropic.com недоступен с RU-IP, ходим через тот же прокси, что и
     Bot API). Ключ — `llm.api_key` / env `LOVEGW_LLM_KEY`. Общий клиент для
     дайджеста и будущего поиска (C4).
+  - `talks` — личная переписка сайта: один поллер под общим клиентом сайта
+    фанит входящие ЛС в личку включённых мессенджеров, ответы реплаем/командой
+    уходят на сайт. **Получатель у сайт-аккаунта ровно один** (`delivery.go`):
+    `getMessagesHistory` помечает сообщение прочитанным на самом сайте, поэтому
+    второй сессии того же человека достанется пустота. Сессии связывает
+    `sessions.site_passport_id` (нет — поллер снимает его сам на первом обходе,
+    одна попытка за запуск: старые сессии его не хранят). Правило выбора —
+    `store.PickDelivery`: явный выбор человека сильнее всего, пока его нет —
+    самый свежий вход; увидев дубль, поллер один раз спрашивает кнопками через
+    `Config.AskDelivery` (замыкание на `dmbot`, у поллера кнопок нет).
+    Недостижимость (заблокировал бота) снимает сессию с обхода только пока
+    выбора не было: у выбравшего это «ЛС не доставляются», а не «отнесём в
+    другой мессенджер». `talks.exclude_users` в конфиге — запрет админа, он
+    сильнее выбора человека.
   - `dmbot` — РюмкинЪ; messenger-agnostic dialog engine `Logic` (state in
     `dialog_states`, transport behind an interface — Telegram wrapper here,
     MAX goes through `maxx.Mirror`). Commands: `/login`, `/add_note`,
     `/add_anonymous_note`, `/status`, `/subscribe`, `/unsubscribe`, `/mysubs`.
+    Плюс `/delivery` (`delivery.go`) — куда носить личные сообщения сайта:
+    показывает нынешнего получателя и даёт кнопки «📬 Присылать сюда» /
+    «🔕 Не присылать сюда». Выбор исключающий, второй мессенджер гасит
+    `store.SetTalksDelivery` одной транзакцией по паспорту сайт-аккаунта.
+    Команда есть и у бота переписки — ЛС доставляет именно он; тем же
+    сообщением и теми же кнопками поллер задаёт свой вопрос про дубль
+    (`AskDelivery`).
     Плюс админская `/news` (`SetNews`, пакет `news`): текст → превью →
     подтверждение кнопкой «Опубликовать» (слово «да» осталось запасным путём) →
     пост в каналы. Она видна только
@@ -234,8 +257,8 @@ messages, and all user-facing bot strings are in Russian.
     перелистыванием по 8. У каждого приглашения есть «Отмена». Меню команд
     мессенджера публикует `PublishCommands` на старте демона (Telegram
     `setMyCommands`, MAX `PATCH /me/commands`) — после подключения talks-роутера,
-    от него зависит, попадут ли в список `/talks` и `/talk`; админская `/news`
-    в меню не значится. Правило правки сообщений: главное меню — пульт, его не
+    от него зависит, попадут ли в список `/talks`, `/talk` и `/delivery`;
+    админская `/news` в меню не значится. Правило правки сообщений: главное меню — пульт, его не
     затирают никогда (список диалогов из меню приходит новым сообщением, а
     перелистывание уже правит его), одноразовый выбор превращается в
     приглашение, список подписок перерисовывается на месте.
@@ -272,7 +295,7 @@ messages, and all user-facing bot strings are in Russian.
     горутине) на read-then-write внутри `news.Publish`; закрыта мьютексом по
     пользователю (`lockUser`), тест на два одновременных нажатия это стережёт.
     `NewTalksLogic` is the second role — a talks-only bot (`/talks`, `/talk`,
-    reply→site delivery, admin alerts) that keeps its own `dialog_states`
+    `/delivery`, reply→site delivery, admin alerts) that keeps its own `dialog_states`
     namespace (`<messenger>:talks`) so a stuck `pm:<id>` cannot break the
     command bot; sessions, subscriptions and peers stay keyed by messenger, so
     it sees the login made in the command bot. The command bot keeps a

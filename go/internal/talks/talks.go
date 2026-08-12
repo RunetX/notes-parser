@@ -30,6 +30,15 @@ type SiteTalks interface {
 	Send(ctx context.Context, cookies []*http.Cookie, passportID, text string) (love.TalkMessage, error)
 }
 
+// SiteIdentifier (опц.) — снятие site-идентичности со страницы сайта. Поллеру
+// она нужна ради паспорта: без него вход одного человека в двух мессенджерах не
+// связать, и выбор мессенджера доставки работать не будет. Сессии, заведённые до
+// появления talks, паспорта не хранят — поллер дозаполняет его лениво.
+// Реализует love.Client.
+type SiteIdentifier interface {
+	SiteIdentity(ctx context.Context, cookies []*http.Cookie) (profileID, passportID, nick string, err error)
+}
+
 // PMTransport — доставка ЛС в конкретный мессенджер. В отличие от dmbot.Transport
 // SendPM возвращает id доставленного сообщения — он нужен для message_targets
 // (маршрутизация ответа реплаем). Name() = имя мессенджера (store.Messenger*).
@@ -54,9 +63,17 @@ type Config struct {
 	ForbiddenLimit int              // подряд ошибок сайта → kill-switch (стоп поллера)
 	// ExcludeUsers — messenger → id владельцев сессий, чью переписку не носим в
 	// мессенджер (человек отказался от доставки). Сессия при этом живая: она
-	// нужна мосту «ответ в чате → комментарий на сайте».
+	// нужна мосту «ответ в чате → комментарий на сайте». Запрет админа: сильнее
+	// выбора самого человека (см. delivery.go).
 	ExcludeUsers map[string][]int64
 	AlertSend    func(ctx context.Context, text string)
+	// AskDelivery — спросить человека, куда носить его ЛС: сайт-аккаунт
+	// залогинен в двух мессенджерах, а получатель может быть только один.
+	// current — сессия, куда носим до его ответа (целиком, а не одно имя
+	// мессенджера: вторым входом бывает и другой аккаунт в том же мессенджере).
+	// Сообщение с кнопками умеет собрать только диалоговое ядро, поэтому это
+	// замыкание из runDaemon; nil — не спрашиваем (CLI-прогоны).
+	AskDelivery func(ctx context.Context, messenger string, userID int64, current store.TalksOwner)
 }
 
 // Ключи уведомлений админу.
@@ -118,6 +135,10 @@ type Watcher struct {
 	// множество. В отличие от unreachable это решение человека, а не сбой:
 	// снимается только правкой конфига.
 	excluded map[ownerKey]bool
+	// identityTried — у кого уже пробовали снять паспорт в этом запуске (см.
+	// captureIdentity): страница отдаёт его не всегда, а тратить на это по
+	// запросу к сайту каждый такт незачем.
+	identityTried map[ownerKey]bool
 }
 
 // ownerKey — владелец сессии в конкретном мессенджере (пространства id разные).
@@ -161,10 +182,11 @@ func New(st *store.Store, site SiteTalks, transports []PMTransport, cfg Config, 
 		alert:       alerts.New(cfg.AlertSend, cfg.ForbiddenLimit),
 		limiter:     rate.NewLimiter(rate.Every(time.Minute/time.Duration(cfg.MaxReqPerMin)), burst),
 		log:         log,
-		lastUnread:  make(map[int64]int),
-		lastFetchAt: make(map[int64]time.Time),
-		unreachable: make(map[ownerKey]bool),
-		excluded:    excludedSet(cfg.ExcludeUsers),
+		lastUnread:    make(map[int64]int),
+		lastFetchAt:   make(map[int64]time.Time),
+		unreachable:   make(map[ownerKey]bool),
+		excluded:      excludedSet(cfg.ExcludeUsers),
+		identityTried: make(map[ownerKey]bool),
 	}
 }
 
@@ -209,11 +231,14 @@ func (w *Watcher) Run(ctx context.Context) error {
 // Для отладочного/безопасного прогона `lovegw talks watch -once`.
 func (w *Watcher) PollOnce(ctx context.Context) bool { return w.pollOnce(ctx) }
 
-// pollOnce обходит все транспорты и их владельцев сессий один раз.
+// pollOnce обходит все транспорты и их владельцев сессий один раз. План
+// доставки считается разом на весь такт: у сайт-аккаунта, залогиненного в двух
+// мессенджерах, получатель ровно один (см. delivery.go).
 func (w *Watcher) pollOnce(ctx context.Context) bool {
 	active := false
+	plan := w.plan(ctx)
 	for _, tr := range w.transports {
-		for _, owner := range w.owners(ctx, tr.Name()) {
+		for _, owner := range plan[tr.Name()] {
 			if w.pollOwner(ctx, tr, owner) {
 				active = true
 			}
@@ -225,50 +250,14 @@ func (w *Watcher) pollOnce(ctx context.Context) bool {
 	return active
 }
 
-// owners — владельцы валидных сессий, кого обходим в мессенджере. В admin-only
-// оставляем только заданного для этого мессенджера админа (у каждого своё
-// пространство id).
-func (w *Watcher) owners(ctx context.Context, messenger string) []int64 {
-	owners, err := w.st.SessionOwners(ctx, messenger)
-	if err != nil {
-		w.log.Error("список сессий talks", "messenger", messenger, "err", err)
-		return nil
-	}
-	if w.cfg.AdminOnly {
-		owners = onlyAdmin(owners, w.cfg.AdminIDs[messenger])
-	}
-	live := make([]int64, 0, len(owners))
-	for _, o := range owners {
-		k := ownerKey{messenger, o}
-		if w.unreachable[k] || w.excluded[k] {
-			continue // доставлять некуда либо человек отказался от доставки
-		}
-		live = append(live, o)
-	}
-	return live
-}
-
-// onlyAdmin оставляет из владельцев одного админа (admin-only режим). admin=0 —
-// админ для мессенджера не задан, обходить некого.
-func onlyAdmin(owners []int64, admin int64) []int64 {
-	if admin == 0 {
-		return nil
-	}
-	for _, o := range owners {
-		if o == admin {
-			return []int64{admin}
-		}
-	}
-	return nil
-}
-
 // pollOwner опрашивает список диалогов одного владельца и дозабирает новые.
-func (w *Watcher) pollOwner(ctx context.Context, tr PMTransport, owner int64) bool {
-	messenger := tr.Name()
+func (w *Watcher) pollOwner(ctx context.Context, tr PMTransport, o store.TalksOwner) bool {
+	messenger, owner := tr.Name(), o.UserID
 	cookies, ok := w.cookies(ctx, messenger, owner)
 	if !ok {
 		return false
 	}
+	w.captureIdentity(ctx, o, cookies)
 	if err := w.limiter.Wait(ctx); err != nil {
 		return false
 	}
@@ -470,8 +459,10 @@ func (w *Watcher) markUnreachable(ctx context.Context, messenger string, owner i
 // ничего не пишет. Возвращает число доставленных сообщений.
 func (w *Watcher) DeliverExisting(ctx context.Context, maxDialogs, perDialog int, deliverTo int64) (int, error) {
 	total := 0
+	plan := w.plan(ctx)
 	for _, tr := range w.transports {
-		for _, owner := range w.owners(ctx, tr.Name()) {
+		for _, o := range plan[tr.Name()] {
+			owner := o.UserID
 			cookies, ok := w.cookies(ctx, tr.Name(), owner)
 			if !ok {
 				continue
@@ -709,7 +700,8 @@ const sessionExpiredMsg = "🔒 Сессия НГС.Лав истекла — л
 // повторном входе. В мультисессии истёкшая сессия ОДНОГО пользователя (гостевой
 // ответ talks, ErrUnauthorized) не должна ронять поллер для остальных — в отличие
 // от 403/дрейфа, которые глобальны и ведут к kill-switch. Невалидная сессия
-// выпадает из SessionOwners, поэтому уведомление уходит один раз.
+// выпадает из плана доставки (TalksOwners берёт только valid=1), поэтому
+// уведомление уходит один раз.
 func (w *Watcher) invalidateOwner(ctx context.Context, tr PMTransport, owner int64) {
 	if err := w.st.SetSessionValid(ctx, tr.Name(), owner, false, time.Now()); err != nil {
 		w.log.Error("сброс истёкшей сессии talks", "messenger", tr.Name(), "user", owner, "err", err)

@@ -65,6 +65,12 @@ func (t talksSite) Send(ctx context.Context, ck []*http.Cookie, passportID, text
 	return t.c.TalksSend(ctx, ck, passportID, text)
 }
 
+// SiteIdentity (talks.SiteIdentifier) — паспорт владельца сессии: по нему
+// поллер связывает вход одного человека в двух мессенджерах.
+func (t talksSite) SiteIdentity(ctx context.Context, ck []*http.Cookie) (string, string, string, error) {
+	return t.c.SiteIdentity(ctx, ck)
+}
+
 const (
 	defaultConfigPath = "config.json"
 	configFlagUsage   = "путь к конфигу"
@@ -446,6 +452,21 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		if len(transports) == 0 {
 			log.Warn("talks включён, но нет мессенджера с ЛС-доставкой — пропускаю")
 		} else {
+			// Вопрос «куда носить ЛС» задаёт диалоговое ядро того мессенджера, где
+			// человек вошёл на сайт: у поллера кнопок нет. Спрашивает бот
+			// переписки — тот, что эти ЛС и доставляет.
+			askDelivery := func(ctx context.Context, messenger string, userID int64, current store.TalksOwner) {
+				switch {
+				case messenger == store.MessengerTelegram && tgTalks != nil:
+					tgTalks.AskDelivery(ctx, userID, current)
+				case messenger == store.MessengerMax && maxTalksDM != nil:
+					maxTalksDM.AskDelivery(ctx, userID, current)
+				case messenger == store.MessengerMax && maxDM != nil:
+					maxDM.AskDelivery(ctx, userID, current) // переписку ведёт бот зеркала
+				default:
+					log.Warn("некому спросить про доставку ЛС", "messenger", messenger, "user", userID)
+				}
+			}
 			watcher := talks.New(st, talksSite{client}, transports, talks.Config{
 				BaseURL:      cfg.Site.BaseURL,
 				AdminOnly:    cfg.Talks.AdminOnly,
@@ -458,6 +479,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				MaxReqPerMin: cfg.Talks.MaxRequestsPerMin,
 				ExcludeUsers: cfg.Talks.ExcludeUsers,
 				AlertSend:    fanOutAlerts(alerters),
+				AskDelivery:  askDelivery,
 			}, log)
 			if tgTalks != nil {
 				tgTalks.SetTalkRouter(watcher)

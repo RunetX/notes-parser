@@ -212,6 +212,15 @@ CREATE INDEX idx_subscriptions_target ON subscriptions(kind, target);
 CREATE INDEX idx_notes_author ON notes(author_id);
 `
 
+// migrateV8SQL — выбор мессенджера доставки личных сообщений. Аддитивна: два
+// поля у сессии — сам выбор и отметка, что про него уже спрашивали. Ничего не
+// дропает, откат бинарника на той же БД безопасен (старый код колонок не
+// видит и носит ЛС во все мессенджеры, как раньше).
+const migrateV8SQL = `
+ALTER TABLE sessions ADD COLUMN talks_delivery TEXT NOT NULL DEFAULT '';
+ALTER TABLE sessions ADD COLUMN talks_asked_at TEXT;
+`
+
 // migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
 // migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
@@ -223,6 +232,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV5SQL, // v5 — личные сообщения сайта (talks)
 		migrateV6SQL, // v6 — кэш расшифровок и суточная квота ASR
 		migrateV7SQL, // v7 — типизированные подписки (kind/target)
+		migrateV8SQL, // v8 — выбор мессенджера доставки ЛС
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

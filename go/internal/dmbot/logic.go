@@ -63,7 +63,9 @@ type Logic struct {
 
 // talksCommands — что умеет бот переписки; остальные команды он отфутболивает
 // к боту команд, чтобы у пользователя не двоились /login и заметки.
-var talksCommands = map[string]bool{"/start": true, "/talks": true, "/talk": true, "/cancel": true}
+var talksCommands = map[string]bool{
+	"/start": true, "/talks": true, "/talk": true, "/delivery": true, "/cancel": true,
+}
 
 // SetTalkRouter подключает роутер личной переписки (в runDaemon после сборки
 // поллера talks). Для MAX ставится на maxDM-логику, для Telegram — через Bot.
@@ -178,6 +180,8 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.showTalks(ctx, userID, 0, nil)
 	case "/talk":
 		l.handleTalkOpen(ctx, userID, commandArg(text))
+	case "/delivery":
+		l.handleDelivery(ctx, userID, nil)
 	case "/news":
 		l.handleNews(ctx, userID)
 	case "/cancel":
@@ -191,7 +195,7 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 // — перелистывание правит то же сообщение, а не сыплет новыми.
 func (l *Logic) showTalks(ctx context.Context, userID int64, page int, cb *kbd.Callback) {
 	if l.talks == nil {
-		l.tr.Send(ctx, userID, "Личная переписка сайта не подключена.")
+		l.tr.Send(ctx, userID, msgTalksOff)
 		return
 	}
 	peers, err := l.st.TalkPeers(ctx, l.messenger, userID)
@@ -229,7 +233,7 @@ func (l *Logic) showTalks(ctx context.Context, userID int64, page int, cb *kbd.C
 // handleTalkOpen «залипает» на диалоге: следующие сообщения уйдут собеседнику.
 func (l *Logic) handleTalkOpen(ctx context.Context, userID int64, arg string) {
 	if l.talks == nil {
-		l.tr.Send(ctx, userID, "Личная переписка сайта не подключена.")
+		l.tr.Send(ctx, userID, msgTalksOff)
 		return
 	}
 	peerID, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)

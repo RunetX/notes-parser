@@ -197,7 +197,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 			default:
 				detail := "сессия ок"
 				if _, pass, _, _ := st.SessionIdentity(ctx, m.name, m.adminID); pass == "" {
-					detail += "; site-идентичность пуста (снимется при следующем /login)"
+					detail += "; site-идентичность пуста (поллер снимет её сам на первом обходе)"
 				}
 				ok(label, detail)
 			}
@@ -208,6 +208,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		if !cfg.Talks.AllowSend {
 			warn("talks", "allow_send=false — только чтение, ответы на сайт не уходят")
 		}
+		checkDeliveryDuplicates(ctx, st, ok, warn, fail)
 	}
 
 	if cfg.ASR.Enabled {
@@ -327,4 +328,35 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 		ok("post-test: удаление поста", "тестовое сообщение удалено")
 	}
 	return nil
+}
+
+// checkDeliveryDuplicates ищет сайт-аккаунты, залогиненные больше чем в одном
+// мессенджере: ЛС достанутся ровно одному из них (сайт помечает сообщение
+// прочитанным на первом же дозаборе), а остальные будут молча пустовать. Кому
+// носим — видно здесь же; поменять это человек может сам, кнопкой /delivery.
+func checkDeliveryDuplicates(ctx context.Context, st *store.Store,
+	ok func(name, detail string), warn func(name, detail string), fail func(name string, err error)) {
+	owners, err := st.TalksOwners(ctx)
+	if err != nil {
+		fail("talks/доставка", err)
+		return
+	}
+	dupes := 0
+	for _, group := range store.GroupByAccount(owners) {
+		if len(group) < 2 {
+			continue
+		}
+		dupes++
+		win, delivered := store.PickDelivery(group)
+		where := "никуда (человек отказался)"
+		if delivered {
+			where = win.Messenger
+		}
+		warn("talks/доставка", fmt.Sprintf(
+			"паспорт %s залогинен в %d мессенджерах, ЛС носим в %s (человек меняет это через /delivery)",
+			group[0].PassportID, len(group), where))
+	}
+	if dupes == 0 {
+		ok("talks/доставка", "у каждого сайт-аккаунта один мессенджер")
+	}
 }

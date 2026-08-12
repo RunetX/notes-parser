@@ -33,7 +33,11 @@ const (
 	verbUnsub  = "unsub"  // аргумент — id строки подписки (цель в payload не влезет)
 	verbTalks  = "talks"  // аргумент — номер страницы списка диалогов
 	verbTalk   = "talk"   // аргумент — id собеседника
-	verbCancel = "cancel"
+	// Доставка ЛС: показать настройку и выбрать. Два глагола, а не один с
+	// аргументом, потому что тост у них разный — у показа его нет.
+	verbDeliv    = "deliv"
+	verbDelivSet = "delivset" // аргумент — argDeliveryOn/argDeliveryOff
+	verbCancel   = "cancel"
 	verbNews   = "news" // аргумент — id черновика новости
 	// Подписка по заметке. Первый глагол приезжает с кнопки под постом канала —
 	// он единственный публичный (см. поле public); остальные два уже из ЛС.
@@ -46,6 +50,10 @@ const (
 const (
 	argNoteOwn  = "own"
 	argNoteAnon = "anon"
+	// Выбор доставки ЛС: «сюда» и «сюда не надо». Второй мессенджер в payload не
+	// нужен — его выключает стор по паспорту сайт-аккаунта.
+	argDeliveryOn  = "on"
+	argDeliveryOff = "off"
 )
 
 const (
@@ -86,6 +94,8 @@ var callbackVerbs = map[string]verbHandler{
 	verbUnsub:       {ack: "Отписал", fn: (*Logic).cbUnsub},
 	verbTalks:       {talks: true, fn: (*Logic).cbTalks},
 	verbTalk:        {talks: true, fn: (*Logic).cbTalk},
+	verbDeliv:       {talks: true, fn: (*Logic).cbDelivery},
+	verbDelivSet:    {ack: "Записал", talks: true, fn: (*Logic).cbDeliverySet},
 	verbCancel:      {ack: "Отменил", talks: true, fn: (*Logic).cbCancel},
 	verbNews:        {ack: "Публикую…", fn: (*Logic).cbNews},
 	verbSubscribe:   {ack: "Открыл выбор в личке", public: true, fn: (*Logic).cbSubscribe},
@@ -265,6 +275,18 @@ func (l *Logic) cbTalk(ctx context.Context, userID int64, _ kbd.Callback, arg st
 	l.handleTalkOpen(ctx, userID, arg)
 }
 
+// cbDelivery — «куда слать ЛС»: показываем состояние и выбор. Кнопка стоит в
+// главном меню, поэтому ответ приходит новым сообщением: меню — пульт, его не
+// затирают.
+func (l *Logic) cbDelivery(ctx context.Context, userID int64, _ kbd.Callback, _ string) {
+	l.handleDelivery(ctx, userID, nil)
+}
+
+// cbDeliverySet записывает выбор мессенджера доставки ЛС.
+func (l *Logic) cbDeliverySet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	l.setDelivery(ctx, userID, cb, arg)
+}
+
 func (l *Logic) cbCancel(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
 	if err := l.st.ClearDialogState(ctx, l.stateNS, userID); err != nil {
 		l.log.Error("снятие состояния диалога", "user", userID, "err", err)
@@ -293,6 +315,7 @@ func botCommands(talksOnly, withTalks bool) []kbd.Command {
 			{Name: "start", Description: "начать и показать меню"},
 			{Name: "talks", Description: "мои диалоги на сайте"},
 			{Name: "talk", Description: "писать в выбранный диалог"},
+			{Name: "delivery", Description: "куда присылать личные сообщения"},
 			{Name: "cancel", Description: "выйти из диалога"},
 		}
 	}
@@ -309,7 +332,8 @@ func botCommands(talksOnly, withTalks bool) []kbd.Command {
 	if withTalks {
 		cmds = append(cmds,
 			kbd.Command{Name: "talks", Description: "мои личные диалоги на сайте"},
-			kbd.Command{Name: "talk", Description: "писать в выбранный диалог"})
+			kbd.Command{Name: "talk", Description: "писать в выбранный диалог"},
+			kbd.Command{Name: "delivery", Description: "куда присылать личные сообщения"})
 	}
 	return append(cmds, kbd.Command{Name: "cancel", Description: "отменить текущий шаг"})
 }
@@ -459,7 +483,7 @@ func mainMenu(talksOnly, withTalks bool) *kbd.Keyboard {
 		return kbd.New().Row(
 			kbd.Button{Text: "💬 Мои диалоги", Payload: kbd.Pack(verbTalks, "")},
 			kbd.Button{Text: "✖ Выйти из диалога", Payload: kbd.Pack(verbCancel, "")},
-		)
+		).Row(kbd.Button{Text: btnDelivery, Payload: kbd.Pack(verbDeliv, "")})
 	}
 	kb := kbd.New().Row(
 		kbd.Button{Text: "🔑 Войти", Payload: kbd.Pack(verbLogin, "")},
@@ -471,7 +495,11 @@ func mainMenu(talksOnly, withTalks bool) *kbd.Keyboard {
 	if withTalks {
 		last = append(last, kbd.Button{Text: "💬 Переписка", Payload: kbd.Pack(verbTalks, "")})
 	}
-	return kb.Row(last...)
+	kb.Row(last...)
+	if withTalks {
+		kb.Row(kbd.Button{Text: btnDelivery, Payload: kbd.Pack(verbDeliv, "")})
+	}
+	return kb
 }
 
 func cancelKeyboard() *kbd.Keyboard {
