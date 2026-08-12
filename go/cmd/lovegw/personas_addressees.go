@@ -35,7 +35,6 @@ func personasAddressees(ctx context.Context, ar *archive.Store) error {
 	fmt.Printf("  адресат по ветке:          %9d  (%.1f%%)\n", st.Branch, pct(st.Branch, st.WithPrefix))
 	fmt.Printf("  по истории ников, в ветке: %9d  (%.1f%%)\n",
 		st.HistoryBranch, pct(st.HistoryBranch, st.WithPrefix))
-	fmt.Printf("  по истории ников:          %9d  (%.1f%%)\n", st.History, pct(st.History, st.WithPrefix))
 	fmt.Printf("  ИТОГО точных адресатов:    %9d  (%.1f%% всех ответов)\n",
 		st.Resolved(), 100*st.Coverage())
 	fmt.Println()

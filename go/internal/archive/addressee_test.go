@@ -109,8 +109,8 @@ func TestBuildAddresseesNickHistory(t *testing.T) {
 		{ID: 1002, NoteID: 100, ParentID: 1000, AuthorID: 3, Text: "Смородина, как дела", PublishedAt: jan},
 		{ID: 1003, NoteID: 100, ParentID: 1000, AuthorID: 1, Text: "Смородина, ну ты даёшь", PublishedAt: jan},
 	}, jan)
-	// В чужой ветке к тому же человеку обращаются старым ником — вот это и
-	// должна разрешить история (по текущему имени «Смородина» не находится).
+	// В чужой ветке тем же старым ником зовут человека, которого среди
+	// участников этой ветки нет: догадываться тут не о чем.
 	saveThread(t, s, 101, 2000, 3, users, []Comment{
 		{ID: 2001, NoteID: 101, ParentID: 2000, AuthorID: 1, Text: "Смородина, и тебе привет", PublishedAt: jan},
 	}, jan)
@@ -122,10 +122,12 @@ func TestBuildAddresseesNickHistory(t *testing.T) {
 	if st.Nicks == 0 {
 		t.Fatal("nick_history пуста: история ников не восстановлена")
 	}
-	// 2001 — в чужой ветке, где адресата нет среди участников: метод history.
-	assertAddressee(t, s, 2001, 2, "history")
-	// А в собственной ветке адресат — участник, значит history_branch.
+	// В собственной ветке адресат — участник, значит history_branch.
 	assertAddressee(t, s, 1001, 2, "history_branch")
+	// А 2001 — в чужой ветке, где владельца ника среди участников нет: слой
+	// молчит. Раньше это разрешал метод history, но он ошибался почти всегда —
+	// брал прежнего владельца ника вместо нынешнего (см. шапку addressee.go).
+	assertNoAddressee(t, s, 2001)
 }
 
 // TestBuildAddresseesIdempotent — повторный пересчёт не задваивает и не меняет итог.

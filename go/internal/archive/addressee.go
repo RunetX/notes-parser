@@ -25,12 +25,14 @@ import (
 // Что делает этот слой. Материализует адресата в comment_addressee тремя
 // методами по убыванию надёжности:
 //
+//	reply          — точная цель ответа из мобильной версии сайта (слой
+//	                 обогащения comment_reply). Не догадка, а то, что сайт
+//	                 хранит сам; перекрывает всё остальное.
 //	branch         — префикс совпал с единственным участником этой же ветки.
 //	                 Ветка почти снимает омонимию ников (несколько кандидатов —
 //	                 0,1 % случаев), поэтому метод точный; покрывает ~58 %.
 //	history_branch — ник в момент реплики принадлежал участнику ветки по
 //	                 nick_history (адресат сменил ник, users.name уже другое).
-//	history        — то же, но владелец ника вне ветки.
 //
 // Неразрешённые реплики в таблицу не пишутся: вьюхи падают на автора корня
 // ветки через COALESCE, то есть до пересчёта и на непокрытом хвосте поведение
@@ -41,6 +43,20 @@ import (
 // доминирующий префикс месяца — его ник в этом месяце. Месяцы схлопываются в
 // интервал [from_ym, to_ym]; ник, переходивший между людьми, даёт пересекающиеся
 // интервалы и на резолве отсекается требованием единственного владельца.
+//
+// Был и четвёртый метод, history: владелец ника по nick_history БЕЗ проверки,
+// что он вообще участвует в ветке. Он снят в v18 как неверный по построению.
+// Сверка с точными парами сайта на 2020–2023: из 4907 его выводов 1472 (30 %) —
+// ответы самому себе (там дерево и текст говорят о разном законно), а из
+// оставшихся 3435 настоящих ответов другому человеку ошибочны ВСЕ 3435. Причина
+// структурная: этап срабатывает только там, где поиск по ветке уже провалился, —
+// а провалился он не из-за отсутствия человека (в 92,4 % ошибок настоящий
+// адресат В ВЕТКЕ БЫЛ), а из-за имени. Метод шёл искать по всему сайту, то есть
+// заведомо не там, и находил прежнего владельца ника вместо нынешнего:
+// требование единственного владельца проверялось только внутри nick_history и
+// никогда не сверялось с users.name. Сама nick_history этим не опорочена —
+// history_branch стоит на ней же и ошибается в 0,3 % случаев; лечила именно
+// проверка присутствия в ветке.
 
 // Само правило «обращение — это префикс до первой запятой» живёт в
 // love.AddressPrefix: им пользуется и живое зеркало, когда решает, на какое
@@ -124,6 +140,24 @@ WHERE c.parent_id != 0
 GROUP BY fi.identity, ti.identity;
 `
 
+// migrateV18SQL — снятие метода history и колонки confidence.
+//
+// Строки метода удаляются здесь, а не оставляются до ближайшего пересчёта:
+// BuildAddressees идёт часами по всему архиву, а до него граф молча продолжал бы
+// разносить заведомо ложные рёбра. Обоснование самого снятия — в шапке файла.
+//
+// confidence уходит следом как мнимая гарантия: значение было чистой функцией
+// method (1.0/1.0/0.9) и не читалось НИ ОДНИМ потребителем — ни вьюхами графа,
+// ни diag/ensemble/relations, ни extract.py в навыке досье. То есть слой
+// выглядел взвешивающим свои выводы, не взвешивая ничего; пусть лучше
+// надёжность метода читается из его имени, чем из поля, которое все игнорируют.
+// DROP COLUMN, а не пересоздание таблицы: RENAME TO переписал бы ссылки на
+// таблицу внутри v_reply_edges/v_persona_reply_edges на временное имя.
+const migrateV18SQL = `
+DELETE FROM comment_addressee WHERE method = 'history';
+ALTER TABLE comment_addressee DROP COLUMN confidence;
+`
+
 // Фрагменты для запросов социального графа. Правило «кому адресована реплика»
 // должно жить в одном месте: точный адресат из слоя, иначе — автор корня ветки
 // (прежнее поведение, оно же покрывает реплики без обращения).
@@ -167,13 +201,12 @@ type AddresseeStats struct {
 	Reply         int // разрешено по дереву мобильной версии (точно, без догадок)
 	Branch        int // разрешено по участнику ветки
 	HistoryBranch int // разрешено по истории ников, владелец в ветке
-	History       int // разрешено по истории ников, владелец вне ветки
 	Nicks         int // строк в nick_history
 }
 
 // Resolved — сколько реплик получили точного адресата.
 func (s AddresseeStats) Resolved() int {
-	return s.Reply + s.Branch + s.HistoryBranch + s.History
+	return s.Reply + s.Branch + s.HistoryBranch
 }
 
 // BuildAddressees пересчитывает nick_history и comment_addressee с нуля.
@@ -251,8 +284,8 @@ func (s *Store) BuildAddressees(ctx context.Context, progress func(string)) (Add
 	// остальных этапах: петля «сам себе» ничего не добавляет социальному графу,
 	// а сырая пара остаётся в comment_reply.
 	if err := exec("резолв по дереву мобильной", `
-		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method, confidence)
-		SELECT r.comment_id, t.author_id, 'reply', 1.0
+		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method)
+		SELECT r.comment_id, t.author_id, 'reply'
 		FROM comment_reply r
 		JOIN comments c ON c.id = r.comment_id
 		JOIN comments t ON t.id = r.reply_to
@@ -264,8 +297,8 @@ func (s *Store) BuildAddressees(ctx context.Context, progress func(string)) (Add
 	// Единственный участник ветки с таким текущим именем — и есть адресат.
 	// HAVING COUNT(*) = 1 отсекает омонимов: лучше не разрешить, чем соврать.
 	if err := exec("резолв по ветке", `
-		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method, confidence)
-		SELECT p.comment_id, MIN(m.author_id), 'branch', 1.0
+		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method)
+		SELECT p.comment_id, MIN(m.author_id), 'branch'
 		FROM _pref p
 		JOIN _member m ON m.root = p.root AND m.author_id != p.author_id
 		JOIN _uname u ON u.user_id = m.author_id AND u.nick = p.nick
@@ -297,27 +330,17 @@ func (s *Store) BuildAddressees(ctx context.Context, progress func(string)) (Add
 		return st, err
 	}
 
-	say("этап 3/3: адресат по истории ников")
+	say("этап 3/3: адресат по истории ников (участник ветки)")
 	// Сменившие ник: users.name уже другое, но в момент реплики ник принадлежал
-	// конкретной анкете. Сначала — владелец, присутствующий в ветке (это ещё и
-	// проверка на переиспользование ника), затем — оставшиеся.
+	// конкретной анкете. Присутствие владельца в ветке обязательно — оно же и
+	// проверка на переиспользование ника. Без него метод выдаёт прежнего
+	// владельца вместо нынешнего и ошибается практически всегда (см. шапку).
 	if err := exec("резолв по истории (в ветке)", `
-		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method, confidence)
-		SELECT p.comment_id, MIN(h.user_id), 'history_branch', 0.9
+		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method)
+		SELECT p.comment_id, MIN(h.user_id), 'history_branch'
 		FROM _pref p
 		JOIN nick_history h ON h.nick = p.nick AND p.ym BETWEEN h.from_ym AND h.to_ym
 		JOIN _member m ON m.root = p.root AND m.author_id = h.user_id
-		WHERE h.user_id != p.author_id
-		  AND NOT EXISTS (SELECT 1 FROM comment_addressee a WHERE a.comment_id = p.comment_id)
-		GROUP BY p.comment_id
-		HAVING COUNT(DISTINCT h.user_id) = 1;`); err != nil {
-		return st, err
-	}
-	if err := exec("резолв по истории", `
-		INSERT OR IGNORE INTO comment_addressee(comment_id, addressee_id, method, confidence)
-		SELECT p.comment_id, MIN(h.user_id), 'history', 0.7
-		FROM _pref p
-		JOIN nick_history h ON h.nick = p.nick AND p.ym BETWEEN h.from_ym AND h.to_ym
 		WHERE h.user_id != p.author_id
 		  AND NOT EXISTS (SELECT 1 FROM comment_addressee a WHERE a.comment_id = p.comment_id)
 		GROUP BY p.comment_id
@@ -344,10 +367,9 @@ func (s *Store) addresseeStats(ctx context.Context) (AddresseeStats, error) {
 		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'reply'),
 		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'branch'),
 		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'history_branch'),
-		       (SELECT COUNT(*) FROM comment_addressee WHERE method = 'history'),
 		       (SELECT COUNT(*) FROM nick_history)`)
 	if err := row.Scan(&st.Replies, &st.WithPrefix, &st.Reply,
-		&st.Branch, &st.HistoryBranch, &st.History, &st.Nicks); err != nil {
+		&st.Branch, &st.HistoryBranch, &st.Nicks); err != nil {
 		return st, fmt.Errorf("статистика слоя адресатов: %w", err)
 	}
 	return st, nil
