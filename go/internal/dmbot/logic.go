@@ -47,6 +47,9 @@ type Logic struct {
 	tr        Transport
 	messenger string
 	talks     TalkRouter // личная переписка сайта; nil — выключена
+	// profile — управление своей анкетой на сайте (/profile). Способность
+	// необязательная: её даёт сам клиент сайта, и nil значит «команды нет».
+	profile SiteProfile
 	// news + adminID — публикация внутренних новостей проекта (/news).
 	// nil/0 — команды нет: она админская и в списке команд не значится.
 	news    *news.Service
@@ -86,12 +89,24 @@ type SiteIdentifier interface {
 	SiteIdentity(ctx context.Context, cookies []*http.Cookie) (profileID, passportID, nick string, err error)
 }
 
+// SiteProfile (опц.) — управление своей анкетой на сайте: прочитать состояние
+// вместе с кнопкой, которую сайт предлагает нажать, и нажать её. Реализуется
+// love.Client; клиент без этой способности просто не даёт команды /profile.
+type SiteProfile interface {
+	ProfileControl(ctx context.Context, cookies []*http.Cookie) (love.ProfileControl, error)
+	SubmitProfileControl(ctx context.Context, cookies []*http.Cookie, ctrl love.ProfileControl) error
+}
+
 // NewLogic создаёт диалоговый движок бота команд для одного мессенджера.
 func NewLogic(st *store.Store, site SiteAuth, tr Transport, messenger string, log *slog.Logger) *Logic {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Logic{st: st, site: site, tr: tr, messenger: messenger, log: log, stateNS: messenger}
+	l := &Logic{st: st, site: site, tr: tr, messenger: messenger, log: log, stateNS: messenger}
+	if p, ok := site.(SiteProfile); ok {
+		l.profile = p
+	}
+	return l
 }
 
 // NewTalksLogic создаёт движок бота личной переписки: сайт ему не нужен
@@ -112,8 +127,8 @@ func NewTalksLogic(st *store.Store, tr Transport, messenger string, log *slog.Lo
 // и первое открытие диалога — bot_started в MAX). Список команд остаётся: он и
 // справка, и обратная совместимость для тех, кто привык набирать.
 func (l *Logic) Greet(ctx context.Context, userID int64) {
-	l.tr.SendKeyboard(ctx, userID, startMessage(l.talksOnly, l.talks != nil),
-		mainMenu(l.talksOnly, l.talks != nil))
+	l.tr.SendKeyboard(ctx, userID, startMessage(l.talksOnly, l.talks != nil, l.profile != nil),
+		mainMenu(l.talksOnly, l.talks != nil, l.profile != nil))
 }
 
 // HandleText обрабатывает входящее ЛС. messageID нужен для удаления
@@ -182,6 +197,8 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.handleTalkOpen(ctx, userID, commandArg(text))
 	case "/delivery":
 		l.handleDelivery(ctx, userID, nil)
+	case "/profile":
+		l.handleProfile(ctx, userID, nil)
 	case "/news":
 		l.handleNews(ctx, userID)
 	case "/cancel":

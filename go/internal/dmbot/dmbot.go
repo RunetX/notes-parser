@@ -388,7 +388,7 @@ func commandArg(text string) string {
 // startMessage собирает приветствие под роль бота: у бота переписки свой
 // короткий список, у бота команд строки про диалоги появляются только когда
 // переписку обслуживает он же (talks-роутер подключён).
-func startMessage(talksOnly, withTalks bool) string {
+func startMessage(talksOnly, withTalks, withProfile bool) string {
 	if talksOnly {
 		return `Привет! Я бот личной переписки НГС.Лав. Я умею:
 /talks — мои диалоги на сайте
@@ -407,6 +407,9 @@ func startMessage(talksOnly, withTalks bool) string {
 /subscribe <слово> — уведомлять о комментариях с этим словом
 /unsubscribe <слово> — отписаться от слова
 /mysubs — мои подписки`
+	if withProfile {
+		msg += "\n/profile — моя анкета на сайте: заблокировать или вернуть"
+	}
 	if withTalks {
 		msg += "\n/talks — мои личные диалоги на сайте\n/talk <номер> — писать в выбранный диалог" +
 			"\n/delivery — куда присылать личные сообщения"

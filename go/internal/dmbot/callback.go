@@ -37,7 +37,13 @@ const (
 	// аргументом, потому что тост у них разный — у показа его нет.
 	verbDeliv    = "deliv"
 	verbDelivSet = "delivset" // аргумент — argDeliveryOn/argDeliveryOff
-	verbCancel   = "cancel"
+	// Своя анкета на сайте: показать, спросить подтверждение блокировки,
+	// нажать кнопку сайта. Три глагола, потому что тост у них разный, а у
+	// показа его нет вовсе.
+	verbProfile    = "prof"
+	verbProfileAsk = "profask" // аргумент — argProfileBlock (что подтверждаем)
+	verbProfileSet = "profset" // аргумент — argProfileBlock/argProfileUnblock
+	verbCancel     = "cancel"
 	verbNews   = "news" // аргумент — id черновика новости
 	// Подписка по заметке. Первый глагол приезжает с кнопки под постом канала —
 	// он единственный публичный (см. поле public); остальные два уже из ЛС.
@@ -54,6 +60,11 @@ const (
 	// нужен — его выключает стор по паспорту сайт-аккаунта.
 	argDeliveryOn  = "on"
 	argDeliveryOff = "off"
+	// Намерение нажатой кнопки по своей анкете. В payload едет именно оно, а не
+	// поле формы сайта: пока сообщение висело, анкету могли переключить на самом
+	// сайте, и делать надо ровно то, что написано на кнопке, либо ничего.
+	argProfileBlock   = "block"
+	argProfileUnblock = "unblock"
 )
 
 const (
@@ -96,6 +107,9 @@ var callbackVerbs = map[string]verbHandler{
 	verbTalk:        {talks: true, fn: (*Logic).cbTalk},
 	verbDeliv:       {talks: true, fn: (*Logic).cbDelivery},
 	verbDelivSet:    {ack: "Записал", talks: true, fn: (*Logic).cbDeliverySet},
+	verbProfile:     {fn: (*Logic).cbProfile},
+	verbProfileAsk:  {fn: (*Logic).cbProfileAsk},
+	verbProfileSet:  {ack: "Отправляю на сайт…", fn: (*Logic).cbProfileSet},
 	verbCancel:      {ack: "Отменил", talks: true, fn: (*Logic).cbCancel},
 	verbNews:        {ack: "Публикую…", fn: (*Logic).cbNews},
 	verbSubscribe:   {ack: "Открыл выбор в личке", public: true, fn: (*Logic).cbSubscribe},
@@ -287,6 +301,22 @@ func (l *Logic) cbDeliverySet(ctx context.Context, userID int64, cb kbd.Callback
 	l.setDelivery(ctx, userID, cb, arg)
 }
 
+// cbProfile — «моя анкета» из главного меню: состояние приходит новым
+// сообщением, меню не затираем.
+func (l *Logic) cbProfile(ctx context.Context, userID int64, _ kbd.Callback, _ string) {
+	l.handleProfile(ctx, userID, nil)
+}
+
+// cbProfileAsk превращает своё же сообщение в вопрос о блокировке анкеты.
+func (l *Logic) cbProfileAsk(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
+	l.askProfileBlock(ctx, userID, cb)
+}
+
+// cbProfileSet нажимает кнопку сайта: блокирует анкету либо возвращает её.
+func (l *Logic) cbProfileSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	l.setProfile(ctx, userID, cb, arg)
+}
+
 func (l *Logic) cbCancel(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
 	if err := l.st.ClearDialogState(ctx, l.stateNS, userID); err != nil {
 		l.log.Error("снятие состояния диалога", "user", userID, "err", err)
@@ -304,12 +334,12 @@ func (l *Logic) askNoteKind(ctx context.Context, userID int64) {
 // PublishCommands публикует меню команд бота под его роль. Зовётся один раз на
 // старте; сбой не фатален — команды просто не появятся в списке мессенджера.
 func (l *Logic) PublishCommands(ctx context.Context) {
-	l.tr.SetCommands(ctx, botCommands(l.talksOnly, l.talks != nil))
+	l.tr.SetCommands(ctx, botCommands(l.talksOnly, l.talks != nil, l.profile != nil))
 }
 
 // botCommands — тот же набор, что и в приветствии: слэш-команды остаются
 // рабочими, кнопки их не отменяют. Админская /news в меню не значится.
-func botCommands(talksOnly, withTalks bool) []kbd.Command {
+func botCommands(talksOnly, withTalks, withProfile bool) []kbd.Command {
 	if talksOnly {
 		return []kbd.Command{
 			{Name: "start", Description: "начать и показать меню"},
@@ -328,6 +358,9 @@ func botCommands(talksOnly, withTalks bool) []kbd.Command {
 		{Name: "subscribe", Description: "подписаться на слово"},
 		{Name: "unsubscribe", Description: "отписаться от слова"},
 		{Name: "mysubs", Description: "мои подписки"},
+	}
+	if withProfile {
+		cmds = append(cmds, kbd.Command{Name: "profile", Description: "моя анкета на сайте"})
 	}
 	if withTalks {
 		cmds = append(cmds,
@@ -478,7 +511,7 @@ func oneLine(s string) string {
 
 // mainMenu — главное меню бота. У бота переписки своё, короткое: вход, заметки
 // и подписки живут у бота команд.
-func mainMenu(talksOnly, withTalks bool) *kbd.Keyboard {
+func mainMenu(talksOnly, withTalks, withProfile bool) *kbd.Keyboard {
 	if talksOnly {
 		return kbd.New().Row(
 			kbd.Button{Text: "💬 Мои диалоги", Payload: kbd.Pack(verbTalks, "")},
@@ -496,9 +529,14 @@ func mainMenu(talksOnly, withTalks bool) *kbd.Keyboard {
 		last = append(last, kbd.Button{Text: "💬 Переписка", Payload: kbd.Pack(verbTalks, "")})
 	}
 	kb.Row(last...)
-	if withTalks {
-		kb.Row(kbd.Button{Text: btnDelivery, Payload: kbd.Pack(verbDeliv, "")})
+	var settings []kbd.Button
+	if withProfile {
+		settings = append(settings, kbd.Button{Text: btnProfile, Payload: kbd.Pack(verbProfile, "")})
 	}
+	if withTalks {
+		settings = append(settings, kbd.Button{Text: btnDelivery, Payload: kbd.Pack(verbDeliv, "")})
+	}
+	kb.Row(settings...)
 	return kb
 }
 
