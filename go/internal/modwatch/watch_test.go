@@ -242,6 +242,62 @@ func TestEventCarriesAgeAndIdle(t *testing.T) {
 	}
 }
 
+// Заметку снимают на проверку и кладут обратно. Возврат — это событие, а не
+// новая публикация каждый такт; и главное — после возврата настоящее удаление
+// обязано фиксироваться (12.08.2026 именно так была потеряна минута, в которую
+// заметку снесли вместе с суточным баном автора).
+func TestNoteReturnsAndIsDeletedAgain(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{}
+	w, store, now := newTestWatcher(t, site)
+
+	site.feed = []love.Note{feedNote("601", 0, false), feedNote("600", 0, false)}
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("первый опрос: %v", err)
+	}
+	*now = now.Add(2 * time.Minute)
+	site.feed = []love.Note{feedNote("600", 0, false)} // 601 сняли
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("второй опрос: %v", err)
+	}
+	if got := len(kindsOf(t, store, KindNoteGone)); got != 1 {
+		t.Fatalf("снятие не поймано: %d событий", got)
+	}
+
+	*now = now.Add(2 * time.Minute)
+	site.feed = []love.Note{feedNote("601", 0, false), feedNote("600", 0, false)} // вернули
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("третий опрос: %v", err)
+	}
+	if got := len(kindsOf(t, store, KindNoteReturned)); got != 1 {
+		t.Fatalf("возврат не пойман: %d событий", got)
+	}
+	if got := len(kindsOf(t, store, KindNotePublished)); got != 2 {
+		t.Fatalf("возврат зачтён как публикация: %d событий вместо 2", got)
+	}
+	// Ещё один такт с той же лентой — ни возврата, ни публикации сверх прежних.
+	*now = now.Add(2 * time.Minute)
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("четвёртый опрос: %v", err)
+	}
+	if got := len(kindsOf(t, store, KindNoteReturned)); got != 1 {
+		t.Fatalf("возврат продублировался: %d событий", got)
+	}
+
+	*now = now.Add(2 * time.Minute)
+	site.feed = []love.Note{feedNote("600", 0, false)} // снесли насовсем
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("пятый опрос: %v", err)
+	}
+	gone := kindsOf(t, store, KindNoteGone)
+	if len(gone) != 2 {
+		t.Fatalf("второе удаление потеряно: %d событий вместо 2", len(gone))
+	}
+	if !gone[1].DetectedAt.After(gone[0].DetectedAt) {
+		t.Fatalf("второе удаление не позже первого: %v … %v", gone[0].DetectedAt, gone[1].DetectedAt)
+	}
+}
+
 // Пустая лента (сбой разбора) не должна выглядеть как массовое удаление.
 func TestEmptyFeedIsNotMassDeletion(t *testing.T) {
 	ctx := context.Background()

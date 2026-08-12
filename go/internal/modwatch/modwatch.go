@@ -30,6 +30,7 @@ var schemaSQL string
 // Виды событий.
 const (
 	KindNoteGone       = "note_gone"       // заметка исчезла из ленты, оставаясь внутри охвата
+	KindNoteReturned   = "note_returned"   // исчезнувшая заметка снова в ленте — снимали на проверку
 	KindNotePublished  = "note_published"  // заметка впервые увидена (для картиночных ≈ момент одобрения)
 	KindImageAdded     = "image_added"     // у заметки появилась иллюстрация — её ставит модератор
 	KindCommentsClosed = "comments_closed" // комментарии закрыли
@@ -40,7 +41,7 @@ const (
 
 // AllKinds — все виды событий в порядке убывания «модераторности».
 var AllKinds = []string{
-	KindNoteGone, KindCommentGone, KindImageAdded,
+	KindNoteGone, KindCommentGone, KindImageAdded, KindNoteReturned,
 	KindCommentsClosed, KindCommentsOpened, KindNotePublished, KindNickChanged,
 }
 
@@ -213,12 +214,16 @@ func nullTS(t time.Time) any {
 	return ts(t)
 }
 
-// LiveNotes возвращает заметки, которые на прошлом опросе были на месте.
-func (s *Store) LiveNotes(ctx context.Context) (map[int64]NoteRow, error) {
+// KnownNotes возвращает заметки, которые попадались за последнее время, — и
+// живые, и уже исчезнувшие (`Gone`). Исчезнувшие нужны потому, что заметка
+// возвращается: сайт снимает её на проверку и кладёт обратно. Без них возврат
+// читался бы как новая публикация каждый такт, а следующее — настоящее —
+// удаление не фиксировалось бы вовсе (заметка ведь уже помечена исчезнувшей).
+func (s *Store) KnownNotes(ctx context.Context, since time.Time) (map[int64]NoteRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
         SELECT id, author_id, author_name, text_head, images, comments_closed,
-               published_at, first_seen, last_seen, last_polled
-          FROM notes WHERE gone_at IS NULL`)
+               published_at, first_seen, last_seen, last_polled, gone_at
+          FROM notes WHERE last_seen >= ?`, ts(since))
 	if err != nil {
 		return nil, err
 	}
@@ -227,12 +232,12 @@ func (s *Store) LiveNotes(ctx context.Context) (map[int64]NoteRow, error) {
 	for rows.Next() {
 		var (
 			r                   NoteRow
-			pub, polled         sql.NullString
+			pub, polled, gone   sql.NullString
 			firstSeen, lastSeen string
 			closed              int
 		)
 		if err := rows.Scan(&r.ID, &r.AuthorID, &r.AuthorName, &r.TextHead, &r.Images, &closed,
-			&pub, &firstSeen, &lastSeen, &polled); err != nil {
+			&pub, &firstSeen, &lastSeen, &polled, &gone); err != nil {
 			return nil, err
 		}
 		r.CommentsClosed = closed != 0
@@ -240,9 +245,16 @@ func (s *Store) LiveNotes(ctx context.Context) (map[int64]NoteRow, error) {
 		r.FirstSeen = parseTS(firstSeen)
 		r.LastSeen = parseTS(lastSeen)
 		r.LastPolled = parseTS(polled.String)
+		r.Gone = gone.Valid
 		out[r.ID] = r
 	}
 	return out, rows.Err()
+}
+
+// UnmarkNoteGone возвращает заметку в наблюдение: она снова видна в ленте.
+func (s *Store) UnmarkNoteGone(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notes SET gone_at = NULL WHERE id = ?`, id)
+	return err
 }
 
 // SaveNote записывает состояние заметки (latest-wins) и двигает last_seen.

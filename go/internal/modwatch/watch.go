@@ -133,7 +133,7 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 		w.log().Warn("лента пуста, пропускаю сверку")
 		return nil
 	}
-	known, err := w.Store.LiveNotes(ctx)
+	known, err := w.Store.KnownNotes(ctx, now.Add(-w.Window))
 	if err != nil {
 		return err
 	}
@@ -164,8 +164,8 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 		}
 	}
 	for id, row := range known {
-		if present[id] || id < minID {
-			continue
+		if present[id] || id < minID || row.Gone {
+			continue // row.Gone — исчезновение уже записано, второй раз не заводим
 		}
 		age, idle := w.eventContext(ctx, id, row.PublishedAt, now)
 		if err := w.Store.AddEvent(ctx, Event{
@@ -190,6 +190,23 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 
 // applyNote записывает состояние заметки и заводит события по изменениям шапки.
 func (w *Watcher) applyNote(ctx context.Context, now time.Time, st NoteState, prev NoteRow, seen bool) error {
+	if seen && prev.Gone {
+		// Заметка вернулась в ленту: снимаем метку, иначе следующее удаление
+		// пройдёт незамеченным (12.08.2026 так была потеряна ровно та минута,
+		// в которую заметку снесли вместе с баном автора).
+		if err := w.Store.UnmarkNoteGone(ctx, st.ID); err != nil {
+			return err
+		}
+		age, _ := w.eventContext(ctx, st.ID, st.PublishedAt, now)
+		if err := w.Store.AddEvent(ctx, Event{
+			Kind: KindNoteReturned, RefID: st.ID, NoteID: st.ID,
+			PrevSeen: prev.LastSeen, DetectedAt: now,
+			Details: describeNote(NoteRow{NoteState: st}), Age: age, Idle: Unknown,
+		}); err != nil {
+			return err
+		}
+		w.log().Info("заметка вернулась", "note", st.ID, "автор", st.AuthorName)
+	}
 	kinds := headerChanges(st, prev, seen)
 	for _, kind := range kinds {
 		prevSeen := prev.LastSeen
