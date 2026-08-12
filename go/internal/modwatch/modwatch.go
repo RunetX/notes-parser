@@ -37,6 +37,7 @@ const (
 	KindCommentsOpened = "comments_opened" // комментарии открыли обратно
 	KindCommentGone    = "comment_gone"    // комментарий исчез внутри охвата треда
 	KindNickChanged    = "nick_changed"    // ник сменился (смену подтверждает модерация)
+	KindUserBanned     = "user_banned"     // человека закрыли в Заметки (вывод из его ритма, в БД не пишется)
 )
 
 // AllKinds — все виды событий в порядке убывания «модераторности».

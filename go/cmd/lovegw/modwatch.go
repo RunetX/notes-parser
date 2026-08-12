@@ -46,13 +46,73 @@ func cmdModwatch(ctx context.Context, args []string) error {
 		return modwatchEvents(ctx, rest)
 	case "status":
 		return modwatchStatus(ctx, rest)
+	case "bans":
+		return modwatchBans(ctx, rest)
 	default:
 		usage()
-		return fmt.Errorf("modwatch: нужна подкоманда (watch|report|events|status)")
+		return fmt.Errorf("modwatch: нужна подкоманда (watch|report|events|status|bans)")
 	}
 }
 
-var modwatchSubcommands = map[string]bool{"watch": true, "report": true, "events": true, "status": true}
+var modwatchSubcommands = map[string]bool{
+	"watch": true, "report": true, "events": true, "status": true, "bans": true,
+}
+
+// modwatchBans — запреты, выведенные из ритма жертв. Наблюдать бан нечем: он
+// ничего не убирает с площадки, поэтому единственный его след — молчание ровно
+// на срок с возвратом сразу после снятия.
+func modwatchBans(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("modwatch bans", flag.ExitOnError)
+	dbPath := fs.String("db", defaultModwatchPath, modwatchDBUsage)
+	tolerance := fs.Duration("tolerance", modwatch.DefaultBanTolerance, "допустимое опоздание возврата после снятия")
+	minAround := fs.Int("min-around", modwatch.DefaultBanMinAround, "сколько реплик должно быть по обе стороны паузы")
+	maxWindow := fs.Duration("max-window", 0, "показывать только запреты с окном не шире (0 — все)")
+	if err := fs.Parse(reorderArgs(args, map[string]bool{
+		"db": true, "tolerance": true, "min-around": true, "max-window": true,
+	})); err != nil {
+		return err
+	}
+	store, err := modwatch.Open(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	bans, err := store.Bans(ctx, modwatch.BanOptions{Tolerance: *tolerance, MinAround: *minAround})
+	if err != nil {
+		return err
+	}
+	names, err := store.Names(ctx)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "окно запрета\tширина\tсрок\tопоздание\tанкета\tник")
+	shown := 0
+	for _, b := range bans {
+		width := b.To.Sub(b.From)
+		if *maxWindow > 0 && width > *maxWindow {
+			continue
+		}
+		shown++
+		fmt.Fprintf(tw, "%s … %s\t%s\t%s\t%s\tu%d\t%s\n",
+			fmtTime(b.From), fmtTime(b.To), fmtDur(width), fmtDur(b.Tier), fmtDur(b.Delay()),
+			b.UserID, names[b.UserID])
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("\nнайдено кандидатов: %d (показано %d)\n", len(bans), shown)
+	fmt.Println(`Окно — [последняя реплика перед молчанием; возврат минус срок]: раньше первого
+запретить не могли, позже второго человек не смог бы вернуться вовремя.
+
+ЭТО КАНДИДАТЫ, А НЕ НАХОДКИ. Естественных суточных пауз столько, что подпись в
+них тонет: на замере 12.08.2026 подставной срок в 20 ч дал столько же строк,
+сколько настоящие сутки, а в архиве за 2025–2026 горба сразу за отметкой нет
+вовсе. Список полезен, только когда запрет известен со стороны: тогда он
+восстанавливает окно наложения с точностью до десятков минут.`)
+	return nil
+}
 
 // modwatchSite — адаптер *love.Client под modwatch.Site.
 type modwatchSite struct {

@@ -49,7 +49,9 @@ messages, and all user-facing bot strings are in Russian.
   комментарий исчез из треда, появилась иллюстрация, закрыли комментарии. Дальше
   `modwatch report` сверяет эти минуты с присутствием людей (кто писал рядом) и
   сравнивает с контрольными окнами того же часа суток; `modwatch events` —
-  сырой список, `modwatch status` — наполнение БД. Только чтение сайта, боевую БД
+  сырой список, `modwatch status` — наполнение БД, `modwatch bans` — окна
+  суточных запретов, выведенные из ритма жертвы (кандидаты, не находки: слепой
+  поиск не отличает запрет от обычной паузы, см. шапку `bans.go`). Только чтение сайта, боевую БД
   не трогает, с работающим демоном совместим (нужен RU-IP).
 - One-off import of legacy JSON state (notes / subscribers) into SQLite:
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).

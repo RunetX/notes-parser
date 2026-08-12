@@ -170,7 +170,8 @@ func usage() {
   lovegw modwatch [-config config.json] [-db modwatch.db] [-feed-interval 90s] [-thread-interval 5m] [-window 48h] [-depth 6h] [-max-threads N] [-pages N] [-once] watch   # ловить моменты удалений/одобрений онлайн
   lovegw modwatch [-db modwatch.db] [-since 72h] [-until …] [-kind note_gone,comment_gone,…] [-presence-window 5m] [-controls N] [-seed N] [-min-hits N] [-top N] report   # кто систематически на площадке в момент действий
   lovegw modwatch [-db modwatch.db] [-since 72h] [-kind …] [-limit N] events
-  lovegw modwatch [-db modwatch.db] status`)
+  lovegw modwatch [-db modwatch.db] status
+  lovegw modwatch [-db modwatch.db] [-tolerance 3h] [-max-window 1h] bans   # запреты, выведенные из ритма жертв`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
