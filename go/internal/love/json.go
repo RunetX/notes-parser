@@ -20,6 +20,11 @@ import (
 // (200 + «Ошибка авторизации»). Наверху → пометить сессию invalid и позвать /login.
 var ErrUnauthorized = errors.New("сессия сайта недействительна (гостевой ответ talks)")
 
+// ErrSiteUnavailable — сайт временно недоступен: 5xx фронта (гейтвей DDoS-Guard
+// или бэкенд НГС) либо обрыв соединения. В отличие от 403 и дрейфа API это
+// проходит само, поэтому наверху — повтор на следующем такте, а не kill-switch.
+var ErrSiteUnavailable = errors.New("сайт временно недоступен")
+
 // guestAuthMarker — текст ошибки авторизации в теле гостевого ответа.
 const guestAuthMarker = "Ошибка авторизации"
 
@@ -103,11 +108,17 @@ func (c *Client) setJSONHeaders(req *http.Request, cookies []*http.Cookie) {
 
 // doJSON выполняет запрос (лимитер уже пройден вызывающим) и классифицирует:
 // 403 → ErrForbidden, гостевой ответ (200 + «Ошибка авторизации») → ErrUnauthorized,
+// 5xx и обрыв связи → ErrSiteUnavailable (временно, повторяемо),
 // прочие не-200 → ошибка со статусом.
 func (c *Client) doJSON(req *http.Request, op string) ([]byte, error) {
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return nil, err
+		// Обрыв или таймаут — временный отказ. Отмену контекста не маскируем:
+		// это штатное завершение демона, а не сбой сайта.
+		if req.Context().Err() != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%s: %w: %v", op, ErrSiteUnavailable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusForbidden {
@@ -115,7 +126,12 @@ func (c *Client) doJSON(req *http.Request, op string) ([]byte, error) {
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, jsonBodyLimit))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: чтение ответа: %w: %v", op, ErrSiteUnavailable, err)
+	}
+	if resp.StatusCode >= 500 {
+		// 502/503/504 — фронт моргнул: ни бан, ни дрейф API. Один такт пропущен,
+		// следующий запрос идёт как обычно.
+		return nil, fmt.Errorf("%s: статус %d: %w", op, resp.StatusCode, ErrSiteUnavailable)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: статус %d", op, resp.StatusCode)

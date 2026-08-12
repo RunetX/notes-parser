@@ -141,6 +141,24 @@ func TestTalksGuestIsUnauthorized(t *testing.T) {
 	}
 }
 
+// 5xx фронта — временный отказ, а не дрейф API: поллер talks по этому признаку
+// отличает «моргнул гейтвей» от «сломался формат» и не уходит в kill-switch.
+func TestTalks5xxIsTransient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+	c := New(srv.URL, "test-ua", 0, nil)
+	_, err := c.TalksDialogs(context.Background(), nil, 10)
+	if !errors.Is(err, ErrSiteUnavailable) {
+		t.Fatalf("502 должен давать ErrSiteUnavailable, got %v", err)
+	}
+	var se *SchemaError
+	if errors.As(err, &se) {
+		t.Fatalf("502 — не дрейф API: %v", err)
+	}
+}
+
 func TestTalksHistoryAndSend(t *testing.T) {
 	c := talksServer(t, false)
 	msgs, err := c.TalksHistory(context.Background(), nil, "777", "", 20)

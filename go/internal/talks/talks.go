@@ -61,8 +61,9 @@ type Config struct {
 
 // Ключи уведомлений админу.
 const (
-	keyForbidden = "доступ к сайту talks (403)"
-	keyDrift     = "ошибка API talks"
+	keyForbidden   = "доступ к сайту talks (403)"
+	keyDrift       = "ошибка API talks"
+	keyUnavailable = "сайт talks недоступен"
 )
 
 // undeliveredWindow — сколько ещё пытаться дослать входящее, застрявшее из-за
@@ -672,6 +673,17 @@ func (w *Watcher) cookies(ctx context.Context, messenger string, owner int64) ([
 // handleSiteError троттлит алерт и после ForbiddenLimit подряд ошибок сайта
 // глушит поллер (kill-switch), не трогая зеркало.
 func (w *Watcher) handleSiteError(ctx context.Context, err error) {
+	// Временный отказ (5xx фронта, обрыв связи) в kill-switch не идёт: он
+	// проходит сам, а остановленный до рестарта поллер теряет входящие ЛС —
+	// история сайта отдаёт только последнюю страницу, и уехавшее за неё живым
+	// дозабором уже не достать. Такой сбой копится в алертере: три подряд —
+	// одно сообщение админу, первый успех — «восстановилось». Поллинг при этом
+	// продолжается на холостом интервале. Боевой случай: 502 на
+	// loadBuddiesList 12.08.2026 — поллер лёг до ручного рестарта.
+	if errors.Is(err, love.ErrSiteUnavailable) {
+		w.alert.Fail(ctx, keyUnavailable, err.Error())
+		return
+	}
 	w.errStreak++
 	key, detail := keyDrift, err.Error()
 	if errors.Is(err, love.ErrForbidden) {
@@ -688,6 +700,7 @@ func (w *Watcher) onSiteOK(ctx context.Context) {
 	w.errStreak = 0
 	w.alert.OK(ctx, keyForbidden)
 	w.alert.OK(ctx, keyDrift)
+	w.alert.OK(ctx, keyUnavailable)
 }
 
 const sessionExpiredMsg = "🔒 Сессия НГС.Лав истекла — личные сообщения на паузе. Войдите снова: /login"

@@ -3,6 +3,7 @@ package talks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -529,6 +530,37 @@ func TestPurgeTalksOlderThan(t *testing.T) {
 	peers, _ := st.TalkPeers(ctx, store.MessengerTelegram, testOwner)
 	if len(peers) != 1 {
 		t.Fatalf("собеседник не должен удаляться ретеншеном, got %d", len(peers))
+	}
+}
+
+// Временный отказ сайта (502 гейтвея) поллер переживает: kill-switch тут
+// вреден — до ручного рестарта входящие ЛС не доедут, а история сайта отдаёт
+// только последнюю страницу. Админ получает одно сообщение и «восстановилось».
+func TestTransientSiteErrorDoesNotKillPoller(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedSession(t, st, testOwner)
+	var alerts []string
+	site := &fakeSite{dialogsErr: fmt.Errorf("loadBuddiesList: статус 502: %w", love.ErrSiteUnavailable)}
+	cfg := testConfig()
+	cfg.AlertSend = func(_ context.Context, text string) { alerts = append(alerts, text) }
+	w := New(st, site, []PMTransport{&fakeTransport{name: store.MessengerTelegram}}, cfg, nil)
+
+	for i := 0; i < 5; i++ {
+		w.pollOnce(ctx)
+	}
+	if w.stopped {
+		t.Fatal("временный отказ сайта не должен ронять поллер (kill-switch — только для 403/дрейфа)")
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], keyUnavailable) {
+		t.Fatalf("ожидалось одно уведомление о недоступности сайта, got %v", alerts)
+	}
+
+	// Сайт ожил — поллер продолжает работать и сообщает о восстановлении.
+	site.dialogsErr = nil
+	w.pollOnce(ctx)
+	if len(alerts) != 2 || !strings.Contains(alerts[1], "восстановилось") {
+		t.Fatalf("после восстановления ожидалось уведомление, got %v", alerts)
 	}
 }
 
