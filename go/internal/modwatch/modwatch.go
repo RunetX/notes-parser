@@ -153,10 +153,29 @@ ALTER TABLE events ADD COLUMN age_sec  INTEGER;  -- возраст объект�
 ALTER TABLE events ADD COLUMN idle_sec INTEGER;  -- сколько в треде было тихо до действия
 `
 
+// migrateV3SQL — визиты в свою анкету.
+//
+// Сайт держит по одной строке на человека и хранит только последний визит:
+// пришёл повторно — прежняя запись затёрта. Поэтому визиты надо снимать и
+// копить у себя, иначе улика по прошлому разу исчезает. Ключ — пара «кто +
+// когда», так что повторное снятие того же визита ничего не портит.
+const migrateV3SQL = `
+CREATE TABLE visits (
+    user_id    INTEGER NOT NULL,
+    visited_at TEXT    NOT NULL, -- время визита со страницы (UTC)
+    nick       TEXT    NOT NULL DEFAULT '',
+    raw        TEXT    NOT NULL DEFAULT '', -- исходная строка времени
+    first_seen TEXT    NOT NULL,            -- когда мы это увидели
+    PRIMARY KEY (user_id, visited_at)
+);
+CREATE INDEX idx_visits_at ON visits(visited_at);
+`
+
 func (s *Store) migrate(ctx context.Context) error {
 	migrations := []string{
 		schemaSQL,    // v1 — базовая схема
 		migrateV2SQL, // v2 — возраст объекта и тишина перед действием
+		migrateV3SQL, // v3 — визиты в свою анкету
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -576,6 +595,72 @@ func (s *Store) Names(ctx context.Context) (map[int64]string, error) {
 			return nil, err
 		}
 		out[id] = name
+	}
+	return out, rows.Err()
+}
+
+// Visit — визит в свою анкету.
+type Visit struct {
+	UserID    int64
+	Nick      string
+	VisitedAt time.Time
+	Raw       string
+	FirstSeen time.Time
+}
+
+// SaveVisit записывает визит; повтор того же визита игнорируется. Возвращает
+// true, если визит новый — только их и стоит показывать в логе.
+func (s *Store) SaveVisit(ctx context.Context, now time.Time, v Visit) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+        INSERT INTO visits (user_id, visited_at, nick, raw, first_seen)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, visited_at) DO UPDATE SET
+            nick = CASE WHEN excluded.nick <> '' THEN excluded.nick ELSE visits.nick END`,
+		v.UserID, ts(v.VisitedAt), v.Nick, v.Raw, ts(now))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	// ON CONFLICT DO UPDATE тоже даёт 1, поэтому новизну определяем отдельно:
+	// у существующей строки first_seen старше текущего момента.
+	if err != nil || n == 0 {
+		return false, err
+	}
+	var first string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT first_seen FROM visits WHERE user_id = ? AND visited_at = ?`,
+		v.UserID, ts(v.VisitedAt)).Scan(&first); err != nil {
+		return false, err
+	}
+	return first == ts(now), nil
+}
+
+// VisitsIn возвращает визиты в интервале, от старых к новым.
+func (s *Store) VisitsIn(ctx context.Context, since, until time.Time) ([]Visit, error) {
+	q := `SELECT user_id, nick, visited_at, raw, first_seen FROM visits WHERE 1=1`
+	var args []any
+	if !since.IsZero() {
+		q += " AND visited_at >= ?"
+		args = append(args, ts(since))
+	}
+	if !until.IsZero() {
+		q += " AND visited_at <= ?"
+		args = append(args, ts(until))
+	}
+	rows, err := s.db.QueryContext(ctx, q+" ORDER BY visited_at", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Visit
+	for rows.Next() {
+		var v Visit
+		var at, first string
+		if err := rows.Scan(&v.UserID, &v.Nick, &at, &v.Raw, &first); err != nil {
+			return nil, err
+		}
+		v.VisitedAt, v.FirstSeen = parseTS(at), parseTS(first)
+		out = append(out, v)
 	}
 	return out, rows.Err()
 }

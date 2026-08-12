@@ -35,6 +35,16 @@ const (
 	selNotePageDate = ".lv-notes__note-date"
 	selNoteComments = ".lv-note__comments" // блок списка комментариев (для признака заморозки)
 
+	// Список гостей своей анкеты (/guests/page~N/limit~24/, только под своей
+	// сессией). Ярлык у времени — «Был:/Была:», но это ВРЕМЯ ВИЗИТА, а не
+	// последний выход человека на сайт: у гостей находятся комментарии,
+	// написанные позже метки (проверено 13.08.2026, у Axeinos на пять суток).
+	// Разметка просто переиспользует карточку из общих списков.
+	selGuestItem = ".lv-people__item"
+	selGuestLink = ".lv-people__link"          // атрибут data-userid
+	selGuestNick = ".lv-user-info__nick_main"  // атрибут title — ник
+	selGuestTime = ".lv-people__time"          // «Был: вчера в 19:38»
+
 	// attrParentComment — id родительского комментария; непусто только в
 	// древовидном виде (?view=tree), в линейном всегда "".
 	attrParentComment = "data-parent-comment-id"

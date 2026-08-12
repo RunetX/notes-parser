@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -13,6 +14,7 @@ import (
 	"lovegw/internal/config"
 	"lovegw/internal/love"
 	"lovegw/internal/modwatch"
+	"lovegw/internal/store"
 )
 
 // defaultModwatchPath — БД наблюдателя, отдельно и от боевой, и от архива.
@@ -48,14 +50,17 @@ func cmdModwatch(ctx context.Context, args []string) error {
 		return modwatchStatus(ctx, rest)
 	case "bans":
 		return modwatchBans(ctx, rest)
+	case "guests":
+		return modwatchGuests(ctx, rest)
 	default:
 		usage()
-		return fmt.Errorf("modwatch: нужна подкоманда (watch|report|events|status|bans)")
+		return fmt.Errorf("modwatch: нужна подкоманда (watch|report|events|status|bans|guests)")
 	}
 }
 
 var modwatchSubcommands = map[string]bool{
-	"watch": true, "report": true, "events": true, "status": true, "bans": true,
+	"watch": true, "report": true, "events": true, "status": true,
+	"bans": true, "guests": true,
 }
 
 // modwatchBans — запреты, выведенные из ритма жертв. Наблюдать бан нечем: он
@@ -111,6 +116,156 @@ func modwatchBans(ctx context.Context, args []string) error {
 сколько настоящие сутки, а в архиве за 2025–2026 горба сразу за отметкой нет
 вовсе. Список полезен, только когда запрет известен со стороны: тогда он
 восстанавливает окно наложения с точностью до десятков минут.`)
+	return nil
+}
+
+// guestSource — адаптер *love.Client под modwatch.GuestSource: список гостей
+// читается только под своей сессией, поэтому куки живут прямо в замыкании.
+type guestSource struct {
+	c       *love.Client
+	cookies []*http.Cookie
+}
+
+func (g guestSource) Guests(ctx context.Context, page int) ([]love.Guest, error) {
+	return g.c.Guests(ctx, g.cookies, page)
+}
+
+// modwatchGuests — визиты в свою анкету: единственный след, который оставляет
+// модератор. Наказывает он молча, но перед этим открывает анкету (бан
+// 12.08.2026 в 19:38 и визит Гадёныша в 19:38 — минута в минуту). Снимать
+// приходится регулярно: сайт держит одну строку на человека и при повторном
+// визите затирает прежнюю.
+func modwatchGuests(ctx context.Context, args []string) error {
+	sub := "watch"
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "watch" || a == "log" {
+			sub = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+	fs := flag.NewFlagSet("modwatch guests", flag.ExitOnError)
+	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
+	dbPath := fs.String("db", defaultModwatchPath, modwatchDBUsage)
+	messenger := fs.String("messenger", "telegram", "чья сессия: telegram|max")
+	userID := fs.Int64("user", 0, "id пользователя в мессенджере (0 — админ из конфига)")
+	interval := fs.Duration("interval", modwatch.DefaultGuestInterval, "период снятия списка")
+	pages := fs.Int("pages", modwatch.DefaultGuestPages, "сколько страниц списка обходить")
+	once := fs.Bool("once", false, "снять один раз и выйти")
+	near := fs.String("near", "", "показать визиты вокруг момента — "+momentUsage)
+	window := fs.Duration("window", 30*time.Minute, "полуширина окна для -near")
+	since := fs.String("since", "", "с какого момента — "+momentUsage)
+	if err := fs.Parse(reorderArgs(rest, map[string]bool{
+		"config": true, "db": true, "messenger": true, "user": true,
+		"interval": true, "pages": true, "near": true, "window": true, "since": true,
+	})); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	log := newLogger(cfg.LogLevel)
+	db, err := modwatch.Open(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if sub == "log" {
+		return modwatchGuestsLog(ctx, db, *since, *near, *window)
+	}
+
+	cookies, err := adminCookies(ctx, cfg, *messenger, *userID)
+	if err != nil {
+		return err
+	}
+	w := &modwatch.GuestWatcher{
+		Source: guestSource{c: love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
+			time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log), cookies: cookies},
+		Store: db, Log: log, Interval: *interval, Pages: *pages,
+	}
+	if *once {
+		n, err := w.Poll(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("снято, новых визитов: %d\n", n)
+		return nil
+	}
+	log.Info("наблюдение за гостями запущено", "db", *dbPath, "период", *interval)
+	if err := w.Run(ctx); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return nil
+}
+
+// adminCookies достаёт сессию сайта владельца анкеты из боевой БД.
+func adminCookies(ctx context.Context, cfg *config.Config, messenger string, userID int64) ([]*http.Cookie, error) {
+	if userID == 0 {
+		if cfg.Messengers != nil {
+			switch messenger {
+			case "max":
+				userID = cfg.Messengers.Max.AdminUserID
+			default:
+				userID = cfg.Messengers.Telegram.AdminUserID
+			}
+		}
+		if userID == 0 {
+			userID = cfg.AdminTGUserID
+		}
+	}
+	if userID == 0 {
+		return nil, fmt.Errorf("не задан пользователь: ни -user, ни admin_user_id в конфиге")
+	}
+	st, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("боевая БД %s: %w", cfg.DBPath, err)
+	}
+	defer st.Close()
+	raw, valid, err := st.SessionCookies(ctx, messenger, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !valid {
+		return nil, fmt.Errorf("сессия %s/%d помечена недействительной — нужен /login", messenger, userID)
+	}
+	return love.CookiesFromJSON([]byte(raw), time.Now())
+}
+
+// modwatchGuestsLog печатает накопленные визиты; с -near — только вокруг
+// указанной минуты, то есть готовый список кандидатов на исполнителя.
+func modwatchGuestsLog(ctx context.Context, db *modwatch.Store, since, near string, window time.Duration) error {
+	from, err := parseMoment(since)
+	if err != nil {
+		return err
+	}
+	var to time.Time
+	if near != "" {
+		at, err := parseMoment(near)
+		if err != nil {
+			return err
+		}
+		if at.IsZero() {
+			return fmt.Errorf("-near: не разобран момент %q", near)
+		}
+		from, to = at.Add(-window), at.Add(window)
+		fmt.Printf("визиты в окне %s … %s\n\n", fmtTime(from), fmtTime(to))
+	}
+	visits, err := db.VisitsIn(ctx, from, to)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "визит\tанкета\tник\tснято")
+	for _, v := range visits {
+		fmt.Fprintf(tw, "%s\tu%d\t%s\t%s\n", fmtTime(v.VisitedAt), v.UserID, v.Nick, fmtTime(v.FirstSeen))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("\nвсего визитов: %d\n", len(visits))
 	return nil
 }
 
