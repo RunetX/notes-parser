@@ -38,3 +38,17 @@ services:
     volumes:
       - ./data:/data
       - ./config.json:/config.json:ro
+
+  # Визиты в анкету владельца — единственный след, который оставляет модератор:
+  # наказывает он молча, но перед этим открывает анкету (бан 12.08.2026 в 19:38
+  # и визит Гадёныша в 19:38 совпали минута в минуту). Снимать надо регулярно:
+  # сайт держит одну строку на человека и при повторном визите затирает прежнюю.
+  # Ходит под сессией владельца из lovegw.db, пишет в ту же modwatch.db.
+  guests:
+    image: lovegw:latest
+    container_name: lovegw-guests
+    restart: unless-stopped
+    command: ["modwatch", "-config", "/config.json", "-db", "/data/modwatch.db", "guests", "watch"]
+    volumes:
+      - ./data:/data
+      - ./config.json:/config.json:ro

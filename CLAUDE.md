@@ -51,7 +51,10 @@ messages, and all user-facing bot strings are in Russian.
   сравнивает с контрольными окнами того же часа суток; `modwatch events` —
   сырой список, `modwatch status` — наполнение БД, `modwatch bans` — окна
   суточных запретов, выведенные из ритма жертвы (кандидаты, не находки: слепой
-  поиск не отличает запрет от обычной паузы, см. шапку `bans.go`). Только чтение сайта, боевую БД
+  поиск не отличает запрет от обычной паузы, см. шапку `bans.go`),
+  `modwatch guests watch|log` — визиты в СВОЮ анкету под своей сессией
+  (`guests log -near "2026-08-12 19:38"` даёт список тех, кто заходил вокруг
+  момента действия). Время везде новосибирское, как на сайте. Только чтение сайта, боевую БД
   не трогает, с работающим демоном совместим (нужен RU-IP).
 - One-off import of legacy JSON state (notes / subscribers) into SQLite:
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
@@ -63,9 +66,11 @@ messages, and all user-facing bot strings are in Russian.
   `docker-compose.yml` + systemd unit + runbook; config mounts as `/config.json`,
   state in `deploy/data` bind-mounted to `/data` (owned by uid 65532 — distroless
   runs as `nonroot`), secrets via env
-  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`). Compose runs **two**
-  services off one image: `lovegw` (the daemon) and `modwatch` (the watcher, its
-  own `data/modwatch.db`, site read-only). A named volume is only needed on a
+  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`). Compose runs **three**
+  services off one image: `lovegw` (the daemon), `modwatch` (the watcher, its
+  own `data/modwatch.db`, site read-only) and `guests` (визиты в анкету
+  владельца: ходит под его сессией из `lovegw.db`, пишет в ту же
+  `modwatch.db`). A named volume is only needed on a
   Windows host, where bind-mount corrupted the DB; on Linux the files sit on the
   host, which makes a backup a plain `sqlite3 .backup`. With MAX enabled, the
   Минцифры PEMs must be in `go/internal/maxx/cacert/` **before** the build — the
