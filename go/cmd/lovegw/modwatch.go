@@ -258,7 +258,7 @@ func modwatchGuestsLog(ctx context.Context, db *modwatch.Store, since, near stri
 		return err
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "визит\tанкета\tник\tснято")
+	fmt.Fprintln(tw, "визит (Нск)\tанкета\tник\tснято")
 	for _, v := range visits {
 		fmt.Fprintf(tw, "%s\tu%d\t%s\t%s\n", fmtTime(v.VisitedAt), v.UserID, v.Nick, fmtTime(v.FirstSeen))
 	}
@@ -534,6 +534,17 @@ func splitKinds(s string) []string {
 }
 
 // parseMoment принимает либо дату/время, либо длительность «назад».
+// siteTZ — пояс площадки. Весь modwatch говорит о событиях сайта, а сайт
+// показывает время по Новосибирску; хост при этом живёт по UTC (в контейнере)
+// или по своему поясу, и вывод расходился с тем, что человек видит на странице.
+// Поэтому и печать, и разбор моментов идут в поясе сайта, а не хоста.
+func siteTZ() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Novosibirsk"); err == nil {
+		return loc
+	}
+	return time.FixedZone("NOVT", 7*3600)
+}
+
 func parseMoment(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -543,7 +554,7 @@ func parseMoment(s string) (time.Time, error) {
 		return time.Now().UTC().Add(-d), nil
 	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+		if t, err := time.ParseInLocation(layout, s, siteTZ()); err == nil {
 			return t.UTC(), nil
 		}
 	}
@@ -554,7 +565,7 @@ func fmtTime(t time.Time) string {
 	if t.IsZero() {
 		return "—"
 	}
-	return t.Local().Format("2006-01-02 15:04")
+	return t.In(siteTZ()).Format("2006-01-02 15:04")
 }
 
 // fmtDur печатает длительность коротко: 4ч15м, 9м, «—» для неизвестной.
