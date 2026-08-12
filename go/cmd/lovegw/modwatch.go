@@ -272,6 +272,9 @@ func modwatchReport(ctx context.Context, args []string) error {
 	// не N независимых совпадений (иначе z раздувается примерно в √N раз).
 	fmt.Printf("наблюдение %s — %s, событий %d в %d окказиях (без контроля %d), контрольных окон на окказию %d\n",
 		fmtTime(rep.From), fmtTime(rep.To), rep.Events, rep.Occasions, rep.EventsSkipped, rep.Controls)
+	if rep.EventsReturned > 0 {
+		fmt.Printf("отброшено как перемодерация (заметка вернулась в ленту): %d\n", rep.EventsReturned)
+	}
 	fmt.Printf("людей в окне события в среднем %.1f, в контрольном %.1f\n\n", rep.AvgPresent, rep.AvgPresentCtrl)
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -297,9 +300,12 @@ func modwatchReport(ctx context.Context, args []string) error {
 // исключением вида, а проверкой возраста (-age-max). note_published и
 // nick_changed не входят: первое случается и без человека, второе редкое и
 // опосредованное; оба доступны явным -kind.
+//
+// image_added тоже НЕ входит, хотя раньше входило: картинку ставит АВТОР,
+// правя свою заметку, а модерация тут лишь пропускает правку. Признак хорош как
+// метка «заметка уехала на премодерацию», но как действие модератора он ложный.
 var moderationKinds = []string{
-	modwatch.KindNoteGone, modwatch.KindCommentGone,
-	modwatch.KindImageAdded, modwatch.KindCommentsClosed,
+	modwatch.KindNoteGone, modwatch.KindCommentGone, modwatch.KindCommentsClosed,
 }
 
 func splitKinds(s string) []string {

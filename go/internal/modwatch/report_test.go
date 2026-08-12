@@ -144,6 +144,47 @@ func TestAnalyzeCollapsesBatchIntoOneOccasion(t *testing.T) {
 	}
 }
 
+// Исчезновение, после которого заметка вернулась в ленту, — это поездка на
+// премодерацию (автор дописал картинку), а не действие модератора.
+func TestAnalyzeDropsReturnedNotes(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "modwatch.db"))
+	if err != nil {
+		t.Fatalf("открытие БД: %v", err)
+	}
+	defer store.Close()
+
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	for m := 0; m < 5*24*60; m += 10 {
+		at := base.Add(time.Duration(m) * time.Minute)
+		if err := store.SaveComment(ctx, at, CommentState{
+			ID: int64(m + 1), NoteID: 1, AuthorID: 22, PublishedAt: at,
+		}); err != nil {
+			t.Fatalf("запись реплики: %v", err)
+		}
+	}
+	at := base.AddDate(0, 0, 2).Add(13 * time.Hour)
+	if err := store.AddEvent(ctx, Event{
+		Kind: KindNoteGone, RefID: 7, NoteID: 7,
+		PrevSeen: at.Add(-time.Minute), DetectedAt: at,
+	}); err != nil {
+		t.Fatalf("запись удаления: %v", err)
+	}
+	if err := store.AddEvent(ctx, Event{
+		Kind: KindNoteReturned, RefID: 7, NoteID: 7,
+		PrevSeen: at, DetectedAt: at.Add(5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("запись возврата: %v", err)
+	}
+	rep, err := store.Analyze(ctx, ReportOptions{Kinds: []string{KindNoteGone}, Controls: 4, Seed: 5})
+	if err != nil {
+		t.Fatalf("анализ: %v", err)
+	}
+	if rep.EventsReturned != 1 || rep.Occasions != 0 {
+		t.Fatalf("перемодерация зачтена как удаление: отброшено %d, окказий %d", rep.EventsReturned, rep.Occasions)
+	}
+}
+
 // Без контрольных окон (наблюдение короче суток) отчёт обязан честно сказать,
 // что считать не на чем, а не выдать пустую таблицу как результат.
 func TestAnalyzeWithoutControls(t *testing.T) {

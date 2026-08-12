@@ -44,6 +44,7 @@ type Report struct {
 	Rows           []ReportRow
 	Events         int       // сколько событий отобрано фильтром
 	Occasions      int       // сколько из них различных окказий — столько и наблюдений
+	EventsReturned int       // «удалений», после которых заметка вернулась, — отброшено
 	EventsSkipped  int       // окказий без пригодных контрольных окон
 	Controls       int       // запрошено контрольных окон на событие
 	From, To       time.Time // фактический период наблюдения (по репликам)
@@ -60,6 +61,32 @@ type occasion struct {
 	NoteID   int64
 	From, To time.Time // объединение окон вошедших событий
 	Objects  int       // сколько объектов исчезло/изменилось в этот момент
+}
+
+// dropReturned выкидывает исчезновения, после которых заметка вернулась в
+// ленту: это не снос, а поездка на премодерацию (автор дописал картинку — и
+// текст, опубликованный сразу, уезжает на проверку). Возвращает оставшиеся
+// события и число отброшенных.
+func dropReturned(events []Event, returns map[int64][]time.Time) ([]Event, int) {
+	out := events[:0:0]
+	dropped := 0
+	for _, e := range events {
+		if e.Kind == KindNoteGone && cameBack(returns[e.NoteID], e.DetectedAt) {
+			dropped++
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, dropped
+}
+
+func cameBack(at []time.Time, after time.Time) bool {
+	for _, t := range at {
+		if t.After(after) {
+			return true
+		}
+	}
+	return false
 }
 
 // occasionsOf схлопывает события в окказии по паре «заметка + такт опроса».
@@ -117,6 +144,14 @@ func (s *Store) Analyze(ctx context.Context, opt ReportOptions) (Report, error) 
 	})
 	if err != nil || len(events) == 0 {
 		return rep, err
+	}
+	returns, err := s.NoteReturns(ctx)
+	if err != nil {
+		return rep, err
+	}
+	events, rep.EventsReturned = dropReturned(events, returns)
+	if len(events) == 0 {
+		return rep, nil
 	}
 	// Присутствие берём за весь период наблюдения: контрольные окна лежат в
 	// других сутках, значит нужны реплики далеко за границами событий.

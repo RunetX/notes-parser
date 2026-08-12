@@ -480,6 +480,33 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 	return out, rows.Err()
 }
 
+// NoteReturns — когда заметка появлялась в ленте, по каждой заметке.
+//
+// Нужно, чтобы отличить удаление от поездки на премодерацию: простой текст
+// публикуется сразу, но стоит автору дописать картинку — заметка уходит на
+// проверку, пропадая из ленты, и возвращается уже одобренной. Такое
+// исчезновение сделал автор, а не модератор. Считаем и `note_published`: до
+// правки от 12.08.2026 возврат записывался именно так.
+func (s *Store) NoteReturns(ctx context.Context) (map[int64][]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT note_id, detected_at FROM events
+         WHERE kind IN (?, ?) ORDER BY detected_at`, KindNoteReturned, KindNotePublished)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]time.Time{}
+	for rows.Next() {
+		var id int64
+		var at string
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		out[id] = append(out[id], parseTS(at))
+	}
+	return out, rows.Err()
+}
+
 // LastCommentAt — время последней известной реплики в заметке.
 func (s *Store) LastCommentAt(ctx context.Context, noteID int64) (time.Time, bool) {
 	var at sql.NullString
