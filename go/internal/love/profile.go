@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -103,6 +104,25 @@ func parseGenderMobile(body []byte, id string) (string, error) {
 		return GenderFemale, nil
 	}
 	return "", nil
+}
+
+// profileIDRe — id анкеты в ссылке на автора. Сегодня сайт пишет
+// /profile/<id>/, в старых записях (импорт из питоновского прототипа) —
+// /anketa<id>/; обе формы встречаются в зеркале рядом.
+var profileIDRe = regexp.MustCompile(`/(?:profile/|anketa)(\d+)`)
+
+// ProfileIDFromLink достаёт числовой id анкеты из ссылки на автора.
+// 0 — ссылки нет либо она не про анкету (так выглядят безанкетные авторы).
+func ProfileIDFromLink(link string) int64 {
+	m := profileIDRe.FindStringSubmatch(link)
+	if m == nil {
+		return 0
+	}
+	id, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 // genderFromClass достаёт пол из списка классов заголовка ника: токен

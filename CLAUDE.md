@@ -54,8 +54,14 @@ messages, and all user-facing bot strings are in Russian.
   поиск не отличает запрет от обычной паузы, см. шапку `bans.go`),
   `modwatch guests watch|log` — визиты в СВОЮ анкету под своей сессией
   (`guests log -near "2026-08-12 19:38"` даёт список тех, кто заходил вокруг
-  момента действия). Время везде новосибирское, как на сайте. Только чтение сайта, боевую БД
-  не трогает, с работающим демоном совместим (нужен RU-IP).
+  момента действия), `modwatch activity watch|scan|report|log` — присутствие
+  людей на сайте, детектор запретов в «Заметки» (`activity report`: «молчит, но
+  ходит» = закрыли, «молчит и не заходит» = ушёл; `activity log -near` — кто был
+  на сайте вокруг момента действия, включая тех, кто ничего не писал). Время
+  везде новосибирское, как на сайте. Сайт только читается, с работающим демоном
+  всё совместимо (нужен RU-IP); боевую БД трогает лишь `activity` — и только на
+  чтение реплик, чтобы набрать круг наблюдения (`-source`; ключ шифрования ему
+  не нужен, сессий он не касается).
 - Service site accounts (a second, technical profile: backup access for
   authenticated crawls and rare hand-made comments):
   `go run ./cmd/lovegw account login -name reserve` (логин/пароль со stdin),
@@ -82,11 +88,13 @@ messages, and all user-facing bot strings are in Russian.
   `docker-compose.yml` + systemd unit + runbook; config mounts as `/config.json`,
   state in `deploy/data` bind-mounted to `/data` (owned by uid 65532 — distroless
   runs as `nonroot`), secrets via env
-  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`). Compose runs **three**
+  (`LOVEGW_MIRROR_TOKEN`/`LOVEGW_DM_TOKEN`/`LOVEGW_TG_PROXY`). Compose runs **four**
   services off one image: `lovegw` (the daemon), `modwatch` (the watcher, its
-  own `data/modwatch.db`, site read-only) and `guests` (визиты в анкету
+  own `data/modwatch.db`, site read-only), `guests` (визиты в анкету
   владельца: ходит под его сессией из `lovegw.db`, пишет в ту же
-  `modwatch.db`). A named volume is only needed on a
+  `modwatch.db`) и `activity` (присутствие людей на сайте: круг берёт из
+  `lovegw.db` только чтением реплик, ходит анонимно, пишет в `modwatch.db`).
+  A named volume is only needed on a
   Windows host, where bind-mount corrupted the DB; on Linux the files sit on the
   host, which makes a backup a plain `sqlite3 .backup`. With MAX enabled, the
   Минцифры PEMs must be in `go/internal/maxx/cacert/` **before** the build — the
@@ -370,6 +378,29 @@ messages, and all user-facing bot strings are in Russian.
     имён — порог не откалиброван на множественную проверку, а анкеты, живущие
     короче периода наблюдения, не попадают в контроль и получают значимость
     даром (см. память `modwatch-report-batch-artifact`).
+    **Присутствие** (`activity.go` + `silence.go`, схема v4) — второй, отдельный
+    от событий канал. Запрет писать в «Заметки» ничего не убирает с площадки и
+    потому в `events` невидим, а это самое частое наказание; зато в анкете есть
+    `last_activity` (`love.Activity`, мобильный vhost). Поле живое, наш
+    анонимный просмотр его НЕ двигает (контроль: анкеты, прочитанные трижды,
+    остались со старыми отметками) и «Приватность» его не прячет — под ней сайт
+    лишь показывает людям другое поле, `last_activity_for_hide`. Правило
+    `ClassifySilence` решает по СВЕЖЕСТИ последнего захода (`Fresh`, сутки), а
+    не по хвосту после последней реплики: молчит и был на сайте только что —
+    «запрет?»; перестал заходить — «ушёл», а если перед этим ещё ходил
+    (`After` ≥ `Margin`) — «ушёл позже». Первая версия смотрела как раз на хвост
+    и записала в жертвы Игоря u1514601, который просто ушёл на полдня позже, чем
+    замолчал. Второй порог — `MinMissed`: сколько реплик человек не написал
+    против своего же темпа, иначе список забивают редкие комментаторы (темп
+    средний за окно, поэтому у затухавшего постепенно он завышен — наказание
+    выглядит обрывом на полном ходу). Отличить запрет от «читаю, но не пишу»
+    отчёт не может; доказывает возвращение — наказание кончается ровно на сроке. `ActivityWatcher` обходит круг активных
+    комментаторов (набирается `RosterSource` — по зеркалу, реже по своим
+    репликам) порциями по очереди `checked_at`, анонимно и строгим темпом
+    (клиент как у `personas gender`: мобильный vhost, jar, джиттер); сбой такта
+    его обрывает — 403 приходит волной. Таблица `activity` копит отметки у себя,
+    потому что сайт хранит только последнее действие: это заодно даёт
+    присутствие тех, кто ничего не пишет, — ту самую слепоту `Analyze`.
   - `secret` — шифрование значений на диске (AES-256-GCM из stdlib, формат
     `enc:v1:<base64 nonce‖ciphertext>`). Ключ живёт ВНЕ базы (env
     `LOVEGW_SECRET_KEY` / `secret_key_file`) — в этом весь смысл: в копии БД его

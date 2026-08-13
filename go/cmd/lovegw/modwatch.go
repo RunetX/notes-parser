@@ -44,15 +44,17 @@ func cmdModwatch(ctx context.Context, args []string) error {
 		return modwatchBans(ctx, rest)
 	case "guests":
 		return modwatchGuests(ctx, rest)
+	case "activity":
+		return modwatchActivity(ctx, rest)
 	default:
 		usage()
-		return fmt.Errorf("modwatch: нужна подкоманда (watch|report|events|status|bans|guests)")
+		return fmt.Errorf("modwatch: нужна подкоманда (watch|report|events|status|bans|guests|activity)")
 	}
 }
 
 var modwatchSubcommands = map[string]bool{
 	"watch": true, "report": true, "events": true, "status": true,
-	"bans": true, "guests": true,
+	"bans": true, "guests": true, "activity": true,
 }
 
 // modwatchBans — запреты, выведенные из ритма жертв. Наблюдать бан нечем: он

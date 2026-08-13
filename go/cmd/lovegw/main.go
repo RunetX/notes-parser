@@ -178,6 +178,10 @@ func usage() {
   lovegw modwatch [-db modwatch.db] [-tolerance 3h] [-max-window 1h] bans   # запреты, выведенные из ритма жертв
   lovegw modwatch [-config config.json] [-db modwatch.db] [-interval 15m] [-once] guests watch   # копить визиты в свою анкету
   lovegw modwatch [-db modwatch.db] [-near "2026-08-12 19:38"] [-window 30m] guests log          # кто заходил вокруг момента
+  lovegw modwatch [-config config.json] [-db modwatch.db] [-source lovegw.db] [-interval 10m] [-batch N] [-users id,id] activity watch   # копить присутствие людей на сайте
+  lovegw modwatch [-config config.json] [-db modwatch.db] [-source lovegw.db] activity scan                                              # сплошной обход круга и сразу отчёт
+  lovegw modwatch [-config config.json] [-db modwatch.db] [-silence 72h] [-fresh 24h] [-min-missed 20] [-top N] activity report          # кто замолчал: «ходит молча» = запрет, «не заходит» = ушёл
+  lovegw modwatch [-db modwatch.db] [-user <id>] [-near "2026-08-12 19:38"] [-window 30m] activity log                                   # кто был на сайте вокруг момента, включая молчунов
   lovegw account [-config config.json] [-accounts accounts.db] -name reserve [-purpose "…"] login   # вход сервисным аккаунтом (логин/пароль со stdin)
   lovegw account [-accounts accounts.db] list                                                    # какие аккаунты есть и живы ли их сессии
   lovegw account [-accounts accounts.db] [-name reserve] check                                   # проверить сессию на сайте (и заметить смену ника)

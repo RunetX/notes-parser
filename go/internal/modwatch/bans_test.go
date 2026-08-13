@@ -19,8 +19,8 @@ func dense(from time.Time, span, step time.Duration) []time.Time {
 // следующего дня, через 9 минут после снятия. Пауза 24,75 ч.
 func TestDetectBanOnRealCase(t *testing.T) {
 	base := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-	last := time.Date(2026, 8, 5, 15, 16, 0, 0, time.UTC)  // 22:16 Нск
-	back := time.Date(2026, 8, 6, 16, 1, 0, 0, time.UTC)   // 23:01 Нск
+	last := time.Date(2026, 8, 5, 15, 16, 0, 0, time.UTC)   // 22:16 Нск
+	back := time.Date(2026, 8, 6, 16, 1, 0, 0, time.UTC)    // 23:01 Нск
 	banned := time.Date(2026, 8, 5, 15, 52, 0, 0, time.UTC) // 22:52 Нск — правда
 
 	var times []time.Time

@@ -176,6 +176,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		schemaSQL,    // v1 — базовая схема
 		migrateV2SQL, // v2 — возраст объекта и тишина перед действием
 		migrateV3SQL, // v3 — визиты в свою анкету
+		migrateV4SQL, // v4 — присутствие анкет на сайте (детектор запретов)
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

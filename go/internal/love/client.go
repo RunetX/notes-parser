@@ -34,6 +34,10 @@ const (
 // Ретраи бессмысленны, нужен разрешённый (российский) IP.
 var ErrForbidden = errors.New("сайт вернул 403 (геоблок/бан IP)")
 
+// ErrNotFound — сайт ответил 404. Для массовых обходов это рабочий случай
+// (удалённая анкета, снесённая заметка), а не сбой: обход не должен вставать.
+var ErrNotFound = errors.New("сайт вернул 404")
+
 // Client — HTTP-клиент сайта с общим лимитером запросов: сколько бы
 // воркеров ни работало, к сайту уходит не больше одного запроса за интервал.
 type Client struct {
@@ -239,6 +243,8 @@ func (c *Client) getOnce(ctx context.Context, path string, cookies []*http.Cooki
 		return b, true, err
 	case resp.StatusCode == http.StatusForbidden:
 		return nil, false, fmt.Errorf("GET %s: %w", path, ErrForbidden)
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, false, fmt.Errorf("GET %s: %w", path, ErrNotFound)
 	case resp.StatusCode >= 500:
 		return nil, true, fmt.Errorf("GET %s: статус %d", path, resp.StatusCode)
 	default:
