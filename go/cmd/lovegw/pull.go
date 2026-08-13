@@ -47,7 +47,7 @@ func cmdPull(ctx context.Context, args []string) error {
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
 
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}

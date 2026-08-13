@@ -355,3 +355,28 @@ git archive --format=tar HEAD go deploy | ssh user@ХОСТ 'mkdir -p ~/notes-pa
 
 `config.json` и `secrets.env` — только `chmod 600`, никогда в git (уже в
 `.gitignore`). В образ не зашиваются — монтируются/передаются на хосте.
+
+### Шифрование сессионных кук (опционально, но рекомендуется)
+
+Куки сессий (боевая `sessions` + сервисные аккаунты в `accounts.db`) можно
+хранить шифротекстом. Защищает это **копии**: бэкап `sqlite3 .backup`, базу,
+уехавшую на рабочую машину, случайно приложенный файл. Хост, где рядом лежит
+ключ, шифрование не защищает — там доступно всё, что доступно демону.
+
+```sh
+lovegw secrets keygen                     # новый ключ (единственная команда, печатающая секрет)
+# положить его в secrets.env как LOVEGW_SECRET_KEY и раскомментировать env_file
+docker compose run --rm lovegw secrets -config /config.json encrypt   # перешить обе базы
+docker compose run --rm lovegw secrets -config /config.json status    # что открыто, что зашифровано
+docker compose up -d --build
+```
+
+Порядок важен: **сначала ключ в `secrets.env`, потом рестарт**. После `encrypt`
+ключ обязателен — демон без него не стартует. Это намеренно: иначе он молча
+выдал бы всем пользователям «сессия истекла, нужен /login».
+
+Ключ нужен сервисам `lovegw` и `guests` (оба читают сессии); `modwatch` ходит
+на сайт анонимно, ему ключ не нужен. **Хранить ключ отдельно от бэкапов базы** —
+иначе в шифровании нет смысла. Потеря ключа = потеря всех сессий: пользователям
+заново `/login`, сервисным аккаунтам — `account login`. Ротация:
+`LOVEGW_SECRET_KEY=<новый> lovegw secrets -old-key-env LOVEGW_SECRET_KEY_OLD encrypt`.

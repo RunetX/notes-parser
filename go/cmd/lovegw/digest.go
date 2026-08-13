@@ -77,7 +77,7 @@ func cmdDigest(ctx context.Context, args []string) error {
 	}
 	w := digest.SlotFor(time.Now(), loc, weekday, hour, o.week)
 
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}

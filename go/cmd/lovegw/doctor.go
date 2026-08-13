@@ -45,7 +45,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	}
 	ok("конфиг", *cfgPath)
 
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		fail("база данных", err)
 		return errors.New("диагностика прервана")
@@ -57,6 +57,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		return errors.New("диагностика прервана")
 	}
 	ok("база данных", fmt.Sprintf("%s, заметок: %d", cfg.DBPath, len(ids)))
+	doctorSecrets(ctx, cfg, st, ok, warn, fail)
 
 	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, nil)
@@ -358,5 +359,57 @@ func checkDeliveryDuplicates(ctx context.Context, st *store.Store,
 	}
 	if dupes == 0 {
 		ok("talks/доставка", "у каждого сайт-аккаунта один мессенджер")
+	}
+}
+
+// doctorSecrets — шифрование сессий и сервисные аккаунты сайта. Сетевых
+// запросов не делает: показывает, что лежит в базах и подходит ли ключ.
+func doctorSecrets(ctx context.Context, cfg *config.Config, st *store.Store,
+	ok func(name, detail string), warn func(name, detail string), fail func(name string, err error)) {
+	key, err := secretKey(cfg)
+	if err != nil {
+		fail("шифрование сессий", err)
+		return
+	}
+	stats, err := st.SessionSecretStats(ctx)
+	if err != nil {
+		fail("шифрование сессий", err)
+		return
+	}
+	switch {
+	case !key.Enabled() && stats.Total == 0:
+		warn("шифрование сессий", "ключ не задан (lovegw secrets keygen)")
+	case !key.Enabled():
+		warn("шифрование сессий", fmt.Sprintf(
+			"ключ не задан, %d сессий лежат открыто (lovegw secrets keygen → encrypt)", stats.Plain))
+	case stats.Plain > 0:
+		warn("шифрование сессий", fmt.Sprintf(
+			"ключ задан, но %d из %d сессий ещё открыты (lovegw secrets encrypt)", stats.Plain, stats.Total))
+	default:
+		ok("шифрование сессий", fmt.Sprintf("зашифровано: %d", stats.Encrypted))
+	}
+
+	accounts, err := openAccounts(ctx, cfg, "")
+	if err != nil {
+		fail("сервисные аккаунты", err)
+		return
+	}
+	defer accounts.Close()
+	list, err := accounts.List(ctx)
+	if err != nil {
+		fail("сервисные аккаунты", err)
+		return
+	}
+	if len(list) == 0 {
+		ok("сервисные аккаунты", "нет")
+		return
+	}
+	for _, a := range list {
+		detail := fmt.Sprintf("%s, вход %s", a.Title(), fmtTime(a.UpdatedAt))
+		if a.Valid {
+			ok("сервисный аккаунт", detail)
+			continue
+		}
+		warn("сервисный аккаунт", detail+" — сессия невалидна (lovegw account login)")
 	}
 }

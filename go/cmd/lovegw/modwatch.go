@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -29,16 +30,7 @@ const (
 // cmdModwatch — наблюдение за действиями модерации: сборщик пишет моменты
 // удалений/одобрений, отчёт сверяет их с присутствием людей на площадке.
 func cmdModwatch(ctx context.Context, args []string) error {
-	// Подкоманда может стоять и после флагов (`modwatch -db … watch`), поэтому
-	// ищем её по имени, а не по позиции.
-	sub, rest := "", make([]string, 0, len(args))
-	for _, a := range args {
-		if sub == "" && modwatchSubcommands[a] {
-			sub = a
-			continue
-		}
-		rest = append(rest, a)
-	}
+	sub, rest := splitSubcommand(args, modwatchSubcommands)
 	switch sub {
 	case "watch":
 		return modwatchWatch(ctx, rest)
@@ -177,7 +169,7 @@ func modwatchGuests(ctx context.Context, args []string) error {
 		return modwatchGuestsLog(ctx, db, *since, *near, *window)
 	}
 
-	cookies, err := adminCookies(ctx, cfg, *messenger, *userID)
+	cookies, err := adminCookies(ctx, cfg, *messenger, *userID, false)
 	if err != nil {
 		return err
 	}
@@ -202,7 +194,10 @@ func modwatchGuests(ctx context.Context, args []string) error {
 }
 
 // adminCookies достаёт сессию сайта владельца анкеты из боевой БД.
-func adminCookies(ctx context.Context, cfg *config.Config, messenger string, userID int64) ([]*http.Cookie, error) {
+// allowInvalid — брать сессию, даже если бот пометил её недействительной.
+// Обходам это прощают: флаг ставится по одной неудаче (а 403 сайта — про IP и
+// троттлинг, не про сессию), и чтение под ней обычно продолжает работать.
+func adminCookies(ctx context.Context, cfg *config.Config, messenger string, userID int64, allowInvalid bool) ([]*http.Cookie, error) {
 	if userID == 0 {
 		if cfg.Messengers != nil {
 			switch messenger {
@@ -219,16 +214,19 @@ func adminCookies(ctx context.Context, cfg *config.Config, messenger string, use
 	if userID == 0 {
 		return nil, fmt.Errorf("не задан пользователь: ни -user, ни admin_user_id в конфиге")
 	}
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("боевая БД %s: %w", cfg.DBPath, err)
 	}
 	defer st.Close()
 	raw, valid, err := st.SessionCookies(ctx, messenger, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, fmt.Errorf("у %s/%d нет сохранённой сессии сайта — сначала /login в РюмкинЪ", messenger, userID)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if !valid {
+	if !valid && !allowInvalid {
 		return nil, fmt.Errorf("сессия %s/%d помечена недействительной — нужен /login", messenger, userID)
 	}
 	return love.CookiesFromJSON([]byte(raw), time.Now())

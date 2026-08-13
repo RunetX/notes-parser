@@ -92,6 +92,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	activeDays := fs.Int("active-days", 0, "рецент-фильтр по активности за N суток (report/attribute/calibrate/verify; 0 — все)")
 	reportHTML := fs.Bool("html", false, "дополнительно собрать красивый characters.html (report)")
 	tgUser := fs.Int64("tg-user", 0, "чья сессия сайта для обхода профилей (gender; 0 — admin_tg_user_id)")
+	account := fs.String("account", "", "сервисный аккаунт(ы) через запятую вместо сессии админа (gender; первый живой)")
 	fromDate := fs.String("from", "", "нижняя граница окна публикации, ISO-дата (anon; replies — обойти только заметки не старше)")
 	toDate := fs.String("to", "", "верхняя граница окна публикации, ISO-дата, не включая (anon)")
 	minText := fs.Int("min-text", 400, "мин. длина анонимки в знаках — короче не ранжируем (anon)")
@@ -119,6 +120,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"topics": true, "min-hits": true, "min-notes": true, "evidence": true,
 		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
 		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
+		"account": true,
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
 		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
 		"from": true, "to": true, "min-text": true, "max-comments": true,
@@ -237,7 +239,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		return personasReport(ctx, ar, *outDir, *reportTop, *activeDays, *reportHTML)
 	case "gender":
 		return personasGender(ctx, ar, genderOpts{
-			cfgPath: *cfgPath, tgUser: *tgUser, activeDays: *activeDays,
+			cfgPath: *cfgPath, account: *account, tgUser: *tgUser, activeDays: *activeDays,
 			reportTop: *reportTop, limit: *limit,
 		})
 	default:

@@ -22,7 +22,8 @@ import (
 // genderOpts — параметры действия gender (из флагов cmdPersonas).
 type genderOpts struct {
 	cfgPath    string
-	tgUser     int64 // чья сессия сайта (0 — admin_tg_user_id из конфига)
+	account    string // сервисный аккаунт(ы) через запятую; пусто — сессия админа
+	tgUser     int64  // чья сессия сайта (0 — admin_tg_user_id из конфига)
 	activeDays int   // >0 — обойти только анкеты активной за окно когорты
 	reportTop  int   // размер когорты (как в report)
 	limit      int   // сплошной режим: максимум анкет за прогон (0 — все)
@@ -30,7 +31,8 @@ type genderOpts struct {
 
 // personasGender размечает пол анкет обходом их профилей через мобильную
 // версию (m.love.ngs.ru/profile/<id>/, sex из JSON dataFromBlade.layout) ПОД
-// СЕССИЕЙ пользователя: куки берутся из основной БД бота (таблица sessions).
+// СЕССИЕЙ: по умолчанию — сессия админа из боевой БД, с -account — сервисный
+// аккаунт из accounts.db (резервная анкета, чтобы обход пережил бан основной).
 // Идемпотентно — обходятся только анкеты без пола; запросы троттлятся
 // клиентом, волны 403 пережидаются. -active-days N обходит когорту отчёта
 // (самых активных), иначе — все без пола до -limit.
@@ -41,32 +43,11 @@ func personasGender(ctx context.Context, ar *archive.Store, opt genderOpts) erro
 	}
 	log := newLogger(cfg.LogLevel)
 
-	// Куки сессии Рантье — из основной БД бота.
-	tgUser := opt.tgUser
-	if tgUser == 0 {
-		tgUser = cfg.AdminTGUserID
-	}
-	if tgUser == 0 {
-		return fmt.Errorf("gender: не задан admin_tg_user_id в конфиге (или -tg-user)")
-	}
-	st, err := store.Open(ctx, cfg.DBPath)
+	// allowInvalid=true — как было до общего резолвера: флаг недействительности
+	// обход не останавливает (403 сайта — про IP, а не про сессию).
+	cookies, who, err := siteCookies(ctx, cfg, opt.account, store.MessengerTelegram, opt.tgUser, true)
 	if err != nil {
-		return fmt.Errorf("gender: открытие БД бота %s: %w", cfg.DBPath, err)
-	}
-	defer st.Close()
-	cookiesJSON, valid, err := st.SessionCookies(ctx, store.MessengerTelegram, tgUser)
-	if err != nil {
-		return fmt.Errorf("gender: сессия tg=%d: %w", tgUser, err)
-	}
-	if cookiesJSON == "" {
-		return fmt.Errorf("gender: у tg=%d нет сохранённой сессии сайта — сначала /login в РюмкинЪ", tgUser)
-	}
-	if !valid {
-		log.Warn("сессия помечена невалидной — пробуем всё равно", "tg", tgUser)
-	}
-	cookies, err := love.CookiesFromJSON([]byte(cookiesJSON), time.Now())
-	if err != nil {
-		return fmt.Errorf("gender: разбор кук сессии: %w", err)
+		return fmt.Errorf("gender: %w", err)
 	}
 
 	ids, err := genderTargets(ctx, ar, opt)
@@ -82,7 +63,7 @@ func personasGender(ctx context.Context, ar *archive.Store, opt genderOpts) erro
 	if err != nil {
 		return err
 	}
-	log.Info("обход профилей под сессией", "tg", tgUser, "анкет", len(ids))
+	log.Info("обход профилей под сессией", "кто", who, "анкет", len(ids))
 
 	done, set, blocked, err := genderCrawl(ctx, ar, client, ids, log)
 	if err != nil {

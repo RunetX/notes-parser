@@ -33,7 +33,7 @@ func cmdRepost(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}

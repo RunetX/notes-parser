@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"time"
 
+	"lovegw/internal/secret"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -62,10 +64,22 @@ type Comment struct {
 
 type Store struct {
 	db *sql.DB
+	// key шифрует куки сессий на диске. Нулевой ключ = шифрование выключено,
+	// и тогда всё работает как раньше (см. пакет secret).
+	key secret.Key
+}
+
+// Option — необязательная настройка хранилища.
+type Option func(*Store)
+
+// WithSecret включает шифрование сессионных кук. Ключ задан — новые записи
+// ложатся шифротекстом, а старые открытые читаются по-прежнему.
+func WithSecret(k secret.Key) Option {
+	return func(s *Store) { s.key = k }
 }
 
 // Open открывает (при необходимости создавая) базу и накатывает миграции.
-func Open(ctx context.Context, path string) (*Store, error) {
+func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -82,6 +96,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	s := &Store{db: db}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -157,13 +174,18 @@ func (s *Store) InsertComment(ctx context.Context, c Comment) (bool, error) {
 }
 
 // UpsertSession сохраняет куки пользователя (JSON), помечая сессию валидной.
+// Куки уходят на диск шифротекстом, если задан ключ (store.WithSecret).
 func (s *Store) UpsertSession(ctx context.Context, messenger string, userID int64, cookiesJSON string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
+	stored, err := s.key.Seal(secret.SessionAAD(messenger, userID), cookiesJSON)
+	if err != nil {
+		return fmt.Errorf("upsert session %s/%d: %w", messenger, userID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at)
 		VALUES (?, ?, ?, 1, ?)
 		ON CONFLICT(messenger, user_id) DO UPDATE SET
 			cookies = excluded.cookies, valid = 1, updated_at = excluded.updated_at`,
-		messenger, userID, cookiesJSON, fmtTime(now))
+		messenger, userID, stored, fmtTime(now))
 	if err != nil {
 		return fmt.Errorf("upsert session %s/%d: %w", messenger, userID, err)
 	}

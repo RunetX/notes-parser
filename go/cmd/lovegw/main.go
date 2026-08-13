@@ -112,6 +112,10 @@ func main() {
 		err = cmdDigest(ctx, os.Args[2:])
 	case "modwatch":
 		err = cmdModwatch(ctx, os.Args[2:])
+	case "account":
+		err = cmdAccount(ctx, os.Args[2:])
+	case "secrets":
+		err = cmdSecrets(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -173,7 +177,16 @@ func usage() {
   lovegw modwatch [-db modwatch.db] status
   lovegw modwatch [-db modwatch.db] [-tolerance 3h] [-max-window 1h] bans   # запреты, выведенные из ритма жертв
   lovegw modwatch [-config config.json] [-db modwatch.db] [-interval 15m] [-once] guests watch   # копить визиты в свою анкету
-  lovegw modwatch [-db modwatch.db] [-near "2026-08-12 19:38"] [-window 30m] guests log          # кто заходил вокруг момента`)
+  lovegw modwatch [-db modwatch.db] [-near "2026-08-12 19:38"] [-window 30m] guests log          # кто заходил вокруг момента
+  lovegw account [-config config.json] [-accounts accounts.db] -name reserve [-purpose "…"] login   # вход сервисным аккаунтом (логин/пароль со stdin)
+  lovegw account [-accounts accounts.db] list                                                    # какие аккаунты есть и живы ли их сессии
+  lovegw account [-accounts accounts.db] [-name reserve] check                                   # проверить сессию на сайте (и заметить смену ника)
+  lovegw account [-accounts accounts.db] -name reserve forget
+  lovegw account [-accounts accounts.db] -name reserve cookie                                    # заголовок Cookie локальным скриптам; только в пайп
+  lovegw account [-accounts accounts.db] -name reserve -note <id> [-reply <comment_id>] [-no-prefix] [-yes] say [текст …]   # комментарий на сайт от сервисного аккаунта
+  lovegw secrets keygen                                                                          # новый ключ шифрования сессий
+  lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
+  lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
@@ -200,7 +213,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	}
 	log := newLogger(cfg.LogLevel)
 
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -695,7 +708,7 @@ func cmdImport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := store.Open(ctx, cfg.DBPath)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -768,6 +781,20 @@ func reorderArgs(args []string, valueFlags map[string]bool) []string {
 		}
 	}
 	return append(flags, positional...)
+}
+
+// splitSubcommand выделяет подкоманду из аргументов. Она может стоять и после
+// флагов (`secrets -config … status`), поэтому ищем по имени, а не по позиции.
+func splitSubcommand(args []string, names map[string]bool) (sub string, rest []string) {
+	rest = make([]string, 0, len(args))
+	for _, a := range args {
+		if sub == "" && names[a] {
+			sub = a
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return sub, rest
 }
 
 func cmdCrawl(ctx context.Context, args []string) error {

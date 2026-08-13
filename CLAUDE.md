@@ -56,6 +56,22 @@ messages, and all user-facing bot strings are in Russian.
   (`guests log -near "2026-08-12 19:38"` даёт список тех, кто заходил вокруг
   момента действия). Время везде новосибирское, как на сайте. Только чтение сайта, боевую БД
   не трогает, с работающим демоном совместим (нужен RU-IP).
+- Service site accounts (a second, technical profile: backup access for
+  authenticated crawls and rare hand-made comments):
+  `go run ./cmd/lovegw account login -name reserve` (логин/пароль со stdin),
+  `account list|check|forget`, `account cookie -name reserve` (заголовок Cookie
+  локальным скриптам — пишет только в пайп),
+  `account say -name reserve -note <id> [-reply <comment_id>] "текст"` —
+  комментарий на сайт с подтверждением; печатает id своей реплики. Живут в
+  своей `accounts.db` (пакет `acct`), ботам не видны. `-account имя[,имя]` у
+  `personas gender` — первый живой аккаунт из списка, это и есть резерв.
+- Session cookies at rest: `go run ./cmd/lovegw secrets keygen` → ключ в
+  `LOVEGW_SECRET_KEY` → `secrets encrypt` шифрует и `sessions`, и `accounts`
+  (идемпотентно; `-old-key-env` — ротация), `secrets status` — что открыто, что
+  зашифровано. **После шифрования ключ обязателен**: любая команда, открывающая
+  боевую БД, падает, если записи не открываются (иначе демон молча выдал бы
+  всем «сессия истекла»). Без ключа всё работает как раньше — куки лежат
+  открыто.
 - One-off import of legacy JSON state (notes / subscribers) into SQLite:
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
@@ -354,6 +370,25 @@ messages, and all user-facing bot strings are in Russian.
     имён — порог не откалиброван на множественную проверку, а анкеты, живущие
     короче периода наблюдения, не попадают в контроль и получают значимость
     даром (см. память `modwatch-report-batch-artifact`).
+  - `secret` — шифрование значений на диске (AES-256-GCM из stdlib, формат
+    `enc:v1:<base64 nonce‖ciphertext>`). Ключ живёт ВНЕ базы (env
+    `LOVEGW_SECRET_KEY` / `secret_key_file`) — в этом весь смысл: в копии БД его
+    нет. Защищает копии и бэкапы (боевую базу бэкапят `sqlite3 .backup`, и её
+    копия уезжает на рабочую машину), а не хост, где ключ лежит рядом. AAD
+    привязывает шифротекст к строке (`sessions:telegram:<id>`,
+    `accounts:<имя>`), поэтому переставить чужую сессию в свою строку нельзя.
+    Значение без префикса читается как есть — так живут записи, сделанные до
+    включения шифрования. Точек шифрования ровно две:
+    `store.SessionCookies` и `store.UpsertSession`; всё остальное (bridge,
+    dmbot, talks, profile) ходит через них и о шифровании не знает.
+  - `acct` — сервисные аккаунты сайта: технические сессии в своей `accounts.db`
+    для обходов под авторизацией и редких ручных комментариев. **Не в
+    `sessions`** намеренно: `store.TalksOwners` берёт ВСЕ валидные сессии без
+    разбора мессенджера, и служебная строка немедленно попала бы в обход ЛС,
+    начав гасить непрочитанное на сайте. Отдельный файл к тому же можно
+    принести на рабочую машину без боевой БД, где лежат живые куки
+    пользователей. Формат кук — общий с `sessions` (`love.CookiesToJSON`),
+    строка остаётся взаимозаменяемой.
   - `legacy` — one-shot importer of old JSON state.
 - Reply→site and note-post reuse saved cookie sessions; a 401/403 marks the
   session invalid and DMs the user to re-`/login`. Admin alerts require
@@ -366,6 +401,9 @@ messages, and all user-facing bot strings are in Russian.
   `LOVEGW_TG_TALKS_TOKEN` / `LOVEGW_MAX_TOKEN` / `LOVEGW_MAX_DM_TOKEN` /
   `LOVEGW_MAX_TALKS_TOKEN` / `LOVEGW_DB_PATH` / `LOVEGW_TG_PROXY` /
   `LOVEGW_LLM_KEY` (Claude API для LLM-рубрик дайджеста) /
+  `LOVEGW_SECRET_KEY` (ключ шифрования кук; или `LOVEGW_SECRET_KEY_FILE`) /
+  `LOVEGW_ACCOUNTS_DB` (база сервисных аккаунтов; пусто — `accounts.db` рядом с
+  боевой БД) /
   `LOVEGW_ASR_*` (`ENABLED`, `PROVIDER`, `BASE_URL`, `API_KEY`, `FFMPEG`,
   `MAX_DURATION_SEC`, `USER_DAILY_LIMIT_SEC`, `CONCURRENCY`, `TIMEOUT_SEC` —
   секция `asr`; единственные env с числами/булевыми, разбор в `config.Load`).
@@ -387,7 +425,15 @@ messages, and all user-facing bot strings are in Russian.
 
 Real credentials live only in the local working copy: bot tokens in
 `go/config.json`; live user session cookies in the SQLite DB (`data/`,
-`sessions` table). All are gitignored — never print, commit, or copy these
-values into new files, examples, or logs, and never weaken the project section
-of `.gitignore`. (Retired Python state such as `config.json` and `sessions/`
-may still linger locally; it is gitignored too.)
+`sessions` table) and technical ones in `accounts.db`. All are gitignored —
+never print, commit, or copy these values into new files, examples, or logs, and
+never weaken the project section of `.gitignore`. (Retired Python state such as
+`config.json` and `sessions/` may still linger locally; it is gitignored too.)
+
+Куки шифруются на диске, если задан `LOVEGW_SECRET_KEY` (пакет `secret`). Ключ
+хранить **отдельно от бэкапов базы** — иначе шифрование бессмысленно: оно и
+защищает ровно копии. Потеря ключа = потеря всех сессий (всем заново `/login`,
+сервисным аккаунтам — `account login`). Единственные две команды, которые
+намеренно выводят секреты: `secrets keygen` (новый ключ — его надо как-то
+передать оператору) и `account cookie` (заголовок для локальных скриптов, и он
+отказывается писать в терминал — только в пайп).

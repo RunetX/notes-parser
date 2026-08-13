@@ -68,7 +68,7 @@ func cmdTalks(ctx context.Context, args []string) error {
 	}
 
 	log := newLogger(cfg.LogLevel)
-	st, err := store.Open(ctx, cfg.DBPath) // мигрирует копию v3→v5
+	st, err := openStore(ctx, cfg) // мигрирует копию v3→v5
 	if err != nil {
 		return err
 	}

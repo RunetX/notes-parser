@@ -68,6 +68,9 @@
   "admin_tg_user_id": 0,
   "feed_interval_s": 60,
   "db_path": "data/lovegw.db",
+  "accounts_db_path": "",
+  "secret_key": "",
+  "secret_key_file": "",
   "log_level": "info",
   "telegram_proxy": ""
 }

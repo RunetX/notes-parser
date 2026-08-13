@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -144,15 +145,35 @@ type Config struct {
 	FeedIntervalS int         `json:"feed_interval_s"`
 	DBPath        string      `json:"db_path"`
 	LogLevel      string      `json:"log_level"`
+	// AccountsDBPath — база сервисных аккаунтов сайта (пакет acct). Пусто —
+	// accounts.db рядом с боевой БД. Боевых путей не касается: там живут
+	// технические сессии для обходов, а не сессии пользователей бота.
+	AccountsDBPath string `json:"accounts_db_path,omitempty"`
+	// SecretKey / SecretKeyFile — ключ шифрования сессионных кук на диске
+	// (base64 32 байт, см. пакет secret; env LOVEGW_SECRET_KEY). Пусто —
+	// шифрование выключено, куки лежат открыто, как раньше. Ключ намеренно
+	// хранится ВНЕ базы: смысл шифрования в том, что в копии БД его нет.
+	SecretKey     string `json:"secret_key,omitempty"`
+	SecretKeyFile string `json:"secret_key_file,omitempty"`
 	// TelegramProxy — прокси для Bot API (http/https/socks5), если Telegram
 	// недоступен напрямую. Сайт и MAX при этом идут мимо прокси. Пусто —
 	// напрямую.
 	TelegramProxy string `json:"telegram_proxy"`
 }
 
+// AccountsDB — путь к базе сервисных аккаунтов сайта. По умолчанию
+// accounts.db рядом с боевой БД: обе базы нужны одним и тем же командам.
+func (c *Config) AccountsDB() string {
+	if c.AccountsDBPath != "" {
+		return c.AccountsDBPath
+	}
+	return filepath.Join(filepath.Dir(c.DBPath), "accounts.db")
+}
+
 // Load читает конфиг, накладывает значения по умолчанию и env-переопределения:
 // LOVEGW_MIRROR_TOKEN, LOVEGW_DM_TOKEN, LOVEGW_MAX_TOKEN, LOVEGW_MAX_DM_TOKEN,
-// LOVEGW_DB_PATH, LOVEGW_ASR_* (см. applyASREnv).
+// LOVEGW_DB_PATH, LOVEGW_SECRET_KEY, LOVEGW_SECRET_KEY_FILE,
+// LOVEGW_ACCOUNTS_DB, LOVEGW_ASR_* (см. applyASREnv).
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Site: Site{
@@ -205,6 +226,9 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("LOVEGW_LLM_KEY"); v != "" {
 		cfg.LLM.APIKey = v
 	}
+	envString(&cfg.SecretKey, "LOVEGW_SECRET_KEY")
+	envString(&cfg.SecretKeyFile, "LOVEGW_SECRET_KEY_FILE")
+	envString(&cfg.AccountsDBPath, "LOVEGW_ACCOUNTS_DB")
 	cfg.normalizeMessengers()
 	if v := os.Getenv("LOVEGW_MAX_TOKEN"); v != "" {
 		cfg.Messengers.Max.Token = v
