@@ -144,8 +144,15 @@ func markScan(ctx context.Context, tx *sql.Tx, noteID int64, status string, seen
 // maxComments > 0 отсекает заведомо неподъёмные треды — страница со всем тредом
 // на них падает в 500. retryFailed — вернуть и те, что уже падали. limit 0 —
 // без предела.
+//
+// refreshStale — вернуть и уже обойдённые заметки, набравшие комментарии ПОСЛЕ
+// своего обхода. Без него живая заметка размечается один раз и навсегда:
+// отметка в reply_scan закрывает её, а тред продолжает расти, и весь прирост
+// остаётся без точных пар. Условие точное (комментарий свежее scanned_at), а не
+// «переобойти окно», поэтому повторный прогон берёт единицы заметок.
+// Пересохранение безопасно: SaveReplyTree переписывает дерево заметки целиком.
 func (s *Store) ReplyScanTargets(ctx context.Context, limit, maxComments int,
-	since string, retryFailed bool) ([]int64, error) {
+	since string, retryFailed, refreshStale bool) ([]int64, error) {
 	q := `
 		SELECT n.id FROM notes n
 		JOIN (SELECT note_id, COUNT(*) AS cnt FROM comments GROUP BY note_id) c ON c.note_id = n.id
@@ -153,6 +160,12 @@ func (s *Store) ReplyScanTargets(ctx context.Context, limit, maxComments int,
 		WHERE (r.note_id IS NULL`
 	if retryFailed {
 		q += ` OR r.status = '` + ReplyScanFailed + `'`
+	}
+	if refreshStale {
+		// r.scanned_at = NULL у необойдённых, сравнение даёт NULL — ветка выше
+		// их и так забрала.
+		q += ` OR EXISTS (SELECT 1 FROM comments c2
+			WHERE c2.note_id = n.id AND c2.published_at > r.scanned_at)`
 	}
 	q += `)`
 	args := []any{}

@@ -25,6 +25,7 @@ type repliesOpts struct {
 	limit       int    // максимум заметок за прогон (0 — все)
 	maxComments int    // пропускать треды длиннее (0 — не пропускать)
 	retry       bool   // повторить заметки, на которых страница уже падала
+	refresh     bool   // переобойти заметки, набравшие комментарии после обхода
 }
 
 // personasReplies обогащает уже выкачанный архив настоящими целями ответа:
@@ -44,6 +45,11 @@ type repliesOpts struct {
 // повторно не берутся. Длинные треды сайт отдавать отказывается (500) — это
 // штатный исход, он тоже помечается; -retry берёт такие снова, -max-comments
 // заранее их не трогает.
+//
+// Живая заметка растёт после своего обхода, и весь прирост остаётся без точных
+// пар — на это есть -refresh: он возвращает в очередь заметки с комментариями
+// свежее отметки обхода. Обычный порядок актуализации архива — сначала
+// backfill -refresh, потом replies -refresh, потом addressees.
 func personasReplies(ctx context.Context, ar *archive.Store, opt repliesOpts) error {
 	cfg, err := config.Load(opt.cfgPath)
 	if err != nil {
@@ -51,7 +57,7 @@ func personasReplies(ctx context.Context, ar *archive.Store, opt repliesOpts) er
 	}
 	log := newLogger(cfg.LogLevel)
 
-	ids, err := ar.ReplyScanTargets(ctx, opt.limit, opt.maxComments, opt.since, opt.retry)
+	ids, err := ar.ReplyScanTargets(ctx, opt.limit, opt.maxComments, opt.since, opt.retry, opt.refresh)
 	if err != nil {
 		return err
 	}

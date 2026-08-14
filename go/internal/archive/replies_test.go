@@ -112,7 +112,7 @@ func TestReplyScanTargetsAndIdempotency(t *testing.T) {
 		{ID: 2001, NoteID: 200, ParentID: 2000, AuthorID: 2, Text: "раз", PublishedAt: at},
 	}, at)
 
-	targets, err := s.ReplyScanTargets(ctx, 0, 0, "", false)
+	targets, err := s.ReplyScanTargets(ctx, 0, 0, "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,18 +127,18 @@ func TestReplyScanTargetsAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if targets, err = s.ReplyScanTargets(ctx, 0, 0, "", false); err != nil {
+	if targets, err = s.ReplyScanTargets(ctx, 0, 0, "", false, false); err != nil {
 		t.Fatal(err)
 	} else if len(targets) != 0 {
 		t.Errorf("после обхода целей быть не должно: %v", targets)
 	}
-	if targets, err = s.ReplyScanTargets(ctx, 0, 0, "", true); err != nil {
+	if targets, err = s.ReplyScanTargets(ctx, 0, 0, "", true, false); err != nil {
 		t.Fatal(err)
 	} else if len(targets) != 1 || targets[0] != 200 {
 		t.Errorf("-retry должен вернуть только упавшую: %v", targets)
 	}
 	// Длинные треды отсекаются заранее — на них страница падает в 500.
-	if targets, err = s.ReplyScanTargets(ctx, 0, 2, "", true); err != nil {
+	if targets, err = s.ReplyScanTargets(ctx, 0, 2, "", true, false); err != nil {
 		t.Fatal(err)
 	} else if len(targets) != 1 || targets[0] != 200 {
 		t.Errorf("-max-comments 2: %v, ожидалась только заметка 200", targets)
@@ -173,17 +173,64 @@ func TestReplyScanTargetsWindow(t *testing.T) {
 		{ID: 2001, NoteID: 200, ParentID: 2000, AuthorID: 2, Text: "свежая", PublishedAt: fresh},
 	}, fresh)
 
-	targets, err := s.ReplyScanTargets(ctx, 0, 0, "2026-07-05", false)
+	targets, err := s.ReplyScanTargets(ctx, 0, 0, "2026-07-05", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(targets) != 1 || targets[0] != 200 {
 		t.Errorf("окно с 2026-07-05: %v, ожидалась только заметка 200", targets)
 	}
-	if targets, err = s.ReplyScanTargets(ctx, 0, 0, "", false); err != nil {
+	if targets, err = s.ReplyScanTargets(ctx, 0, 0, "", false, false); err != nil {
 		t.Fatal(err)
 	} else if len(targets) != 2 {
 		t.Errorf("без окна должны вернуться обе: %v", targets)
+	}
+}
+
+// Живая заметка растёт после обхода: отметка в reply_scan закрывает её
+// навсегда, и весь прирост остаётся без точных пар. -refresh возвращает такие
+// заметки в очередь, и только их.
+func TestReplyScanTargetsRefreshStale(t *testing.T) {
+	s := newTestArchive(t)
+	ctx := context.Background()
+	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+
+	users := []User{{ID: 1, Name: "А"}, {ID: 2, Name: "Б"}}
+	saveThread(t, s, 100, 1000, 1, users, []Comment{
+		{ID: 1001, NoteID: 100, ParentID: 1000, AuthorID: 2, Text: "раз", PublishedAt: at},
+	}, at)
+	saveThread(t, s, 200, 2000, 1, users, []Comment{
+		{ID: 2001, NoteID: 200, ParentID: 2000, AuthorID: 2, Text: "раз", PublishedAt: at},
+	}, at)
+
+	for _, id := range []int64{100, 200} {
+		if _, err := s.SaveReplyTree(ctx, id, map[int64]int64{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if targets, err := s.ReplyScanTargets(ctx, 0, 0, "", false, true); err != nil {
+		t.Fatal(err)
+	} else if len(targets) != 0 {
+		t.Fatalf("сразу после обхода переобходить нечего: %v", targets)
+	}
+
+	// В заметку 100 приходит комментарий позже отметки обхода (scanned_at
+	// ставится «сейчас», поэтому берём заведомо более позднюю дату).
+	later := time.Now().UTC().Add(time.Hour)
+	saveThread(t, s, 100, 1000, 1, users, []Comment{
+		{ID: 1001, NoteID: 100, ParentID: 1000, AuthorID: 2, Text: "раз", PublishedAt: at},
+		{ID: 1002, NoteID: 100, ParentID: 1000, AuthorID: 2, Text: "дописали", PublishedAt: later},
+	}, later)
+
+	if targets, err := s.ReplyScanTargets(ctx, 0, 0, "", false, false); err != nil {
+		t.Fatal(err)
+	} else if len(targets) != 0 {
+		t.Errorf("без -refresh обойдённая заметка не берётся: %v", targets)
+	}
+	if targets, err := s.ReplyScanTargets(ctx, 0, 0, "", false, true); err != nil {
+		t.Fatal(err)
+	} else if len(targets) != 1 || targets[0] != 100 {
+		t.Errorf("-refresh должен вернуть только доросшую заметку: %v", targets)
 	}
 }
 

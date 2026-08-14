@@ -55,7 +55,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	useProxy := fs.Bool("proxy", false, "качать аватары через telegram_proxy (avatars fetch)")
 	workers := fs.Int("workers", 6, "воркеров загрузки (avatars fetch)")
 	intervalMS := fs.Int("interval-ms", 150, "интервал запросов, мс (avatars fetch)")
-	refresh := fs.Bool("refresh", false, "пере-скачать уже хэшированные аватары (avatars fetch)")
+	refresh := fs.Bool("refresh", false, "пере-скачать уже хэшированные аватары (avatars fetch); переобойти заметки, набравшие комментарии после обхода (replies)")
 	maxDist := fs.Int("max-dist", 4, "макс. Hamming dHash для склейки (avatars cluster)")
 	genericMax := fs.Int("generic-max", 4, "exact-группа аватаров больше — generic, пропуск (avatars cluster)")
 	minChars := fs.Int("min-chars", 1000, "мин. суммарного текста автора для профиля (stylometry build)")
@@ -222,7 +222,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	case "replies":
 		return personasReplies(ctx, ar, repliesOpts{
 			cfgPath: *cfgPath, since: *fromDate, limit: *limit,
-			maxComments: *maxComments, retry: *retryFailed,
+			maxComments: *maxComments, retry: *retryFailed, refresh: *refresh,
 		})
 	case "voice":
 		return personasVoice(ctx, ar, fs.Args()[1:], voiceOpts{
