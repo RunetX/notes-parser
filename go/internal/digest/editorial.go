@@ -69,25 +69,66 @@ var editorialSchema = map[string]any{
 	"additionalProperties": false,
 }
 
+// editorialRetries — сколько раз просить рубрики, прежде чем откатиться на
+// полуручной цикл. Брак бывает разовым: 15.08.2026 модель за считаные секунды
+// вернула валидный по схеме JSON с пустыми week_summary и topics, а тот же
+// запрос минутой позже отработал нормально (44 с). Выпуск еженедельный, и
+// сорванная автопубликация ждёт руки до следующей субботы — переспрос дешевле
+// осечки. Backoff не нужен: чинится не темп запросов, а сам ответ, временные
+// сбои сети и 429/5xx ретраит SDK.
+const editorialRetries = 3
+
+// retryNote — хвост переспроса. Слепой повтор того же запроса повторил бы и
+// вырожденный ответ, поэтому причина брака едет в промпт.
+const retryNote = `
+
+## Переспрос
+
+Предыдущий ответ забракован: %v. Напиши рубрики заново — обязательные поля
+пустыми быть не должны.`
+
 // GenerateEditorial запрашивает у LLM тексты рубрик по материалам выпуска и
 // валидирует их той же проверкой, что правки админа в черновике.
 func GenerateEditorial(ctx context.Context, gen JSONGenerator, is *Issue) (*Editorial, error) {
-	var prompt strings.Builder
-	if err := WriteMaterials(&prompt, is); err != nil {
+	var materials strings.Builder
+	if err := WriteMaterials(&materials, is); err != nil {
 		return nil, err
 	}
-	raw, err := gen.GenerateJSON(ctx, editorialSystem, prompt.String(), editorialSchema)
+	base := materials.String()
+	var lastErr error
+	for attempt := 0; attempt < editorialRetries; attempt++ {
+		prompt := base
+		if lastErr != nil {
+			prompt += fmt.Sprintf(retryNote, lastErr)
+		}
+		ed, retriable, err := generateOnce(ctx, gen, prompt, is)
+		if err == nil {
+			return ed, nil
+		}
+		lastErr = err
+		if !retriable {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("редактура: попытки исчерпаны: %w", lastErr)
+}
+
+// generateOnce — одна попытка: запрос, разбор, валидация. retriable отделяет
+// брак ответа (пришёл, но не годится) от ошибки самого запроса — её повторять
+// незачем, сеть и 429/5xx SDK уже отретраил сам.
+func generateOnce(ctx context.Context, gen JSONGenerator, prompt string, is *Issue) (_ *Editorial, retriable bool, err error) {
+	raw, err := gen.GenerateJSON(ctx, editorialSystem, prompt, editorialSchema)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var ed Editorial
 	if err := json.Unmarshal(raw, &ed); err != nil {
-		return nil, fmt.Errorf("разбор ответа LLM: %w", err)
+		return nil, true, fmt.Errorf("разбор ответа LLM: %w", err)
 	}
 	if err := validateEditorial(&ed, is); err != nil {
-		return nil, fmt.Errorf("ответ LLM не прошёл валидацию: %w", err)
+		return nil, true, fmt.Errorf("ответ LLM не прошёл валидацию: %w", err)
 	}
-	return &ed, nil
+	return &ed, false, nil
 }
 
 // validateEditorial проверяет разметку полей и обязательность рубрик.

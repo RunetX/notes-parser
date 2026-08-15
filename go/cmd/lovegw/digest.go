@@ -162,7 +162,11 @@ func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w dig
 	fmt.Printf("выпуск %s: заметок %d, комментариев %d, участников %d\n",
 		w.ID, is.Stats.Notes, is.Stats.Comments, is.Stats.Commenters)
 	fmt.Printf("черновик:  %s\nматериалы: %s\n", draftPath, matPath)
-	fmt.Println("дальше: заполните LLM-рубрики из материалов, проверьте preview, затем publish")
+	if is.Editorial != nil {
+		fmt.Println("дальше: проверьте preview, затем publish (рубрики уже заполнены)")
+	} else {
+		fmt.Println("дальше: заполните LLM-рубрики из материалов, проверьте preview, затем publish")
+	}
 	return nil
 }
 

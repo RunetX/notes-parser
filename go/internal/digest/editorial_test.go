@@ -8,9 +8,12 @@ import (
 	"testing"
 )
 
-// fakeGen — фейковый JSONGenerator.
+// fakeGen — фейковый JSONGenerator. queue задаёт ответы по попыткам (последний
+// повторяется дальше); пусто — всегда resp.
 type fakeGen struct {
 	resp   map[string]string
+	queue  []map[string]string
+	calls  int
 	err    error
 	system string
 	prompt string
@@ -18,10 +21,15 @@ type fakeGen struct {
 
 func (f *fakeGen) GenerateJSON(_ context.Context, system, prompt string, _ map[string]any) ([]byte, error) {
 	f.system, f.prompt = system, prompt
+	f.calls++
 	if f.err != nil {
 		return nil, f.err
 	}
-	return json.Marshal(f.resp)
+	resp := f.resp
+	if len(f.queue) > 0 {
+		resp = f.queue[min(f.calls-1, len(f.queue)-1)]
+	}
+	return json.Marshal(resp)
 }
 
 func fullEditorial() map[string]string {
@@ -95,10 +103,52 @@ func TestGenerateEditorialRejectsBadMarkup(t *testing.T) {
 	}
 }
 
+// Вырожденный ответ бывает разовым (15.08.2026): переспрос спасает выпуск.
+func TestGenerateEditorialRetriesBadAnswer(t *testing.T) {
+	empty := fullEditorial()
+	empty["week_summary"], empty["topics"] = "", ""
+	gen := &fakeGen{queue: []map[string]string{empty, fullEditorial()}}
+	ed, err := GenerateEditorial(context.Background(), gen, sampleIssue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen.calls != 2 {
+		t.Errorf("попыток: %d, ожидались 2", gen.calls)
+	}
+	if ed.WeekSummary == "" {
+		t.Error("рубрики должны прийти со второй попытки")
+	}
+	// Переспрос несёт причину брака: слепой повтор повторил бы и брак.
+	if !strings.Contains(gen.prompt, "Переспрос") || !strings.Contains(gen.prompt, "week_summary пуст") {
+		t.Error("во втором промпте должна быть причина брака")
+	}
+}
+
+func TestGenerateEditorialGivesUpAfterRetries(t *testing.T) {
+	empty := fullEditorial()
+	empty["week_summary"] = ""
+	gen := &fakeGen{resp: empty}
+	_, err := GenerateEditorial(context.Background(), gen, sampleIssue())
+	if err == nil {
+		t.Fatal("исчерпанные попытки должны быть ошибкой")
+	}
+	if gen.calls != editorialRetries {
+		t.Errorf("попыток: %d, ожидалось %d", gen.calls, editorialRetries)
+	}
+	if !strings.Contains(err.Error(), "week_summary пуст") {
+		t.Errorf("ошибка должна называть причину брака: %v", err)
+	}
+}
+
 func TestGenerateEditorialErrorPropagates(t *testing.T) {
 	wantErr := errors.New("сеть моргнула")
-	_, err := GenerateEditorial(context.Background(), &fakeGen{err: wantErr}, sampleIssue())
+	gen := &fakeGen{err: wantErr}
+	_, err := GenerateEditorial(context.Background(), gen, sampleIssue())
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("ошибка генератора должна пробрасываться: %v", err)
+	}
+	// Ошибку запроса SDK ретраит сам, второй раз спрашивать незачем.
+	if gen.calls != 1 {
+		t.Errorf("попыток: %d, ожидалась 1", gen.calls)
 	}
 }
