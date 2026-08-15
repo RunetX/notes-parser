@@ -221,6 +221,60 @@ ALTER TABLE sessions ADD COLUMN talks_delivery TEXT NOT NULL DEFAULT '';
 ALTER TABLE sessions ADD COLUMN talks_asked_at TEXT;
 `
 
+// migrateV9SQL — амвон (пакет pulpit): собственный комментарий владельца под
+// каждой новой заметкой и редкие ответы тем, кто ему ответил. Аддитивна:
+// откат бинарника на той же БД безопасен (старый код новых таблиц не видит).
+//
+// FK на notes у pulpit_comments НАМЕРЕННО нет, хотя foreign_keys(1) включён:
+// амвон обходит ленту своим клиентом и видит заметку раньше, чем её вставит
+// зеркало, — FK связал бы домены отказа ровно там, где мы их разводим.
+//
+// pulpit_replies ключуется чужой репликой: монетка «отвечать или нет» бросается
+// ровно один раз на реплику, иначе 15 % за десяток циклов превращаются в 80 %.
+//
+// settings — рантайм-флаги. В проекте тумблеры жили только в конфиге, потому что
+// ни один не менялся в рантайме; здесь выключает автоматика (в контейнер
+// config.json монтируется снаружи, писать в него нельзя), а включает админ
+// кнопкой, и выключение обязано пережить рестарт. ТОЛЬКО ФЛАГИ, НИКОГДА
+// СЕКРЕТЫ: секреты живут в env и в шифрованных колонках sessions/accounts.
+const migrateV9SQL = `
+CREATE TABLE pulpit_comments (
+    note_id    TEXT PRIMARY KEY,                 -- заметка сайта (без FK, см. выше)
+    state      TEXT NOT NULL,                    -- queued|posting|posted|confirmed|missing|vanished|skipped|failed
+    reason     TEXT NOT NULL DEFAULT '',         -- почему пропустили/не вышло
+    form       TEXT NOT NULL DEFAULT '',         -- форма проповеди (укор, притча, …)
+    text       TEXT NOT NULL DEFAULT '',         -- отправленный текст
+    comment_id INTEGER,                          -- id своей реплики на сайте (после верификации)
+    seen_at    TEXT NOT NULL,                    -- когда заметка занята: от него считается свежесть
+    posted_at  TEXT,
+    checked_at TEXT,
+    checks     INTEGER NOT NULL DEFAULT 0,       -- сколько раз перечитывали тред в поисках своей реплики
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_pulpit_comments_state ON pulpit_comments(state, seen_at);
+
+CREATE TABLE pulpit_replies (
+    reply_to_id INTEGER PRIMARY KEY,             -- чужая реплика, на которую отвечаем
+    note_id     TEXT NOT NULL,
+    author_id   TEXT NOT NULL DEFAULT '',        -- её автор: одному человеку в заметке отвечаем один раз
+    state       TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL DEFAULT '',
+    comment_id  INTEGER,
+    decided_at  TEXT NOT NULL,                   -- когда бросили монетку
+    posted_at   TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX idx_pulpit_replies_note ON pulpit_replies(note_id);
+
+CREATE TABLE settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''          -- кто переключил: 'admin:<id>' или 'fuse'
+);
+`
+
 // migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
 // migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
@@ -233,6 +287,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV6SQL, // v6 — кэш расшифровок и суточная квота ASR
 		migrateV7SQL, // v7 — типизированные подписки (kind/target)
 		migrateV8SQL, // v8 — выбор мессенджера доставки ЛС
+		migrateV9SQL, // v9 — амвон: свои реплики под заметками и рантайм-флаги
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

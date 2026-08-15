@@ -95,6 +95,7 @@ type Mirror struct {
 	feedInterval time.Duration
 	seedFirst    bool
 	subNotify    map[string]SubNotify
+	onNewNote    func(ctx context.Context, n love.Note)
 
 	events chan string // id заметок для запуска воркеров
 }
@@ -112,6 +113,13 @@ type Config struct {
 	SeedFirst    bool
 	AlertSend    func(ctx context.Context, text string)
 	SubNotify    map[string]SubNotify
+	// OnNewNote (может быть nil) — заметка появилась в ленте и только что
+	// сохранена. Страховка амвона (пакет pulpit) на случай, если его
+	// собственный обход ленты моргнул: у него свой клиент и свой цикл, а этот
+	// колбэк — второй вход к тому же claim'у. Зовётся ДО постинга в канал и
+	// только вне seed-режима; обязан быть неблокирующим — зеркалирование не
+	// должно ждать чужую службу.
+	OnNewNote func(ctx context.Context, n love.Note)
 }
 
 // New создаёт зеркало, публикующее во все переданные приёмники (fan-out).
@@ -135,6 +143,7 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 		feedInterval: cfg.FeedInterval,
 		seedFirst:    cfg.SeedFirst,
 		subNotify:    cfg.SubNotify,
+		onNewNote:    cfg.OnNewNote,
 		events:       make(chan string, 16),
 	}
 }
@@ -286,6 +295,11 @@ func (m *Mirror) ingestNewNote(ctx context.Context, n love.Note, seed bool) inge
 		return ingestSkipped
 	}
 	m.storeNoteImages(ctx, n.ID, n.Images)
+	// До постинга в канал: пост уходит через лимитеры мессенджеров и стоит
+	// секунд, а подписчику этой заметки (амвону) важна каждая из них.
+	if m.onNewNote != nil {
+		m.onNewNote(ctx, n)
+	}
 	if m.postNote(ctx, rec) {
 		return ingestPosted
 	}

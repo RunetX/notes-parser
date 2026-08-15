@@ -15,6 +15,7 @@
 //	import — импорт состояния старой Python-версии (M2)
 //	run    — основной демон (M3+)
 //	digest — еженедельный дайджест: draft → правка LLM-рубрик → publish
+//	pulpit — амвон: черновик своей реплики под заметкой и состояние службы
 package main
 
 import (
@@ -114,6 +115,8 @@ func main() {
 		err = cmdModwatch(ctx, os.Args[2:])
 	case "account":
 		err = cmdAccount(ctx, os.Args[2:])
+	case "pulpit":
+		err = cmdPulpit(ctx, os.Args[2:])
 	case "secrets":
 		err = cmdSecrets(ctx, os.Args[2:])
 	default:
@@ -188,6 +191,8 @@ func usage() {
   lovegw account [-accounts accounts.db] -name reserve forget
   lovegw account [-accounts accounts.db] -name reserve cookie                                    # заголовок Cookie локальным скриптам; только в пайп
   lovegw account [-accounts accounts.db] -name reserve -note <id> [-reply <comment_id>] [-no-prefix] [-yes] say [текст …]   # комментарий на сайт от сервисного аккаунта
+  lovegw pulpit [-config config.json] [-db lovegw.db] draft <note_id> [<note_id> ...]            # черновик реплики амвона, на сайт ничего не уходит
+  lovegw pulpit [-config config.json] [-db lovegw.db] status                                     # включён ли амвон, что писал последним
   lovegw secrets keygen                                                                          # новый ключ шифрования сессий
   lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
   lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ`)
@@ -613,12 +618,46 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel)
 	}
 
+	// Амвон: своя реплика под каждой новой заметкой сайта. Служба поднимается
+	// ДО зеркала: ей нужен колбэк OnNewNote как страховка на случай, если её
+	// собственный (более частый) обход ленты моргнёт. Ошибку Run наружу не
+	// отдаём — амвон не критичен для зеркалирования.
+	var onNewNote func(context.Context, love.Note)
+	if cfg.Pulpit.Enabled {
+		gen, err := llmClientFor(cfg, cfg.Pulpit.Model, cfg.Pulpit.Effort,
+			time.Duration(cfg.Pulpit.GenerateTimeoutS)*time.Second)
+		if err != nil {
+			return fmt.Errorf("амвон: %w", err)
+		}
+		svc, err := newPulpit(cfg, st, gen, fanOutAlerts(alerters), log)
+		if err != nil {
+			return err
+		}
+		onNewNote = svc.OnNewNote
+		g.Go(func() error {
+			if err := svc.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("амвон остановлен", "err", err)
+			}
+			return nil
+		})
+		// Ручка /pulpit — админам тех мессенджеров, где есть ЛС-бот команд.
+		// Ставится после старта поллера, как и SetNews: тот же латентный
+		// дата-рейс, что у всех Set*-подключений проекта.
+		if dm != nil && tgCfg.AdminUserID != 0 {
+			dm.SetPulpit(svc, tgCfg.AdminUserID)
+		}
+		if maxDM != nil && maxCfg.AdminUserID != 0 {
+			maxDM.SetPulpit(svc, maxCfg.AdminUserID)
+		}
+	}
+
 	mir := mirror.New(st, client, sinks, mirror.Config{
 		NotesLimit:   cfg.NotesLimit,
 		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
 		SeedFirst:    seed,
 		AlertSend:    fanOutAlerts(alerters),
 		SubNotify:    subNotify,
+		OnNewNote:    onNewNote,
 	}, log)
 
 	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath,

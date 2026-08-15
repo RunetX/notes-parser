@@ -37,6 +37,15 @@ type Config struct {
 	Model     string          // пусто — DefaultModel
 	MaxTokens int             // 0 — defaultMaxTokens
 	Transport *http.Transport // nil — прямое соединение (tgx.ProxyTransport для прокси)
+	// Effort — сколько модели думать (low|medium|high|xhigh|max). Пусто —
+	// как решит модель (adaptive), то есть сегодняшнее поведение дайджеста.
+	// Это единственный рычаг задержки: claude-opus-5 думает по умолчанию, а
+	// выключать размышление нельзя — с thinking: disabled модель роняет
+	// <thinking>-теги в видимый ответ. Амвону нужен «low»: он гонится за
+	// секундами, чтобы успеть первым под свежую заметку.
+	Effort string
+	// Timeout — потолок одного запроса. 0 — requestTimeout пакета (5 мин).
+	Timeout time.Duration
 }
 
 // Client — тонкая обёртка над официальным SDK.
@@ -44,6 +53,7 @@ type Client struct {
 	api       anthropic.Client
 	model     string
 	maxTokens int64
+	effort    anthropic.OutputConfigEffort
 }
 
 // ErrRefusal — классификаторы модели отклонили запрос (stop_reason refusal).
@@ -52,9 +62,13 @@ var ErrRefusal = errors.New("модель отклонила запрос (refus
 // New создаёт клиента. baseURL переопределяет адрес API (тесты против
 // httptest); пусто — боевой api.anthropic.com.
 func New(cfg Config, baseURL string) *Client {
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = requestTimeout
+	}
 	opts := []option.RequestOption{
 		option.WithAPIKey(cfg.APIKey),
-		option.WithRequestTimeout(requestTimeout),
+		option.WithRequestTimeout(timeout),
 	}
 	if cfg.Transport != nil {
 		opts = append(opts, option.WithHTTPClient(&http.Client{Transport: cfg.Transport}))
@@ -70,7 +84,12 @@ func New(cfg Config, baseURL string) *Client {
 	if maxTokens == 0 {
 		maxTokens = defaultMaxTokens
 	}
-	return &Client{api: anthropic.NewClient(opts...), model: model, maxTokens: maxTokens}
+	return &Client{
+		api:       anthropic.NewClient(opts...),
+		model:     model,
+		maxTokens: maxTokens,
+		effort:    anthropic.OutputConfigEffort(cfg.Effort),
+	}
 }
 
 // Model — имя модели (для логов: результат осмыслен против конкретной версии).
@@ -87,6 +106,9 @@ func (c *Client) GenerateJSON(ctx context.Context, system, prompt string, schema
 			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
 		},
 		OutputConfig: anthropic.OutputConfigParam{
+			// Пустой effort SDK не сериализует (omitzero) — запрос остаётся
+			// ровно таким, каким был до появления рычага.
+			Effort: c.effort,
 			Format: anthropic.JSONOutputFormatParam{Schema: schema},
 		},
 	})

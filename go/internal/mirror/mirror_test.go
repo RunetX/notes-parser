@@ -167,6 +167,51 @@ func TestFeedCycleSeedDoesNotPost(t *testing.T) {
 	}
 }
 
+// OnNewNote — страховочный вход амвона. Зовётся на каждую новую заметку и
+// ДО постинга в канал (пост идёт через лимитеры мессенджеров и стоит секунд, а
+// подписчику важна каждая), но в seed-режиме молчит: там новых заметок нет.
+func TestFeedCycleCallsOnNewNote(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n2", Text: "т"}, {ID: "n1", Text: "т"}}}
+	sink := &fakeSink{}
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	var seen []string
+	postsAtCall := 0
+	m := New(st, site, []Sink{sink}, Config{
+		NotesLimit:   5,
+		FeedInterval: time.Minute,
+		OnNewNote: func(_ context.Context, n love.Note) {
+			seen = append(seen, n.ID)
+			postsAtCall = len(sink.calls)
+		},
+	}, slog.Default())
+
+	m.feedCycle(ctx, true) // seed: колбэк молчит
+	if len(seen) != 0 {
+		t.Fatalf("в seed-режиме колбэк не зовётся: %v", seen)
+	}
+
+	site.notes = append([]love.Note{{ID: "n3", Text: "т"}}, site.notes...)
+	m.feedCycle(ctx, false)
+	if len(seen) != 1 || seen[0] != "n3" {
+		t.Fatalf("колбэк: %v", seen)
+	}
+	if postsAtCall != 0 {
+		t.Errorf("колбэк должен идти до поста в канал, а постов уже %d", postsAtCall)
+	}
+
+	// Повторный обход дублей не даёт.
+	m.feedCycle(ctx, false)
+	if len(seen) != 1 {
+		t.Errorf("колбэк позвали повторно: %v", seen)
+	}
+}
+
 func TestFeedCyclePostsNewNotesOldestFirst(t *testing.T) {
 	ctx := context.Background()
 	// Лента: новые сверху (n3 новее n2 новее n1).

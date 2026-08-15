@@ -44,7 +44,13 @@ const (
 	verbProfileAsk = "profask" // аргумент — argProfileBlock (что подтверждаем)
 	verbProfileSet = "profset" // аргумент — argProfileBlock/argProfileUnblock
 	verbCancel     = "cancel"
-	verbNews   = "news" // аргумент — id черновика новости
+	verbNews       = "news" // аргумент — id черновика новости
+	// Амвон: показать состояние, спросить подтверждение включения после
+	// предохранителя, переключить тумблер. Три глагола по той же причине, что у
+	// анкеты: тост у них разный, а у показа его нет вовсе.
+	verbPulpit    = "pulp"
+	verbPulpitAsk = "pulpask" // аргумент — argPulpitOn (что подтверждаем)
+	verbPulpitSet = "pulpset" // аргумент — argPulpitOn/argPulpitOff
 	// Подписка по заметке. Первый глагол приезжает с кнопки под постом канала —
 	// он единственный публичный (см. поле public); остальные два уже из ЛС.
 	verbSubscribe   = kbd.VerbSubscribe // аргумент — id заметки
@@ -65,6 +71,9 @@ const (
 	// сайте, и делать надо ровно то, что написано на кнопке, либо ничего.
 	argProfileBlock   = "block"
 	argProfileUnblock = "unblock"
+	// Тумблер амвона. Payload «1:pulpset:off» — 12 байт при пределе 64.
+	argPulpitOn  = "on"
+	argPulpitOff = "off"
 )
 
 const (
@@ -112,6 +121,9 @@ var callbackVerbs = map[string]verbHandler{
 	verbProfileSet:  {ack: "Отправляю на сайт…", fn: (*Logic).cbProfileSet},
 	verbCancel:      {ack: "Отменил", talks: true, fn: (*Logic).cbCancel},
 	verbNews:        {ack: "Публикую…", fn: (*Logic).cbNews},
+	verbPulpit:      {fn: (*Logic).cbPulpit},
+	verbPulpitAsk:   {fn: (*Logic).cbPulpitAsk},
+	verbPulpitSet:   {ack: "Переключаю…", fn: (*Logic).cbPulpitSet},
 	verbSubscribe:   {ack: "Открыл выбор в личке", public: true, fn: (*Logic).cbSubscribe},
 	verbSubAuthor:   {ack: "Подписал", fn: (*Logic).cbSubAuthor},
 	verbSubComments: {ack: "Подписал", fn: (*Logic).cbSubComments},
@@ -315,6 +327,22 @@ func (l *Logic) cbProfileAsk(ctx context.Context, userID int64, cb kbd.Callback,
 // cbProfileSet нажимает кнопку сайта: блокирует анкету либо возвращает её.
 func (l *Logic) cbProfileSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
 	l.setProfile(ctx, userID, cb, arg)
+}
+
+// cbPulpit — состояние амвона из ЛС (кнопки в меню нет: команда админская).
+func (l *Logic) cbPulpit(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
+	l.handlePulpit(ctx, userID, &cb)
+}
+
+// cbPulpitAsk превращает своё же сообщение в вопрос о включении после
+// срабатывания предохранителя.
+func (l *Logic) cbPulpitAsk(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
+	l.askPulpitOn(ctx, userID, cb)
+}
+
+// cbPulpitSet переключает тумблер амвона.
+func (l *Logic) cbPulpitSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	l.setPulpit(ctx, userID, cb, arg)
 }
 
 func (l *Logic) cbCancel(ctx context.Context, userID int64, cb kbd.Callback, _ string) {

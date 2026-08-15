@@ -130,6 +130,42 @@ type ASR struct {
 	TimeoutSec        int    `json:"timeout_sec"`          // таймаут запроса к провайдеру
 }
 
+// Pulpit — амвон: собственный комментарий владельца под каждой новой заметкой
+// (пакет pulpit). Дефолт выключен; рантайм-тумблер живёт не здесь, а в БД
+// (settings['pulpit.enabled']) — выключает предохранитель, включает админ
+// кнопкой, и переключение обязано пережить рестарт. enabled здесь — гейт
+// сборки службы: false значит «службы нет вовсе».
+type Pulpit struct {
+	Enabled bool `json:"enabled"`
+	// OwnerProfileID — id анкеты владельца на сайте: по нему берётся сессия
+	// (SessionForProfile) и опознаётся своя реплика в треде.
+	OwnerProfileID string `json:"owner_profile_id"`
+	// FeedIntervalS — свой обход ленты. Он отдельный от зеркального: общий
+	// лимитер love.Client (0,5 rps) делит очередь с опросом комментариев всех
+	// живых заметок, и заметка добиралась до нас за p90 = 619 с, тогда как
+	// первый чужой комментарий приходит за медианные 164 с.
+	FeedIntervalS    int    `json:"feed_interval_s"`
+	FreshnessMin     int    `json:"freshness_min"`      // старше — не пишем (заметка уже обжита)
+	MaxLatencyS      int    `json:"max_latency_s"`      // после этого от момента находки реплику не шлём вовсе
+	GenerateTimeoutS int    `json:"generate_timeout_s"` // потолок генерации со всеми переспросами
+	MaxPerDay        int    `json:"max_per_day"`        // предохранитель от «сайт выкатил архив в ленту»
+	Model            string `json:"model"`              // пусто — llm.DefaultModel
+	Effort           string `json:"effort"`             // low — гасим скрытую задержку размышления
+	MinRunes         int    `json:"min_runes"`
+	MaxRunes         int    `json:"max_runes"`
+	MaxLines         int    `json:"max_lines"`
+	AllowEmoji       bool   `json:"allow_emoji"`
+	HistorySize      int    `json:"history_size"`  // сколько своих последних реплик показывать модели
+	FormCooldown     int    `json:"form_cooldown"` // формы последних N реплик не предлагаются
+	// ReplyProbability — вероятность ответить тому, кто ответил нам. 0 —
+	// в переписку не вступаем вовсе.
+	ReplyProbability float64 `json:"reply_probability"`
+	RepliesPerNote   int     `json:"replies_per_note"`
+	RepliesPerDay    int     `json:"replies_per_day"`
+	ReplyWindowH     int     `json:"reply_window_h"`
+	FuseMisses       int     `json:"fuse_misses"` // столько «страница есть, реплики нет» подряд = выключаемся
+}
+
 type Config struct {
 	Site          Site        `json:"site"`
 	MirrorBot     MirrorBot   `json:"mirror_bot"`
@@ -139,6 +175,7 @@ type Config struct {
 	Digest        Digest      `json:"digest"`
 	LLM           LLM         `json:"llm"`
 	ASR           ASR         `json:"asr"`
+	Pulpit        Pulpit      `json:"pulpit"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
 	AdminTGUserID int64       `json:"admin_tg_user_id"`
@@ -201,6 +238,29 @@ func Load(path string) (*Config, error) {
 			Concurrency:       2,
 			TimeoutSec:        60,
 		},
+		// Амвон по умолчанию выключен. Пороги длины сняты с самого владельца
+		// (p25 = 42 руны, p50 = 79), а не выбраны по вкусу: порог 60 отсекал бы
+		// четверть его собственной манеры. max_per_day = 25 при медиане 10
+		// заметок в сутки — это runaway-guard, а не троттлинг.
+		Pulpit: Pulpit{
+			FeedIntervalS:    20,
+			FreshnessMin:     15,
+			MaxLatencyS:      180,
+			GenerateTimeoutS: 45,
+			MaxPerDay:        25,
+			Effort:           "low",
+			MinRunes:         40,
+			MaxRunes:         400,
+			MaxLines:         12,
+			AllowEmoji:       true,
+			HistorySize:      20,
+			FormCooldown:     5,
+			ReplyProbability: 0.15,
+			RepliesPerNote:   1,
+			RepliesPerDay:    3,
+			ReplyWindowH:     24,
+			FuseMisses:       3,
+		},
 	}
 
 	b, err := os.ReadFile(path)
@@ -246,6 +306,9 @@ func Load(path string) (*Config, error) {
 	if err := cfg.applyASREnv(); err != nil {
 		return nil, err
 	}
+	if err := cfg.applyPulpitEnv(); err != nil {
+		return nil, err
+	}
 
 	if cfg.Site.BaseURL == "" {
 		return nil, fmt.Errorf("site.base_url не задан")
@@ -274,6 +337,17 @@ func (c *Config) applyASREnv() error {
 	return envInt(&c.ASR.TimeoutSec, "LOVEGW_ASR_TIMEOUT_SEC")
 }
 
+// applyPulpitEnv накладывает env-переопределения секции pulpit. Их три:
+// выключить фичу на хосте, сменить модель и придержать ответы на ответы —
+// остальное правится конфигом, а тумблер «включено сейчас» живёт в БД.
+func (c *Config) applyPulpitEnv() error {
+	if err := envBool(&c.Pulpit.Enabled, "LOVEGW_PULPIT_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.Pulpit.Model, "LOVEGW_PULPIT_MODEL")
+	return envFloat(&c.Pulpit.ReplyProbability, "LOVEGW_PULPIT_REPLY_PROBABILITY")
+}
+
 // envString переопределяет значение, если переменная задана и непуста.
 func envString(dst *string, name string) {
 	if v := os.Getenv(name); v != "" {
@@ -293,6 +367,20 @@ func envInt(dst *int, name string) error {
 		return fmt.Errorf("%s: ожидалось целое число, получено %q", name, v)
 	}
 	*dst = n
+	return nil
+}
+
+// envFloat разбирает дробное из переменной окружения (вероятность ответа).
+func envFloat(dst *float64, name string) error {
+	v := os.Getenv(name)
+	if v == "" {
+		return nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fmt.Errorf("%s: ожидалось число, получено %q", name, v)
+	}
+	*dst = f
 	return nil
 }
 

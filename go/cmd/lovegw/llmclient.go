@@ -7,6 +7,7 @@ package main
 
 import (
 	"errors"
+	"time"
 
 	"lovegw/internal/config"
 	"lovegw/internal/llm"
@@ -16,6 +17,15 @@ import (
 // llmClient строит LLM-клиента по конфигу; запросы идут через telegram_proxy —
 // api.anthropic.com, как и Bot API, недоступен с российского IP.
 func llmClient(cfg *config.Config) (*llm.Client, error) {
+	return llmClientFor(cfg, cfg.LLM.Model, "", 0)
+}
+
+// llmClientFor — клиент под конкретную задачу: ключ и прокси общие, а модель,
+// усердие и таймаут свои. Нужен амвону: ему важны секунды (модель по умолчанию
+// думает, и это скрытая задержка), а дайджесту — качество, и менять его
+// поведение заодно нельзя. Пустые model/effort и нулевой timeout означают
+// «как в секции llm».
+func llmClientFor(cfg *config.Config, model, effort string, timeout time.Duration) (*llm.Client, error) {
 	if cfg.LLM.APIKey == "" {
 		return nil, errors.New("llm.api_key не задан (секция llm конфига или env LOVEGW_LLM_KEY)")
 	}
@@ -23,10 +33,15 @@ func llmClient(cfg *config.Config) (*llm.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if model == "" {
+		model = cfg.LLM.Model
+	}
 	return llm.New(llm.Config{
 		APIKey:    cfg.LLM.APIKey,
-		Model:     cfg.LLM.Model,
+		Model:     model,
 		MaxTokens: cfg.LLM.MaxTokens,
 		Transport: transport,
+		Effort:    effort,
+		Timeout:   timeout,
 	}, ""), nil
 }

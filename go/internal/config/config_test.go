@@ -178,9 +178,46 @@ func TestLoadASREnvOverrides(t *testing.T) {
 	}
 }
 
+// Амвон по умолчанию выключен, а пороги длины сняты с самого владельца
+// (p25 = 42 руны): порог 60 отсекал бы четверть его собственной манеры.
+func TestLoadPulpitDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"site": {"base_url": "https://love.ngs.ru"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Pulpit
+	if p.Enabled || p.FeedIntervalS != 20 || p.FreshnessMin != 15 || p.MaxPerDay != 25 ||
+		p.MinRunes != 40 || p.MaxRunes != 400 || !p.AllowEmoji || p.Effort != "low" ||
+		p.ReplyProbability != 0.15 || p.FuseMisses != 3 {
+		t.Errorf("дефолты амвона: %+v", p)
+	}
+}
+
+// Секция pulpit читается из JSON, env перебивает её.
+func TestLoadPulpitEnvOverrides(t *testing.T) {
+	t.Setenv("LOVEGW_PULPIT_ENABLED", "true")
+	t.Setenv("LOVEGW_PULPIT_MODEL", "claude-sonnet-5")
+	t.Setenv("LOVEGW_PULPIT_REPLY_PROBABILITY", "0")
+	cfg, err := Load(writeConfig(t, `{
+		"pulpit": {"enabled": false, "owner_profile_id": "1472546", "model": "claude-opus-5",
+		           "reply_probability": 0.5, "allow_emoji": false}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Pulpit
+	if !p.Enabled || p.Model != "claude-sonnet-5" || p.ReplyProbability != 0 ||
+		p.OwnerProfileID != "1472546" || p.AllowEmoji {
+		t.Errorf("env-переопределения амвона: %+v", p)
+	}
+}
+
 // Мусор в числовой/булевой переменной — ошибка конфига, а не молчаливый ноль.
 func TestLoadASRBadEnv(t *testing.T) {
-	for _, name := range []string{"LOVEGW_ASR_CONCURRENCY", "LOVEGW_ASR_ENABLED"} {
+	for _, name := range []string{
+		"LOVEGW_ASR_CONCURRENCY", "LOVEGW_ASR_ENABLED",
+		"LOVEGW_PULPIT_ENABLED", "LOVEGW_PULPIT_REPLY_PROBABILITY",
+	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "не число")
 			if _, err := Load(writeConfig(t, `{}`)); err == nil {

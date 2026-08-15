@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func serve(t *testing.T, stopReason, text string, got *map[string]any) *httptest.Server {
@@ -42,9 +43,30 @@ func TestGenerateJSONRequestShape(t *testing.T) {
 	if req["model"] != DefaultModel {
 		t.Errorf("модель: %v", req["model"])
 	}
-	format := req["output_config"].(map[string]any)["format"].(map[string]any)
+	out := req["output_config"].(map[string]any)
+	format := out["format"].(map[string]any)
 	if format["type"] != "json_schema" || format["schema"] == nil {
 		t.Errorf("output_config.format: %v", format)
+	}
+	// Без Effort поле не должно появляться вовсе: дайджест и voice остаются
+	// на прежнем поведении модели (adaptive).
+	if _, ok := out["effort"]; ok {
+		t.Errorf("output_config.effort не задавали, а он в запросе: %v", out["effort"])
+	}
+}
+
+// TestGenerateJSONEffort — рычаг задержки: effort едет в output_config.
+func TestGenerateJSONEffort(t *testing.T) {
+	var req map[string]any
+	srv := serve(t, "end_turn", `{"ok":true}`, &req)
+	defer srv.Close()
+
+	c := New(Config{APIKey: "test-key", Effort: "low", Timeout: time.Minute}, srv.URL)
+	if _, err := c.GenerateJSON(context.Background(), "с", "п", map[string]any{"type": "object"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := req["output_config"].(map[string]any)["effort"]; got != "low" {
+		t.Errorf("output_config.effort: %v", got)
 	}
 }
 

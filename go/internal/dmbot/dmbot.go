@@ -143,6 +143,9 @@ func (d *Bot) SetTalkRouter(r TalkRouter) {
 // SetNews подключает публикацию новостей проекта админом (/news).
 func (d *Bot) SetNews(svc *news.Service, adminID int64) { d.logic.SetNews(svc, adminID) }
 
+// SetPulpit подключает ручку амвона админом (/pulpit).
+func (d *Bot) SetPulpit(svc PulpitControl, adminID int64) { d.logic.SetPulpit(svc, adminID) }
+
 // AskDelivery спрашивает, куда носить личные сообщения (зовёт поллер talks,
 // увидев один сайт-аккаунт в двух мессенджерах).
 func (d *Bot) AskDelivery(ctx context.Context, userID int64, current store.TalksOwner) {

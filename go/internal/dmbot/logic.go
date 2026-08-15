@@ -52,7 +52,10 @@ type Logic struct {
 	profile SiteProfile
 	// news + adminID — публикация внутренних новостей проекта (/news).
 	// nil/0 — команды нет: она админская и в списке команд не значится.
-	news    *news.Service
+	news *news.Service
+	// pulpit — ручка амвона (/pulpit), тоже админская и тоже не в списке.
+	// Интерфейс объявлен здесь: пакет pulpit диалоговое ядро не импортирует.
+	pulpit  PulpitControl
 	adminID int64
 	log     *slog.Logger
 	// talksOnly — движок бота переписки: из команд живут только /start,
@@ -201,6 +204,8 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.handleProfile(ctx, userID, nil)
 	case "/news":
 		l.handleNews(ctx, userID)
+	case "/pulpit":
+		l.handlePulpit(ctx, userID, nil)
 	case "/cancel":
 		l.handleCancel(ctx, userID)
 	default:
