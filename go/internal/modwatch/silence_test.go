@@ -7,8 +7,8 @@ import (
 
 // Живой замер 13.08.2026, на котором метод и родился: из топ-40 июля выпали
 // шестеро. Пятеро перестали заходить в тот же час, что и писать, — это уход.
-// Актриса при 682 репликах молчит с 31 июля и при этом на сайте прямо сейчас —
-// так выглядит запрет.
+// Шестая, Актриса, молчала с 31 июля при живой отметке присутствия, и след
+// покрывает несколько суток её молчания — вот это и есть запрет.
 func TestClassifySilenceRealCase(t *testing.T) {
 	now := time.Date(2026, 8, 13, 9, 50, 0, 0, time.UTC) // 16:50 Нск
 	people := []Commenter{
@@ -29,7 +29,12 @@ func TestClassifySilenceRealCase(t *testing.T) {
 		1500827: {UserID: 1500827, LastAt: time.Date(2026, 8, 4, 17, 46, 0, 0, time.UTC), CheckedAt: now},
 		1:       {UserID: 1, LastAt: now, CheckedAt: now},
 	}
-	rows := ClassifySilence(people, profiles, SilenceOptions{Now: now})
+	trail := map[int64][]time.Time{1431505: {
+		time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 7, 18, 0, 0, 0, time.UTC),
+		now,
+	}}
+	rows := ClassifySilence(people, profiles, trail, SilenceOptions{Now: now})
 
 	if len(rows) != 4 {
 		t.Fatalf("строк %d, ожидалось 4: молчащие без того, кто пишет", len(rows))
@@ -40,6 +45,9 @@ func TestClassifySilenceRealCase(t *testing.T) {
 	}
 	if first.After < 12*24*time.Hour {
 		t.Errorf("«ходил после» = %s, ожидались двенадцать с лишним суток", first.After)
+	}
+	if first.SeenDays != 3 {
+		t.Errorf("суток на сайте = %d, ожидалось 3 (три отметки на разных сутках молчания)", first.SeenDays)
 	}
 	want := map[int64]string{
 		1515257: VerdictLeft,    // заход замер через минуту после последней реплики
@@ -65,13 +73,48 @@ func TestClassifySilenceLeftLaterIsNotABan(t *testing.T) {
 			LastComment: time.Date(2026, 8, 4, 22, 44, 0, 0, time.UTC)}},
 		map[int64]ProfileRow{1514601: {UserID: 1514601,
 			LastAt: time.Date(2026, 8, 5, 11, 13, 0, 0, time.UTC), CheckedAt: now}},
-		SilenceOptions{Now: now})
+		nil, SilenceOptions{Now: now})
 	if len(rows) != 1 {
 		t.Fatalf("строк %d, ожидалась одна", len(rows))
 	}
 	if rows[0].Verdict != VerdictLeftLater {
 		t.Fatalf("вердикт %q, ожидался %q: ходил после молчания, но уже неделю не заходит",
 			rows[0].Verdict, VerdictLeftLater)
+	}
+}
+
+// Осечка с Актрисой u1431505 (13.08.2026): её признали закрытой по одной
+// свежей отметке, а она в тот же вечер вернулась — отметка была не «ходит
+// молча тринадцать суток», а первый день на площадке после отъезда. Пока след
+// не покрыл хотя бы двое разных суток молчания, это «мало данных», а не запрет.
+func TestClassifySilenceOneStampIsNotEnough(t *testing.T) {
+	now := time.Date(2026, 8, 13, 9, 50, 0, 0, time.UTC)
+	last := time.Date(2026, 7, 31, 15, 7, 0, 0, time.UTC)
+	people := []Commenter{{UserID: 1431505, Nick: "Актриса", Comments: 682, LastComment: last}}
+	profiles := map[int64]ProfileRow{1431505: {UserID: 1431505, LastAt: now, CheckedAt: now}}
+
+	rows := ClassifySilence(people, profiles,
+		map[int64][]time.Time{1431505: {now}}, SilenceOptions{Now: now})
+	if len(rows) != 1 || rows[0].Verdict != VerdictThin {
+		t.Fatalf("по одной отметке ожидался вердикт %q, получено %+v", VerdictThin, rows)
+	}
+	if rows[0].SeenDays != 1 {
+		t.Errorf("суток на сайте = %d, ожидались одни", rows[0].SeenDays)
+	}
+
+	// Вторая отметка на других сутках молчания — и это уже запрет.
+	rows = ClassifySilence(people, profiles,
+		map[int64][]time.Time{1431505: {now.Add(-5 * 24 * time.Hour), now}}, SilenceOptions{Now: now})
+	if rows[0].Verdict != VerdictBan {
+		t.Fatalf("по двум отметкам ожидался вердикт %q, получено %q", VerdictBan, rows[0].Verdict)
+	}
+
+	// Отметки ДО последней реплики молчания не покрывают — это ещё не оно.
+	rows = ClassifySilence(people, profiles,
+		map[int64][]time.Time{1431505: {last.Add(-48 * time.Hour), last.Add(-time.Hour), now}},
+		SilenceOptions{Now: now})
+	if rows[0].SeenDays != 1 || rows[0].Verdict != VerdictThin {
+		t.Fatalf("отметки до молчания попали в счёт: %+v", rows[0])
 	}
 }
 
@@ -87,7 +130,10 @@ func TestClassifySilenceMinMissed(t *testing.T) {
 		1: {UserID: 1, LastAt: now, CheckedAt: now},
 		2: {UserID: 2, LastAt: now, CheckedAt: now},
 	}
-	rows := ClassifySilence(people, profiles, SilenceOptions{Now: now, MinMissed: DefaultMinMissed})
+	trail := map[int64][]time.Time{
+		1: {now}, 2: {now.Add(-3 * 24 * time.Hour), now},
+	}
+	rows := ClassifySilence(people, profiles, trail, SilenceOptions{Now: now, MinMissed: DefaultMinMissed})
 	if len(rows) != 1 || rows[0].UserID != 2 {
 		t.Fatalf("строки = %+v, ожидался только частый комментатор", rows)
 	}
@@ -103,7 +149,7 @@ func TestClassifySilenceMissingProfile(t *testing.T) {
 	rows := ClassifySilence(
 		[]Commenter{{UserID: 7, Comments: 100, LastComment: now.Add(-10 * 24 * time.Hour)}},
 		map[int64]ProfileRow{7: {UserID: 7, Missing: true, CheckedAt: now}},
-		SilenceOptions{Now: now})
+		nil, SilenceOptions{Now: now})
 	if len(rows) != 1 || rows[0].Verdict != VerdictMissing {
 		t.Fatalf("ожидался вердикт %q, получено %+v", VerdictMissing, rows)
 	}
@@ -117,7 +163,7 @@ func TestClassifySilenceMarginCutsEveningTail(t *testing.T) {
 	rows := ClassifySilence(
 		[]Commenter{{UserID: 8, Comments: 100, LastComment: last}},
 		map[int64]ProfileRow{8: {UserID: 8, LastAt: last.Add(time.Hour), CheckedAt: now}},
-		SilenceOptions{Now: now})
+		nil, SilenceOptions{Now: now})
 	if len(rows) != 1 || rows[0].Verdict != VerdictLeft {
 		t.Fatalf("ожидался вердикт %q, получено %+v", VerdictLeft, rows)
 	}

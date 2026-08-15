@@ -230,6 +230,21 @@ func (s *Store) ActivityIn(ctx context.Context, user int64, since, until time.Ti
 	return out, rows.Err()
 }
 
+// ActivityTrail возвращает отметки присутствия за период, сгруппированные по
+// анкетам. Это вход разбора молчания: по одной последней отметке «ходит молча»
+// и «вернулся сегодня» неразличимы, различает их только покрытие следом.
+func (s *Store) ActivityTrail(ctx context.Context, since, until time.Time) (map[int64][]time.Time, error) {
+	stamps, err := s.ActivityIn(ctx, 0, since, until)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64][]time.Time, len(stamps))
+	for _, st := range stamps {
+		out[st.UserID] = append(out[st.UserID], st.At)
+	}
+	return out, nil
+}
+
 // ActivitySource — то, что обходу нужно от сайта: присутствие одной анкеты.
 type ActivitySource interface {
 	Activity(ctx context.Context, id int64) (love.Activity, error)

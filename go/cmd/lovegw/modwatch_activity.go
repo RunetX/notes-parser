@@ -181,20 +181,25 @@ func modwatchActivityReport(ctx context.Context, db *modwatch.Store, roster modw
 	if err != nil {
 		return err
 	}
-	rows := modwatch.ClassifySilence(people, profiles, opt)
+	// След берём за то же окно, что и реплики: молчание не может быть длиннее.
+	trail, err := db.ActivityTrail(ctx, time.Now().Add(-active), time.Time{})
+	if err != nil {
+		return err
+	}
+	rows := modwatch.ClassifySilence(people, profiles, trail, opt)
 
 	fmt.Printf("круг наблюдения: %d человек (от %d реплик за %s), опрошено анкет %d\n",
 		len(people), minComments, fmtSpan(active), len(profiles))
 	fmt.Printf("молчат дольше %s: %d\n\n", fmtSpan(opt.Silence), len(rows))
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "вердикт\tмолчит\tне заходит\tнедописал\tреплик\tпоследняя реплика\tпоследний заход\tанкета\tник")
+	fmt.Fprintln(tw, "вердикт\tмолчит\tне заходит\tсуток на сайте\tнедописал\tреплик\tпоследняя реплика\tпоследний заход\tанкета\tник")
 	for i, r := range rows {
 		if top > 0 && i >= top {
 			break
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%.0f\t%d\t%s\t%s\tu%d\t%s%s\n",
-			r.Verdict, fmtSpan(r.Silence), fmtSpan(r.Away), r.Missed, r.Comments,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%.0f\t%d\t%s\t%s\tu%d\t%s%s\n",
+			r.Verdict, fmtSpan(r.Silence), fmtSpan(r.Away), r.SeenDays, r.Missed, r.Comments,
 			fmtTime(r.LastComment), fmtTime(r.LastActivity), r.UserID, r.Nick, vipMark(r))
 	}
 	if err := tw.Flush(); err != nil {
@@ -205,7 +210,11 @@ func modwatchActivityReport(ctx context.Context, db *modwatch.Store, roster modw
 поэтому молчащий, который был на сайте только что, — на площадке, но писать не
 может. Перестал заходить — ушёл, и неважно, сколько ещё ходил, замолчав;
 «ушёл позже» значит, что он сделал это в два приёма (так выглядит и запрет, из
-которого человек не вернулся). «Недописал» — сколько реплик потеряно против
+которого человек не вернулся). «Суток на сайте» — на скольких РАЗНЫХ сутках
+молчания мы его там застали; пока их меньше двух, вердикт «мало данных», а не
+«запрет»: у вернувшегося после отъезда последняя отметка такая же свежая, и
+одна точка эти случаи не различает (на этом и вышла осечка с Актрисой
+13.08.2026 — она вернулась в тот же вечер). «Недописал» — сколько реплик потеряно против
 СВОЕГО же темпа: четверо суток молчания у пишущего раз в неделю не значат
 ничего. Темп при этом средний за всё окно, поэтому у затухавшего постепенно он
 завышен — наказание выглядит как ОБРЫВ на полном ходу, и разница видна по

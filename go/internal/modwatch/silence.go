@@ -47,30 +47,40 @@ type Commenter struct {
 // MinMissed — сколько реплик человек не написал против СВОЕГО же темпа. Без
 // этого порога список забивают редкие комментаторы: четверо суток молчания у
 // пишущего раз в неделю — не событие.
+//
+// MinSeenDays — на скольких РАЗНЫХ сутках молчания человек замечен на сайте.
+// Порог введён после разбора Актрисы u1431505 (13.08.2026): её признали
+// закрытой по одной свежей отметке, а она в тот же вечер вернулась — отметка
+// была не «ходит молча тринадцать суток», а «первый день на площадке после
+// отсутствия». Владелец анкеты потом объяснил: уезжала без связи. Одна точка
+// эти два случая не различает в принципе, различает только серия.
 const (
-	DefaultSilence   = 72 * time.Hour
-	DefaultFresh     = 24 * time.Hour
-	DefaultMargin    = 12 * time.Hour
-	DefaultMinMissed = 20
+	DefaultSilence     = 72 * time.Hour
+	DefaultFresh       = 24 * time.Hour
+	DefaultMargin      = 12 * time.Hour
+	DefaultMinMissed   = 20
+	DefaultMinSeenDays = 2
 )
 
 // Вердикты разбора.
 const (
-	VerdictBan       = "запрет?"    // молчит, но ходит до сих пор
-	VerdictLeftLater = "ушёл позже" // ещё ходил, замолчав, но потом пропал совсем
-	VerdictLeft      = "ушёл"       // перестал и писать, и заходить разом
-	VerdictUnknown   = "не опрошен" // анкету ещё не смотрели
-	VerdictMissing   = "анкеты нет" // 404: удалена или закрыта администрацией
+	VerdictBan       = "запрет?"     // молчит, но ходит — и ходил не только сегодня
+	VerdictThin      = "мало данных" // на площадке, но отметок внутри молчания мало: мог только вернуться
+	VerdictLeftLater = "ушёл позже"  // ещё ходил, замолчав, но потом пропал совсем
+	VerdictLeft      = "ушёл"        // перестал и писать, и заходить разом
+	VerdictUnknown   = "не опрошен"  // анкету ещё не смотрели
+	VerdictMissing   = "анкеты нет"  // 404: удалена или закрыта администрацией
 )
 
 // SilenceOptions — параметры разбора.
 type SilenceOptions struct {
-	Now       time.Time
-	Silence   time.Duration
-	Fresh     time.Duration
-	Margin    time.Duration
-	Window    time.Duration // окно, за которое посчитаны реплики круга
-	MinMissed float64       // 0 — не отсеивать (у остальных полей 0 означает «по умолчанию»)
+	Now         time.Time
+	Silence     time.Duration
+	Fresh       time.Duration
+	Margin      time.Duration
+	Window      time.Duration // окно, за которое посчитаны реплики круга
+	MinMissed   float64       // 0 — не отсеивать (у остальных полей 0 означает «по умолчанию»)
+	MinSeenDays int
 }
 
 func (o *SilenceOptions) defaults() {
@@ -89,6 +99,9 @@ func (o *SilenceOptions) defaults() {
 	if o.Window <= 0 {
 		o.Window = DefaultActivityWindow
 	}
+	if o.MinSeenDays <= 0 {
+		o.MinSeenDays = DefaultMinSeenDays
+	}
 }
 
 // SilenceRow — строка разбора.
@@ -100,19 +113,26 @@ type SilenceRow struct {
 	After        time.Duration // сколько ещё ходил после последней реплики
 	Stale        time.Duration // как давно опрашивали анкету
 	Missed       float64       // сколько реплик не написал против своего темпа
+	SeenDays     int           // на скольких разных сутках молчания замечен на сайте
 	HideMe       bool
 	VIP          bool
 	Verdict      string
 }
 
 // ClassifySilence разбирает замолчавших по данным обхода анкет. На вход — круг
-// с последней репликой каждого и снимки анкет; на выход — только молчащие
+// с последней репликой каждого, снимки анкет и след присутствия (`trail`:
+// отметки по анкетам, обычно из Store.ActivityIn); на выход — только молчащие
 // дольше порога, кандидаты на запрет впереди.
-func ClassifySilence(people []Commenter, profiles map[int64]ProfileRow, opt SilenceOptions) []SilenceRow {
+//
+// След обязателен по существу, а не для удобства: без него «ходит молча» и
+// «вернулся сегодня» — одна и та же картинка (см. MinSeenDays). Пустой след
+// не ошибка, но вердикты тогда честно вырождаются в «мало данных».
+func ClassifySilence(people []Commenter, profiles map[int64]ProfileRow,
+	trail map[int64][]time.Time, opt SilenceOptions) []SilenceRow {
 	opt.defaults()
 	var out []SilenceRow
 	for _, c := range people {
-		row, ok := silenceRow(c, profiles[c.UserID], opt)
+		row, ok := silenceRow(c, profiles[c.UserID], trail[c.UserID], opt)
 		if !ok {
 			continue
 		}
@@ -129,7 +149,7 @@ func ClassifySilence(people []Commenter, profiles map[int64]ProfileRow, opt Sile
 
 // silenceRow строит строку разбора по одному человеку. ok=false — он не молчит
 // достаточно долго либо молчание не идёт вразрез с его собственным темпом.
-func silenceRow(c Commenter, p ProfileRow, opt SilenceOptions) (SilenceRow, bool) {
+func silenceRow(c Commenter, p ProfileRow, stamps []time.Time, opt SilenceOptions) (SilenceRow, bool) {
 	if c.LastComment.IsZero() {
 		return SilenceRow{}, false
 	}
@@ -154,6 +174,7 @@ func silenceRow(c Commenter, p ProfileRow, opt SilenceOptions) (SilenceRow, bool
 		row.Stale = opt.Now.Sub(p.CheckedAt)
 		row.After = p.LastAt.Sub(c.LastComment)
 		row.Away = opt.Now.Sub(p.LastAt)
+		row.SeenDays = seenDays(stamps, c.LastComment)
 		row.Verdict = verdictOf(row, opt)
 	}
 	if row.Nick == "" {
@@ -162,19 +183,44 @@ func silenceRow(c Commenter, p ProfileRow, opt SilenceOptions) (SilenceRow, bool
 	return row, true
 }
 
-// verdictOf — правило: запрет это «молчит, но ходит СЕЙЧАС». Перестал ходить —
-// значит ушёл, и неважно, сколько ещё ходил после последней реплики; разница
-// лишь в том, разом он это сделал или в два приёма.
+// seenDays — на скольких разных сутках молчания человек замечен на сайте.
+// Сутки считаются от последней реплики, а не по календарю: так не нужен пояс
+// площадки, и мера прямо отвечает на вопрос «насколько плотно след покрывает
+// молчание». Отметки раньше последней реплики не в счёт — это ещё не молчание.
+func seenDays(stamps []time.Time, lastComment time.Time) int {
+	if lastComment.IsZero() {
+		return 0
+	}
+	buckets := map[int64]bool{}
+	for _, at := range stamps {
+		d := at.Sub(lastComment)
+		if d <= 0 {
+			continue
+		}
+		buckets[int64(d/(24*time.Hour))] = true
+	}
+	return len(buckets)
+}
+
+// verdictOf — правило: запрет это «молчит, но ходит СЕЙЧАС, и ходил не только
+// сегодня». Перестал ходить — значит ушёл, и неважно, сколько ещё ходил после
+// последней реплики; разница лишь в том, разом он это сделал или в два приёма.
+//
+// Оговорка про «мало данных» и есть главный урок Актрисы: свежая отметка у
+// вернувшегося и у закрытого выглядит одинаково, поэтому пока след не покрыл
+// хотя бы MinSeenDays разных суток молчания, называть это запретом нельзя.
 func verdictOf(r SilenceRow, opt SilenceOptions) string {
 	switch {
 	case r.LastActivity.IsZero():
 		return VerdictUnknown // анкету видели, но времени сайт не дал
-	case r.Away <= opt.Fresh:
-		return VerdictBan
-	case r.After >= opt.Margin:
+	case r.Away > opt.Fresh && r.After >= opt.Margin:
 		return VerdictLeftLater
-	default:
+	case r.Away > opt.Fresh:
 		return VerdictLeft
+	case r.SeenDays >= opt.MinSeenDays:
+		return VerdictBan
+	default:
+		return VerdictThin
 	}
 }
 
@@ -182,13 +228,15 @@ func verdictRank(v string) int {
 	switch v {
 	case VerdictBan:
 		return 0
-	case VerdictLeftLater:
+	case VerdictThin:
 		return 1
-	case VerdictUnknown:
+	case VerdictLeftLater:
 		return 2
-	case VerdictMissing:
+	case VerdictUnknown:
 		return 3
-	default:
+	case VerdictMissing:
 		return 4
+	default:
+		return 5
 	}
 }
