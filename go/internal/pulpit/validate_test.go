@@ -56,6 +56,7 @@ func TestValidate(t *testing.T) {
 		name string
 		text string
 		form string
+		hook string // деталь из заметки; пусто — проверять нечего
 		cfg  validateConfig
 		bad  bool
 	}{
@@ -173,10 +174,23 @@ func TestValidate(t *testing.T) {
 			text: "Смирение приходит не сразу.\n~ ~ ~\nЖди и не проси лишнего.",
 			form: "сценка", cfg: cfg,
 		},
+		{
+			// Деталь названа словами автора, пусть и в другом падеже.
+			name: "деталь из заметки",
+			text: "Кота-то за что. Он ипотеку не брал.",
+			form: "буквально", hook: "с ипотекой и котом", cfg: cfg,
+		},
+		{
+			// Шутка выросла из темы вообще, а деталь придумана: в заметке нет ни
+			// дачи, ни тёщи.
+			name: "выдуманная деталь",
+			text: "Кота-то за что. Он ипотеку не брал.",
+			form: "буквально", hook: "дача тёщи", cfg: cfg, bad: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reason := validate(tc.text, tc.form, tc.cfg)
+			reason := validate(quip{Text: tc.text, Form: tc.form, Hook: tc.hook}, tc.cfg)
 			if tc.bad && reason == "" {
 				t.Errorf("ожидался брак, реплика принята: %q", tc.text)
 			}
@@ -191,7 +205,7 @@ func TestValidate(t *testing.T) {
 // шрифт на площадке пропорциональный.
 func TestValidateArtBlockHeight(t *testing.T) {
 	art := strings.Repeat("/\\_/\\\n", 6)
-	reason := validate("Гляди в оба.\n"+art, "сценка", validateConfig{
+	reason := validate(quip{Text: "Гляди в оба.\n" + art, Form: "сценка"}, validateConfig{
 		MinRunes: 5, MaxRunes: 400, MaxLines: 20, AllowEmoji: true, Forms: quipForms,
 	})
 	if reason == "" {

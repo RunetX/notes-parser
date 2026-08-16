@@ -173,6 +173,37 @@ func spacesToNBSP(line string) string {
 	return b.String()
 }
 
+// hookPrefix — сколько первых рун слова сравниваем, проверяя, что деталь взята
+// из заметки. Не всё слово: русский язык склоняет, и «инжир с хозяйского куста»
+// против «хозяйский куст» в заметке — та же деталь. Четыре руны ловят корень
+// (склонение правит хвост, а не начало) и не требуют от нас морфологии. Слова
+// короче четырёх рун в расчёт не берутся вовсе: «и», «под», «куст» доказывают
+// не больше, чем совпадение по алфавиту.
+const hookPrefix = 4
+
+// hookInNote — названа ли деталь словами автора. Достаточно одного слова: модель
+// пересказывает деталь своей фразой, и требовать дословного совпадения целиком
+// значило бы жечь переспросы на склонениях.
+func hookInNote(hook, note string) bool {
+	if strings.TrimSpace(hook) == "" || strings.TrimSpace(note) == "" {
+		return true // нечего проверять
+	}
+	lower := strings.ToLower(note)
+	judged := false
+	for _, w := range words(hook) {
+		r := []rune(w)
+		if len(r) < hookPrefix {
+			continue // короткие слова («и», «под», «куст») ничего не доказывают
+		}
+		judged = true
+		if strings.Contains(lower, string(r[:hookPrefix])) {
+			return true
+		}
+	}
+	// Длинных слов не нашлось — судить не по чему, пропускаем.
+	return !judged
+}
+
 // validateConfig — пороги проверки одной реплики.
 type validateConfig struct {
 	MinRunes   int
@@ -190,7 +221,8 @@ type validateConfig struct {
 
 // validate возвращает причину брака ("" — годится). Причина едет хвостом в
 // промпт переспроса, поэтому формулируется как указание, а не как код ошибки.
-func validate(text, form string, cfg validateConfig) string {
+func validate(q quip, cfg validateConfig) string {
+	text, form := q.Text, q.Form
 	if strings.TrimSpace(text) == "" {
 		return "пустой текст"
 	}
@@ -232,6 +264,11 @@ func validate(text, form string, cfg validateConfig) string {
 	}
 	if len(cfg.Forms) > 0 && !hasForm(cfg.Forms, form) {
 		return "приём «" + form + "» не из предложенных (" + strings.Join(cfg.Forms, ", ") + ")"
+	}
+	if !hookInNote(q.Hook, cfg.NoteText) {
+		// Деталь названа, но её в заметке нет — значит шутка выросла из темы
+		// вообще (или из выдуманного факта), а не из того, что автор написал.
+		return "детали «" + q.Hook + "» в заметке нет: цепляйся за то, что написал автор"
 	}
 	return ""
 }

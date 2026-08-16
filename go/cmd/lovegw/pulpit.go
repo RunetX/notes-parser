@@ -92,8 +92,8 @@ func pulpitDraft(ctx context.Context, cfg *config.Config, st *store.Store, noteI
 				sm.Idea, time.Since(started).Round(time.Millisecond))
 			continue
 		}
-		fmt.Printf("--- реплика [%s, %s, %d знаков, %s]\n%s\n\n",
-			sm.Form, sm.Idea, len([]rune(sm.Text)),
+		fmt.Printf("--- реплика [%s, деталь: %s, %s, %d знаков, %s]\n%s\n\n",
+			sm.Form, sm.Hook, sm.Idea, len([]rune(sm.Text)),
 			time.Since(started).Round(time.Millisecond), sm.Text)
 	}
 	return nil

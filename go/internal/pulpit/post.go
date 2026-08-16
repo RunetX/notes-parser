@@ -146,9 +146,12 @@ func (s *Service) punchUp(ctx context.Context, note string, draft quip, cfg vali
 	if sharp.Text != draft.Text {
 		s.log.Debug("амвон: реплика поправлена", "было", draft.Text, "стало", sharp.Text)
 	}
-	// Форму и мысль дневника берём от черновика, если редактор их потерял.
+	// Форму, деталь и мысль дневника берём от черновика, если редактор их потерял.
 	if sharp.Form == "" {
 		sharp.Form = draft.Form
+	}
+	if sharp.Hook == "" {
+		sharp.Hook = draft.Hook
 	}
 	if sharp.Idea == "" {
 		sharp.Idea = draft.Idea
@@ -201,7 +204,7 @@ func (s *Service) askOnce(ctx context.Context, system, prompt string, schema map
 		return quip{Skip: true, Idea: sm.Idea}, false, nil
 	}
 	sm.Text = normalize(sm.Text)
-	if reason := validate(sm.Text, sm.Form, cfg); reason != "" {
+	if reason := validate(sm, cfg); reason != "" {
 		return quip{}, true, fmt.Errorf("%s", reason)
 	}
 	return sm, false, nil
