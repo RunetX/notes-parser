@@ -107,7 +107,7 @@ func (c *Client) postCredentials(ctx context.Context, hc *http.Client, login, pa
 	if resp.StatusCode != http.StatusOK {
 		return lr, fmt.Errorf("вход: сайт вернул статус %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, jsonBodyLimit))
 	if err != nil {
 		return lr, err
 	}

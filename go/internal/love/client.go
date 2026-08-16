@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +22,15 @@ const (
 
 	requestTimeout = 15 * time.Second
 	getRetries     = 3
+
+	// pageSizeLimit — потолок страницы сайта. Ответ читается целиком в память,
+	// и без потолка сорвавшийся (или враждебный) ответ раздул бы демон.
+	// Переполнение — явная ошибка, а не молчаливая обрезка: обрезанный HTML
+	// выглядел бы дрейфом вёрстки и поднял бы ложную тревогу.
+	pageSizeLimit = 16 << 20
+
+	// maxRedirects — потолок цепочки перенаправлений (у net/http дефолт 10).
+	maxRedirects = 5
 )
 
 // Виды отображения комментариев на сайте. Древовидный проставляет числовой
@@ -62,6 +72,12 @@ func NewWithClient(baseURL, userAgent string, requestInterval time.Duration, hc 
 	}
 	if hc == nil {
 		hc = &http.Client{Timeout: requestTimeout}
+	}
+	// Политика перенаправлений своя, если вызывающий не задал свою: за медиа мы
+	// ходим по ссылке с чужой страницы, и цепочка редиректов — та же ссылка,
+	// только не видная заранее. Куки на чужой домен net/http не отдаёт и сам.
+	if hc.CheckRedirect == nil {
+		hc.CheckRedirect = checkRedirect
 	}
 	return &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
@@ -171,6 +187,9 @@ const mediaSizeLimit = 10 << 20
 // hsmedia.ru) отдаёт им не картинку — отсюда «wrong type of the web page
 // content». Байты качаем сами и грузим в Telegram как файл.
 func (c *Client) FetchMedia(ctx context.Context, rawURL string) ([]byte, error) {
+	if err := checkMediaURL(ctx, rawURL); err != nil {
+		return nil, err
+	}
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, err
 	}
@@ -188,6 +207,61 @@ func (c *Client) FetchMedia(ctx context.Context, rawURL string) ([]byte, error) 
 		return nil, fmt.Errorf("аватар %s: статус %d", rawURL, resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, mediaSizeLimit))
+}
+
+// checkMediaURL решает, пойдём ли мы по ссылке за картинкой. Ссылка приезжает
+// атрибутом чужой страницы, а демон живёт на VPS: без проверки он сходил бы по
+// ней и во внутреннюю сеть — к соседям по хосту и к метаданным облака.
+func checkMediaURL(ctx context.Context, rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("медиа %q: ссылка не разбирается", rawURL)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("медиа %q: допустимы только http и https", rawURL)
+	}
+	if internalHost(ctx, u.Hostname()) {
+		return fmt.Errorf("медиа %q: адрес во внутренней сети", rawURL)
+	}
+	return nil
+}
+
+// checkRedirect — та же проверка на каждом шаге цепочки: перенаправление уводит
+// туда же, куда и прямая ссылка, только незаметно.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("перенаправлений больше %d", maxRedirects)
+	}
+	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+		return fmt.Errorf("перенаправление на схему %q", req.URL.Scheme)
+	}
+	if internalHost(req.Context(), req.URL.Hostname()) {
+		return fmt.Errorf("перенаправление на внутренний адрес %q", req.URL.Host)
+	}
+	return nil
+}
+
+// internalHost — адрес не из публичного интернета: литерал внутреннего адреса
+// или имя, которое в такой адрес разрешается. Имя проверяется по ВСЕМ его
+// адресам: одного публичного в ответе мало, ходить будут по любому из них.
+// Неразрешимое имя считаем внутренним — идти всё равно некуда.
+func internalHost(ctx context.Context, host string) bool {
+	if host == "" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsGlobalUnicast() || ip.IsPrivate()
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return true
+	}
+	for _, a := range ips {
+		if !a.IP.IsGlobalUnicast() || a.IP.IsPrivate() {
+			return true
+		}
+	}
+	return false
 }
 
 // get выполняет GET с ретраями (сеть/5xx) и экспоненциальным backoff.
@@ -239,8 +313,14 @@ func (c *Client) getOnce(ctx context.Context, path string, cookies []*http.Cooki
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
-		b, err := io.ReadAll(resp.Body)
-		return b, true, err
+		b, err := io.ReadAll(io.LimitReader(resp.Body, pageSizeLimit+1))
+		if err != nil {
+			return nil, true, err
+		}
+		if len(b) > pageSizeLimit {
+			return nil, false, fmt.Errorf("GET %s: страница больше %d байт", path, pageSizeLimit)
+		}
+		return b, true, nil
 	case resp.StatusCode == http.StatusForbidden:
 		return nil, false, fmt.Errorf("GET %s: %w", path, ErrForbidden)
 	case resp.StatusCode == http.StatusNotFound:

@@ -201,3 +201,55 @@ func TestPostNoteForm(t *testing.T) {
 		}
 	}
 }
+
+// Ссылка на медиа приезжает атрибутом чужой страницы, а демон живёт на VPS:
+// без проверки он сходил бы по ней и во внутреннюю сеть хоста.
+func TestCheckMediaURL(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		url  string
+		ok   bool
+	}{
+		{"публичный литерал", "https://93.184.216.34/a.jpg", true},
+		{"http тоже можно", "http://93.184.216.34/a.jpg", true},
+		{"javascript", "javascript:alert(1)", false},
+		{"data", "data:image/png;base64,AAAA", false},
+		{"file", "file:///etc/passwd", false},
+		{"loopback", "http://127.0.0.1/a.jpg", false},
+		{"метаданные облака", "http://169.254.169.254/latest/meta-data/", false},
+		{"частная сеть", "http://10.0.0.5/a.jpg", false},
+		{"частная сеть 192.168", "http://192.168.1.1/a.jpg", false},
+		{"ipv6 loopback", "http://[::1]/a.jpg", false},
+		{"без хоста", "http:///a.jpg", false},
+	} {
+		err := checkMediaURL(ctx, tc.url)
+		if tc.ok && err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+		if !tc.ok && err == nil {
+			t.Errorf("%s: %q должен быть отвергнут", tc.name, tc.url)
+		}
+	}
+}
+
+// Перенаправление уводит туда же, куда прямая ссылка, только незаметно.
+func TestCheckRedirect(t *testing.T) {
+	req := func(u string) *http.Request {
+		r, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if err := checkRedirect(req("https://93.184.216.34/a.jpg"), nil); err != nil {
+		t.Errorf("публичный адрес должен проходить: %v", err)
+	}
+	if err := checkRedirect(req("http://169.254.169.254/"), nil); err == nil {
+		t.Error("перенаправление во внутреннюю сеть должно отвергаться")
+	}
+	via := make([]*http.Request, maxRedirects)
+	if err := checkRedirect(req("https://93.184.216.34/a.jpg"), via); err == nil {
+		t.Error("цепочка длиннее потолка должна обрываться")
+	}
+}
