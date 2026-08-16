@@ -48,9 +48,7 @@ func cmdGrab(ctx context.Context, args []string) error {
 	saveHTML := fs.String("save-html", "", "каталог для сохранения сырого HTML (фикстуры)")
 	view := fs.String("view", love.ViewTree, "вид комментариев: tree (с деревом ответов) или linear")
 	maxPages := fs.Int("max-pages", 0, "предел числа страниц комментариев (0 — все)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "db": true, "out": true, "save-html": true, "view": true, "max-pages": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -64,8 +62,7 @@ func cmdGrab(ctx context.Context, args []string) error {
 		return err
 	}
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 
 	res, err := grabNote(ctx, client, grabOptions{
 		baseURL:  cfg.Site.BaseURL,

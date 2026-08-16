@@ -64,30 +64,41 @@ import (
 
 // udfErr — ошибка регистрации UDF. Регистрация обязана произойти до открытия
 // первого соединения (драйвер раздаёт функции только тем, что открыты после),
-// поэтому она в init, а ошибка всплывает в Open.
+// поэтому она в init, а ошибка всплывает в Open. Молча её терять нельзя: без
+// функции запрос падает уже в бою, а выглядит это как «в архиве нет данных».
 var udfErr error
 
 func init() {
-	// ru_lower — регистронезависимое сравнение ников: встроенный lower() в
-	// SQLite приводит регистр только у ASCII, а ники сплошь кириллические.
-	if err := sqlite3.RegisterDeterministicScalarFunction("ru_lower", 1,
-		func(_ *sqlite3.FunctionContext, args []driver.Value) (driver.Value, error) {
-			s, _ := args[0].(string)
-			return strings.ToLower(s), nil
-		}); err != nil {
-		udfErr = fmt.Errorf("регистрация ru_lower: %w", err)
-		return
-	}
+	// ulower — Unicode-корректный lower(). Встроенные lower() и LIKE в SQLite
+	// приводят регистр только у ASCII, а ники и тексты сплошь кириллические:
+	// без этой функции мимо шаблонов прошли бы и «Вторая анкета», и половина
+	// сравнений ников.
+	registerUDF("ulower", func(s string) (driver.Value, error) {
+		return strings.ToLower(s), nil
+	})
 	// addr_prefix — обращение из начала реплики; NULL, если обращения нет.
-	if err := sqlite3.RegisterDeterministicScalarFunction("addr_prefix", 1,
+	registerUDF("addr_prefix", func(s string) (driver.Value, error) {
+		if p := love.AddressPrefix(s); p != "" {
+			return p, nil
+		}
+		return nil, nil
+	})
+}
+
+// registerUDF регистрирует однострочную скалярную функцию над текстом.
+// Не-строка (NULL, число) отдаётся как есть — так же ведут себя встроенные
+// функции SQLite.
+func registerUDF(name string, fn func(string) (driver.Value, error)) {
+	err := sqlite3.RegisterDeterministicScalarFunction(name, 1,
 		func(_ *sqlite3.FunctionContext, args []driver.Value) (driver.Value, error) {
-			s, _ := args[0].(string)
-			if p := love.AddressPrefix(s); p != "" {
-				return p, nil
+			s, ok := args[0].(string)
+			if !ok {
+				return args[0], nil
 			}
-			return nil, nil
-		}); err != nil {
-		udfErr = fmt.Errorf("регистрация addr_prefix: %w", err)
+			return fn(s)
+		})
+	if err != nil && udfErr == nil {
+		udfErr = fmt.Errorf("регистрация %s: %w", name, err)
 	}
 }
 
@@ -266,7 +277,7 @@ func (s *Store) BuildAddressees(ctx context.Context, progress func(string)) (Add
 
 		DROP TABLE IF EXISTS temp._uname;
 		CREATE TEMP TABLE _uname (user_id INTEGER PRIMARY KEY, nick TEXT NOT NULL);
-		INSERT INTO _uname SELECT id, ru_lower(name) FROM users WHERE name != '';
+		INSERT INTO _uname SELECT id, ulower(name) FROM users WHERE name != '';
 		CREATE INDEX temp._uname_nick ON _uname(nick);`); err != nil {
 		return st, err
 	}

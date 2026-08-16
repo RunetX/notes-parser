@@ -66,9 +66,7 @@ func modwatchBans(ctx context.Context, args []string) error {
 	tolerance := fs.Duration("tolerance", modwatch.DefaultBanTolerance, "допустимое опоздание возврата после снятия")
 	minAround := fs.Int("min-around", modwatch.DefaultBanMinAround, "сколько реплик должно быть по обе стороны паузы")
 	maxWindow := fs.Duration("max-window", 0, "показывать только запреты с окном не шире (0 — все)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"db": true, "tolerance": true, "min-around": true, "max-window": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	store, err := modwatch.Open(ctx, *dbPath)
@@ -150,10 +148,7 @@ func modwatchGuests(ctx context.Context, args []string) error {
 	near := fs.String("near", "", "показать визиты вокруг момента — "+momentUsage)
 	window := fs.Duration("window", 30*time.Minute, "полуширина окна для -near")
 	since := fs.String("since", "", "с какого момента — "+momentUsage)
-	if err := fs.Parse(reorderArgs(rest, map[string]bool{
-		"config": true, "db": true, "messenger": true, "user": true,
-		"interval": true, "pages": true, "near": true, "window": true, "since": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)
@@ -176,9 +171,8 @@ func modwatchGuests(ctx context.Context, args []string) error {
 		return err
 	}
 	w := &modwatch.GuestWatcher{
-		Source: guestSource{c: love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-			time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log), cookies: cookies},
-		Store: db, Log: log, Interval: *interval, Pages: *pages,
+		Source: guestSource{c: newSiteClient(cfg, log), cookies: cookies},
+		Store:  db, Log: log, Interval: *interval, Pages: *pages,
 	}
 	if *once {
 		n, err := w.Poll(ctx)
@@ -310,10 +304,7 @@ func modwatchWatch(ctx context.Context, args []string) error {
 	maxThreads := fs.Int("max-threads", modwatch.DefaultMaxThreads, "сколько тредов опрашивать за тик")
 	maxPages := fs.Int("pages", modwatch.DefaultMaxPages, "предел страниц комментариев на тред")
 	once := fs.Bool("once", false, "один проход и выход (проверка настройки)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "db": true, "feed-interval": true, "thread-interval": true,
-		"window": true, "depth": true, "max-threads": true, "pages": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)
@@ -321,8 +312,7 @@ func modwatchWatch(ctx context.Context, args []string) error {
 		return err
 	}
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 
 	store, err := modwatch.Open(ctx, *dbPath)
 	if err != nil {
@@ -357,7 +347,7 @@ func modwatchWatch(ctx context.Context, args []string) error {
 func modwatchStatus(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("modwatch status", flag.ExitOnError)
 	dbPath := fs.String("db", defaultModwatchPath, modwatchDBUsage)
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"db": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	store, err := modwatch.Open(ctx, *dbPath)
@@ -388,10 +378,7 @@ func modwatchEvents(ctx context.Context, args []string) error {
 	minAge := fs.Duration(flagAgeMin, 0, "только события над объектом старше указанного возраста")
 	maxAge := fs.Duration(flagAgeMax, 0, "только события над объектом моложе указанного возраста (проверка таймером)")
 	limit := fs.Int("limit", 200, "сколько строк показать")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"db": true, "since": true, "until": true, "kind": true,
-		flagAgeMin: true, flagAgeMax: true, "limit": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	store, err := modwatch.Open(ctx, *dbPath)
@@ -447,10 +434,7 @@ func modwatchReport(ctx context.Context, args []string) error {
 	seed := fs.Int64("seed", 1, "зерно выбора контрольных окон")
 	minHits := fs.Int("min-hits", 3, "не показывать тех, кто совпал реже")
 	top := fs.Int("top", 25, "сколько строк показать")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"db": true, "since": true, "until": true, "kind": true, "presence-window": true,
-		"controls": true, "seed": true, "min-hits": true, "top": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	store, err := modwatch.Open(ctx, *dbPath)

@@ -46,9 +46,7 @@ func cmdDigest(ctx context.Context, args []string) error {
 	fs.StringVar(&o.to, "to", "", "только один мессенджер: telegram или max")
 	fs.BoolVar(&o.force, "force", false, "draft: перезаписать черновик; preview/publish: выбросить секции с незаполненными LLM-плейсхолдерами")
 	fs.BoolVar(&o.llm, "llm", false, "draft: заполнить LLM-рубрики через Claude API (нужен llm.api_key)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "db": true, "week": true, "out": true, "in": true, "to": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if o.week > 0 {

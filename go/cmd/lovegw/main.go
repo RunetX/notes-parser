@@ -203,7 +203,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	seed := fs.Bool("seed", false, "первый обход ленты: запомнить заметки без постинга")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)
@@ -275,10 +275,9 @@ type daemon struct {
 // через одного бота (long polling GetUpdates в каждом).
 func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bool, log *slog.Logger) error {
 	d := &daemon{
-		cfg: cfg,
-		st:  st,
-		client: love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-			time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log),
+		cfg:       cfg,
+		st:        st,
+		client:    newSiteClient(cfg, log),
 		log:       log,
 		seed:      seed,
 		subNotify: map[string]mirror.SubNotify{},
@@ -865,9 +864,7 @@ func cmdImport(ctx context.Context, args []string) error {
 	notesPath := fs.String("notes", "", "notes.json старой версии")
 	sessionsPath := fs.String("sessions", "", "JSON с экспортированными куки пользователей старой версии")
 	subscribersPath := fs.String("subscribers", "", "subscribers.json старой версии")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "notes": true, "sessions": true, "subscribers": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if *notesPath == "" && *sessionsPath == "" && *subscribersPath == "" {
@@ -935,7 +932,16 @@ func cmdImport(ctx context.Context, args []string) error {
 // flag прекращает разбор на первом позиционном, а команды вида
 // `crawl notes -save-html dir` естественно писать флагами после.
 // valueFlags — имена флагов, ожидающих значение следующим токеном.
-func reorderArgs(args []string, valueFlags map[string]bool) []string {
+func reorderArgs(args []string, fs *flag.FlagSet) []string {
+	valueFlags := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		// Булев флаг значения не берёт: «-html cluster» — это флаг и действие,
+		// а не флаг со значением.
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			return
+		}
+		valueFlags[f.Name] = true
+	})
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -971,7 +977,7 @@ func cmdCrawl(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	saveHTML := fs.String("save-html", "", "каталог для сохранения сырого HTML (фикстуры)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true, "save-html": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
@@ -984,8 +990,7 @@ func cmdCrawl(ctx context.Context, args []string) error {
 		return err
 	}
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 
 	switch fs.Arg(0) {
 	case "notes":

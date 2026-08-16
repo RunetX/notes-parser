@@ -28,7 +28,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	postTest := fs.Bool("post-test", false, "тестовый пост в канал с проверкой автофорварда (сообщение удаляется)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 
@@ -62,8 +62,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 	ok("база данных", fmt.Sprintf("%s, заметок: %d", cfg.DBPath, len(ids)))
 	doctorSecrets(ctx, cfg, st, ok, warn, fail)
 
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, nil)
+	client := newSiteClient(cfg, nil)
 	if _, err := client.RawNotes(ctx); err != nil {
 		if errors.Is(err, love.ErrForbidden) {
 			warn("сайт", "403: геоблок — нужен разрешённый (российский) IP")

@@ -53,7 +53,7 @@ func cmdExport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
 	outDir := fs.String("out", ".", "каталог для <id>.json")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"db": true, "out": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {

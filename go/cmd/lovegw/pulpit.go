@@ -26,7 +26,7 @@ func cmdPulpit(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("pulpit", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	dbPath := fs.String("db", "", "путь к БД (по умолчанию из конфига)")
-	if err := fs.Parse(reorderArgs(rest, map[string]bool{"config": true, "db": true})); err != nil {
+	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)

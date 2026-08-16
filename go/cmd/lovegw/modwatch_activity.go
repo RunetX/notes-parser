@@ -59,12 +59,7 @@ func modwatchActivity(ctx context.Context, args []string) error {
 	since := fs.String("since", "", "с какого момента — "+momentUsage)
 	near := fs.String("near", "", "показать присутствие вокруг момента — "+momentUsage)
 	window := fs.Duration("window", 30*time.Minute, "полуширина окна для -near")
-	if err := fs.Parse(reorderArgs(rest, map[string]bool{
-		"config": true, "db": true, "source": true, "interval": true, "batch": true,
-		"active": true, "min-comments": true, "users": true, "silence": true,
-		"fresh": true, "margin": true, "min-missed": true, "top": true,
-		"user": true, "since": true, "near": true, "window": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
 	silenceOpts := modwatch.SilenceOptions{

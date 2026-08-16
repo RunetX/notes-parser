@@ -128,7 +128,7 @@ func secretsStatus(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("secrets status", flag.ExitOnError)
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	accountsPath := fs.String("accounts", "", accountsFlagUsage)
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true, "accounts": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)
@@ -203,9 +203,7 @@ func secretsEncrypt(ctx context.Context, args []string) error {
 	cfgPath := fs.String("config", defaultConfigPath, configFlagUsage)
 	accountsPath := fs.String("accounts", "", accountsFlagUsage)
 	oldKeyEnv := fs.String("old-key-env", "", "переменная со СТАРЫМ ключом — для ротации")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "accounts": true, "old-key-env": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*cfgPath)

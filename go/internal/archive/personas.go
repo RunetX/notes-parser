@@ -3,30 +3,12 @@ package archive
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
-
-	sqlite "modernc.org/sqlite"
 )
-
-// init регистрирует ulower — Unicode-корректный lower(). Встроенные LIKE и
-// lower() SQLite приводят регистр только ASCII, поэтому кириллические
-// самораскрытия («Вторая анкета») мимо шаблонов бы прошли. Функция доступна
-// всем соединениям, открытым после регистрации, — init гарантирует это до Open.
-func init() {
-	_ = sqlite.RegisterDeterministicScalarFunction("ulower", 1,
-		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
-			s, ok := args[0].(string)
-			if !ok {
-				return args[0], nil // NULL/не-строка — как есть
-			}
-			return strings.ToLower(s), nil
-		})
-}
 
 // migrateV3SQL — слой распознавания личностей (persona resolution) поверх сырых
 // users. Обратимый и производный: сами users не трогаем. disclosure_hits —

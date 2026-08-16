@@ -111,23 +111,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 	accept := fs.Float64("accept", 0, "порог квантиля эталонной полосы для приёмки (voice; 0 — дефолт 0.25)")
 	maxCopy := fs.Float64("max-copy", 0, "потолок пересечения черновика с образцами (voice; 0 — дефолт 0.30)")
 	control := fs.String("control", "", "вторая личность для контроля различающей силы (voice note/comment)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"db": true, "out": true, "in": true, "limit": true, "min-score": true, "patterns": true,
-		"config": true, "workers": true, "interval-ms": true, "max-dist": true, "generic-max": true,
-		"min-chars": true, "dims": true, "min-cosine": true, "top-k": true, "max-pairs": true,
-		"top": true, "ens-top-k": true, "handoff-days": true, "ens-floor": true,
-		"max-persona": true, "min-density": true,
-		"topics": true, "min-hits": true, "min-notes": true, "evidence": true,
-		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
-		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
-		"account":    true,
-		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
-		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
-		"from": true, "to": true, "min-text": true, "max-comments": true,
-		"recent": true, "samples": true, "band": true, "seed": true, "top-words": true,
-		"topic": true, "reply-to": true, "drafts": true, "rounds": true,
-		"accept": true, "max-copy": true, "control": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {

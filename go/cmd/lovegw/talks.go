@@ -16,7 +16,6 @@ import (
 
 	"lovegw/internal/config"
 	"lovegw/internal/dmbot"
-	"lovegw/internal/love"
 	"lovegw/internal/store"
 	"lovegw/internal/talks"
 	"lovegw/internal/tgx"
@@ -34,9 +33,7 @@ func cmdTalks(ctx context.Context, args []string) error {
 	testSend := fs.Bool("test-send", false, "диагностика доставки: показать @ЛС-бота и отправить одно тестовое ЛС")
 	to := fs.Int64("to", 0, "Telegram chat_id получателя (0 — сам админ); для показа в другой аккаунт")
 	all := fs.Bool("all", false, "мультисессия: обходить ВСЕ валидные сессии, а не только админа (admin_only=false)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "db": true, "interval": true, "max-dialogs": true, "history-limit": true, "backfill": true, "to": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 || fs.Arg(0) != "watch" {
@@ -74,8 +71,7 @@ func cmdTalks(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 
 	tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
 	if err != nil {

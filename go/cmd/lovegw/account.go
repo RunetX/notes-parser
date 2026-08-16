@@ -50,24 +50,18 @@ func cmdAccount(ctx context.Context, args []string) error {
 
 // accountFlags — общие флаги подкоманд: конфиг и путь к базе аккаунтов.
 type accountFlags struct {
-	cfgPath   *string
-	accounts  *string
-	name      *string
-	valueArgs map[string]bool
+	cfgPath  *string
+	accounts *string
+	name     *string
 }
 
-func accountFlagSet(name string, extra map[string]bool) (*flag.FlagSet, accountFlags) {
+func accountFlagSet(name string) (*flag.FlagSet, accountFlags) {
 	fs := flag.NewFlagSet("account "+name, flag.ExitOnError)
-	f := accountFlags{
-		cfgPath:   fs.String("config", defaultConfigPath, configFlagUsage),
-		accounts:  fs.String("accounts", "", accountsFlagUsage),
-		name:      fs.String("name", "", "имя аккаунта (например reserve)"),
-		valueArgs: map[string]bool{"config": true, "accounts": true, "name": true},
+	return fs, accountFlags{
+		cfgPath:  fs.String("config", defaultConfigPath, configFlagUsage),
+		accounts: fs.String("accounts", "", accountsFlagUsage),
+		name:     fs.String("name", "", "имя аккаунта (например reserve)"),
 	}
-	for k, v := range extra {
-		f.valueArgs[k] = v
-	}
-	return fs, f
 }
 
 // accountLogin — вход на сайт и сохранение сессии.
@@ -75,10 +69,10 @@ func accountFlagSet(name string, extra map[string]bool) (*flag.FlagSet, accountF
 // Логин и пароль читаются со stdin: во флаге они осели бы в истории оболочки и
 // светились в `ps` у всех на машине.
 func accountLogin(ctx context.Context, args []string) error {
-	fs, f := accountFlagSet("login", map[string]bool{"purpose": true})
+	fs, f := accountFlagSet("login")
 	// Не -note: в этом CLI -note всюду означает id заметки на сайте.
 	purpose := fs.String("purpose", "", "зачем этот аккаунт (свободный текст, попадёт в account list)")
-	if err := fs.Parse(reorderArgs(args, f.valueArgs)); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if *f.name == "" {
@@ -94,8 +88,7 @@ func accountLogin(ctx context.Context, args []string) error {
 	}
 
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 	cookies, err := client.Login(ctx, login, password)
 	if err != nil {
 		return fmt.Errorf("вход на сайт: %w", err)
@@ -157,8 +150,8 @@ func readLine(r *bufio.Reader) (string, error) {
 }
 
 func accountList(ctx context.Context, args []string) error {
-	fs, f := accountFlagSet("list", nil)
-	if err := fs.Parse(reorderArgs(args, f.valueArgs)); err != nil {
+	fs, f := accountFlagSet("list")
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*f.cfgPath)
@@ -209,8 +202,8 @@ func fmtTimeOrDash(t time.Time) string {
 // accountCheck — жива ли сессия. Заодно ловит смену ника и бан: сайт под
 // мёртвой сессией отвечает как гостю.
 func accountCheck(ctx context.Context, args []string) error {
-	fs, f := accountFlagSet("check", nil)
-	if err := fs.Parse(reorderArgs(args, f.valueArgs)); err != nil {
+	fs, f := accountFlagSet("check")
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	cfg, err := config.Load(*f.cfgPath)
@@ -239,8 +232,7 @@ func accountCheck(ctx context.Context, args []string) error {
 		return nil
 	}
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 	for _, name := range names {
 		if err := checkAccount(ctx, db, client, name); err != nil {
 			return err
@@ -277,8 +269,8 @@ func checkAccount(ctx context.Context, db *acct.Store, client *love.Client, name
 }
 
 func accountForget(ctx context.Context, args []string) error {
-	fs, f := accountFlagSet("forget", nil)
-	if err := fs.Parse(reorderArgs(args, f.valueArgs)); err != nil {
+	fs, f := accountFlagSet("forget")
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if *f.name == "" {
@@ -309,8 +301,8 @@ func accountForget(ctx context.Context, args []string) error {
 // может). Пишем ТОЛЬКО в пайп: печать сессии на экран — прямой путь к тому,
 // чтобы она осела в скроллбеке или в чьём-нибудь скриншоте.
 func accountCookie(ctx context.Context, args []string) error {
-	fs, f := accountFlagSet("cookie", nil)
-	if err := fs.Parse(reorderArgs(args, f.valueArgs)); err != nil {
+	fs, f := accountFlagSet("cookie")
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if *f.name == "" {
@@ -401,12 +393,12 @@ func siteCookies(ctx context.Context, cfg *config.Config, accounts, messenger st
 // вести переписку. Отсюда подтверждение перед отправкой и печать id своей
 // реплики — по нему потом сверяют, что с ней стало.
 func accountSay(ctx context.Context, args []string) error {
-	fs, f := accountFlagSet("say", map[string]bool{"note": true, "reply": true})
+	fs, f := accountFlagSet("say")
 	noteID := fs.String("note", "", "id заметки")
 	replyTo := fs.Int64("reply", 0, "id комментария, которому отвечаем (0 — в корень заметки)")
 	noPrefix := fs.Bool("no-prefix", false, "не подставлять обращение «Ник, …»")
 	yes := fs.Bool("yes", false, "не спрашивать подтверждения")
-	if err := fs.Parse(reorderArgs(args, f.valueArgs)); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	if *f.name == "" || *noteID == "" {
@@ -434,8 +426,7 @@ func accountSay(ctx context.Context, args []string) error {
 	}
 
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 	page, err := client.FetchCommentsPage(ctx, *noteID)
 	if err != nil {
 		return fmt.Errorf("заметка %s: %w", *noteID, err)

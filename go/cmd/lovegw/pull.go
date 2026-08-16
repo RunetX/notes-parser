@@ -28,7 +28,7 @@ func cmdPull(ctx context.Context, args []string) error {
 	dbPath := fs.String("db", "", "путь к БД (перебивает db_path из конфига)")
 	full := fs.Bool("full", false,
 		"дотянуть весь тред (view=tree, все страницы) и снять заметку с архива — все комментарии уйдут в мессенджеры")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{"config": true, "db": true})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 	ids := fs.Args()
@@ -44,8 +44,7 @@ func cmdPull(ctx context.Context, args []string) error {
 		cfg.DBPath = *dbPath
 	}
 	log := newLogger(cfg.LogLevel)
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+	client := newSiteClient(cfg, log)
 
 	st, err := openStore(ctx, cfg)
 	if err != nil {

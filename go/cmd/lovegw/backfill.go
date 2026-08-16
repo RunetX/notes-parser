@@ -51,10 +51,7 @@ func cmdBackfill(ctx context.Context, args []string) error {
 	refresh := fs.Bool("refresh", false, "пере-обходить уже загруженные заметки")
 	limit := fs.Int("limit", 0, "ограничить число заметок в прогоне (0 — все; для теста)")
 	startPage := fs.Int("start-page", 1, "начать обход ленты с этой страницы (id≈240866 ≈ стр. 1500; экономит тысячи страниц на старом диапазоне)")
-	if err := fs.Parse(reorderArgs(args, map[string]bool{
-		"config": true, "db": true, "workers": true, "interval-ms": true,
-		"from": true, "to": true, "limit": true, "start-page": true,
-	})); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		return err
 	}
 
