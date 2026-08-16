@@ -361,11 +361,16 @@ func scanComment(rows *sql.Rows) (Comment, error) {
 		&c.AuthorLink, &c.AvatarURL, &published, &c.Text, &tgMsg, &createdAt); err != nil {
 		return c, err
 	}
+	var err error
 	if published.Valid {
-		c.PublishedAt = parseTime(published.String)
+		if c.PublishedAt, err = parseTime(published.String); err != nil {
+			return c, err
+		}
 	}
 	if createdAt.Valid {
-		c.CreatedAt = parseTime(createdAt.String)
+		if c.CreatedAt, err = parseTime(createdAt.String); err != nil {
+			return c, err
+		}
 	}
 	c.TGMessageID = tgMsg.Int64
 	return c, nil
@@ -383,9 +388,14 @@ func scanNote(rows *sql.Rows) (Note, error) {
 	}
 	n.TGMessageID = tgMsg.Int64
 	n.TGThreadID = tgThread.Int64
-	n.FirstSeenAt = parseTime(firstSeen)
+	var err error
+	if n.FirstSeenAt, err = parseTime(firstSeen); err != nil {
+		return n, err
+	}
 	if lastComment.Valid {
-		n.LastCommentAt = parseTime(lastComment.String)
+		if n.LastCommentAt, err = parseTime(lastComment.String); err != nil {
+			return n, err
+		}
 	}
 	n.CommentsClosed = commentsClosed == 1
 	return n, nil
@@ -413,7 +423,14 @@ func fmtTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func parseTime(s string) time.Time {
-	t, _ := time.Parse(time.RFC3339, s)
-	return t
+// parseTime разбирает время из колонки. Ошибка не глушится: битая строка
+// времени — это битая запись БД, и честная ошибка чтения лучше нулевого
+// time.Time (нулевой FirstSeenAt, например, означал бы мгновенную архивацию
+// заметки через ShouldArchive).
+func parseTime(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("разбор времени %q: %w", s, err)
+	}
+	return t, nil
 }

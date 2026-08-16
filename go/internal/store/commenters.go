@@ -32,7 +32,7 @@ func (s *Store) Commenters(ctx context.Context, since time.Time, minComments int
         SELECT author_link, author_name, COALESCE(published_at, created_at) AS at
           FROM comments
          WHERE COALESCE(published_at, created_at) >= ?
-         ORDER BY at`, since.UTC().Format(time.RFC3339))
+         ORDER BY at`, fmtTime(since))
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +56,11 @@ func (s *Store) Commenters(ctx context.Context, since time.Time, minComments int
 		// Идём по возрастанию времени, поэтому последняя запись побеждает — и
 		// ник берётся тот, под которым человек писал последний раз.
 		c.Nick = name
-		if t, err := time.Parse(time.RFC3339, at); err == nil {
-			c.LastComment = t.UTC()
+		t, err := parseTime(at)
+		if err != nil {
+			return nil, err
 		}
+		c.LastComment = t.UTC()
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

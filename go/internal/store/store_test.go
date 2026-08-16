@@ -59,6 +59,25 @@ func TestNoteAvatarRoundtrip(t *testing.T) {
 	}
 }
 
+// TestScanNoteBrokenTimeIsError: битая строка времени в БД — ошибка чтения, а
+// не Note с нулевым FirstSeenAt (нулевое время означало бы мгновенную
+// архивацию заметки через ShouldArchive).
+func TestScanNoteBrokenTimeIsError(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	if _, err := st.InsertNote(ctx, Note{ID: "n1", Text: "т", Status: StatusPosted, FirstSeenAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE notes SET first_seen_at = 'мусор' WHERE id = 'n1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.NoteByID(ctx, "n1"); err == nil {
+		t.Fatal("битое first_seen_at должно давать ошибку чтения")
+	} else if errors.Is(err, ErrNotFound) {
+		t.Fatalf("битое время замаскировано под ErrNotFound: %v", err)
+	}
+}
+
 // TestSingleRowErrorIsNotNotFound закрепляет контракт однострочных выборок:
 // ошибка БД не маскируется под ErrNotFound. Вызывающие различают эти случаи
 // (bridge молча отбрасывает «не найдено», но обязан логировать ошибку БД).

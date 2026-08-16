@@ -140,9 +140,13 @@ func (s *Store) CommenterHistory(ctx context.Context, start, end time.Time) ([]C
 		if err := rows.Scan(&cs.Link, &cs.Name, &cs.InWindow, &firstInWin, &prev); err != nil {
 			return nil, err
 		}
-		cs.FirstInWindow = parseTime(firstInWin)
+		if cs.FirstInWindow, err = parseTime(firstInWin); err != nil {
+			return nil, err
+		}
 		if prev.Valid {
-			cs.PrevSeenAt = parseTime(prev.String)
+			if cs.PrevSeenAt, err = parseTime(prev.String); err != nil {
+				return nil, err
+			}
 		}
 		seen = append(seen, cs)
 	}
@@ -186,7 +190,9 @@ func (s *Store) NoteAuthorHistory(ctx context.Context, start, end time.Time) ([]
 			return nil, err
 		}
 		if prev.Valid {
-			as.PrevNoteAt = parseTime(prev.String)
+			if as.PrevNoteAt, err = parseTime(prev.String); err != nil {
+				return nil, err
+			}
 		}
 		seen = append(seen, as)
 	}
@@ -227,9 +233,15 @@ func (s *Store) NoteCommentTotals(ctx context.Context) ([]NoteTotals, error) {
 			&firstAt, &lastAt); err != nil {
 			return nil, err
 		}
-		t.FirstSeenAt = parseTime(firstSeen)
-		t.FirstAt = parseTime(firstAt)
-		t.LastAt = parseTime(lastAt)
+		if t.FirstSeenAt, err = parseTime(firstSeen); err != nil {
+			return nil, err
+		}
+		if t.FirstAt, err = parseTime(firstAt); err != nil {
+			return nil, err
+		}
+		if t.LastAt, err = parseTime(lastAt); err != nil {
+			return nil, err
+		}
 		totals = append(totals, t)
 	}
 	return totals, rows.Err()
@@ -253,7 +265,11 @@ func (s *Store) PeakCommentHour(ctx context.Context) (hourStart time.Time, noteI
 		}
 		return time.Time{}, "", 0, err
 	}
-	return parseTime(hour + ":00:00Z"), noteID, n, nil
+	hourStart, err = parseTime(hour + ":00:00Z")
+	if err != nil {
+		return time.Time{}, "", 0, err
+	}
+	return hourStart, noteID, n, nil
 }
 
 func collectNotes(rows *sql.Rows) ([]Note, error) {

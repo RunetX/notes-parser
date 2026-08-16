@@ -281,10 +281,15 @@ func scanTalkPeer(rows *sql.Rows) (TalkPeer, error) {
 		&p.Nick, &p.AvatarURL, &p.CursorMsgID, &lastEvent, &createdAt); err != nil {
 		return p, err
 	}
+	var err error
 	if lastEvent.Valid {
-		p.LastEventAt = parseTime(lastEvent.String)
+		if p.LastEventAt, err = parseTime(lastEvent.String); err != nil {
+			return p, err
+		}
 	}
-	p.CreatedAt = parseTime(createdAt)
+	if p.CreatedAt, err = parseTime(createdAt); err != nil {
+		return p, err
+	}
 	return p, nil
 }
 
@@ -297,9 +302,14 @@ func scanTalkMessage(rows *sql.Rows) (TalkMessage, error) {
 		return m, err
 	}
 	m.SiteMsgID = siteMsg.String
+	var err error
 	if sentAt.Valid {
-		m.SentAt = parseTime(sentAt.String)
+		if m.SentAt, err = parseTime(sentAt.String); err != nil {
+			return m, err
+		}
 	}
-	m.CreatedAt = parseTime(createdAt)
+	if m.CreatedAt, err = parseTime(createdAt); err != nil {
+		return m, err
+	}
 	return m, nil
 }

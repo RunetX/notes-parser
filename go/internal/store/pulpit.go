@@ -440,13 +440,22 @@ func scanPulpit(rows *sql.Rows) (PulpitComment, error) {
 		return p, err
 	}
 	p.CommentID = commentID.Int64
-	p.SeenAt = parseTime(seenAt)
-	p.CreatedAt = parseTime(createdAt)
+	var err error
+	if p.SeenAt, err = parseTime(seenAt); err != nil {
+		return p, err
+	}
+	if p.CreatedAt, err = parseTime(createdAt); err != nil {
+		return p, err
+	}
 	if postedAt.Valid {
-		p.PostedAt = parseTime(postedAt.String)
+		if p.PostedAt, err = parseTime(postedAt.String); err != nil {
+			return p, err
+		}
 	}
 	if checkedAt.Valid {
-		p.CheckedAt = parseTime(checkedAt.String)
+		if p.CheckedAt, err = parseTime(checkedAt.String); err != nil {
+			return p, err
+		}
 	}
 	return p, nil
 }
@@ -461,9 +470,14 @@ func scanPulpitReply(rows *sql.Rows) (PulpitReply, error) {
 		return r, err
 	}
 	r.CommentID = commentID.Int64
-	r.DecidedAt = parseTime(decidedAt)
+	var err error
+	if r.DecidedAt, err = parseTime(decidedAt); err != nil {
+		return r, err
+	}
 	if postedAt.Valid {
-		r.PostedAt = parseTime(postedAt.String)
+		if r.PostedAt, err = parseTime(postedAt.String); err != nil {
+			return r, err
+		}
 	}
 	return r, nil
 }

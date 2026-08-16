@@ -110,7 +110,9 @@ func talksOwners(ctx context.Context, q querier, query string, args ...any) ([]T
 			return nil, err
 		}
 		o.Asked = asked.Valid
-		o.UpdatedAt = parseTime(updated)
+		if o.UpdatedAt, err = parseTime(updated); err != nil {
+			return nil, err
+		}
 		owners = append(owners, o)
 	}
 	return owners, rows.Err()
