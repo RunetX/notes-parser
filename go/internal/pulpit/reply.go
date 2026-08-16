@@ -195,8 +195,12 @@ func (s *Service) sendReply(ctx context.Context, row store.PulpitComment, c love
 
 	text := renderReply(c.AuthorName, sm.Text)
 	started, err := s.st.TryStartPulpitReply(ctx, c.ID, text, time.Now())
-	if err != nil || !started {
+	if err != nil {
+		s.log.Error("амвон: фиксация отправки ответа", "comment", c.ID, "err", err)
 		return false
+	}
+	if !started {
+		return false // строку уже забрал другой цикл
 	}
 	if err := s.site.PostComment(ctx, cookies, row.NoteID,
 		strconv.FormatInt(c.ID, 10), text); err != nil {

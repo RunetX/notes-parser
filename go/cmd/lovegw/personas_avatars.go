@@ -114,7 +114,9 @@ func runAvatarFetch(ctx context.Context, client *love.Client, ar *archive.Store,
 					return
 				default:
 					failed.Add(1)
-					_ = ar.SaveAvatarHash(ctx, t.UserID, t.URL, nil, "error", time.Now())
+					if err := ar.SaveAvatarHash(ctx, t.UserID, t.URL, nil, "error", time.Now()); err != nil {
+						log.Warn("avatars: отметка ошибки не записана", "user", t.UserID, "err", err)
+					}
 				}
 				if n := ok.Load() + failed.Load(); n%200 == 0 {
 					el := time.Since(start).Seconds()
@@ -125,10 +127,15 @@ func runAvatarFetch(ctx context.Context, client *love.Client, ar *archive.Store,
 		}()
 	}
 
+	// Раздача останавливается по отмене (403 гасит контекст из воркера):
+	// иначе продюсер вхолостую докручивал бы весь остаток списка — а это
+	// десятки тысяч анкет.
+producer:
 	for _, t := range targets {
 		select {
 		case jobs <- t:
 		case <-ctx.Done():
+			break producer
 		}
 	}
 	close(jobs)
