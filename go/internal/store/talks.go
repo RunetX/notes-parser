@@ -175,24 +175,6 @@ func (s *Store) HasUndeliveredIncoming(ctx context.Context, messenger string, pe
 	return found == 1, nil
 }
 
-// TalkMessageByID возвращает сообщение по внутреннему id. ErrNotFound — нет.
-func (s *Store) TalkMessageByID(ctx context.Context, id int64) (TalkMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, peer_id, site_msg_id, direction, text, media_url, sent_at, created_at
-		FROM talks_messages WHERE id = ?`, id)
-	if err != nil {
-		return TalkMessage{}, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return TalkMessage{}, err
-		}
-		return TalkMessage{}, fmt.Errorf("сообщение talks %d: %w", id, ErrNotFound)
-	}
-	return scanTalkMessage(rows)
-}
-
 // PeerByDeliveredPM находит собеседника по id доставленного в мессенджер ЛС
 // (для маршрутизации ответа реплаем: reply-to → message_targets → peer).
 // ErrNotFound — это сообщение не связано с диалогом talks.

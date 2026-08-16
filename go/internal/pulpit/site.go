@@ -35,11 +35,6 @@ func NewSite(baseURL, userAgent string, log *slog.Logger) Site {
 	return siteAdapter{c: love.New(baseURL, userAgent, siteInterval, log), baseURL: baseURL}
 }
 
-// NewSiteWith оборачивает готовый клиент (CLI-черновик обходится одним).
-func NewSiteWith(c *love.Client, baseURL string) Site {
-	return siteAdapter{c: c, baseURL: baseURL}
-}
-
 func (s siteAdapter) FetchNotes(ctx context.Context) ([]love.Note, error) {
 	return s.c.FetchNotes(ctx)
 }

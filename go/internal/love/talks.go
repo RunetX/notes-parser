@@ -45,17 +45,15 @@ const (
 	selBuddyUnread     = ".lv-talks__unread-inbox"
 
 	// Сообщение диалога (история и ответ sendMessage — одинаковые <li>).
-	selMsgItem   = "li.lv-talks__message-item"
-	classMsgOut  = "lv-talks__message-item_out" // исходящее; иначе входящее
-	selMsgBox    = ".lv-msg__message-box"       // data-msg-id
-	attrMsgID    = "data-msg-id"
-	selMsgOut    = ".lv-msg__outmsg"
-	selMsgIn     = ".lv-msg__inmsg"
-	selMsgImage  = ".message-image img"
-	selMsgAuthor = ".lv-talks__message-author"
+	selMsgItem  = "li.lv-talks__message-item"
+	classMsgOut = "lv-talks__message-item_out" // исходящее; иначе входящее
+	selMsgBox   = ".lv-msg__message-box"       // data-msg-id
+	attrMsgID   = "data-msg-id"
+	selMsgOut   = ".lv-msg__outmsg"
+	selMsgIn    = ".lv-msg__inmsg"
+	selMsgImage = ".message-image img"
 
 	loadBuddiesPathFmt = "/ajax?request=loadBuddiesList&before=0&limit=%d&anticache=%d"
-	talksHistoryLimit  = 20 // MSG_LIMIT сервера на страницу
 )
 
 // TalkDialog — один диалог в списке talks (метаданные для поллера и списка).

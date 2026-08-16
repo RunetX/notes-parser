@@ -556,19 +556,6 @@ func headline(text string) string {
 	return text
 }
 
-// readStdinText читает текст комментария со stdin (когда он не задан
-// аргументом): так удобнее вставлять многострочное.
-func readStdinText() (string, error) {
-	if isTerminal(os.Stdin) {
-		fmt.Fprintln(os.Stderr, "текст комментария (закончить Ctrl+Z / Ctrl+D):")
-	}
-	data, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
 // accountCookies — годится ли аккаунт для обхода. why != "" — не годится, но
 // это не ошибка: следующий в списке может подойти, в этом смысл резерва.
 func accountCookies(ctx context.Context, db *acct.Store, name string) (cookies []*http.Cookie, title, why string, err error) {

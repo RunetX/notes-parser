@@ -94,7 +94,6 @@ func TestSingleRowErrorIsNotNotFound(t *testing.T) {
 		"NoteByThread":    func() error { _, err := st.NoteByThread(ctx, MessengerTelegram, "t1"); return err },
 		"CommentByTarget": func() error { _, err := st.CommentByTarget(ctx, MessengerTelegram, "m1"); return err },
 		"TalkPeerByID":    func() error { _, err := st.TalkPeerByID(ctx, 1); return err },
-		"TalkMessageByID": func() error { _, err := st.TalkMessageByID(ctx, 1); return err },
 		"PeerByDeliveredPM": func() error {
 			_, err := st.PeerByDeliveredPM(ctx, MessengerTelegram, "m1")
 			return err
