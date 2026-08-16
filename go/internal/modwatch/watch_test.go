@@ -101,6 +101,29 @@ func TestFeedDeletionVsPagination(t *testing.T) {
 	}
 }
 
+// Лента, где ни один id не разобрался (дрейф вёрстки): охват неизвестен, и
+// сверку надо пропустить — иначе все известные заметки разом объявляются
+// удалёнными.
+func TestFeedUnparsableIDsSkipsSweep(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{}
+	w, store, now := newTestWatcher(t, site)
+
+	site.feed = []love.Note{feedNote("102", 0, false), feedNote("101", 0, false)}
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("первый опрос: %v", err)
+	}
+
+	*now = now.Add(2 * time.Minute)
+	site.feed = []love.Note{feedNote("", 0, false), feedNote("не-число", 0, false)}
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("второй опрос: %v", err)
+	}
+	if got := len(kindsOf(t, store, KindNoteGone)); got != 0 {
+		t.Fatalf("нераспарсенная лента принята за удаление: %d событий", got)
+	}
+}
+
 // Картинка у заметки и закрытие комментариев — действия модератора.
 func TestHeaderEvents(t *testing.T) {
 	ctx := context.Background()

@@ -167,6 +167,13 @@ func (w *Watcher) pollFeed(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
+	if len(present) == 0 {
+		// Ни один id ленты не разобрался (дрейф вёрстки): minID остался
+		// MaxInt64, и охват накрыл бы ВСЕ известные заметки — лавина ложных
+		// note_gone. Пустая лента выше отсекается по другому признаку.
+		w.log().Warn("ни один id заметки не разобран, пропускаю сверку", "в_ленте", len(notes))
+		return nil
+	}
 	for id, row := range known {
 		if present[id] || id < minID || row.Gone {
 			continue // row.Gone — исчезновение уже записано, второй раз не заводим

@@ -229,14 +229,34 @@ func WriteIssueFiles(is *Issue, dir string) (draftPath, materialsPath string, er
 	return draftPath, materialsPath, nil
 }
 
+// writeFile пишет файл целиком или не пишет вовсе: сперва во временный, потом
+// переименованием. Обрыв на полуслове оставлял бы обрезанный черновик, а
+// processSlot считает его наличие признаком «черновик уже есть» — то есть
+// обрезок заблокировал бы пересборку слота, и правит его человек руками.
 func writeFile(path string, write func(*os.File) error) error {
-	f, err := os.Create(path)
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
 	if err := write(f); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	// На Windows rename поверх существующего файла падает; писатель один,
+	// гонки здесь нет.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
