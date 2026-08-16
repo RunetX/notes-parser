@@ -79,7 +79,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		return errors.New("диагностика прервана")
 	}
 	if cfg.TelegramProxy != "" {
-		ok("прокси telegram", cfg.TelegramProxy)
+		ok("прокси telegram", tgx.MaskProxy(cfg.TelegramProxy))
 	}
 
 	tgCfg := cfg.Messengers.Telegram

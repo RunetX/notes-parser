@@ -2,10 +2,12 @@ package tgx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -28,6 +30,32 @@ func ProxyClient(proxyURL string) (*http.Client, error) {
 	return &http.Client{Transport: transport, Timeout: httpClientTimeout}, nil
 }
 
+// MaskProxy прячет пароль в строке прокси, оставляя всё, что нужно для
+// диагностики: схему, логин, хост и порт. Строку печатает doctor и она попадает
+// в тексты ошибок, а их читают через плечо, копируют в переписку и прикладывают
+// к отчётам — пароль в таком месте живёт дольше, чем нужно.
+func MaskProxy(proxyURL string) string {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		// Неразбираемую строку не показываем вовсе: пароль в ней всё равно
+		// есть, а диагностике довольно самого факта, что она не разбирается.
+		return "<строка прокси не разбирается>"
+	}
+	name := ""
+	if u.User != nil {
+		if _, ok := u.User.Password(); !ok {
+			return proxyURL // логин без пароля прятать нечего
+		}
+		name = u.User.Username()
+	}
+	if name == "" {
+		return proxyURL
+	}
+	u.User = nil
+	// Собираем руками: url.UserPassword экранировала бы звёздочки в %2A.
+	return u.Scheme + "://" + name + ":***@" + strings.TrimPrefix(u.String(), u.Scheme+"://")
+}
+
 // ProxyTransport строит HTTP-транспорт через прокси — для клиентов с другим
 // таймаутом, чем у Bot API (например, минуты у LLM-запросов дайджеста).
 // Пустая строка — прямое соединение (nil, nil).
@@ -37,7 +65,14 @@ func ProxyTransport(proxyURL string) (*http.Transport, error) {
 	}
 	u, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, fmt.Errorf("разбор telegram_proxy %q: %w", proxyURL, err)
+		// Строку целиком в ошибку не кладём: в ней пароль, а ошибка уедет и в
+		// лог, и в вывод doctor. Своей обёртки мало — *url.Error несёт разобранную
+		// строку внутри себя, поэтому берём только причину.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("разбор telegram_proxy (%s): %w", MaskProxy(proxyURL), err)
 	}
 	transport := &http.Transport{}
 	switch u.Scheme {

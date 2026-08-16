@@ -584,6 +584,16 @@ func TestTransientSiteErrorDoesNotKillPoller(t *testing.T) {
 	if len(alerts) != 1 || !strings.Contains(alerts[0], keyUnavailable) {
 		t.Fatalf("ожидалось одно уведомление о недоступности сайта, got %v", alerts)
 	}
+	// В ЛС уходит объяснение, а не сырая ошибка: внутренний URL и «context
+	// deadline exceeded» читаются как поломка у нас или как бан.
+	if !strings.Contains(alerts[0], "Вмешательства не нужно") {
+		t.Errorf("алерт должен говорить, что делать ничего не надо: %q", alerts[0])
+	}
+	for _, leak := range []string{"loadBuddiesList", "502", "http"} {
+		if strings.Contains(alerts[0], leak) {
+			t.Errorf("в алерт утекла сырая ошибка (%q): %q", leak, alerts[0])
+		}
+	}
 
 	// Сайт ожил — поллер продолжает работать и сообщает о восстановлении.
 	site.dialogsErr = nil

@@ -20,6 +20,12 @@ const (
 
 const sessionExpiredMsg = "🔒 Сессия НГС.Лав истекла — личные сообщения на паузе. Войдите снова: /login"
 
+// msgSiteUnavailable — что админ читает в ЛС, когда сайт не отвечает. Отказ
+// временный и лечится сам, поэтому в тексте главное не причина, а то, что
+// делать не нужно ничего: под этот ключ придёт «восстановилось».
+const msgSiteUnavailable = "личные сообщения на паузе, поллер продолжает попытки. " +
+	"Вмешательства не нужно — сообщу, когда сайт ответит."
+
 // cookies читает и разбирает куки сессии; невалидную/битую помечает invalid.
 func (w *Watcher) cookies(ctx context.Context, messenger string, owner int64) ([]*http.Cookie, bool) {
 	cookiesJSON, valid, err := w.st.SessionCookies(ctx, messenger, owner)
@@ -68,7 +74,12 @@ func (w *Watcher) handleSiteError(ctx context.Context, err error) {
 	// продолжается на холостом интервале. Боевой случай: 502 на
 	// loadBuddiesList 12.08.2026 — поллер лёг до ручного рестарта.
 	if errors.Is(err, love.ErrSiteUnavailable) {
-		w.alert.Fail(ctx, keyUnavailable, err.Error())
+		// В ЛС уходит человеческий текст, а не Get "…&anticache=…":
+		// «context deadline exceeded» с внутренним URL читается как поломка у
+		// нас или как бан, хотя означает ровно «сайт не ответил». Настоящая
+		// ошибка остаётся в логе — там она и нужна.
+		w.log.Warn("сайт не отвечает, личная переписка на паузе", "err", err)
+		w.alert.Fail(ctx, keyUnavailable, msgSiteUnavailable)
 		return
 	}
 	w.errStreak++
