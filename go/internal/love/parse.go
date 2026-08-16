@@ -3,6 +3,7 @@ package love
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -315,10 +316,24 @@ func splitNameAge(alt string) (name, age string) {
 	return strings.TrimSpace(alt), ""
 }
 
-// absolutize достраивает относительные ссылки сайта до абсолютных.
+// absolutize достраивает относительные ссылки сайта до абсолютных. Схему, кроме
+// http(s), отбрасывает: строка приезжает атрибутом чужой вёрстки, а уходит и в
+// href поста канала, и в загрузчик медиа — javascript:/data: там не нужны
+// никогда. Пустая строка на выходе означает «ссылки нет», и вызывающие это уже
+// умеют (ComposeSubNotice, fetchMedia).
 func absolutize(baseURL, link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	// Ссылка от корня сайта — включая «//host/path»: она приклеится к базе как
+	// путь и останется на сайте, менять это поведение незачем.
 	if strings.HasPrefix(link, "/") {
 		return strings.TrimSuffix(baseURL, "/") + link
+	}
+	u, err := url.Parse(link)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
 	}
 	return link
 }

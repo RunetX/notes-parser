@@ -45,6 +45,12 @@ func TestValidateHTML(t *testing.T) {
 		{"перекрытые <b><i>теги</b></i>", "непарный тег"},
 		{"закрыт без открытия</b>", "непарный тег"},
 		{"голая скобка 5 < 7", "экранировать"},
+		{`<a href="javascript:alert(1)">яд</a>`, "только http"},
+		{`<a href="data:text/html;base64,PHNjcmlwdD4=">яд</a>`, "только http"},
+		{`<a href="/notes/1/">относительная</a>`, "только http"},
+		{`<a href="https://x/" onclick="steal()">лишний атрибут</a>`, "ровно один атрибут"},
+		{`<a>без href</a>`, "ровно один атрибут"},
+		{`<b class="x">атрибут у b</b>`, "не должно быть атрибутов"},
 	}
 	for _, tc := range bad {
 		err := ValidateHTML(tc.text)

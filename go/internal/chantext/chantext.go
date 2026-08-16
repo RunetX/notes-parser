@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -28,6 +29,14 @@ import (
 const MessageBudget = 3500
 
 var tagRe = regexp.MustCompile(`</?([a-zA-Z0-9]+)[^<>]*>`)
+
+// Открывающие теги разбираем строго: у <b> и <i> атрибутов быть не должно, у
+// <a> допустим ровно один — href в двойных кавычках. Иначе проверка тегов
+// пропускала бы внутрь любой атрибут, включая обработчики событий.
+var (
+	plainOpenRe  = regexp.MustCompile(`^<[a-zA-Z0-9]+\s*>$`)
+	anchorOpenRe = regexp.MustCompile(`^<[aA]\s+href="([^"<>]*)"\s*>$`)
+)
 
 // VisibleLen — видимая длина HTML в рунах: теги отбрасываются, сущности
 // (&lt; и т.п.) считаются одним символом. Методика visibleNoteLen из tgx.
@@ -52,6 +61,9 @@ func ValidateHTML(s string) error {
 			}
 			stack = stack[:len(stack)-1]
 		} else {
+			if err := validateOpenTag(name, m); err != nil {
+				return err
+			}
 			stack = append(stack, name)
 		}
 	}
@@ -60,6 +72,35 @@ func ValidateHTML(s string) error {
 	}
 	if rest := tagRe.ReplaceAllString(s, ""); strings.ContainsAny(rest, "<>") {
 		return errors.New("символы < и > вне тегов нужно экранировать (&lt; и &gt;)")
+	}
+	return nil
+}
+
+// validateOpenTag проверяет атрибуты открывающего тега.
+func validateOpenTag(name, tag string) error {
+	if name == "a" {
+		m := anchorOpenRe.FindStringSubmatch(tag)
+		if m == nil {
+			return errors.New(`у тега <a> допустим ровно один атрибут — href="…"`)
+		}
+		return validateHref(m[1])
+	}
+	if !plainOpenRe.MatchString(tag) {
+		return fmt.Errorf("у тега <%s> не должно быть атрибутов", name)
+	}
+	return nil
+}
+
+// validateHref: ссылка обязана вести в веб. Мессенджер javascript: и data: не
+// исполнит, но текст уходит и в другие места (черновики, HTML-отчёты), а
+// проверка тут стоит дёшево.
+func validateHref(href string) error {
+	u, err := url.Parse(html.UnescapeString(href))
+	if err != nil {
+		return fmt.Errorf("ссылка %q не разбирается", href)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("ссылка %q: в href допустимы только http и https", href)
 	}
 	return nil
 }

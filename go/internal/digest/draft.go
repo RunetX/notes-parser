@@ -218,7 +218,11 @@ func recordLine(r Record, top *NoteStat) string {
 }
 
 func personLink(p Person) string {
-	return fmt.Sprintf(`<a href="%s">%s</a>`, p.ProfileURL, html.EscapeString(p.Name))
+	if p.ProfileURL == "" {
+		return html.EscapeString(p.Name)
+	}
+	return fmt.Sprintf(`<a href="%s">%s</a>`,
+		html.EscapeString(p.ProfileURL), html.EscapeString(p.Name))
 }
 
 func activityText(p Person) string {

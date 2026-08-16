@@ -55,6 +55,32 @@ func TestComposeCommentMessageFitsLimit(t *testing.T) {
 	}
 }
 
+// Ссылка автора приезжает атрибутом чужой вёрстки: кавычка в ней вырвалась бы
+// из href, а непринятое сообщение в MAX — вечная пробка в очереди заметки.
+func TestComposeCommentMessageEscapesAuthorLink(t *testing.T) {
+	got := ComposeCommentMessage(store.Comment{
+		AuthorLink: `https://love.ngs.ru/profile/1"><b>`,
+		AuthorName: "Имя", AuthorAge: "40", Text: "т"})
+	if strings.Contains(got, `1"><b>`) {
+		t.Errorf("ссылка не экранирована: %s", got)
+	}
+	if !strings.Contains(got, "&#34;&gt;&lt;b&gt;") {
+		t.Errorf("нет экранированной ссылки: %s", got)
+	}
+}
+
+// Ссылки может не быть (parse.absolutize отбрасывает чужие схемы) — тогда шапка
+// остаётся текстом, а не пустым <a href="">.
+func TestComposeCommentMessageWithoutAuthorLink(t *testing.T) {
+	got := ComposeCommentMessage(store.Comment{AuthorName: "Гость", AuthorAge: "40", Text: "т"})
+	if strings.Contains(got, `<a href="">`) {
+		t.Errorf("пустая ссылка протекла: %q", got)
+	}
+	if !strings.HasPrefix(got, "<b>Гость, 40:</b>") {
+		t.Errorf("шапка без ссылки: %q", got)
+	}
+}
+
 func TestComposeCommentMessageShortTextIntact(t *testing.T) {
 	c := store.Comment{
 		AuthorLink: "https://love.ngs.ru/profile/1",
