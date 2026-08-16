@@ -12,6 +12,7 @@ package pulpit
 // дорогу.
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -57,7 +58,41 @@ var (
 	// узкое намеренно: каждый переспрос стоит 10–30 секунд, то есть ровно той
 	// валюты, ради которой амвон и спешит быть первым.
 	reJokeTag = regexp.MustCompile(`(?i)\((шутка|сарказм|ирония)\)|/сарказм|\b(lol|лол)\b|ахах|бугага`)
+	// reReasoning — размышление, протёкшее в сам текст. Тег <thinking> ловится
+	// отдельно, но с включённым усилием (effort) модель роняет в поле text и
+	// голые обрывки хода мысли: «Wait, no.», «Hmm», «Let me». Замечено на живых
+	// черновиках 16.08.2026, два случая из трёх. Площадка русская, английских
+	// вставок в комментариях практически нет, так что правило дешёвое.
+	reReasoning = regexp.MustCompile(`(?i)\b(wait|hmm+|okay|let me|i should|hold on|actually)\b`)
+	// reMixedWord — слово из букв двух алфавитов («uправила»): такое не пишут
+	// ни люди, ни опечатка раскладки — это склейка при генерации.
+	reMixedWord = regexp.MustCompile(`[\p{Cyrillic}]+[a-zA-Z]|[a-zA-Z]+[\p{Cyrillic}]`)
 )
+
+// textTells — приметы генерации, которые ловятся регуляркой. Таблицей, а не
+// цепочкой if-ов: правил стало больше, чем читается за раз, а порядок в списке
+// и есть порядок проверки. %s — попавшийся кусок, он уезжает в переспрос.
+var textTells = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	{reThinking, "служебный тег %s в тексте"},
+	{reReasoning, "обрывок размышления «%s» в тексте: в реплику едет только сама реплика"},
+	{reMixedWord, "слово из двух алфавитов («%s»): склейка при генерации"},
+	{reBBCode, "BB-код %s: на сайте он напечатается буквально"},
+	{reHTMLTag, "HTML-тег %s: сайт его экранирует, и он вылезет текстом"},
+	{reJokeTag, "метка шутки «%s»: если смешно, она не нужна, если не смешно — не спасёт"},
+}
+
+// tellHit — первая сработавшая примета ("" — чисто).
+func tellHit(text string) string {
+	for _, t := range textTells {
+		if m := t.re.FindString(text); m != "" {
+			return fmt.Sprintf(t.reason, m)
+		}
+	}
+	return ""
+}
 
 // dashes / quotes — что чиним подстановкой. Замер площадки: длинное тире у
 // 0,52 % комментариев, ёлочки у 0,65 % — так пишет типографика, а не люди.
@@ -148,25 +183,16 @@ func validate(text, form string, cfg validateConfig) string {
 		return "длина " + strconv.Itoa(n) + " знаков вне допустимых " +
 			strconv.Itoa(cfg.MinRunes) + "–" + strconv.Itoa(cfg.MaxRunes)
 	}
-	if m := reThinking.FindString(text); m != "" {
-		// Модель уронила служебный тег в видимый ответ — известный дефект
-		// размышляющих моделей, и на сайт он уйдёт текстом.
-		return "служебный тег " + m + " в тексте"
-	}
-	if m := reBBCode.FindString(text); m != "" {
-		return "BB-код " + m + ": на сайте он напечатается буквально"
-	}
-	if m := reHTMLTag.FindString(text); m != "" {
-		return "HTML-тег " + m + ": сайт его экранирует, и он вылезет текстом"
+	if tell := tellHit(text); tell != "" {
+		// Сюда попадают и служебный тег размышления, и обрывок хода мысли, и
+		// разметка, которая на сайте напечаталась бы буквально.
+		return tell
 	}
 	if md := markdownHit(text); md != "" {
 		return "markdown (" + md + "): на сайте он напечатается буквально"
 	}
 	if bad := typographyHit(text); bad != "" {
 		return "знак " + bad + " на площадке почти не встречается — только дефис и обычная кавычка"
-	}
-	if m := reJokeTag.FindString(text); m != "" {
-		return "метка шутки «" + m + "»: если смешно, она не нужна, если не смешно — не спасёт"
 	}
 	lines := strings.Split(text, "\n")
 	if cfg.MaxLines > 0 && len(lines) > cfg.MaxLines {
