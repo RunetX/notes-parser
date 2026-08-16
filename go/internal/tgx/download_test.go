@@ -2,6 +2,7 @@ package tgx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -84,6 +85,27 @@ func TestDownloadFileHidesToken(t *testing.T) {
 	_, err := m.DownloadFile(context.Background(), "AgADvoice")
 	if err == nil {
 		t.Fatal("обрыв соединения должен быть ошибкой")
+	}
+	if strings.Contains(err.Error(), secretToken) {
+		t.Errorf("токен бота утёк в ошибку: %v", err)
+	}
+}
+
+// deadTransport обрывает любой запрос: net/http завернёт адрес в *url.Error.
+type deadTransport struct{}
+
+func (deadTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("сеть недоступна")
+}
+
+// ProbePendingUpdates зовёт Bot API мимо библиотеки (та getUpdates не
+// экспортирует), поэтому маскировать токен в адресе некому, кроме нас; ошибку
+// печатает doctor.
+func TestProbePendingUpdatesHidesToken(t *testing.T) {
+	_, err := ProbePendingUpdates(context.Background(), secretToken,
+		&http.Client{Transport: deadTransport{}})
+	if err == nil {
+		t.Fatal("сбой транспорта должен быть ошибкой")
 	}
 	if strings.Contains(err.Error(), secretToken) {
 		t.Errorf("токен бота утёк в ошибку: %v", err)

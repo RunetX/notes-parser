@@ -656,7 +656,14 @@ func (w *Watcher) transportFor(messenger string) PMTransport {
 // cookies читает и разбирает куки сессии; невалидную/битую помечает invalid.
 func (w *Watcher) cookies(ctx context.Context, messenger string, owner int64) ([]*http.Cookie, bool) {
 	cookiesJSON, valid, err := w.st.SessionCookies(ctx, messenger, owner)
-	if err != nil || !valid {
+	if err != nil {
+		// Чаще всего это «нет ключа шифрования» или чужой ключ: владелец молча
+		// выпадает из обхода, и без записи в лог причину не найти.
+		w.log.Error("не прочитать сессию владельца", "messenger", messenger,
+			"owner", owner, "err", err)
+		return nil, false
+	}
+	if !valid {
 		return nil, false
 	}
 	cookies, err := love.CookiesFromJSON([]byte(cookiesJSON), time.Now())

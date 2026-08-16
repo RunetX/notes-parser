@@ -336,3 +336,24 @@ func TestDigitsOf(t *testing.T) {
 		t.Errorf("digitsOf без цифр должен вернуть \"0\", получено %q", got)
 	}
 }
+
+// Ссылка приезжает атрибутом чужой вёрстки и уходит в href поста и в загрузчик
+// медиа, поэтому всё, кроме http(s) и пути от корня, должно отсеиваться здесь.
+func TestAbsolutize(t *testing.T) {
+	const base = "https://love.ngs.ru"
+	for _, tc := range []struct{ name, link, want string }{
+		{"путь от корня", "/profile/981563/", "https://love.ngs.ru/profile/981563/"},
+		{"абсолютный https CDN", "https://cdn.hsmedia.ru/a.jpg", "https://cdn.hsmedia.ru/a.jpg"},
+		{"абсолютный http", "http://cdn.hsmedia.ru/a.jpg", "http://cdn.hsmedia.ru/a.jpg"},
+		{"схема-относительная остаётся на сайте", "//evil.example/x", "https://love.ngs.ru//evil.example/x"},
+		{"javascript отбрасывается", "javascript:alert(1)", ""},
+		{"data отбрасывается", "data:text/html;base64,PHNjcmlwdD4=", ""},
+		{"mailto отбрасывается", "mailto:a@b.c", ""},
+		{"относительный без слэша отбрасывается", "img/a.jpg", ""},
+		{"пустая строка", "   ", ""},
+	} {
+		if got := absolutize(base, tc.link); got != tc.want {
+			t.Errorf("%s: absolutize(%q) = %q, want %q", tc.name, tc.link, got, tc.want)
+		}
+	}
+}

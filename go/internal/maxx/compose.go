@@ -120,7 +120,8 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 	if n.AuthorID == "" || n.AuthorID == "0" {
 		fmt.Fprintf(&head, "<b>%s:</b>\n", name)
 	} else {
-		fmt.Fprintf(&head, `<b><a href="%s/profile/%s">%s:</a></b>%s`, baseURL, n.AuthorID, name, "\n")
+		fmt.Fprintf(&head, `<b><a href="%s">%s:</a></b>%s`,
+			html.EscapeString(baseURL+"/profile/"+n.AuthorID), name, "\n")
 	}
 	tail := ""
 	if signature != "" {
@@ -133,11 +134,13 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 // укладывая результат в бюджет MAX: непринятое сообщение остановило бы очередь
 // комментариев заметки навсегда.
 func ComposeCommentMessage(c store.Comment) string {
-	head := fmt.Sprintf(`<b><a href="%s">%s, %s:</a></b>%s`,
-		c.AuthorLink,
+	inner := fmt.Sprintf("%s, %s:",
 		html.EscapeString(truncateRunes(c.AuthorName, authorFieldLimit)),
-		html.EscapeString(truncateRunes(c.AuthorAge, authorFieldLimit)),
-		"\n")
+		html.EscapeString(truncateRunes(c.AuthorAge, authorFieldLimit)))
+	if c.AuthorLink != "" {
+		inner = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), inner)
+	}
+	head := "<b>" + inner + "</b>\n"
 	return head + escapeFit(c.Text, messageBudget-apiLen(head))
 }
 
@@ -160,7 +163,7 @@ func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string)
 	if c.ID == 0 {
 		fmt.Fprintf(&b, "<b>%s</b>:\n%s", html.EscapeString(n.AuthorName),
 			html.EscapeString(truncateRunes(n.Text, subNoticeCommentLimit)))
-		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", link)
+		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", html.EscapeString(link))
 		return b.String()
 	}
 
@@ -169,7 +172,7 @@ func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string)
 		author += ", " + html.EscapeString(c.AuthorAge)
 	}
 	if c.AuthorLink != "" {
-		author = fmt.Sprintf(`<a href="%s">%s</a>`, c.AuthorLink, author)
+		author = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), author)
 	}
 	fmt.Fprintf(&b, "<b>%s</b> в заметке <i>%s</i>", author,
 		html.EscapeString(truncateRunes(oneLine(n.AuthorName+": "+n.Text), subNoticeNoteLimit)))
@@ -178,7 +181,7 @@ func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string)
 	}
 	b.WriteString(":\n")
 	b.WriteString(html.EscapeString(truncateRunes(c.Text, subNoticeCommentLimit)))
-	fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть комментарий</a>", link)
+	fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть комментарий</a>", html.EscapeString(link))
 	return b.String()
 }
 

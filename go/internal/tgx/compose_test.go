@@ -106,6 +106,41 @@ func TestComposeCommentCaptionEscapes(t *testing.T) {
 	}
 }
 
+// Ссылка автора приезжает атрибутом чужой вёрстки. Кавычка в ней вырвалась бы
+// из href, а сообщение с битой разметкой Telegram отвергает — очередь
+// комментариев заметки встала бы навсегда.
+func TestComposeCommentEscapesAuthorLink(t *testing.T) {
+	c := store.Comment{AuthorName: "Имя", AuthorAge: "30 лет",
+		AuthorLink: `https://love.ngs.ru/profile/1/"><b>`, Text: "т"}
+	got := ComposeCommentCaption(c)
+	if strings.Contains(got, `"><b>`) {
+		t.Errorf("ссылка не экранирована: %s", got)
+	}
+	if !strings.Contains(got, "&#34;&gt;&lt;b&gt;") {
+		t.Errorf("нет экранированной ссылки: %s", got)
+	}
+}
+
+// Ссылки может не быть (parse.absolutize отбрасывает чужие схемы) — тогда шапка
+// остаётся текстом, а не пустым <a href="">.
+func TestComposeCommentWithoutAuthorLink(t *testing.T) {
+	got := ComposeCommentCaption(store.Comment{AuthorName: "Гость", AuthorAge: "30 лет", Text: "т"})
+	if strings.Contains(got, `<a href="">`) {
+		t.Errorf("пустая ссылка протекла: %q", got)
+	}
+	if !strings.Contains(got, "<b>Гость, 30 лет:</b>") {
+		t.Errorf("шапка без ссылки: %q", got)
+	}
+}
+
+func TestComposeSubNoticeEscapesLinks(t *testing.T) {
+	c := store.Comment{ID: 7, AuthorName: "Б", AuthorLink: `https://x/"onmouseover=`, Text: "к"}
+	got := ComposeSubNotice("к", store.Note{AuthorName: "А", Text: "т"}, c, `https://t.me/c/1/2"`)
+	if strings.Contains(got, `"onmouseover=`) || strings.Contains(got, `/2">Открыть`) {
+		t.Errorf("ссылка не экранирована: %s", got)
+	}
+}
+
 func TestComposeSubNotice(t *testing.T) {
 	n := store.Note{ID: "312818", AuthorName: "Мария",
 		Text: "Ищу того,\nкто пьёт чай\nиз рюмки"}

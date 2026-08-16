@@ -79,9 +79,12 @@ func WithSecret(k secret.Key) Option {
 }
 
 // Open открывает (при необходимости создавая) базу и накатывает миграции.
+// Каталог заводится под 0700: в базе лежат сессионные куки пользователей, и
+// шифрование (пакет secret) необязательно — без ключа они лежат открыто.
+// Существующему каталогу режим не меняем: он мог быть заведён снаружи.
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 	}
