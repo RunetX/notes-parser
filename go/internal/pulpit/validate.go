@@ -231,7 +231,7 @@ func validate(text, form string, cfg validateConfig) string {
 		return "пересказ заметки: слишком много общих оборотов"
 	}
 	if len(cfg.Forms) > 0 && !hasForm(cfg.Forms, form) {
-		return "форма «" + form + "» не из предложенных (" + strings.Join(cfg.Forms, ", ") + ")"
+		return "приём «" + form + "» не из предложенных (" + strings.Join(cfg.Forms, ", ") + ")"
 	}
 	return ""
 }

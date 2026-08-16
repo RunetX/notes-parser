@@ -129,9 +129,18 @@ func (g *fakeGen) GenerateJSON(_ context.Context, system, prompt string, _ map[s
 		"form":"` + allowedForm(prompt) + `","idea":"обида"}`), nil
 }
 
-// allowedForm вытаскивает из промпта первую предложенную форму.
+// allowedForm вытаскивает из промпта приём, который модель обязана назвать: у
+// черновика — первый из предложенных, у правки — тот же, что был в черновике.
+// Подставлять всегда quipForms[0] значило бы ловить брак там, где его в бою нет:
+// кулдаун сужает набор, и первый приём в списке бывает запрещён.
 func allowedForm(prompt string) string {
-	const marker = "В этот раз возьми одну из форм: "
+	if i := strings.Index(prompt, "(приём: "); i >= 0 {
+		rest := prompt[i+len("(приём: "):]
+		if j := strings.Index(rest, ")"); j > 0 {
+			return rest[:j]
+		}
+	}
+	const marker = "В этот раз возьми один из приёмов: "
 	i := strings.Index(prompt, marker)
 	if i < 0 {
 		return quipForms[0]
@@ -288,7 +297,7 @@ func TestResumeAfterCrashConfirmsWithoutDuplicate(t *testing.T) {
 	if _, err := st.TryClaimPulpitNote(ctx, "n1", store.PulpitQueued, "", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.TryStartPulpitPost(ctx, "n1", "инструкция", "своя реплика", now); err != nil {
+	if _, err := st.TryStartPulpitPost(ctx, "n1", "буквально", "своя реплика", now); err != nil {
 		t.Fatal(err)
 	}
 	// Реплика на сайте на самом деле есть — POST дошёл до падения.
@@ -502,9 +511,9 @@ func TestGenerationRetryUsesReason(t *testing.T) {
 	gen := &fakeGen{answer: func(_, _ string) (string, error) {
 		calls++
 		if calls == 1 {
-			return `{"text":"**Гордыня**","form":"инструкция","idea":"гордыня"}`, nil
+			return `{"text":"**Гордыня**","form":"буквально","idea":"гордыня"}`, nil
 		}
-		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"инструкция","idea":"обида"}`, nil
+		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"буквально","idea":"обида"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
@@ -528,7 +537,7 @@ func TestGenerationFailureDoesNotPost(t *testing.T) {
 	ctx := context.Background()
 	site := newFakeSite(note("n1"))
 	gen := &fakeGen{answer: func(_, _ string) (string, error) {
-		return `{"text":"[b]коротко[/b]","form":"инструкция","idea":"и"}`, nil
+		return `{"text":"[b]коротко[/b]","form":"буквально","idea":"и"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
@@ -555,9 +564,9 @@ func TestPunchUpSharpensDraft(t *testing.T) {
 	const sharp = "Обида кормится вниманием. Моя вон уже с меня ростом."
 	gen := &fakeGen{answer: func(_, prompt string) (string, error) {
 		if strings.Contains(prompt, "## Черновик реплики") {
-			return `{"skip":false,"text":"` + sharp + `","form":"инструкция","idea":"обида"}`, nil
+			return `{"skip":false,"text":"` + sharp + `","form":"буквально","idea":"обида"}`, nil
 		}
-		return `{"skip":false,"text":"` + draft + `","form":"инструкция","idea":"обида"}`, nil
+		return `{"skip":false,"text":"` + draft + `","form":"буквально","idea":"обида"}`, nil
 	}}
 	svc, _, _ := newTestService(t, site, gen, nil)
 
@@ -582,9 +591,9 @@ func TestPunchUpFailureKeepsDraft(t *testing.T) {
 	const draft = "Обида кормится вниманием. Не корми ее - и она уйдет следом."
 	gen := &fakeGen{answer: func(_, prompt string) (string, error) {
 		if strings.Contains(prompt, "## Черновик реплики") {
-			return `{"skip":false,"text":"**жирным**","form":"инструкция","idea":"брак"}`, nil
+			return `{"skip":false,"text":"**жирным**","form":"буквально","idea":"брак"}`, nil
 		}
-		return `{"skip":false,"text":"` + draft + `","form":"инструкция","idea":"обида"}`, nil
+		return `{"skip":false,"text":"` + draft + `","form":"буквально","idea":"обида"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
@@ -682,7 +691,7 @@ func TestReplySentWithPrefix(t *testing.T) {
 		if strings.Contains(system, "Тебе ответили") {
 			return `{"text":"Смирение не в том, чтобы молчать.","idea":"смирение"}`, nil
 		}
-		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"инструкция","idea":"обида"}`, nil
+		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"буквально","idea":"обида"}`, nil
 	}}, func(c *Config) { c.ReplyProbability = 1 })
 	svc.rand = func() float64 { return 0 } // всегда «отвечать»
 
