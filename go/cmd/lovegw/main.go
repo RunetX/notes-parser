@@ -294,6 +294,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	if d.asrSvc != nil {
 		d.asrSvc.SetAlert(fanOutAlerts(d.alerters))
 	}
+	d.wirePollAlerts()
 	d.setupTalks()
 	d.setupNews()
 	d.publishCommands(ctx)
@@ -515,6 +516,32 @@ func (d *daemon) setupMax() error {
 		})
 	}
 	return nil
+}
+
+// wirePollAlerts — супервизия поллеров: умерший getUpdates (409 от второго
+// процесса, протухший токен) не должен оставлять демон молча полуживым.
+// Поллеры при этом продолжают ретраить — алерт информационный. Фан-аут шлёт
+// во все мессенджеры, поэтому смерть одного бота доносит живой сосед.
+func (d *daemon) wirePollAlerts() {
+	if len(d.alerters) == 0 {
+		return
+	}
+	send := fanOutAlerts(d.alerters)
+	if d.tg != nil {
+		d.tg.SetPollAlert("Telegram (постер)", send)
+	}
+	if d.dm != nil {
+		d.dm.SetPollAlert("Telegram (РюмкинЪ)", send)
+	}
+	if d.tgTalks != nil && d.tgTalks != d.dm {
+		d.tgTalks.SetPollAlert("Telegram (переписка)", send)
+	}
+	if d.mx != nil {
+		d.mx.SetPollAlert("MAX (зеркало)", send)
+	}
+	if d.maxTalks != nil && d.maxTalks != d.mx {
+		d.maxTalks.SetPollAlert("MAX (переписка)", send)
+	}
 }
 
 // setupTalks — личная переписка сайта (talks): один поллер под общим клиентом

@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"lovegw/internal/alerts"
 	"lovegw/internal/kbd"
 	"lovegw/internal/news"
 	"lovegw/internal/store"
@@ -80,6 +82,11 @@ type Bot struct {
 	logic *Logic
 	talks TalkRouter
 	log   *slog.Logger
+
+	// pollAlert — алерт о полосе сбоев поллинга (nil — уведомлять некому);
+	// ставится в wire-фазе runDaemon, читается обработчиком ошибок бота.
+	pmu       sync.Mutex
+	pollAlert *alerts.PollWatch
 }
 
 // TalkRouter — личная переписка сайта (talks): маршрутизация ответа-реплая на
@@ -117,6 +124,15 @@ func newBot(token string, httpClient *http.Client, log *slog.Logger,
 		bot.WithDefaultHandler(func(ctx context.Context, _ *bot.Bot, u *models.Update) {
 			d.handle(ctx, u)
 		}),
+		// Ошибки поллинга библиотека сама только ретраит — вечный 409 или
+		// протухший токен оставили бы бота молча мёртвым. Считаем полосу
+		// сбоев для алерта (см. tgx: та же схема у постера).
+		bot.WithErrorsHandler(func(err error) {
+			log.Warn("dm bot", "err", err)
+			if w := d.pollWatch(); w != nil {
+				w.Error(context.Background(), err)
+			}
+		}),
 	}
 	if httpClient != nil {
 		opts = append(opts, bot.WithHTTPClient(30*time.Second, httpClient))
@@ -132,6 +148,20 @@ func newBot(token string, httpClient *http.Client, log *slog.Logger,
 
 // Start запускает long polling; блокируется до отмены контекста.
 func (d *Bot) Start(ctx context.Context) { d.b.Start(ctx) }
+
+// SetPollAlert подключает алерт о полосе сбоев поллинга. name различает ботов
+// в тексте алерта. Как и все Set*, зовётся до Start (wire-фаза runDaemon).
+func (d *Bot) SetPollAlert(name string, send func(ctx context.Context, text string)) {
+	d.pmu.Lock()
+	defer d.pmu.Unlock()
+	d.pollAlert = alerts.NewPollWatch(name, send)
+}
+
+func (d *Bot) pollWatch() *alerts.PollWatch {
+	d.pmu.Lock()
+	defer d.pmu.Unlock()
+	return d.pollAlert
+}
 
 // SetTalkRouter подключает роутер личной переписки целиком: и маршрутизацию
 // реплаев, и команды /talks, /talk (в runDaemon после сборки поллера talks).

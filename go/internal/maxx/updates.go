@@ -22,6 +22,9 @@ const pollErrorPause = 5 * time.Second
 type UpdateHandler func(ctx context.Context, u model.Update)
 
 // Start запускает long polling апдейтов; блокируется до отмены контекста.
+// Ошибки не роняют цикл (ретрай с паузой), но полоса сбоев поднимает алерт
+// админу через pollAlert: иначе умерший поллер (протухший токен, второй
+// процесс на том же боте) оставлял бы демон молча полуживым.
 func (m *Mirror) Start(ctx context.Context, onUpdate UpdateHandler) {
 	var marker int64
 	for ctx.Err() == nil {
@@ -31,12 +34,18 @@ func (m *Mirror) Start(ctx context.Context, onUpdate UpdateHandler) {
 				return
 			}
 			m.log.Warn("MAX getUpdates", "err", err)
+			if m.pollAlert != nil {
+				m.pollAlert.Fail(ctx, m.pollAlertKey, err.Error())
+			}
 			select {
 			case <-time.After(pollErrorPause):
 			case <-ctx.Done():
 				return
 			}
 			continue
+		}
+		if m.pollAlert != nil {
+			m.pollAlert.OK(ctx, m.pollAlertKey)
 		}
 		marker = next
 		for _, u := range updates {

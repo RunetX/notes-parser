@@ -18,6 +18,7 @@ import (
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
 	"golang.org/x/time/rate"
 
+	"lovegw/internal/alerts"
 	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
@@ -71,6 +72,12 @@ type Mirror struct {
 	// уходит на сайт. Ставится в runDaemon после сборки поллера (Ф5).
 	talks TalkReplyRouter
 
+	// pollAlert (может быть nil) — алерт админу о полосе сбоев GetUpdates:
+	// умерший поллер (протухший токен, второй процесс) не должен оставлять
+	// демон молча полуживым. Ставится в wire-фазе runDaemon до Start.
+	pollAlert    *alerts.Alerter
+	pollAlertKey string
+
 	up *uploader
 }
 
@@ -118,6 +125,18 @@ func NewMirror(p Params, log *slog.Logger) (*Mirror, error) {
 
 // Name — имя мессенджера для message_targets.
 func (m *Mirror) Name() string { return store.MessengerMax }
+
+// pollFailThreshold — сколько сбоев GetUpdates подряд поднимают алерт:
+// такт поллинга при ошибках ~5 с (pollErrorPause), порог ≈ минута тишины.
+const pollFailThreshold = 12
+
+// SetPollAlert подключает алерт о полосе сбоев GetUpdates. name различает
+// ботов одного мессенджера в тексте («MAX (зеркало)» / «MAX (переписка)»).
+// Как и все Set*, зовётся строго до Start (wire-фаза runDaemon).
+func (m *Mirror) SetPollAlert(name string, send func(ctx context.Context, text string)) {
+	m.pollAlertKey = "поллинг " + name
+	m.pollAlert = alerts.New(send, pollFailThreshold)
+}
 
 // Me возвращает данные бота (диагностика doctor).
 func (m *Mirror) Me(ctx context.Context) (model.BotInfo, error) {

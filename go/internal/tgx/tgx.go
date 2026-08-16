@@ -20,6 +20,7 @@ import (
 	"github.com/go-telegram/bot/models"
 	"golang.org/x/time/rate"
 
+	"lovegw/internal/alerts"
 	"lovegw/internal/kbd"
 	"lovegw/internal/store"
 )
@@ -56,9 +57,12 @@ type Mirror struct {
 	// выключена). Ставится до старта поллинга, читается из его горутин.
 	// subBot — юзернейм ЛС-бота для ссылки «Подписаться» в подвале поста
 	// канала (пусто — ссылки нет). Ставится там же и тем же замком.
-	vmu     sync.Mutex
-	onVoice func(ctx context.Context, u *models.Update)
-	subBot  string
+	// pollAlert — алерт о полосе сбоев поллинга (nil — уведомлять некому);
+	// ставится в wire-фазе, читается обработчиком ошибок бота.
+	vmu       sync.Mutex
+	onVoice   func(ctx context.Context, u *models.Update)
+	subBot    string
+	pollAlert *alerts.PollWatch
 
 	// mediaCache: (тип, URL медиа) → Telegram file_id. Одинаковые аватары (один
 	// автор комментирует много раз) грузим в Telegram один раз, дальше — по
@@ -113,6 +117,15 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 				h(ctx, u)
 			}
 		}),
+		// Ошибки поллинга библиотека сама только ретраит с backoff'ом —
+		// вечный 409 (второй процесс) или протухший токен оставили бы демон
+		// молча полуживым. Логируем и считаем полосу сбоев для алерта.
+		bot.WithErrorsHandler(func(err error) {
+			m.log.Warn("telegram bot", "err", err)
+			if w := m.pollWatch(); w != nil {
+				w.Error(context.Background(), err)
+			}
+		}),
 	}
 	if p.HTTPClient != nil {
 		opts = append(opts, bot.WithHTTPClient(pollTimeout, p.HTTPClient))
@@ -123,6 +136,20 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 	}
 	m.b = b
 	return m, nil
+}
+
+// SetPollAlert подключает алерт о полосе сбоев поллинга. name различает ботов
+// в тексте алерта. Как и все Set*, зовётся до Start (wire-фаза runDaemon).
+func (m *Mirror) SetPollAlert(name string, send func(ctx context.Context, text string)) {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	m.pollAlert = alerts.NewPollWatch(name, send)
+}
+
+func (m *Mirror) pollWatch() *alerts.PollWatch {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	return m.pollAlert
 }
 
 // SetVoiceHandler подключает распознавание голосовых. Вызывается до Start;
