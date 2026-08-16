@@ -25,26 +25,28 @@ type postCall struct {
 }
 
 type fakeSite struct {
-	mu       sync.Mutex
-	notes    []love.Note
-	threads  map[string][]love.Comment
-	pageErr  map[string]error
-	posts    []postCall
-	profile  love.ProfileControl
-	profErr  error
-	nick     string
-	nextID   int64
-	autoShow bool // после POST реплика появляется в треде (обычное поведение сайта)
+	mu        sync.Mutex
+	notes     []love.Note
+	threads   map[string][]love.Comment
+	pageErr   map[string]error
+	published map[string]time.Time // время публикации в шапке страницы (zero — шапка без времени)
+	posts     []postCall
+	profile   love.ProfileControl
+	profErr   error
+	nick      string
+	nextID    int64
+	autoShow  bool // после POST реплика появляется в треде (обычное поведение сайта)
 }
 
 func newFakeSite(notes ...love.Note) *fakeSite {
 	return &fakeSite{
-		notes:    notes,
-		threads:  map[string][]love.Comment{},
-		pageErr:  map[string]error{},
-		nick:     myNick,
-		nextID:   500,
-		autoShow: true,
+		notes:     notes,
+		threads:   map[string][]love.Comment{},
+		pageErr:   map[string]error{},
+		published: map[string]time.Time{},
+		nick:      myNick,
+		nextID:    500,
+		autoShow:  true,
 	}
 }
 
@@ -60,7 +62,8 @@ func (f *fakeSite) FetchCommentsPage(_ context.Context, noteID string) (love.Com
 	if err := f.pageErr[noteID]; err != nil {
 		return love.CommentsPage{}, err
 	}
-	n := love.Note{ID: noteID, AuthorID: "u1", AuthorName: "Автор", Text: "текст заметки"}
+	n := love.Note{ID: noteID, AuthorID: "u1", AuthorName: "Автор", Text: "текст заметки",
+		PublishedAt: f.published[noteID]}
 	return love.CommentsPage{Comments: append([]love.Comment(nil), f.threads[noteID]...), Note: &n}, nil
 }
 
@@ -260,6 +263,72 @@ func TestCycleWritesOncePerNote(t *testing.T) {
 	}
 	if row.State != store.PulpitConfirmed || row.CommentID == 0 {
 		t.Fatalf("строка после цикла: %+v", row)
+	}
+}
+
+// TestStaleNoteFromFeedSkipped — заметка, вернувшаяся в ленту уже старой
+// (возврат с премодерации: автор дописал картинку), реплику не получает.
+// Лента возраста не отдаёт — он берётся со страницы комментариев.
+func TestStaleNoteFromFeedSkipped(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	site.published["n1"] = time.Now().Add(-3 * time.Hour)
+	svc, st, _ := newTestService(t, site, &fakeGen{}, func(c *Config) {
+		c.Freshness = 30 * time.Minute
+	})
+
+	svc.cycle(ctx)
+
+	if got := site.postCount(); got != 0 {
+		t.Fatalf("реплика под старой заметкой недопустима: %+v", site.posts)
+	}
+	row, err := st.PulpitNote(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != store.PulpitSkipped || row.Reason != reasonStale {
+		t.Fatalf("ожидалось skipped:%s, получено %s:%s", reasonStale, row.State, row.Reason)
+	}
+}
+
+// TestStaleNoteByOldestComment — шапка без времени (дрейф вёрстки): нижняя
+// граница возраста — старейший комментарий страницы.
+func TestStaleNoteByOldestComment(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	site.threads["n1"] = []love.Comment{
+		{ID: 1, AuthorID: "u2", AuthorName: "Гость", Text: "первый",
+			PublishedAt: time.Now().Add(-2 * time.Hour)},
+	}
+	svc, st, _ := newTestService(t, site, &fakeGen{}, func(c *Config) {
+		c.Freshness = 30 * time.Minute
+	})
+
+	svc.cycle(ctx)
+
+	if got := site.postCount(); got != 0 {
+		t.Fatalf("реплика под старой заметкой недопустима: %+v", site.posts)
+	}
+	if row, _ := st.PulpitNote(ctx, "n1"); row.State != store.PulpitSkipped {
+		t.Fatalf("ожидалось skipped, получено %s:%s", row.State, row.Reason)
+	}
+}
+
+// TestFreshnessPageErrorKeepsQueued — страница возраста не прочиталась: строка
+// остаётся в queued, её дожмёт resumeQueued (у него потолок от момента claim'а).
+func TestFreshnessPageErrorKeepsQueued(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite()
+	site.pageErr["n1"] = errors.New("сайт лежит")
+	svc, st, _ := newTestService(t, site, &fakeGen{}, nil)
+
+	svc.handleNote(ctx, note("n1"), false, -1)
+
+	if got := site.postCount(); got != 0 {
+		t.Fatalf("отправка при непрочитанной странице недопустима: %+v", site.posts)
+	}
+	if row, _ := st.PulpitNote(ctx, "n1"); row.State != store.PulpitQueued {
+		t.Fatalf("строка должна остаться в queued, получено %s:%s", row.State, row.Reason)
 	}
 }
 

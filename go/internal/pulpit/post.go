@@ -37,6 +37,25 @@ func (s *Service) postQuip(ctx context.Context, n love.Note, seenAt time.Time) b
 		s.skip(ctx, n.ID, store.PulpitFailed, reasonNoLLM)
 		return false
 	}
+	// Свежесть — по сайту, а не по ленте: лента возраста не отдаёт, и без
+	// этой проверки ветка stale на пути ленты была мертва — заметка,
+	// вернувшаяся с премодерации старой (автор дописал картинку), выглядела
+	// бы новой, и реплика легла бы под обжитый тред. Проверка стоит одного
+	// запроса и идёт ДО генерации: не жечь LLM-бюджет под скип.
+	if s.cfg.Freshness > 0 {
+		age, ok := s.noteAge(ctx, n.ID)
+		if !ok {
+			// Страница не прочиталась: строка остаётся в queued, её дожмёт
+			// resumeQueued со своим потолком возраста от момента claim'а.
+			return false
+		}
+		if age > s.cfg.Freshness {
+			s.log.Info("амвон: заметка уже обжита, молчим",
+				"note", n.ID, "возраст", age.Round(time.Minute))
+			s.skip(ctx, n.ID, store.PulpitSkipped, reasonStale)
+			return false
+		}
+	}
 	sm, err := s.Draft(ctx, n)
 	if err != nil {
 		s.log.Warn("амвон: реплика не сгенерирована", "note", n.ID, "err", err)
@@ -86,6 +105,33 @@ func (s *Service) postQuip(ctx context.Context, n love.Note, seenAt time.Time) b
 	s.log.Info("амвон: реплика отправлена", "note", n.ID, "форма", sm.Form,
 		"знаков", len([]rune(sm.Text)), "задержка", time.Since(seenAt).Round(time.Second))
 	return true
+}
+
+// noteAge — возраст заметки со страницы комментариев. Первоисточник —
+// PublishedAt из шапки; шапка без времени (дрейф вёрстки) — нижняя граница по
+// старейшему комментарию страницы; нет ни того ни другого — считаем свежей:
+// многодневная заметка без единого комментария — вырожденный случай, штатные
+// прикрыты холодным стартом и claim'ом. ok=false — страница не прочиталась.
+func (s *Service) noteAge(ctx context.Context, noteID string) (time.Duration, bool) {
+	page, err := s.site.FetchCommentsPage(ctx, noteID)
+	if err != nil {
+		s.log.Warn("амвон: возраст заметки не выяснен", "note", noteID, "err", err)
+		return 0, false
+	}
+	now := time.Now()
+	if page.Note != nil && !page.Note.PublishedAt.IsZero() {
+		return now.Sub(page.Note.PublishedAt), true
+	}
+	var oldest time.Time
+	for _, c := range page.Comments {
+		if !c.PublishedAt.IsZero() && (oldest.IsZero() || c.PublishedAt.Before(oldest)) {
+			oldest = c.PublishedAt
+		}
+	}
+	if oldest.IsZero() {
+		return 0, true
+	}
+	return now.Sub(oldest), true
 }
 
 // Draft генерирует реплику под заметку, ничего не отправляя. Экспортируется для
