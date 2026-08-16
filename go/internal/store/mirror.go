@@ -162,6 +162,29 @@ func (s *Store) Subscriptions(ctx context.Context) ([]Subscription, error) {
 	return subs, rows.Err()
 }
 
+// SubscriptionsByKind — все подписки вида в мессенджере (например, ключевые
+// слова для проверки нового комментария). Точечной цели у слова нет, поэтому
+// вычитка по (messenger, kind) — это и есть минимальный объём.
+func (s *Store) SubscriptionsByKind(ctx context.Context, messenger, kind string) ([]Subscription, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, target FROM subscriptions
+		WHERE messenger = ? AND kind = ?
+		ORDER BY id`, messenger, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subs []Subscription
+	for rows.Next() {
+		sub := Subscription{Messenger: messenger, Kind: kind}
+		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.Target); err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
 // SubscribersByTarget — подписчики конкретной цели в мессенджере. Новая заметка
 // автора бьёт точечно по индексу, а не вычиткой всей таблицы: заметок в день
 // единицы, а подписок со временем будут тысячи.

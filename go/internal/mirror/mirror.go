@@ -670,8 +670,6 @@ func (m *Mirror) startThreadEarly(ctx context.Context, sink Sink, n store.Note) 
 // комментарии. Приёмник без пойманного треда пропускается — его содержимое
 // уйдёт следующим циклом, когда появится корень треда.
 func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
-	var subs []store.Subscription
-	subsLoaded := false
 	for _, sink := range m.sinks {
 		// Заметка, не зеркалившаяся в этот приёмник (запощена до его
 		// включения), в его цикле не участвует: комментарии не очередятся.
@@ -709,11 +707,17 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 		if len(unsent) == 0 {
 			continue
 		}
-		if !subsLoaded {
-			subsLoaded = true
-			if subs, err = m.st.Subscriptions(ctx); err != nil {
-				m.log.Error("чтение подписок", "err", err)
-			}
+		// Подписки для ЛС: комментарии этой заметки — точечно по индексу
+		// (idx_subscriptions_target), ключевые слова — вычиткой вида по
+		// мессенджеру. Раньше на каждый комментарий линейно сканировались ВСЕ
+		// подписки всех мессенджеров.
+		noteSubs, err := m.st.SubscribersByTarget(ctx, sink.Name(), store.SubNoteComments, n.ID)
+		if err != nil {
+			m.log.Error("чтение подписок на заметку", "note", n.ID, "sink", sink.Name(), "err", err)
+		}
+		kwSubs, err := m.st.SubscriptionsByKind(ctx, sink.Name(), store.SubKeyword)
+		if err != nil {
+			m.log.Error("чтение подписок на слова", "sink", sink.Name(), "err", err)
 		}
 		for _, c := range unsent {
 			avatar := m.fetchMedia(ctx, c.AvatarURL, "аватар комментария")
@@ -728,7 +732,7 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 				m.log.Error("фиксация поста комментария", "comment", c.ID, "sink", sink.Name(), "err", err)
 				break
 			}
-			m.notifySubscribers(ctx, subs, sink, n, c, thread, msgID)
+			m.notifySubscribers(ctx, noteSubs, kwSubs, sink, n, c, thread, msgID)
 		}
 	}
 }
@@ -823,30 +827,32 @@ func isRealAvatar(url string) bool {
 }
 
 // notifySubscribers шлёт ЛС подписчикам этого мессенджера, которых касается
-// новый комментарий: подписка на комментарии этой заметки и подписка на слово
-// в её тексте. Один комментарий — одно ЛС на человека: сработавшие подписки
-// схлопываются по пользователю, и при совпадении выигрывает подписка на
-// заметку. Она точнее: заметку человек выбрал сам, слово могло совпасть
-// случайно, и отписываться из уведомления он захочет именно от заметки.
-func (m *Mirror) notifySubscribers(ctx context.Context, subs []store.Subscription,
+// новый комментарий: noteSubs — подписки на комментарии этой заметки (уже
+// отфильтрованы выборкой), kwSubs — подписки на слова. Один комментарий —
+// одно ЛС на человека: noteSubs идут первыми, и при совпадении выигрывает
+// подписка на заметку. Она точнее: заметку человек выбрал сам, слово могло
+// совпасть случайно, и отписываться из уведомления он захочет именно от
+// заметки.
+func (m *Mirror) notifySubscribers(ctx context.Context, noteSubs, kwSubs []store.Subscription,
 	sink Sink, n store.Note, c store.Comment, threadID, commentMsgID string) {
-	sent := make(map[int64]bool, len(subs))
-	for _, kind := range []string{store.SubNoteComments, store.SubKeyword} {
-		for _, sub := range subs {
-			if sub.Messenger != sink.Name() || sub.Kind != kind || sent[sub.UserID] {
-				continue
-			}
-			if kind == store.SubNoteComments && sub.Target != n.ID {
-				continue
-			}
-			if kind == store.SubKeyword && !strings.Contains(c.Text, sub.Target) {
-				continue
-			}
-			sent[sub.UserID] = true
-			m.deliver(ctx, sink, sub.UserID, SubEvent{
-				Sub: sub, Note: n, Comment: c, ThreadID: threadID, MsgID: commentMsgID,
-			})
+	sent := make(map[int64]bool, len(noteSubs)+1)
+	for _, sub := range noteSubs {
+		if sent[sub.UserID] {
+			continue
 		}
+		sent[sub.UserID] = true
+		m.deliver(ctx, sink, sub.UserID, SubEvent{
+			Sub: sub, Note: n, Comment: c, ThreadID: threadID, MsgID: commentMsgID,
+		})
+	}
+	for _, sub := range kwSubs {
+		if sent[sub.UserID] || !strings.Contains(c.Text, sub.Target) {
+			continue
+		}
+		sent[sub.UserID] = true
+		m.deliver(ctx, sink, sub.UserID, SubEvent{
+			Sub: sub, Note: n, Comment: c, ThreadID: threadID, MsgID: commentMsgID,
+		})
 	}
 }
 
