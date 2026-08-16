@@ -67,6 +67,20 @@ func (s *Store) TryReserveASR(ctx context.Context, messenger string, userID int6
 	return n == 1, nil
 }
 
+// RefundASR возвращает секунды в суточную квоту: списание было авансом, а
+// работа (скачивание, конвертация, распознавание) сорвалась — провайдеру не
+// заплачено. Ниже нуля не уходит.
+func (s *Store) RefundASR(ctx context.Context, messenger string, userID int64, day string, seconds int) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE asr_usage SET seconds = MAX(0, seconds - ?)
+		WHERE messenger = ? AND user_id = ? AND day = ?`,
+		seconds, messenger, userID, day)
+	if err != nil {
+		return fmt.Errorf("возврат квоты asr %s/%d: %w", messenger, userID, err)
+	}
+	return nil
+}
+
 // ASRUsage — израсходованные за день секунды (диагностика и тесты).
 func (s *Store) ASRUsage(ctx context.Context, messenger string, userID int64, day string) (int, error) {
 	var seconds int

@@ -175,6 +175,12 @@ func (s *Service) process(ctx context.Context, job Job) {
 		return
 	}
 
+	// Квота списывается авансом (атомарность против конкурентных воркеров),
+	// поэтому сорвавшаяся работа обязана её вернуть: иначе пользователь мог
+	// выжечь дневной лимит на падающем ffmpeg, не получив ни одной
+	// расшифровки. Пустая расшифровка возвратом НЕ считается — провайдеру
+	// уже заплачено.
+	refund := func() {}
 	if s.cfg.UserDailyLimitSec > 0 {
 		day := s.now().UTC().Format(time.DateOnly)
 		ok, err := s.st.TryReserveASR(ctx, job.Messenger, job.UserID, day,
@@ -187,11 +193,17 @@ func (s *Service) process(ctx context.Context, job Job) {
 			log.Info("суточная квота исчерпана", "user", job.UserID, "limit_sec", s.cfg.UserDailyLimitSec)
 			return
 		}
+		refund = func() {
+			if err := s.st.RefundASR(ctx, job.Messenger, job.UserID, day, job.Duration); err != nil {
+				log.Warn("квота ASR не возвращена", "err", err)
+			}
+		}
 	}
 
 	audio, err := job.Fetch(ctx)
 	if err != nil {
 		log.Warn("не скачали голосовое", "err", err)
+		refund()
 		return
 	}
 
@@ -200,6 +212,7 @@ func (s *Service) process(ctx context.Context, job Job) {
 	convCancel()
 	if err != nil {
 		log.Warn("конвертация не удалась", "err", err)
+		refund()
 		return
 	}
 
@@ -209,6 +222,7 @@ func (s *Service) process(ctx context.Context, job Job) {
 		if errors.Is(err, ErrAuth) {
 			s.alertFail(ctx, "провайдер отверг ключ или исчерпан баланс — голосовые не распознаются")
 		}
+		refund()
 		return
 	}
 	s.alertOK(ctx)

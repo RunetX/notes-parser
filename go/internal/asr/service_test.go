@@ -196,6 +196,35 @@ func TestProcessFailuresAreSilent(t *testing.T) {
 	}
 }
 
+// TestProcessRefundsQuotaOnFailure — сорвавшаяся работа возвращает секунды:
+// иначе пользователь выжигал дневной лимит на падающем ffmpeg, не получив ни
+// одной расшифровки. Пустая расшифровка — НЕ возврат: провайдеру заплачено.
+func TestProcessRefundsQuotaOnFailure(t *testing.T) {
+	ctx := context.Background()
+	day := time.Now().UTC().Format(time.DateOnly)
+	cases := []struct {
+		name string
+		tr   *fakeTranscriber
+		conv *fakeConverter
+		rec  *recorder
+		want int // секунд списано после process
+	}{
+		{"файл не скачался", &fakeTranscriber{text: "т"}, &fakeConverter{}, &recorder{err: errors.New("403")}, 0},
+		{"конвертация упала", &fakeTranscriber{text: "т"}, &fakeConverter{err: errors.New("ffmpeg")}, &recorder{}, 0},
+		{"провайдер недоступен", &fakeTranscriber{err: errors.New("сеть")}, &fakeConverter{}, &recorder{}, 0},
+		{"пустая расшифровка — оплачено", &fakeTranscriber{text: "   "}, &fakeConverter{}, &recorder{}, 10},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, st := newTestService(t, c.tr, c.conv, Config{MaxDurationSec: 90, UserDailyLimitSec: 600})
+			s.process(ctx, c.rec.job("KEY1", 10, 42))
+			if used, _ := st.ASRUsage(ctx, store.MessengerTelegram, 42, day); used != c.want {
+				t.Errorf("списано %d секунд, ожидалось %d", used, c.want)
+			}
+		})
+	}
+}
+
 func TestProcessAlertsAdminOnAuthError(t *testing.T) {
 	tr := &fakeTranscriber{err: ErrAuth}
 	s, _ := newTestService(t, tr, &fakeConverter{}, Config{MaxDurationSec: 90})
