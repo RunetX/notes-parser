@@ -256,11 +256,7 @@ func (s *Store) usersByIDs(ctx context.Context, ids []int64) (map[int64]Candidat
 	if len(ids) == 0 {
 		return m, nil
 	}
-	ph := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
+	ph, args := inList(ids)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, name, age, first_seen, last_seen FROM users WHERE id IN (`+ph+`)`, args...)
 	if err != nil {

@@ -185,14 +185,11 @@ func (s *Store) CohortNodes(ctx context.Context, identities []string) (map[strin
 		return out, nil
 	}
 	// 1) личность → её анкеты (user_id) + метка/признак персоны.
-	idArgs := make([]any, len(identities))
-	for i, id := range identities {
-		idArgs[i] = id
-	}
+	ph, idArgs := inList(identities)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT i.identity, i.user_id, i.label, i.is_persona, u.avatar_url, u.gender, u.age
 		FROM v_identity i JOIN users u ON u.id = i.user_id
-		WHERE i.identity IN (`+placeholders(len(identities))+`)`, idArgs...)
+		WHERE i.identity IN (`+ph+`)`, idArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -506,6 +503,18 @@ func placeholders(n int) string {
 		return ""
 	}
 	return strings.Repeat("?,", n-1) + "?"
+}
+
+// inList — «?,?,?» и параметры для IN (…) одним вызовом: ручная пара
+// «placeholders + цикл в []any» стояла в четырёх местах. Пустой список даёт
+// пустую строку, поэтому вызывающий обязан проверить его ДО запроса: «IN ()» —
+// синтаксическая ошибка SQLite, а не пустая выборка.
+func inList[T any](vals []T) (string, []any) {
+	args := make([]any, len(vals))
+	for i, v := range vals {
+		args[i] = v
+	}
+	return placeholders(len(vals)), args
 }
 
 // minNonEmpty — лексикографически меньшая непустая строка (min по датам ISO-8601,

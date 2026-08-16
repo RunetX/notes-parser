@@ -272,10 +272,9 @@ func (s *Store) attributionMeta(ctx context.Context, ids []int64, genre string) 
 		return out, nil
 	}
 	args := make([]any, 0, len(ids)+1)
+	ph, idArgs := inList(ids)
 	args = append(args, genre)
-	for _, id := range ids {
-		args = append(args, id)
-	}
+	args = append(args, idArgs...)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.id, u.name, u.gender,
 		       COALESCE(i.identity, ''), COALESCE(i.is_persona, 0),
@@ -283,7 +282,7 @@ func (s *Store) attributionMeta(ctx context.Context, ids []int64, genre string) 
 		FROM users u
 		LEFT JOIN v_identity i ON i.user_id = u.id
 		LEFT JOIN style_profiles sp ON sp.user_id = u.id AND sp.genre = ?
-		WHERE u.id IN (`+placeholders(len(ids))+`)`, args...)
+		WHERE u.id IN (`+ph+`)`, args...)
 	if err != nil {
 		return nil, err
 	}

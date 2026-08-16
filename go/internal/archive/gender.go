@@ -31,15 +31,12 @@ func (s *Store) AccountsMissingGender(ctx context.Context, identities []string) 
 	if len(identities) == 0 {
 		return nil, nil
 	}
-	args := make([]any, len(identities))
-	for i, id := range identities {
-		args[i] = id
-	}
+	ph, args := inList(identities)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.id FROM users u
 		JOIN v_identity i ON i.user_id = u.id
 		JOIN v_user_activity a ON a.id = u.id
-		WHERE i.identity IN (`+placeholders(len(identities))+`) AND u.gender = ''
+		WHERE i.identity IN (`+ph+`) AND u.gender = ''
 		ORDER BY a.comments DESC`, args...)
 	if err != nil {
 		return nil, err
