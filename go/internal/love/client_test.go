@@ -164,6 +164,27 @@ func TestPostCommentForm(t *testing.T) {
 	}
 }
 
+// 401/403 на POST — типизированные ошибки: bridge отличает протухшую сессию
+// через errors.Is, а не разбором текста.
+func TestPostCommentTypedAuthErrors(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   error
+	}{
+		{http.StatusUnauthorized, ErrUnauthorized},
+		{http.StatusForbidden, ErrForbidden},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+		}))
+		err := testClient(t, srv).PostComment(context.Background(), nil, "1", "0", "текст")
+		srv.Close()
+		if !errors.Is(err, tc.want) {
+			t.Errorf("статус %d: ожидалась %v, получено: %v", tc.status, tc.want, err)
+		}
+	}
+}
+
 // Регрессионная фиксация точных полей формы заметки (паритет с ryumkin.py).
 func TestPostNoteForm(t *testing.T) {
 	for _, tc := range []struct {

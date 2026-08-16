@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"lovegw/internal/love"
@@ -137,12 +136,9 @@ func (c *Core) invalidateSession(ctx context.Context, userID int64) {
 	c.notify(ctx, userID, "Сессия сайта истекла. Сделайте /login ещё раз")
 }
 
-// isAuthError — эвристика «сессия протухла»: сайт ответил 401/403 на POST.
-// Точную форму неавторизованного ответа уточним по живым логам.
+// isAuthError — «сессия протухла»: сайт ответил 401/403 на POST. Типизированные
+// ошибки ставит love.drainOK; 403 бывает и баном IP, но пользователю в обоих
+// случаях поможет только /login.
 func isAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "статус 401") ||
-		strings.Contains(err.Error(), "статус 403")
+	return errors.Is(err, love.ErrUnauthorized) || errors.Is(err, love.ErrForbidden)
 }

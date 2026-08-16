@@ -65,11 +65,21 @@ func (c *Client) PostNote(ctx context.Context, cookies []*http.Cookie, text stri
 // drainOK вычитывает и закрывает тело ответа (для переиспользования
 // соединения) и проверяет статус. Паритет с Python: сайт отвечает 200 и
 // HTML-страницей и на успех, и требует авторизацию через куки сессии.
+// 401/403 оборачиваются в типизированные ошибки — bridge по ним решает, что
+// сессия пользователя протухла (errors.Is, а не разбор текста). 403 бывает и
+// баном IP, но для POST-пути инвалидация сессии — сознательный паритет со
+// старым поведением: пользователю в любом случае поможет только /login.
 func drainOK(resp *http.Response) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("статус 401: %w", ErrUnauthorized)
+	case http.StatusForbidden:
+		return fmt.Errorf("статус 403: %w", ErrForbidden)
+	default:
 		return fmt.Errorf("статус %d", resp.StatusCode)
 	}
-	return nil
 }
