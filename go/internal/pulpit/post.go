@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"lovegw/internal/love"
@@ -100,6 +101,7 @@ func (s *Service) Draft(ctx context.Context, n love.Note) (Quip, error) {
 		Note:       n.Text,
 		AuthorName: n.AuthorName,
 		Anonymous:  n.AuthorID == "" || n.AuthorID == "0",
+		Nick:       s.currentNick(),
 		Forms:      allowed,
 		History:    history,
 		Samples:    s.styleSamples(ctx, n.ID),
@@ -116,7 +118,42 @@ func (s *Service) Draft(ctx context.Context, n love.Note) (Quip, error) {
 		Nicks: []string{n.AuthorName, s.currentNick()},
 	}
 	sm, err := s.ask(genCtx, quipSystem, base, quipSchema, cfg)
-	return Quip(sm), err
+	if err != nil || sm.Skip {
+		return Quip(sm), err
+	}
+	return Quip(s.punchUp(genCtx, n.Text, sm, cfg)), nil
+}
+
+// punchUp — второй проход по своему же черновику: убрать пояснение после удара,
+// заменить общее конкретным, добавить добивку. Первый заход находит угол, второй
+// его затачивает — в один заход модель этого не делает, она бережёт уже
+// написанное.
+//
+// Провал правки НЕ отменяет реплику: возвращаем черновик. Он уже прошёл
+// валидацию, а вторая попытка была улучшением, а не условием.
+func (s *Service) punchUp(ctx context.Context, note string, draft quip, cfg validateConfig) quip {
+	prompt := buildPunchupPrompt(note, draft.Text, draft.Form, cfg.MaxRunes)
+	// Форму редактор менять не должен, но своей строкой он её и повторяет —
+	// сверяем по тому же списку, что и черновик.
+	sharp, err := s.ask(ctx, punchupSystem, prompt, quipSchema, cfg)
+	if err != nil {
+		s.log.Info("амвон: правка не удалась, берём черновик", "err", err)
+		return draft
+	}
+	if sharp.Skip || strings.TrimSpace(sharp.Text) == "" {
+		return draft
+	}
+	if sharp.Text != draft.Text {
+		s.log.Debug("амвон: реплика поправлена", "было", draft.Text, "стало", sharp.Text)
+	}
+	// Форму и мысль дневника берём от черновика, если редактор их потерял.
+	if sharp.Form == "" {
+		sharp.Form = draft.Form
+	}
+	if sharp.Idea == "" {
+		sharp.Idea = draft.Idea
+	}
+	return sharp
 }
 
 // Quip — сгенерированная реплика (наружу её показывает только CLI-черновик).

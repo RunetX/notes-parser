@@ -152,6 +152,31 @@ func (g *fakeGen) lastPrompt() string {
 	return g.prompts[len(g.prompts)-1]
 }
 
+// draftPrompt — промпт черновика, а не правки шутки: последним запросом идёт
+// второй проход, и по нему проверять содержимое первого нельзя.
+func (g *fakeGen) draftPrompt() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := len(g.prompts) - 1; i >= 0; i-- {
+		if !strings.Contains(g.prompts[i], "## Черновик реплики") {
+			return g.prompts[i]
+		}
+	}
+	return ""
+}
+
+// anyPrompt — встречалась ли подстрока хоть в одном запросе.
+func (g *fakeGen) anyPrompt(sub string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, p := range g.prompts {
+		if strings.Contains(p, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // ——— стенд ———
 
 func newTestService(t *testing.T, site Site, gen JSONGenerator, edit func(*Config)) (*Service, *store.Store, *[]string) {
@@ -263,7 +288,7 @@ func TestResumeAfterCrashConfirmsWithoutDuplicate(t *testing.T) {
 	if _, err := st.TryClaimPulpitNote(ctx, "n1", store.PulpitQueued, "", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.TryStartPulpitPost(ctx, "n1", "буквально", "своя реплика", now); err != nil {
+	if _, err := st.TryStartPulpitPost(ctx, "n1", "инструкция", "своя реплика", now); err != nil {
 		t.Fatal(err)
 	}
 	// Реплика на сайте на самом деле есть — POST дошёл до падения.
@@ -459,7 +484,7 @@ func TestAnonymousNoteKeepsNameOut(t *testing.T) {
 
 	svc.cycle(ctx)
 
-	prompt := gen.lastPrompt()
+	prompt := gen.draftPrompt()
 	if !strings.Contains(prompt, "Автор скрыл имя") {
 		t.Errorf("промпт не предупреждает об анонимности:\n%s", prompt)
 	}
@@ -477,19 +502,20 @@ func TestGenerationRetryUsesReason(t *testing.T) {
 	gen := &fakeGen{answer: func(_, _ string) (string, error) {
 		calls++
 		if calls == 1 {
-			return `{"text":"**Гордыня**","form":"буквально","idea":"гордыня"}`, nil
+			return `{"text":"**Гордыня**","form":"инструкция","idea":"гордыня"}`, nil
 		}
-		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"буквально","idea":"обида"}`, nil
+		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"инструкция","idea":"обида"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
 	svc.cycle(ctx)
 
-	if calls != 2 {
-		t.Fatalf("попыток генерации %d, ожидалось 2", calls)
+	// Три вызова: забракованный черновик, переспрос и правка шутки.
+	if calls != 3 {
+		t.Fatalf("вызовов модели %d, ожидалось 3", calls)
 	}
-	if !strings.Contains(gen.lastPrompt(), "Переспрос") {
-		t.Errorf("причина брака не попала в промпт:\n%s", gen.lastPrompt())
+	if !gen.anyPrompt("Переспрос") {
+		t.Errorf("причина брака не попала в промпт:\n%s", gen.draftPrompt())
 	}
 	row, err := st.PulpitNote(ctx, "n1")
 	if err != nil || row.State != store.PulpitConfirmed {
@@ -502,7 +528,7 @@ func TestGenerationFailureDoesNotPost(t *testing.T) {
 	ctx := context.Background()
 	site := newFakeSite(note("n1"))
 	gen := &fakeGen{answer: func(_, _ string) (string, error) {
-		return `{"text":"[b]коротко[/b]","form":"буквально","idea":"и"}`, nil
+		return `{"text":"[b]коротко[/b]","form":"инструкция","idea":"и"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
@@ -517,6 +543,62 @@ func TestGenerationFailureDoesNotPost(t *testing.T) {
 	}
 	if row.State != store.PulpitFailed {
 		t.Fatalf("строка: %+v", row)
+	}
+}
+
+// TestPunchUpSharpensDraft — на сайт уходит правка, а не черновик: второй
+// проход и есть то место, где убирают пояснение после удара.
+func TestPunchUpSharpensDraft(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	const draft = "Обида кормится вниманием, и это, если подумать, довольно грустно."
+	const sharp = "Обида кормится вниманием. Моя вон уже с меня ростом."
+	gen := &fakeGen{answer: func(_, prompt string) (string, error) {
+		if strings.Contains(prompt, "## Черновик реплики") {
+			return `{"skip":false,"text":"` + sharp + `","form":"инструкция","idea":"обида"}`, nil
+		}
+		return `{"skip":false,"text":"` + draft + `","form":"инструкция","idea":"обида"}`, nil
+	}}
+	svc, _, _ := newTestService(t, site, gen, nil)
+
+	svc.cycle(ctx)
+
+	if site.postCount() != 1 {
+		t.Fatalf("постов %d, ожидался один", site.postCount())
+	}
+	if got := site.posts[0].Text; got != sharp {
+		t.Errorf("на сайт ушёл не правленый текст: %q", got)
+	}
+	if !gen.anyPrompt("## Черновик реплики") {
+		t.Error("второго прохода не было вовсе")
+	}
+}
+
+// TestPunchUpFailureKeepsDraft — правка не удалась, а реплика всё равно уходит:
+// черновик уже прошёл валидацию, и второй проход был улучшением, а не условием.
+func TestPunchUpFailureKeepsDraft(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	const draft = "Обида кормится вниманием. Не корми ее - и она уйдет следом."
+	gen := &fakeGen{answer: func(_, prompt string) (string, error) {
+		if strings.Contains(prompt, "## Черновик реплики") {
+			return `{"skip":false,"text":"**жирным**","form":"инструкция","idea":"брак"}`, nil
+		}
+		return `{"skip":false,"text":"` + draft + `","form":"инструкция","idea":"обида"}`, nil
+	}}
+	svc, st, _ := newTestService(t, site, gen, nil)
+
+	svc.cycle(ctx)
+
+	if site.postCount() != 1 {
+		t.Fatalf("постов %d, ожидался один", site.postCount())
+	}
+	if got := site.posts[0].Text; got != draft {
+		t.Errorf("вместо черновика ушло что-то другое: %q", got)
+	}
+	row, err := st.PulpitNote(ctx, "n1")
+	if err != nil || row.State != store.PulpitConfirmed {
+		t.Fatalf("строка: %+v %v", row, err)
 	}
 }
 
@@ -600,7 +682,7 @@ func TestReplySentWithPrefix(t *testing.T) {
 		if strings.Contains(system, "Тебе ответили") {
 			return `{"text":"Смирение не в том, чтобы молчать.","idea":"смирение"}`, nil
 		}
-		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"буквально","idea":"обида"}`, nil
+		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"инструкция","idea":"обида"}`, nil
 	}}, func(c *Config) { c.ReplyProbability = 1 })
 	svc.rand = func() float64 { return 0 } // всегда «отвечать»
 
