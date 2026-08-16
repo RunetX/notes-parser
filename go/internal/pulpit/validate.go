@@ -248,6 +248,9 @@ func validate(q quip, cfg validateConfig) string {
 	if reason := checkArt(lines); reason != "" {
 		return reason
 	}
+	if frag := tailFragment(text); frag != "" {
+		return "обрывок «" + frag + "» в конце: после панча не остаётся ничего"
+	}
 	if !cfg.AllowEmoji && hasEmoji(text) {
 		return "эмодзи, а в этот раз без них"
 	}
@@ -271,6 +274,33 @@ func validate(q quip, cfg validateConfig) string {
 		return "детали «" + q.Hook + "» в заметке нет: цепляйся за то, что написал автор"
 	}
 	return ""
+}
+
+// tailFragment — обрывок в конце ("" — чисто). Последняя строка из одного-двух
+// слов, и все они уже были выше: так выглядит хвост, оставшийся от правки
+// («…Папа не уточнил, с какой.\nгрядки.» — живой черновик 16.08.2026), а не
+// добивка. У настоящей добивки есть хотя бы одно своё слово, поэтому «Уже нет.»
+// после диалога проходит, а повтор уже сказанного — нет.
+func tailFragment(text string) string {
+	lines := strings.Split(text, "\n")
+	last := len(lines) - 1
+	for last >= 0 && strings.TrimSpace(lines[last]) == "" {
+		last--
+	}
+	if last <= 0 {
+		return "" // одна строка: обрывку неоткуда взяться
+	}
+	tail := words(lines[last])
+	if len(tail) == 0 || len(tail) > 2 {
+		return ""
+	}
+	before := words(strings.Join(lines[:last], " "))
+	for _, w := range tail {
+		if !contains(before, w) {
+			return "" // своё слово — значит добивка, а не хвост
+		}
+	}
+	return strings.TrimSpace(lines[last])
 }
 
 // knownNick — совпало ли обращение с одним из тех ников, которые подставляет
