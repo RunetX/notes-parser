@@ -54,7 +54,9 @@ func openStore(ctx context.Context, cfg *config.Config) (*store.Store, error) {
 	return st, nil
 }
 
-// openAccounts открывает базу сервисных аккаунтов сайта.
+// openAccounts открывает базу сервисных аккаунтов сайта. Как и у боевой БД,
+// строка, не открывающаяся текущим ключом, останавливает запуск: иначе неверный
+// ключ всплыл бы посреди работы, на первом же account say.
 func openAccounts(ctx context.Context, cfg *config.Config, path string) (*acct.Store, error) {
 	key, err := secretKey(cfg)
 	if err != nil {
@@ -63,7 +65,23 @@ func openAccounts(ctx context.Context, cfg *config.Config, path string) (*acct.S
 	if path == "" {
 		path = cfg.AccountsDB()
 	}
-	return acct.Open(ctx, path, acct.WithSecret(key))
+	db, err := acct.Open(ctx, path, acct.WithSecret(key))
+	if err != nil {
+		return nil, err
+	}
+	stats, err := db.SecretStatsOf(ctx)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if stats.Unreadable > 0 {
+		db.Close()
+		return nil, fmt.Errorf(
+			"в %s есть зашифрованные аккаунты (%d), которые не открываются текущим ключом: "+
+				"проверьте LOVEGW_SECRET_KEY / secret_key_file (сводка — lovegw secrets status)",
+			path, stats.Unreadable)
+	}
+	return db, nil
 }
 
 const accountsFlagUsage = "путь к базе сервисных аккаунтов (пусто — accounts.db рядом с боевой БД)"

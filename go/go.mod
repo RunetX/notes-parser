@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
+	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/go-telegram/bot v1.22.0
 	github.com/max-messenger/max-bot-api-client-go/v2 v2.2.4
 	golang.org/x/net v0.52.0
@@ -14,7 +15,6 @@ require (
 
 require (
 	github.com/andybalholm/cascadia v1.3.3 // indirect
-	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
