@@ -354,6 +354,15 @@ func (m *Mirror) PostChannelHTML(ctx context.Context, html string) (string, erro
 
 // ThreadLink — ссылка на ветку заметки в чате обсуждения (ссылки дайджеста);
 // "" — mid непонятного вида или чат обсуждения не задан.
+// MessageBudget — предел одного сообщения и мера, которой его считает MAX:
+// сырая строка вместе с разметкой, в единицах UTF-16. Нужен дайджесту, чтобы
+// резать выпуск по мере приёмника: иначе части считались бы в видимых рунах, а
+// дорезались бы уже здесь, посреди фразы. Метод (реализация digest.SplitBudget)
+// и функция — одно и то же; функция нужна `digest preview`, у которого бота нет.
+func MessageBudget() (limit int, length func(string) int) { return messageBudget, apiLen }
+
+func (m *Mirror) MessageBudget() (int, func(string) int) { return MessageBudget() }
+
 func (m *Mirror) ThreadLink(threadID string) string {
 	return m.chatMessageLink(threadID)
 }

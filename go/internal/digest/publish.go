@@ -26,7 +26,7 @@ func Publish(ctx context.Context, st *store.Store, p Publisher, d Draft, weekID,
 	if err != nil {
 		return 0, fmt.Errorf("резолв ссылок (%s): %w", p.Name(), err)
 	}
-	msgs := SplitMessages(blocks, MessageBudget)
+	msgs := SplitMessages(blocks, BudgetFor(p))
 
 	sent := 0
 	firstID := ""

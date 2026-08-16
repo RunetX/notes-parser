@@ -16,12 +16,43 @@ const MessageBudget = chantext.MessageBudget
 // numberingReserve — резерв под суффикс нумерации «(k/N)» и повтор заголовка.
 const numberingReserve = 48
 
-// SplitMessages жадно пакует блоки в сообщения не длиннее budget видимых рун.
+// Budget — чем и до какого предела приёмник меряет одно сообщение. Мессенджеры
+// считают по-разному: Telegram — видимый текст после разбора разметки, MAX —
+// сырую строку вместе с тегами. Выпуск с полусотней ссылок расходится в этих
+// мерах на сотни знаков, и общий бюджет видимых рун проезжает мимо предела MAX
+// — там сообщение дорезалось бы уже в транспорте, посреди фразы.
+type Budget struct {
+	Limit  int
+	Length func(string) int
+}
+
+// RuneBudget — бюджет в видимых рунах (мера Telegram и дефолт для всех, кто не
+// объявил свою).
+func RuneBudget(limit int) Budget {
+	return Budget{Limit: limit, Length: chantext.VisibleLen}
+}
+
+// SplitBudget — опциональная способность приёмника: объявить свою меру длины.
+// Реализует maxx.Mirror; кто не реализует, получает RuneBudget(MessageBudget).
+type SplitBudget interface {
+	MessageBudget() (limit int, length func(string) int)
+}
+
+// BudgetFor — бюджет приёмника: своя мера, если он её объявил.
+func BudgetFor(p Publisher) Budget {
+	if b, ok := p.(SplitBudget); ok {
+		limit, length := b.MessageBudget()
+		return Budget{Limit: limit, Length: length}
+	}
+	return RuneBudget(MessageBudget)
+}
+
+// SplitMessages жадно пакует блоки в сообщения не длиннее бюджета приёмника.
 // Абзац не рвётся (гигантский — обрезается по границе руны с «…» и закрытием
 // тегов); рубрика, продолжившаяся в новом сообщении, получает повтор
 // заголовка с пометкой «(продолжение)». При N > 1 сообщения нумеруются (k/N).
-func SplitMessages(blocks []Block, budget int) []string {
-	limit := budget - numberingReserve
+func SplitMessages(blocks []Block, b Budget) []string {
+	limit := b.Limit - numberingReserve
 	var msgs [][]string
 	var cur []string
 	curLen := 0
@@ -31,21 +62,21 @@ func SplitMessages(blocks []Block, budget int) []string {
 			curLen += len("\n\n")
 		}
 		cur = append(cur, t)
-		curLen += chantext.VisibleLen(t)
+		curLen += b.Length(t)
 	}
-	for _, b := range blocks {
-		if b.NewSection {
-			header = b.Text
+	for _, blk := range blocks {
+		if blk.NewSection {
+			header = blk.Text
 		}
-		t := b.Text
-		if chantext.VisibleLen(t) > limit {
-			t = chantext.Truncate(t, limit-1)
+		t := blk.Text
+		if b.Length(t) > limit {
+			t, _ = chantext.FitMeasured(t, limit, b.Length)
 		}
-		need := chantext.VisibleLen(t)
+		need := b.Length(t)
 		if curLen > 0 && curLen+len("\n\n")+need > limit {
 			msgs = append(msgs, cur)
 			cur, curLen = nil, 0
-			if !b.NewSection && header != "" && header != b.Text {
+			if !blk.NewSection && header != "" && header != blk.Text {
 				add(header + " <i>(продолжение)</i>")
 			}
 		}

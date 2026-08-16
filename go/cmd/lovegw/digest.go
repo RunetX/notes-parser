@@ -203,12 +203,13 @@ func digestPreview(ctx context.Context, cfg *config.Config, st *store.Store, w d
 		if err != nil {
 			return err
 		}
-		msgs := digest.SplitMessages(blocks, digest.MessageBudget)
-		fmt.Printf("=== %s: выпуск %s, %d %s ===\n", p.Name(), w.ID,
-			len(msgs), pluralParts(len(msgs)))
+		b := digest.BudgetFor(p)
+		msgs := digest.SplitMessages(blocks, b)
+		fmt.Printf("=== %s: выпуск %s, %d %s (предел %d) ===\n", p.Name(), w.ID,
+			len(msgs), pluralParts(len(msgs)), b.Limit)
 		for i, m := range msgs {
-			fmt.Printf("--- часть %d/%d · %d видимых символов ---\n%s\n", i+1, len(msgs),
-				chantext.VisibleLen(m), m)
+			fmt.Printf("--- часть %d/%d · %d видимых, %d по мере мессенджера ---\n%s\n",
+				i+1, len(msgs), chantext.VisibleLen(m), b.Length(m), m)
 		}
 	}
 	return nil
@@ -224,10 +225,13 @@ func pluralParts(n int) string {
 	return "частей"
 }
 
-// linkPub — офлайн-«приёмник» для preview: только имя и формат ссылок.
+// linkPub — офлайн-«приёмник» для preview: имя, формат ссылок и мера длины
+// сообщения. Мера нужна затем же, зачем и сам предпросмотр: у MAX она своя, и
+// без неё preview показывал бы разбиение, которого в бою не будет.
 type linkPub struct {
-	name string
-	link func(threadID string) string
+	name   string
+	link   func(threadID string) string
+	budget digest.Budget
 }
 
 func (p linkPub) Name() string { return p.name }
@@ -236,23 +240,33 @@ func (p linkPub) PostChannelHTML(context.Context, string) (string, error) {
 }
 func (p linkPub) ThreadLink(threadID string) string { return p.link(threadID) }
 
+// MessageBudget реализует digest.SplitBudget.
+func (p linkPub) MessageBudget() (int, func(string) int) { return p.budget.Limit, p.budget.Length }
+
 func previewPublishers(cfg *config.Config, only string) []digest.Publisher {
 	var pubs []digest.Publisher
 	tgCfg, maxCfg := cfg.Messengers.Telegram, cfg.Messengers.Max
 	if tgCfg.Enabled && (only == "" || only == store.MessengerTelegram) {
 		chat := tgCfg.DiscussionChatID
-		pubs = append(pubs, linkPub{name: store.MessengerTelegram, link: func(t string) string {
-			return tgx.ThreadDeepLink(chat, t)
-		}})
+		pubs = append(pubs, linkPub{
+			name:   store.MessengerTelegram,
+			budget: digest.RuneBudget(digest.MessageBudget),
+			link:   func(t string) string { return tgx.ThreadDeepLink(chat, t) },
+		})
 	}
 	if maxCfg.Enabled && (only == "" || only == store.MessengerMax) {
 		chat := maxCfg.DiscussionChatID
-		pubs = append(pubs, linkPub{name: store.MessengerMax, link: func(t string) string {
-			if chat == 0 {
-				return ""
-			}
-			return maxx.MessageLink(chat, t)
-		}})
+		limit, length := maxx.MessageBudget()
+		pubs = append(pubs, linkPub{
+			name:   store.MessengerMax,
+			budget: digest.Budget{Limit: limit, Length: length},
+			link: func(t string) string {
+				if chat == 0 {
+					return ""
+				}
+				return maxx.MessageLink(chat, t)
+			},
+		})
 	}
 	return pubs
 }
