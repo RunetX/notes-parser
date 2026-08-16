@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -226,5 +227,53 @@ func TestLoadASRBadEnv(t *testing.T) {
 				t.Errorf("%s с мусором должен ломать загрузку", name)
 			}
 		})
+	}
+}
+
+// Значения, при которых демон не поднимется вовсе (0 в интервале ленты — это
+// паника time.NewTicker) или поведёт себя необъяснимо, ловятся загрузкой.
+func TestLoadRejectsOutOfRange(t *testing.T) {
+	for name, body := range map[string]string{
+		"интервал ленты":        `{"feed_interval_s": 0}`,
+		"размер ленты":          `{"notes_limit": 0}`,
+		"интервал сайта":        `{"site": {"base_url": "https://x", "request_interval_ms": -1}}`,
+		"день недели дайджеста": `{"digest": {"weekday": 7}}`,
+		"час дайджеста":         `{"digest": {"hour": 24}}`,
+		"вероятность ответа":    `{"pulpit": {"reply_probability": 1.5}}`,
+		"пороги длины реплики":  `{"pulpit": {"min_runes": 200, "max_runes": 100}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, body)); err == nil {
+				t.Errorf("%s: битое значение должно ломать загрузку", name)
+			}
+		})
+	}
+	// Вероятность 0 и 1 — законные края, а не «не задано».
+	for _, p := range []string{"0", "1"} {
+		if _, err := Load(writeConfig(t, `{"pulpit": {"reply_probability": `+p+`}}`)); err != nil {
+			t.Errorf("reply_probability=%s должна проходить: %v", p, err)
+		}
+	}
+}
+
+// Токен при выключенном мессенджере — не ошибка, но и не молчание: иначе
+// «зеркало не постит» ищут в коде, а не в одной строке конфига.
+func TestLoadWarnsAboutDisabledMessengerToken(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{
+		"messengers": {"max": {"enabled": false, "token": "max-token"}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "messengers.max") {
+		t.Errorf("ждали предупреждение про выключенный max, получили %q", cfg.Warnings)
+	}
+	// У включённого мессенджера предупреждения быть не должно.
+	cfg, err = Load(writeConfig(t, `{"messengers": {"max": {"enabled": true, "token": "max-token"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("лишние предупреждения: %q", cfg.Warnings)
 	}
 }

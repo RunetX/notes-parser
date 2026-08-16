@@ -221,6 +221,9 @@ func cmdRun(ctx context.Context, args []string) error {
 		return fmt.Errorf("run: max включён, но не заданы token / channel_id")
 	}
 	log := newLogger(cfg.LogLevel)
+	for _, w := range cfg.Warnings {
+		log.Warn("конфиг: " + w)
+	}
 
 	st, err := openStore(ctx, cfg)
 	if err != nil {

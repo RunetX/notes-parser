@@ -44,6 +44,9 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		return errors.New("диагностика прервана")
 	}
 	ok("конфиг", *cfgPath)
+	for _, w := range cfg.Warnings {
+		warn("конфиг", w)
+	}
 
 	st, err := openStore(ctx, cfg)
 	if err != nil {

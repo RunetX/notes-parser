@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 )
 
@@ -196,6 +197,11 @@ type Config struct {
 	// недоступен напрямую. Сайт и MAX при этом идут мимо прокси. Пусто —
 	// напрямую.
 	TelegramProxy string `json:"telegram_proxy"`
+	// Warnings — настройки, которые заданы, но ни на что не влияют. Не ошибка:
+	// демон обязан подняться и с ними. Но и не молчать: токен, выключенный
+	// забытым `enabled: false`, ищут часами — зеркало просто никуда не постит.
+	// Печатают их демон на старте и doctor.
+	Warnings []string `json:"-"`
 }
 
 // AccountsDB — путь к базе сервисных аккаунтов сайта. По умолчанию
@@ -207,10 +213,17 @@ func (c *Config) AccountsDB() string {
 	return filepath.Join(filepath.Dir(c.DBPath), "accounts.db")
 }
 
-// Load читает конфиг, накладывает значения по умолчанию и env-переопределения:
-// LOVEGW_MIRROR_TOKEN, LOVEGW_DM_TOKEN, LOVEGW_MAX_TOKEN, LOVEGW_MAX_DM_TOKEN,
-// LOVEGW_DB_PATH, LOVEGW_SECRET_KEY, LOVEGW_SECRET_KEY_FILE,
-// LOVEGW_ACCOUNTS_DB, LOVEGW_ASR_* (см. applyASREnv).
+// Load читает конфиг, накладывает значения по умолчанию и env-переопределения,
+// после чего проверяет диапазоны (validate) и собирает предупреждения о
+// настройках, которые ни на что не влияют (Warnings).
+//
+// Переменные окружения — все, что понимает конфиг:
+//
+//	токены       LOVEGW_MIRROR_TOKEN, LOVEGW_DM_TOKEN, LOVEGW_TG_TALKS_TOKEN,
+//	             LOVEGW_MAX_TOKEN, LOVEGW_MAX_DM_TOKEN, LOVEGW_MAX_TALKS_TOKEN
+//	пути и сеть  LOVEGW_DB_PATH, LOVEGW_ACCOUNTS_DB, LOVEGW_TG_PROXY
+//	ключи        LOVEGW_LLM_KEY, LOVEGW_SECRET_KEY, LOVEGW_SECRET_KEY_FILE
+//	секции       LOVEGW_ASR_* (см. applyASREnv), LOVEGW_PULPIT_* (applyPulpitEnv)
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Site: Site{
@@ -281,37 +294,19 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("разбор конфига %s: %w", path, err)
 	}
 
-	if v := os.Getenv("LOVEGW_MIRROR_TOKEN"); v != "" {
-		cfg.MirrorBot.Token = v
-	}
-	if v := os.Getenv("LOVEGW_DM_TOKEN"); v != "" {
-		cfg.DMBot.Token = v
-	}
-	if v := os.Getenv("LOVEGW_DB_PATH"); v != "" {
-		cfg.DBPath = v
-	}
-	if v := os.Getenv("LOVEGW_TG_PROXY"); v != "" {
-		cfg.TelegramProxy = v
-	}
-	if v := os.Getenv("LOVEGW_LLM_KEY"); v != "" {
-		cfg.LLM.APIKey = v
-	}
+	envString(&cfg.MirrorBot.Token, "LOVEGW_MIRROR_TOKEN")
+	envString(&cfg.DMBot.Token, "LOVEGW_DM_TOKEN")
+	envString(&cfg.DBPath, "LOVEGW_DB_PATH")
+	envString(&cfg.TelegramProxy, "LOVEGW_TG_PROXY")
+	envString(&cfg.LLM.APIKey, "LOVEGW_LLM_KEY")
 	envString(&cfg.SecretKey, "LOVEGW_SECRET_KEY")
 	envString(&cfg.SecretKeyFile, "LOVEGW_SECRET_KEY_FILE")
 	envString(&cfg.AccountsDBPath, "LOVEGW_ACCOUNTS_DB")
 	cfg.normalizeMessengers()
-	if v := os.Getenv("LOVEGW_MAX_TOKEN"); v != "" {
-		cfg.Messengers.Max.Token = v
-	}
-	if v := os.Getenv("LOVEGW_MAX_DM_TOKEN"); v != "" {
-		cfg.Messengers.Max.DMToken = v
-	}
-	if v := os.Getenv("LOVEGW_MAX_TALKS_TOKEN"); v != "" {
-		cfg.Messengers.Max.TalksToken = v
-	}
-	if v := os.Getenv("LOVEGW_TG_TALKS_TOKEN"); v != "" {
-		cfg.Messengers.Telegram.TalksToken = v
-	}
+	envString(&cfg.Messengers.Max.Token, "LOVEGW_MAX_TOKEN")
+	envString(&cfg.Messengers.Max.DMToken, "LOVEGW_MAX_DM_TOKEN")
+	envString(&cfg.Messengers.Max.TalksToken, "LOVEGW_MAX_TALKS_TOKEN")
+	envString(&cfg.Messengers.Telegram.TalksToken, "LOVEGW_TG_TALKS_TOKEN")
 	cfg.normalizeTalksTokens()
 	if err := cfg.applyASREnv(); err != nil {
 		return nil, err
@@ -320,10 +315,67 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.Site.BaseURL == "" {
-		return nil, fmt.Errorf("site.base_url не задан")
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
+	cfg.collectWarnings()
 	return cfg, nil
+}
+
+// validate ловит значения, при которых демон либо не поднимется вовсе, либо
+// поведёт себя необъяснимо. Здесь только то, что нельзя починить дефолтом:
+// «0 значит по умолчанию» уже разобрано в конструкторах служб, а вот 0 в
+// интервале ленты — это паника time.NewTicker на старте, и объяснять её потом
+// по стектрейсу незачем.
+func (c *Config) validate() error {
+	if c.Site.BaseURL == "" {
+		return fmt.Errorf("site.base_url не задан")
+	}
+	if c.Site.RequestIntervalMS < 0 {
+		return fmt.Errorf("site.request_interval_ms: ожидалось неотрицательное число, получено %d", c.Site.RequestIntervalMS)
+	}
+	if c.FeedIntervalS <= 0 {
+		return fmt.Errorf("feed_interval_s: ожидалось положительное число, получено %d", c.FeedIntervalS)
+	}
+	if c.NotesLimit <= 0 {
+		return fmt.Errorf("notes_limit: ожидалось положительное число, получено %d", c.NotesLimit)
+	}
+	if c.Digest.Weekday < 0 || c.Digest.Weekday > 6 {
+		return fmt.Errorf("digest.weekday: ожидалось 0–6 (0 — воскресенье), получено %d", c.Digest.Weekday)
+	}
+	if c.Digest.Hour < 0 || c.Digest.Hour > 23 {
+		return fmt.Errorf("digest.hour: ожидалось 0–23, получено %d", c.Digest.Hour)
+	}
+	if p := c.Pulpit.ReplyProbability; p < 0 || p > 1 {
+		return fmt.Errorf("pulpit.reply_probability: ожидалась вероятность 0–1, получено %v", p)
+	}
+	if c.Pulpit.MinRunes > c.Pulpit.MaxRunes && c.Pulpit.MaxRunes > 0 {
+		return fmt.Errorf("pulpit.min_runes (%d) больше pulpit.max_runes (%d) — ни одна реплика не пройдёт валидатор",
+			c.Pulpit.MinRunes, c.Pulpit.MaxRunes)
+	}
+	return nil
+}
+
+// collectWarnings собирает настройки, заданные вхолостую. Главный случай —
+// токен при выключенном мессенджере: гейт messengers молча отключает приёмник,
+// а снаружи это выглядит как «зеркало не работает без причины».
+func (c *Config) collectWarnings() {
+	c.Warnings = nil
+	for name, m := range map[string]Messenger{"max": c.Messengers.Max, "telegram": c.Messengers.Telegram} {
+		if m.Token != "" && !m.Enabled {
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"messengers.%s: токен задан, но enabled=false — этот мессенджер выключен целиком", name))
+		}
+	}
+	if c.Digest.AutoPublish && !c.Digest.Enabled {
+		c.Warnings = append(c.Warnings,
+			"digest.auto_publish=true при digest.enabled=false — планировщик выпуска не запускается")
+	}
+	if c.LLM.APIKey == "" && c.Digest.AutoPublish {
+		c.Warnings = append(c.Warnings,
+			"digest.auto_publish=true без llm.api_key — LLM-рубрики заполнить нечем, выпуск уйдёт админу на полуручной цикл")
+	}
+	sort.Strings(c.Warnings) // порядок map'а иначе гуляет от запуска к запуску
 }
 
 // applyASREnv накладывает env-переопределения секции asr.
