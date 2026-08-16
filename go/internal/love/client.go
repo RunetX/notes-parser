@@ -1,6 +1,7 @@
 package love
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -101,7 +102,7 @@ func (c *Client) FetchNotes(ctx context.Context) ([]Note, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParseNotes(strings.NewReader(string(body)))
+	return ParseNotes(bytes.NewReader(body))
 }
 
 // FetchComments скачивает и разбирает комментарии заметки.
@@ -121,15 +122,17 @@ func (c *Client) FetchCommentsPage(ctx context.Context, noteID string) (Comments
 	if err != nil {
 		return CommentsPage{}, err
 	}
-	comments, err := ParseComments(strings.NewReader(string(body)), c.baseURL)
+	comments, note, err := ParseCommentsPage(bytes.NewReader(body), c.baseURL)
 	if err != nil {
 		return CommentsPage{}, err
 	}
-	page := CommentsPage{Comments: comments}
-	if n, err := ParseNoteFromCommentsPage(strings.NewReader(string(body)), c.baseURL); err == nil {
-		page.Note = &n
+	if note == nil {
+		// Шапка не разобралась — это не повод ронять зеркалирование, но и
+		// молчать нельзя: так теряются свежие иллюстрации и признак
+		// «комментарии запрещены».
+		c.log.Warn("шапка заметки на странице комментариев не разобрана", "note", noteID)
 	}
-	return page, nil
+	return CommentsPage{Comments: comments, Note: note}, nil
 }
 
 // RawNotes возвращает сырой HTML ленты (для crawl --save-html и фикстур).

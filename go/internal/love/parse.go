@@ -156,78 +156,92 @@ func ParseComments(r io.Reader, baseURL string) ([]Comment, error) {
 		return nil, fmt.Errorf("разбор HTML комментариев: %w", err)
 	}
 
+	return parseCommentsDoc(doc, baseURL)
+}
+
+// parseCommentsDoc — та же работа по готовому DOM: страницу комментариев
+// разбирают дважды (сами комментарии и шапка заметки), и строить дерево два
+// раза на каждом такте опроса каждой заметки незачем.
+func parseCommentsDoc(doc *goquery.Document, baseURL string) ([]Comment, error) {
 	var comments []Comment
 	var parseErr error
 	doc.Find(selCommentItem).EachWithBreak(func(i int, s *goquery.Selection) bool {
-		ctx := fmt.Sprintf("комментарий #%d на странице", i)
-
-		anchor := s.Find(selCommentID).First()
-		idAttr, ok := anchor.Attr("id")
-		if !ok {
-			parseErr = &MarkupError{Selector: selCommentID, Context: ctx}
-			return false
-		}
-		id, err := strconv.ParseInt(strings.TrimPrefix(idAttr, commentAnchorPrefix), 10, 64)
+		c, err := parseCommentItem(s, i, baseURL)
 		if err != nil {
-			parseErr = &MarkupError{Selector: selCommentID, Context: ctx + ": id=" + idAttr}
+			parseErr = err
 			return false
 		}
-		ctx = fmt.Sprintf("комментарий %d", id)
-
-		// parent_id есть только в древовидном виде; пустой/непарсибельный —
-		// корень заметки (0), это не ошибка вёрстки.
-		var parentID int64
-		if p, ok := anchor.Attr(attrParentComment); ok {
-			if p = strings.TrimSpace(p); p != "" {
-				parentID, _ = strconv.ParseInt(p, 10, 64)
-			}
-		}
-
-		href, ok := s.Find(selNickname).First().Attr("href")
-		if !ok {
-			parseErr = &MarkupError{Selector: selNickname, Context: ctx}
-			return false
-		}
-
-		avatar := s.Find(selAvatar).First()
-		src, okSrc := avatar.Attr("src")
-		alt, okAlt := avatar.Attr("alt")
-		if !okSrc || !okAlt {
-			parseErr = &MarkupError{Selector: selAvatar, Context: ctx}
-			return false
-		}
-		name, age := splitNameAge(alt)
-
-		dateText := strings.TrimSpace(s.Find(selCommentDate).First().Text())
-		published, err := time.ParseInLocation(dateLayout, dateText, nsk)
-		if err != nil {
-			parseErr = &MarkupError{Selector: selCommentDate, Context: ctx + ": " + dateText}
-			return false
-		}
-
-		text := s.Find(selCommentText).First()
-		if text.Length() == 0 {
-			parseErr = &MarkupError{Selector: selCommentText, Context: ctx}
-			return false
-		}
-
-		comments = append(comments, Comment{
-			ID:          id,
-			ParentID:    parentID,
-			AuthorID:    digitsOf(href),
-			AuthorName:  name,
-			AuthorAge:   age,
-			AuthorLink:  absolutize(baseURL, href),
-			AvatarURL:   absolutize(baseURL, src),
-			PublishedAt: published,
-			Text:        strings.TrimSpace(text.Text()),
-		})
+		comments = append(comments, c)
 		return true
 	})
 	if parseErr != nil {
 		return nil, parseErr
 	}
 	return comments, nil
+}
+
+// parseCommentItem разбирает один элемент списка комментариев. Любой
+// отсутствующий обязательный кусок — MarkupError (дрейф вёрстки), и обход
+// останавливается: разбирать остаток страницы по сломанным селекторам смысла
+// нет.
+func parseCommentItem(s *goquery.Selection, i int, baseURL string) (Comment, error) {
+	ctx := fmt.Sprintf("комментарий #%d на странице", i)
+
+	anchor := s.Find(selCommentID).First()
+	idAttr, ok := anchor.Attr("id")
+	if !ok {
+		return Comment{}, &MarkupError{Selector: selCommentID, Context: ctx}
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(idAttr, commentAnchorPrefix), 10, 64)
+	if err != nil {
+		return Comment{}, &MarkupError{Selector: selCommentID, Context: ctx + ": id=" + idAttr}
+	}
+	ctx = fmt.Sprintf("комментарий %d", id)
+
+	// parent_id есть только в древовидном виде; пустой/непарсибельный —
+	// корень заметки (0), это не ошибка вёрстки.
+	var parentID int64
+	if p, ok := anchor.Attr(attrParentComment); ok {
+		if p = strings.TrimSpace(p); p != "" {
+			parentID, _ = strconv.ParseInt(p, 10, 64)
+		}
+	}
+
+	href, ok := s.Find(selNickname).First().Attr("href")
+	if !ok {
+		return Comment{}, &MarkupError{Selector: selNickname, Context: ctx}
+	}
+
+	avatar := s.Find(selAvatar).First()
+	src, okSrc := avatar.Attr("src")
+	alt, okAlt := avatar.Attr("alt")
+	if !okSrc || !okAlt {
+		return Comment{}, &MarkupError{Selector: selAvatar, Context: ctx}
+	}
+	name, age := splitNameAge(alt)
+
+	dateText := strings.TrimSpace(s.Find(selCommentDate).First().Text())
+	published, err := time.ParseInLocation(dateLayout, dateText, nsk)
+	if err != nil {
+		return Comment{}, &MarkupError{Selector: selCommentDate, Context: ctx + ": " + dateText}
+	}
+
+	text := s.Find(selCommentText).First()
+	if text.Length() == 0 {
+		return Comment{}, &MarkupError{Selector: selCommentText, Context: ctx}
+	}
+
+	return Comment{
+		ID:          id,
+		ParentID:    parentID,
+		AuthorID:    digitsOf(href),
+		AuthorName:  name,
+		AuthorAge:   age,
+		AuthorLink:  absolutize(baseURL, href),
+		AvatarURL:   absolutize(baseURL, src),
+		PublishedAt: published,
+		Text:        strings.TrimSpace(text.Text()),
+	}, nil
 }
 
 // ParseNoteFromCommentsPage разбирает шапку самой заметки на её странице
@@ -240,6 +254,33 @@ func ParseNoteFromCommentsPage(r io.Reader, baseURL string) (Note, error) {
 	if err != nil {
 		return Note{}, fmt.Errorf("разбор HTML комментариев: %w", err)
 	}
+	return parseNoteDoc(doc, baseURL)
+}
+
+// ParseCommentsPage разбирает страницу комментариев целиком по ОДНОМУ дереву:
+// и сами комментарии, и шапку заметки. Отдельные ParseComments и
+// ParseNoteFromCommentsPage строили DOM каждая своим, а страница опрашивается
+// на каждом такте каждой живой заметки. Ошибка шапки не валит комментарии:
+// шапка нужна зеркалу только для необязательных обновлений (свежие
+// иллюстрации, «комментарии запрещены»), и её дрейф не должен останавливать
+// зеркалирование — возвращается nil.
+func ParseCommentsPage(r io.Reader, baseURL string) ([]Comment, *Note, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("разбор HTML комментариев: %w", err)
+	}
+	comments, err := parseCommentsDoc(doc, baseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	n, err := parseNoteDoc(doc, baseURL)
+	if err != nil {
+		return comments, nil, nil
+	}
+	return comments, &n, nil
+}
+
+func parseNoteDoc(doc *goquery.Document, baseURL string) (Note, error) {
 	item := doc.Find(selNotePageItem).First()
 	if item.Length() == 0 {
 		return Note{}, &MarkupError{Selector: selNotePageItem, Context: "шапка заметки на странице комментариев"}
