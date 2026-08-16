@@ -237,236 +237,295 @@ func cmdRun(ctx context.Context, args []string) error {
 	return runDaemon(ctx, cfg, st, *seed, log)
 }
 
+// daemon — состояние сборки демона. Сборка идёт в три фазы: build (создать
+// объекты) → wire (все Set*-инжекции) → start (поднять поллеры и службы,
+// метод run). ЛЮБАЯ Set*-инжекция после старта поллера — data race по модели
+// памяти Go (поля ботов не под мьютексом), поэтому setup-методы только копят
+// starts, а g.Go зовётся одним циклом в конце.
+type daemon struct {
+	cfg    *config.Config
+	st     *store.Store
+	client *love.Client
+	log    *slog.Logger
+	seed   bool
+
+	sinks     []mirror.Sink
+	alerters  []func(ctx context.Context, text string)
+	subNotify map[string]mirror.SubNotify
+	starts    []func(context.Context) error
+
+	asrSvc     *asr.Service
+	dm         *dmbot.Bot // Telegram: бот команд (РюмкинЪ)
+	tgTalks    *dmbot.Bot // Telegram: бот переписки (talks_token), иначе = dm
+	tg         *tgx.Mirror
+	mx         *maxx.Mirror // MAX: бот зеркала — канал, чат обсуждения и ЛС-команды
+	maxTalks   *maxx.Mirror // MAX: бот переписки (talks_token), иначе = mx
+	maxDM      *dmbot.Logic // ЛС-команды бота зеркала MAX
+	maxTalksDM *dmbot.Logic
+	onNewNote  func(context.Context, love.Note)
+}
+
 // runDaemon собирает включённые мессенджеры (гейт messengers) и крутит все
 // компоненты под общим errgroup. Telegram поднимает полный контур (зеркало,
 // мост, ЛС-бот РюмкинЪ); MAX — зеркало + мост + ЛС-диалоги: при заданном
 // dm_token личка живёт в отдельном боте (по аналогии с telegram), иначе всё
 // через одного бота (long polling GetUpdates в каждом).
 func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bool, log *slog.Logger) error {
-	client := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
-	tgCfg, maxCfg := cfg.Messengers.Telegram, cfg.Messengers.Max
+	d := &daemon{
+		cfg: cfg,
+		st:  st,
+		client: love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
+			time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log),
+		log:       log,
+		seed:      seed,
+		subNotify: map[string]mirror.SubNotify{},
+	}
+	if err := d.setupASR(); err != nil {
+		return err
+	}
+	if err := d.setupTelegram(ctx); err != nil {
+		return err
+	}
+	if err := d.setupMax(); err != nil {
+		return err
+	}
+	// Алертеры собраны — подключаем к ним ASR: о сбое ключа или исчерпанном
+	// балансе провайдера админ узнаёт один раз (в треде при этом тишина).
+	if d.asrSvc != nil {
+		d.asrSvc.SetAlert(fanOutAlerts(d.alerters))
+	}
+	d.setupTalks()
+	d.setupNews()
+	d.publishCommands(ctx)
+	if err := d.setupDigest(); err != nil {
+		return err
+	}
+	if err := d.setupPulpit(); err != nil {
+		return err
+	}
+	return d.run(ctx)
+}
 
-	var sinks []mirror.Sink
-	var alerters []func(ctx context.Context, text string)
-	subNotify := map[string]mirror.SubNotify{}
-	var dm *dmbot.Bot      // Telegram: бот команд (РюмкинЪ)
-	var tgTalks *dmbot.Bot // Telegram: бот переписки (talks_token), иначе = dm
-	var tg *tgx.Mirror
-	var mx *maxx.Mirror       // MAX: бот зеркала — канал, чат обсуждения и ЛС-команды
-	var maxTalks *maxx.Mirror // MAX: бот переписки (talks_token), иначе = mx
-	var maxDM *dmbot.Logic    // ЛС-команды бота зеркала MAX
-	var maxTalksDM *dmbot.Logic
+// setupASR — распознавание голосовых в тредах. Выключен — гейт как раньше.
+func (d *daemon) setupASR() error {
+	cfg, log := d.cfg, d.log
+	if !cfg.ASR.Enabled {
+		return nil
+	}
+	var err error
+	if d.asrSvc, err = newASR(cfg, d.st, log); err != nil {
+		return err
+	}
+	d.starts = append(d.starts, d.asrSvc.Run)
+	log.Info("распознавание голосовых включено", "provider", cfg.ASR.Provider,
+		"max_duration_sec", cfg.ASR.MaxDurationSec,
+		"daily_limit_sec", cfg.ASR.UserDailyLimitSec, "concurrency", cfg.ASR.Concurrency)
+	if !cfg.Messengers.Telegram.Enabled {
+		log.Warn("asr включён, но telegram выключен — голосовые слушать некому")
+	}
+	return nil
+}
 
-	g, gctx := errgroup.WithContext(ctx)
-
-	// Сборка идёт в три фазы: build (создать объекты) → wire (все Set*-инжекции)
-	// → start (поднять поллеры и службы). Старты копятся здесь и запускаются
-	// одним циклом в самом конце: ЛЮБАЯ Set*-инжекция после старта поллера —
-	// это data race по модели памяти Go (поля ботов не под мьютексом), поэтому
-	// новые g.Go в середину функции не добавлять — только в starts.
-	var starts []func(context.Context) error
-
-	// Распознавание голосовых в тредах. Выключен — гейт работает как раньше.
-	var asrSvc *asr.Service
-	if cfg.ASR.Enabled {
-		var err error
-		if asrSvc, err = newASR(cfg, st, log); err != nil {
-			return err
-		}
-		starts = append(starts, asrSvc.Run)
-		log.Info("распознавание голосовых включено", "provider", cfg.ASR.Provider,
-			"max_duration_sec", cfg.ASR.MaxDurationSec,
-			"daily_limit_sec", cfg.ASR.UserDailyLimitSec, "concurrency", cfg.ASR.Concurrency)
-		if !tgCfg.Enabled {
-			log.Warn("asr включён, но telegram выключен — голосовые слушать некому")
-		}
+// setupTelegram — зеркало, мост и ЛС-боты Telegram-стороны.
+func (d *daemon) setupTelegram(ctx context.Context) error {
+	cfg, st, client, log := d.cfg, d.st, d.client, d.log
+	tgCfg := cfg.Messengers.Telegram
+	if !tgCfg.Enabled {
+		return nil
+	}
+	tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
+	if err != nil {
+		return err
 	}
 
-	if tgCfg.Enabled {
-		tgClient, err := tgx.ProxyClient(cfg.TelegramProxy)
-		if err != nil {
+	// ЛС-бот РюмкинЪ (опционален): без него мост не сможет уведомлять
+	// пользователей о протухшей сессии, но зеркалирование работает.
+	var notify bridge.Notify
+	if tgCfg.DMToken != "" {
+		if d.dm, err = dmbot.New(tgCfg.DMToken, st, client, tgClient, log); err != nil {
 			return err
 		}
+		notify = d.dm.Notify
+	}
+	dm := d.dm
 
-		// ЛС-бот РюмкинЪ (опционален): без него мост не сможет уведомлять
-		// пользователей о протухшей сессии, но зеркалирование работает.
-		var notify bridge.Notify
-		if tgCfg.DMToken != "" {
-			if dm, err = dmbot.New(tgCfg.DMToken, st, client, tgClient, log); err != nil {
-				return err
-			}
-			notify = dm.Notify
-		}
+	handler := bridge.New(st, client, notify, tgCfg.ChannelID, tgCfg.DiscussionChatID, log)
+	tg, err := tgx.NewMirror(tgx.Params{
+		Token:            tgCfg.Token,
+		ChannelID:        tgCfg.ChannelID,
+		DiscussionChatID: tgCfg.DiscussionChatID,
+		Signature:        tgCfg.Signature,
+		BaseURL:          cfg.Site.BaseURL,
+		HTTPClient:       tgClient,
+	}, log, handler.Handle)
+	if err != nil {
+		return err
+	}
+	d.tg = tg
+	d.sinks = append(d.sinks, tg)
 
-		handler := bridge.New(st, client, notify, tgCfg.ChannelID, tgCfg.DiscussionChatID, log)
-		tg, err = tgx.NewMirror(tgx.Params{
-			Token:            tgCfg.Token,
-			ChannelID:        tgCfg.ChannelID,
-			DiscussionChatID: tgCfg.DiscussionChatID,
-			Signature:        tgCfg.Signature,
-			BaseURL:          cfg.Site.BaseURL,
-			HTTPClient:       tgClient,
-		}, log, handler.Handle)
-		if err != nil {
+	// Бот переписки (опционален): личная переписка сайта уезжает к нему
+	// целиком, у бота команд остаётся только маршрутизация старых реплаев.
+	d.tgTalks = dm
+	if tgCfg.TalksToken != "" {
+		if d.tgTalks, err = dmbot.NewTalks(tgCfg.TalksToken, st, tgClient, log); err != nil {
 			return err
 		}
-		sinks = append(sinks, tg)
-
-		// Бот переписки (опционален): личная переписка сайта уезжает к нему
-		// целиком, у бота команд остаётся только маршрутизация старых реплаев.
-		tgTalks = dm
-		if tgCfg.TalksToken != "" {
-			if tgTalks, err = dmbot.NewTalks(tgCfg.TalksToken, st, tgClient, log); err != nil {
-				return err
-			}
-			talksBot := tgTalks
-			starts = append(starts, func(ctx context.Context) error {
-				talksBot.Start(ctx)
-				return nil
-			})
-		}
-
-		if tgCfg.AdminUserID != 0 {
-			// Алерты шлём в ЛС — приоритет боту переписки, затем боту команд;
-			// без ЛС-ботов остаётся постер (в личку он писать сможет не всегда).
-			adminID := tgCfg.AdminUserID
-			notifier := tgTalks
-			alerters = append(alerters, func(ctx context.Context, text string) {
-				if notifier != nil {
-					notifier.Notify(ctx, adminID, "⚠️ lovegw: "+text)
-					return
-				}
-				if err := tg.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
-					log.Warn("не удалось отправить алерт админу", "sink", "telegram", "err", err)
-				}
-			})
-		}
-
-		// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
-		// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
-		if dm != nil {
-			subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, ev mirror.SubEvent) {
-				link := subLinkTG(tgCfg, ev, cfg.Site.BaseURL, log)
-				dm.NotifyHTML(ctx, userID,
-					tgx.ComposeSubNotice(ev.Reason(), ev.Note, ev.Comment, link),
-					dmbot.UnsubKeyboard(ev.Sub.ID))
-			}
-		}
-
-		// Юзернейм РюмкинЪ нужен постеру: под заметкой он вешает deep-link в
-		// этот ЛС. Не снялся — просто не будет кнопки.
-		if dm != nil {
-			if name, err := dm.Username(ctx); err != nil {
-				log.Warn("юзернейм ЛС-бота не снят, кнопки подписки под заметками не будет", "err", err)
-			} else {
-				tg.SetSubscribeBot(name)
-			}
-		}
-
-		// Хук распознавания ставим до старта поллинга — гонки нет.
-		if asrSvc != nil {
-			tg.SetVoiceHandler(tgx.NewVoiceHandler(tg, asrSvc, tgCfg.DiscussionChatID, log).Handle)
-		}
-
-		starts = append(starts, func(ctx context.Context) error {
-			tg.Start(ctx) // блокируется до отмены контекста
+		talksBot := d.tgTalks
+		d.starts = append(d.starts, func(ctx context.Context) error {
+			talksBot.Start(ctx)
 			return nil
 		})
-		if dm != nil {
-			starts = append(starts, func(ctx context.Context) error {
-				dm.Start(ctx)
-				return nil
-			})
+	}
+
+	if tgCfg.AdminUserID != 0 {
+		// Алерты шлём в ЛС — приоритет боту переписки, затем боту команд;
+		// без ЛС-ботов остаётся постер (в личку он писать сможет не всегда).
+		adminID := tgCfg.AdminUserID
+		notifier := d.tgTalks
+		d.alerters = append(d.alerters, func(ctx context.Context, text string) {
+			if notifier != nil {
+				notifier.Notify(ctx, adminID, "⚠️ lovegw: "+text)
+				return
+			}
+			if err := tg.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
+				log.Warn("не удалось отправить алерт админу", "sink", "telegram", "err", err)
+			}
+		})
+	}
+
+	// Уведомления подписчиков шлём через РюмкинЪ (его пользователь точно
+	// запускал, раз подписался) — постер-бот не смог бы написать в ЛС.
+	if dm != nil {
+		d.subNotify[store.MessengerTelegram] = func(ctx context.Context, userID int64, ev mirror.SubEvent) {
+			link := subLinkTG(tgCfg, ev, cfg.Site.BaseURL, log)
+			dm.NotifyHTML(ctx, userID,
+				tgx.ComposeSubNotice(ev.Reason(), ev.Note, ev.Comment, link),
+				dmbot.UnsubKeyboard(ev.Sub.ID))
 		}
 	}
 
-	if maxCfg.Enabled {
-		var err error
-		mx, err = maxx.NewMirror(maxx.Params{
-			Token:            maxCfg.Token,
-			ChannelID:        maxCfg.ChannelID,
-			DiscussionChatID: maxCfg.DiscussionChatID,
-			Signature:        maxCfg.Signature,
-			BaseURL:          cfg.Site.BaseURL,
-			HTTPClient:       maxx.MintsifraClient(),
+	// Юзернейм РюмкинЪ нужен постеру: под заметкой он вешает deep-link в
+	// этот ЛС. Не снялся — просто не будет кнопки.
+	if dm != nil {
+		if name, err := dm.Username(ctx); err != nil {
+			log.Warn("юзернейм ЛС-бота не снят, кнопки подписки под заметками не будет", "err", err)
+		} else {
+			tg.SetSubscribeBot(name)
+		}
+	}
+
+	// Хук распознавания ставим до старта поллинга — гонки нет.
+	if d.asrSvc != nil {
+		tg.SetVoiceHandler(tgx.NewVoiceHandler(tg, d.asrSvc, tgCfg.DiscussionChatID, log).Handle)
+	}
+
+	d.starts = append(d.starts, func(ctx context.Context) error {
+		tg.Start(ctx) // блокируется до отмены контекста
+		return nil
+	})
+	if dm != nil {
+		d.starts = append(d.starts, func(ctx context.Context) error {
+			dm.Start(ctx)
+			return nil
+		})
+	}
+	return nil
+}
+
+// setupMax — зеркало, мост и ЛС-диалоги MAX-стороны.
+func (d *daemon) setupMax() error {
+	cfg, st, client, log := d.cfg, d.st, d.client, d.log
+	maxCfg := cfg.Messengers.Max
+	if !maxCfg.Enabled {
+		return nil
+	}
+	mx, err := maxx.NewMirror(maxx.Params{
+		Token:            maxCfg.Token,
+		ChannelID:        maxCfg.ChannelID,
+		DiscussionChatID: maxCfg.DiscussionChatID,
+		Signature:        maxCfg.Signature,
+		BaseURL:          cfg.Site.BaseURL,
+		HTTPClient:       maxx.MintsifraClient(),
+	}, log)
+	if err != nil {
+		return err
+	}
+	d.mx = mx
+	d.sinks = append(d.sinks, mx)
+	if maxCfg.DiscussionChatID == 0 {
+		log.Warn("MAX без discussion_chat_id: посты уйдут в канал, комментарии останутся в очереди")
+	}
+
+	// Бот переписки MAX (опционален): к нему уезжает только личная
+	// переписка сайта. Канал, чат обсуждения и все ЛС-команды остаются у
+	// бота зеркала — как было до появления переписки.
+	d.maxTalks = mx
+	if maxCfg.TalksToken != "" {
+		if maxCfg.TalksToken == maxCfg.Token {
+			log.Warn("MAX: talks_token совпадает с token — два поллера на один бот, апдейты будут теряться")
+		}
+		d.maxTalks, err = maxx.NewMirror(maxx.Params{
+			Token:      maxCfg.TalksToken,
+			BaseURL:    cfg.Site.BaseURL,
+			HTTPClient: maxx.MintsifraClient(),
 		}, log)
 		if err != nil {
 			return err
 		}
-		sinks = append(sinks, mx)
-		if maxCfg.DiscussionChatID == 0 {
-			log.Warn("MAX без discussion_chat_id: посты уйдут в канал, комментарии останутся в очереди")
-		}
+	}
 
-		// Бот переписки MAX (опционален): к нему уезжает только личная
-		// переписка сайта. Канал, чат обсуждения и все ЛС-команды остаются у
-		// бота зеркала — как было до появления переписки.
-		maxTalks = mx
-		if maxCfg.TalksToken != "" {
-			if maxCfg.TalksToken == maxCfg.Token {
-				log.Warn("MAX: talks_token совпадает с token — два поллера на один бот, апдейты будут теряться")
+	// Алерты — через бота переписки (без него это тот же бот зеркала).
+	if maxCfg.AdminUserID != 0 {
+		adminID, pm := maxCfg.AdminUserID, d.maxTalks
+		d.alerters = append(d.alerters, func(ctx context.Context, text string) {
+			if err := pm.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
+				log.Warn("не удалось отправить алерт админу", "sink", "max", "err", err)
 			}
-			maxTalks, err = maxx.NewMirror(maxx.Params{
-				Token:      maxCfg.TalksToken,
-				BaseURL:    cfg.Site.BaseURL,
-				HTTPClient: maxx.MintsifraClient(),
-			}, log)
-			if err != nil {
-				return err
-			}
+		})
+	}
+	// Подписки — функция бота зеркала: он же принимает /subscribe.
+	d.subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, ev mirror.SubEvent) {
+		link := mx.SubNoteLink(ev.Note, ev.PostMsgID)
+		if ev.IsComment() {
+			link = mx.SubCommentLink(ev.Note, ev.Comment.ID, ev.MsgID)
 		}
+		text := maxx.ComposeSubNotice(ev.Reason(), ev.Note, ev.Comment, link)
+		if err := mx.NotifyHTML(ctx, userID, text, dmbot.UnsubKeyboard(ev.Sub.ID)); err != nil {
+			log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
+		}
+	}
 
-		// Алерты — через бота переписки (без него это тот же бот зеркала).
-		if maxCfg.AdminUserID != 0 {
-			adminID, pm := maxCfg.AdminUserID, maxTalks
-			alerters = append(alerters, func(ctx context.Context, text string) {
-				if err := pm.SendText(ctx, adminID, "⚠️ lovegw: "+text); err != nil {
-					log.Warn("не удалось отправить алерт админу", "sink", "max", "err", err)
-				}
-			})
-		}
-		// Подписки — функция бота зеркала: он же принимает /subscribe.
-		subNotify[store.MessengerMax] = func(ctx context.Context, userID int64, ev mirror.SubEvent) {
-			link := mx.SubNoteLink(ev.Note, ev.PostMsgID)
-			if ev.IsComment() {
-				link = mx.SubCommentLink(ev.Note, ev.Comment.ID, ev.MsgID)
-			}
-			text := maxx.ComposeSubNotice(ev.Reason(), ev.Note, ev.Comment, link)
-			if err := mx.NotifyHTML(ctx, userID, text, dmbot.UnsubKeyboard(ev.Sub.ID)); err != nil {
-				log.Warn("уведомление подписчика не удалось", "sink", "max", "user", userID, "err", err)
-			}
-		}
-
-		// Бот зеркала ведёт и мост «ответ в чате → комментарий на сайте», и
-		// ЛС-команды; бот переписки — только диалоги talks.
-		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
-		maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
-		starts = append(starts, func(ctx context.Context) error {
-			mx.Start(ctx, mx.Dispatch(maxCore, maxDM))
+	// Бот зеркала ведёт и мост «ответ в чате → комментарий на сайте», и
+	// ЛС-команды; бот переписки — только диалоги talks.
+	maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
+	d.maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
+	maxDM := d.maxDM
+	d.starts = append(d.starts, func(ctx context.Context) error {
+		mx.Start(ctx, mx.Dispatch(maxCore, maxDM))
+		return nil
+	})
+	if d.maxTalks != mx {
+		pm := d.maxTalks
+		d.maxTalksDM = dmbot.NewTalksLogic(st, pm, store.MessengerMax, log)
+		talksLogic := d.maxTalksDM
+		d.starts = append(d.starts, func(ctx context.Context) error {
+			pm.Start(ctx, pm.Dispatch(nil, talksLogic))
 			return nil
 		})
-		if maxTalks != mx {
-			pm := maxTalks
-			maxTalksDM = dmbot.NewTalksLogic(st, pm, store.MessengerMax, log)
-			talksLogic := maxTalksDM
-			starts = append(starts, func(ctx context.Context) error {
-				pm.Start(ctx, pm.Dispatch(nil, talksLogic))
-				return nil
-			})
-		}
 	}
+	return nil
+}
 
-	// Алертеры собраны — подключаем к ним ASR: о сбое ключа или исчерпанном
-	// балансе провайдера админ узнаёт один раз (в треде при этом тишина).
-	if asrSvc != nil {
-		asrSvc.SetAlert(fanOutAlerts(alerters))
-	}
-
-	// Личная переписка сайта (talks): один поллер под общим клиентом сайта фанит
-	// входящие ЛС в личку включённых мессенджеров, ответы реплаем/командой уходят
-	// на сайт. Роутер инжектится в ЛС-стороны обоих мессенджеров (nil-safe:
-	// выключенный talks не меняет поведения ботов).
+// setupTalks — личная переписка сайта (talks): один поллер под общим клиентом
+// сайта фанит входящие ЛС в личку включённых мессенджеров, ответы
+// реплаем/командой уходят на сайт. Роутер инжектится в ЛС-стороны обоих
+// мессенджеров (nil-safe: выключенный talks не меняет поведения ботов).
+func (d *daemon) setupTalks() {
+	cfg, st, client, log := d.cfg, d.st, d.client, d.log
+	tgCfg, maxCfg := cfg.Messengers.Telegram, cfg.Messengers.Max
+	tgTalks, maxTalks := d.tgTalks, d.maxTalks
+	maxDM, maxTalksDM := d.maxDM, d.maxTalksDM
 	if cfg.Talks.Enabled {
 		// Транспорт — бот переписки мессенджера (без своего токена это бот
 		// команд в telegram и бот зеркала в MAX, как было раньше).
@@ -509,7 +568,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				StoreText:    cfg.Talks.StoreText,
 				MaxReqPerMin: cfg.Talks.MaxRequestsPerMin,
 				ExcludeUsers: cfg.Talks.ExcludeUsers,
-				AlertSend:    fanOutAlerts(alerters),
+				AlertSend:    fanOutAlerts(d.alerters),
 				AskDelivery:  askDelivery,
 			}, log)
 			if tgTalks != nil {
@@ -517,8 +576,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			}
 			// Боту команд оставляем только маршрутизацию реплаев: ЛС,
 			// доставленные им раньше, по-прежнему ждут ответа у него.
-			if dm != nil && dm != tgTalks {
-				dm.SetReplyRouter(watcher)
+			if d.dm != nil && d.dm != tgTalks {
+				d.dm.SetReplyRouter(watcher)
 			}
 			if maxTalks != nil {
 				maxTalks.SetTalkRouter(watcher)
@@ -526,13 +585,13 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 					maxTalksDM.SetTalkRouter(watcher)
 				}
 			}
-			if mx != nil && mx != maxTalks {
-				mx.SetTalkRouter(watcher) // старые реплаи в MAX; команды /talks у бота переписки
+			if d.mx != nil && d.mx != maxTalks {
+				d.mx.SetTalkRouter(watcher) // старые реплаи в MAX; команды /talks у бота переписки
 			}
-			if maxTalks == mx && maxDM != nil {
+			if maxTalks == d.mx && maxDM != nil {
 				maxDM.SetTalkRouter(watcher) // один бот на всё — как раньше
 			}
-			starts = append(starts, watcher.Run)
+			d.starts = append(d.starts, watcher.Run)
 			log.Info("talks включён", "admin_only", cfg.Talks.AdminOnly,
 				"allow_send", cfg.Talks.AllowSend, "store_text", cfg.Talks.StoreText,
 				"мессенджеров", len(transports))
@@ -541,144 +600,166 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// независимо от наличия транспортов.
 		if cfg.Talks.RetentionDays > 0 {
 			days := cfg.Talks.RetentionDays
-			starts = append(starts, func(ctx context.Context) error {
+			d.starts = append(d.starts, func(ctx context.Context) error {
 				return talks.PurgeLoop(ctx, st, days, log)
 			})
 		}
 	}
+}
 
-	// Новости проекта: админ пишет /news в ЛС командному боту, и текст уходит
-	// постом в каналы мимо сайта (заметки на love.ngs.ru не появляется).
-	// Приёмники — те же, что у зеркала.
+// setupNews — новости проекта: админ пишет /news в ЛС командному боту, и текст
+// уходит постом в каналы мимо сайта (заметки на love.ngs.ru не появляется).
+// Приёмники — те же, что у зеркала.
+func (d *daemon) setupNews() {
+	cfg, log := d.cfg, d.log
 	var newsPubs []news.Publisher
-	for _, s := range sinks {
+	for _, s := range d.sinks {
 		if p, ok := s.(news.Publisher); ok {
 			newsPubs = append(newsPubs, p)
 		}
 	}
-	if len(newsPubs) > 0 {
-		newsSvc := news.New(st, newsPubs, log)
-		bots := 0
-		if dm != nil && tgCfg.AdminUserID != 0 {
-			dm.SetNews(newsSvc, tgCfg.AdminUserID)
-			bots++
-		}
-		if maxDM != nil && maxCfg.AdminUserID != 0 {
-			maxDM.SetNews(newsSvc, maxCfg.AdminUserID)
-			bots++
-		}
-		if bots > 0 {
-			log.Info("новости проекта включены", "каналов", len(newsPubs), "ботов", bots)
-		}
+	if len(newsPubs) == 0 {
+		return
 	}
+	newsSvc := news.New(d.st, newsPubs, log)
+	bots := 0
+	if d.dm != nil && cfg.Messengers.Telegram.AdminUserID != 0 {
+		d.dm.SetNews(newsSvc, cfg.Messengers.Telegram.AdminUserID)
+		bots++
+	}
+	if d.maxDM != nil && cfg.Messengers.Max.AdminUserID != 0 {
+		d.maxDM.SetNews(newsSvc, cfg.Messengers.Max.AdminUserID)
+		bots++
+	}
+	if bots > 0 {
+		log.Info("новости проекта включены", "каналов", len(newsPubs), "ботов", bots)
+	}
+}
 
-	// Меню команд в клиентах мессенджеров. После подключения talks-роутера:
-	// от него зависит, попадут ли в список /talks и /talk. Сбой не фатален —
-	// сами команды работают и без меню, поэтому ошибку логирует транспорт.
-	if dm != nil {
-		dm.PublishCommands(ctx)
+// publishCommands — меню команд в клиентах мессенджеров. Зовётся после
+// подключения talks-роутера: от него зависит, попадут ли в список /talks и
+// /talk. Сбой не фатален — сами команды работают и без меню, поэтому ошибку
+// логирует транспорт.
+func (d *daemon) publishCommands(ctx context.Context) {
+	if d.dm != nil {
+		d.dm.PublishCommands(ctx)
 	}
-	if tgTalks != nil && tgTalks != dm {
-		tgTalks.PublishCommands(ctx)
+	if d.tgTalks != nil && d.tgTalks != d.dm {
+		d.tgTalks.PublishCommands(ctx)
 	}
-	if maxDM != nil {
-		maxDM.PublishCommands(ctx)
+	if d.maxDM != nil {
+		d.maxDM.PublishCommands(ctx)
 	}
-	if maxTalksDM != nil {
-		maxTalksDM.PublishCommands(ctx)
+	if d.maxTalksDM != nil {
+		d.maxTalksDM.PublishCommands(ctx)
 	}
+}
 
-	// Планировщик дайджеста: в слот выпуска готовит черновик (LLM заполняет
-	// рубрики, если настроен) и либо публикует сам (auto_publish), либо
-	// зовёт админа — премодерация через lovegw digest publish.
-	if cfg.Digest.Enabled {
-		loc, weekday, hour, err := digestSlotParams(cfg)
+// setupDigest — планировщик дайджеста: в слот выпуска готовит черновик (LLM
+// заполняет рубрики, если настроен) и либо публикует сам (auto_publish), либо
+// зовёт админа — премодерация через lovegw digest publish.
+func (d *daemon) setupDigest() error {
+	cfg, log := d.cfg, d.log
+	if !cfg.Digest.Enabled {
+		return nil
+	}
+	loc, weekday, hour, err := digestSlotParams(cfg)
+	if err != nil {
+		return err
+	}
+	dcfg := digest.ScheduleConfig{
+		Loc:         loc,
+		Weekday:     weekday,
+		Hour:        hour,
+		OutDir:      digestOutDir(cfg),
+		SiteBase:    cfg.Site.BaseURL,
+		Notify:      fanOutAlerts(d.alerters),
+		AutoPublish: cfg.Digest.AutoPublish,
+	}
+	// Автопубликация идёт в те же приёмники, что и зеркало.
+	for _, s := range d.sinks {
+		if p, ok := s.(digest.Publisher); ok {
+			dcfg.Publishers = append(dcfg.Publishers, p)
+		}
+	}
+	llmModel := ""
+	if cfg.LLM.APIKey != "" {
+		lc, err := llmClient(cfg)
 		if err != nil {
 			return err
 		}
-		dcfg := digest.ScheduleConfig{
-			Loc:         loc,
-			Weekday:     weekday,
-			Hour:        hour,
-			OutDir:      digestOutDir(cfg),
-			SiteBase:    cfg.Site.BaseURL,
-			Notify:      fanOutAlerts(alerters),
-			AutoPublish: cfg.Digest.AutoPublish,
-		}
-		// Автопубликация идёт в те же приёмники, что и зеркало.
-		for _, s := range sinks {
-			if p, ok := s.(digest.Publisher); ok {
-				dcfg.Publishers = append(dcfg.Publishers, p)
-			}
-		}
-		llmModel := ""
-		if cfg.LLM.APIKey != "" {
-			lc, err := llmClient(cfg)
-			if err != nil {
-				return err
-			}
-			dcfg.LLM = lc
-			llmModel = lc.Model()
-		}
-		starts = append(starts, func(ctx context.Context) error {
-			return digest.RunSchedule(ctx, st, dcfg, log)
-		})
-		log.Info("дайджест включён", "слот",
-			fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir,
-			"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel)
+		dcfg.LLM = lc
+		llmModel = lc.Model()
 	}
+	st := d.st
+	d.starts = append(d.starts, func(ctx context.Context) error {
+		return digest.RunSchedule(ctx, st, dcfg, log)
+	})
+	log.Info("дайджест включён", "слот",
+		fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir,
+		"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel)
+	return nil
+}
 
-	// Амвон: своя реплика под каждой новой заметкой сайта. Служба поднимается
-	// ДО зеркала: ей нужен колбэк OnNewNote как страховка на случай, если её
-	// собственный (более частый) обход ленты моргнёт. Ошибку Run наружу не
-	// отдаём — амвон не критичен для зеркалирования.
-	var onNewNote func(context.Context, love.Note)
-	if cfg.Pulpit.Enabled {
-		gen, err := llmClientFor(cfg, cfg.Pulpit.Model, cfg.Pulpit.Effort,
-			time.Duration(cfg.Pulpit.GenerateTimeoutS)*time.Second)
-		if err != nil {
-			return fmt.Errorf("амвон: %w", err)
-		}
-		svc, err := newPulpit(cfg, st, gen, fanOutAlerts(alerters), log)
-		if err != nil {
-			return err
-		}
-		onNewNote = svc.OnNewNote
-		starts = append(starts, func(ctx context.Context) error {
-			if err := svc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				log.Error("амвон остановлен", "err", err)
-			}
-			return nil
-		})
-		// Ручка /pulpit — админам тех мессенджеров, где есть ЛС-бот команд.
-		// Как и все Set*, ставится до стартов поллеров (фаза wire).
-		if dm != nil && tgCfg.AdminUserID != 0 {
-			dm.SetPulpit(svc, tgCfg.AdminUserID)
-		}
-		if maxDM != nil && maxCfg.AdminUserID != 0 {
-			maxDM.SetPulpit(svc, maxCfg.AdminUserID)
-		}
+// setupPulpit — амвон: своя реплика под каждой новой заметкой сайта. Служба
+// собирается ДО зеркала: ей нужен колбэк OnNewNote как страховка на случай,
+// если её собственный (более частый) обход ленты моргнёт. Ошибку Run наружу
+// не отдаём — амвон не критичен для зеркалирования.
+func (d *daemon) setupPulpit() error {
+	cfg, log := d.cfg, d.log
+	if !cfg.Pulpit.Enabled {
+		return nil
 	}
+	gen, err := llmClientFor(cfg, cfg.Pulpit.Model, cfg.Pulpit.Effort,
+		time.Duration(cfg.Pulpit.GenerateTimeoutS)*time.Second)
+	if err != nil {
+		return fmt.Errorf("амвон: %w", err)
+	}
+	svc, err := newPulpit(cfg, d.st, gen, fanOutAlerts(d.alerters), log)
+	if err != nil {
+		return err
+	}
+	d.onNewNote = svc.OnNewNote
+	d.starts = append(d.starts, func(ctx context.Context) error {
+		if err := svc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("амвон остановлен", "err", err)
+		}
+		return nil
+	})
+	// Ручка /pulpit — админам тех мессенджеров, где есть ЛС-бот команд.
+	// Как и все Set*, ставится до стартов поллеров (фаза wire).
+	if d.dm != nil && cfg.Messengers.Telegram.AdminUserID != 0 {
+		d.dm.SetPulpit(svc, cfg.Messengers.Telegram.AdminUserID)
+	}
+	if d.maxDM != nil && cfg.Messengers.Max.AdminUserID != 0 {
+		d.maxDM.SetPulpit(svc, cfg.Messengers.Max.AdminUserID)
+	}
+	return nil
+}
 
-	mir := mirror.New(st, client, sinks, mirror.Config{
+// run — фаза start: сборка и все Set*-инжекции позади, поллеры поднимаются
+// без гонок.
+func (d *daemon) run(ctx context.Context) error {
+	cfg, log := d.cfg, d.log
+	mir := mirror.New(d.st, d.client, d.sinks, mirror.Config{
 		NotesLimit:   cfg.NotesLimit,
 		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,
-		SeedFirst:    seed,
-		AlertSend:    fanOutAlerts(alerters),
-		SubNotify:    subNotify,
-		OnNewNote:    onNewNote,
+		SeedFirst:    d.seed,
+		AlertSend:    fanOutAlerts(d.alerters),
+		SubNotify:    d.subNotify,
+		OnNewNote:    d.onNewNote,
 	}, log)
 
-	log.Info("lovegw запущен", "seed", seed, "db", cfg.DBPath,
-		"telegram", tgCfg.Enabled, "max", maxCfg.Enabled, "dm_bot", dm != nil,
-		"tg_talks_bot", tgTalks != nil && tgTalks != dm,
-		"max_talks_bot", maxTalks != nil && maxTalks != mx, "log_level", cfg.LogLevel)
+	log.Info("lovegw запущен", "seed", d.seed, "db", cfg.DBPath,
+		"telegram", cfg.Messengers.Telegram.Enabled, "max", cfg.Messengers.Max.Enabled,
+		"dm_bot", d.dm != nil,
+		"tg_talks_bot", d.tgTalks != nil && d.tgTalks != d.dm,
+		"max_talks_bot", d.maxTalks != nil && d.maxTalks != d.mx, "log_level", cfg.LogLevel)
 	log.Debug("debug-логирование включено") // видна только на уровне debug
 
-	// Фаза start: сборка и все Set*-инжекции позади, теперь поллеры можно
-	// поднимать без гонок.
-	starts = append(starts, mir.Run)
-	for _, run := range starts {
+	g, gctx := errgroup.WithContext(ctx)
+	d.starts = append(d.starts, mir.Run)
+	for _, run := range d.starts {
 		run := run
 		g.Go(func() error { return run(gctx) })
 	}
