@@ -151,6 +151,10 @@ config.json
 config.*.json
 !config.example.json
 ryumkin.json
+# Env-файлы деплоя: compose и runbook велят класть secrets.env прямо в deploy/,
+# а там токены ботов, ключ шифрования кук и ключ Claude. Шаблоны *.env.example
+# под правило не попадают — они кончаются на .example.
+*.env
 # Состояние и данные пользователей
 notes.json
 subscribers.json

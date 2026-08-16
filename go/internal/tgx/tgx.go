@@ -407,7 +407,7 @@ func ProbePendingUpdates(ctx context.Context, token string, httpClient *http.Cli
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://api.telegram.org/bot"+token+"/getUpdates?timeout=0", nil)
 	if err != nil {
-		return 0, err
+		return 0, sanitize(err)
 	}
 	client := httpClient
 	if client == nil {
@@ -415,7 +415,7 @@ func ProbePendingUpdates(ctx context.Context, token string, httpClient *http.Cli
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, sanitize(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusConflict {
@@ -436,6 +436,8 @@ func ProbePendingUpdates(ctx context.Context, token string, httpClient *http.Cli
 
 // CheckToken проверяет валидность токена бота через getMe.
 // httpClient может быть nil (прямое соединение).
+// Санировать ошибку здесь не нужно: go-telegram/bot сам подменяет токен на
+// «***» в url.Error, а doctor печатает её на экран как есть.
 func CheckToken(ctx context.Context, token string, httpClient *http.Client) (*models.User, error) {
 	opts := []bot.Option{bot.WithSkipGetMe()}
 	if httpClient != nil {
@@ -565,12 +567,13 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note, subLink string)
 	if n.AuthorID == "" || n.AuthorID == "0" {
 		fmt.Fprintf(&b, "<b>%s:</b>\n", name)
 	} else {
-		fmt.Fprintf(&b, `<b><a href="%s/profile/%s">%s:</a></b>%s`, baseURL, n.AuthorID, name, "\n")
+		fmt.Fprintf(&b, `<b><a href="%s">%s:</a></b>%s`,
+			html.EscapeString(baseURL+"/profile/"+n.AuthorID), name, "\n")
 	}
 	b.WriteString(html.EscapeString(n.Text))
 	sub := ""
 	if subLink != "" {
-		sub = fmt.Sprintf(`<a href="%s">%s</a>`, subLink, linkSubscribe)
+		sub = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(subLink), linkSubscribe)
 	}
 	if foot := noteFooter(signature, sub); foot != "" {
 		b.WriteString("\n\n")
@@ -633,9 +636,11 @@ func composeComment(c store.Comment, limit int) string {
 	if r := []rune(text); len(r) > budget {
 		text = string(r[:budget]) + "…"
 	}
-	return fmt.Sprintf(`<b><a href="%s">%s, %s:</a></b>%s%s`,
-		c.AuthorLink, html.EscapeString(c.AuthorName), html.EscapeString(c.AuthorAge),
-		"\n", html.EscapeString(text))
+	head := fmt.Sprintf("%s, %s:", html.EscapeString(c.AuthorName), html.EscapeString(c.AuthorAge))
+	if c.AuthorLink != "" {
+		head = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), head)
+	}
+	return "<b>" + head + "</b>\n" + html.EscapeString(text)
 }
 
 // ComposeCommentCaption — подпись к документу-аватару (лимит подписи).
@@ -660,7 +665,7 @@ func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string)
 	if c.ID == 0 {
 		fmt.Fprintf(&b, "<b>%s</b>:\n%s", html.EscapeString(n.AuthorName),
 			html.EscapeString(truncateRunes(n.Text, subNoticeCommentLimit)))
-		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", link)
+		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", html.EscapeString(link))
 		return b.String()
 	}
 
@@ -669,7 +674,7 @@ func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string)
 		author += ", " + html.EscapeString(c.AuthorAge)
 	}
 	if c.AuthorLink != "" {
-		author = fmt.Sprintf(`<a href="%s">%s</a>`, c.AuthorLink, author)
+		author = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), author)
 	}
 	fmt.Fprintf(&b, "<b>%s</b> в заметке <i>%s</i>", author,
 		html.EscapeString(truncateRunes(oneLine(n.AuthorName+": "+n.Text), subNoticeNoteLimit)))
@@ -678,7 +683,7 @@ func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string)
 	}
 	b.WriteString(":\n")
 	b.WriteString(html.EscapeString(truncateRunes(c.Text, subNoticeCommentLimit)))
-	fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть в обсуждении</a>", link)
+	fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть в обсуждении</a>", html.EscapeString(link))
 	return b.String()
 }
 
