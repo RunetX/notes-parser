@@ -17,9 +17,10 @@ import (
 // --- фейки ---
 
 type fakeSite struct {
-	notes    []love.Note
-	notesErr error
-	comments map[string][]love.Comment
+	notes       []love.Note
+	notesErr    error
+	comments    map[string][]love.Comment
+	commentsErr error
 	// headers — шапка заметки на странице комментариев (nil — не разобралась).
 	headers map[string]*love.Note
 	avatar  []byte
@@ -27,6 +28,9 @@ type fakeSite struct {
 
 func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
 func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.CommentsPage, error) {
+	if f.commentsErr != nil {
+		return love.CommentsPage{}, f.commentsErr
+	}
 	return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id]}, nil
 }
 func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
@@ -770,6 +774,31 @@ func TestFeedDriftAlertsAdminOnce(t *testing.T) {
 	m.feedCycle(ctx, false)
 	if len(alerts) != 2 || !strings.Contains(alerts[1], "восстановилось") {
 		t.Errorf("ожидалось уведомление о восстановлении, получено: %v", alerts)
+	}
+}
+
+// Успех ленты не гасит счётчик 403 тредов: ключи раздельные, иначе частичный
+// бан (лента отвечает, треды 403) не набирал бы порог никогда.
+func TestCommentsForbiddenAlertSurvivesFeedSuccess(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n1", Text: "т"}}}
+	var alerted []string
+	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, func(_ context.Context, text string) {
+		alerted = append(alerted, text)
+	})
+	m.feedCycle(ctx, false) // постит n1
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	site.commentsErr = love.ErrForbidden
+	for i := 0; i < alertThreshold; i++ {
+		m.feedCycle(ctx, false) // лента живая — счётчик тредов не сбрасывается
+		m.pollComments(ctx, n)  // треды под 403
+	}
+	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsForbidden) {
+		t.Fatalf("ожидался один алерт 403 комментариев, получено: %v", alerted)
 	}
 }
 

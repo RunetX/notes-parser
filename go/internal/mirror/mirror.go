@@ -167,14 +167,14 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 
 // reportSiteError классифицирует ошибку загрузки и при необходимости
 // беспокоит админа: дрейф вёрстки (MarkupError) или блокировка (403).
-// driftKey — ключ дрейфа для конкретного источника (лента/комментарии).
-func (m *Mirror) reportSiteError(ctx context.Context, driftKey string, err error) {
+// driftKey/forbiddenKey — ключи конкретного источника (лента/комментарии).
+func (m *Mirror) reportSiteError(ctx context.Context, driftKey, forbiddenKey string, err error) {
 	var me *love.MarkupError
 	switch {
 	case errors.As(err, &me):
 		m.alert.Fail(ctx, driftKey, "селектор «"+me.Selector+"» — "+me.Context)
 	case errors.Is(err, love.ErrForbidden):
-		m.alert.Fail(ctx, keyForbidden, "сайт вернул 403 (геоблок или бан IP)")
+		m.alert.Fail(ctx, forbiddenKey, "сайт вернул 403 (геоблок или бан IP)")
 	}
 }
 
@@ -220,11 +220,11 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 	notes, err := m.site.FetchNotes(ctx)
 	if err != nil {
 		m.log.Warn("лента недоступна", "err", err)
-		m.reportSiteError(ctx, keyFeedDrift, err)
+		m.reportSiteError(ctx, keyFeedDrift, keyFeedForbidden, err)
 		return false
 	}
 	m.alert.OK(ctx, keyFeedDrift)
-	m.alert.OK(ctx, keyForbidden)
+	m.alert.OK(ctx, keyFeedForbidden)
 	known, err := m.st.KnownNoteIDs(ctx)
 	if err != nil {
 		m.log.Error("чтение известных заметок", "err", err)
@@ -540,12 +540,12 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 	page, err := m.site.FetchCommentsPage(ctx, n.ID)
 	if err != nil {
 		m.log.Warn("комментарии недоступны", "note", n.ID, "err", err)
-		m.reportSiteError(ctx, keyCommentsDrift, err)
+		m.reportSiteError(ctx, keyCommentsDrift, keyCommentsForbidden, err)
 		return
 	}
 	comments := page.Comments
 	m.alert.OK(ctx, keyCommentsDrift)
-	m.alert.OK(ctx, keyForbidden)
+	m.alert.OK(ctx, keyCommentsForbidden)
 	m.applyNoteHeader(ctx, n, page.Note)
 	known, err := m.st.CommentIDs(ctx, n.ID)
 	if err != nil {
@@ -614,7 +614,13 @@ func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) strin
 		return ""
 	}
 	postID, _, found, err := m.st.Target(ctx, sink.Name(), store.TargetNotePost, n.ID)
-	if err != nil || !found || postID == "" {
+	if err != nil {
+		// Без лога ошибка чтения была бы неотличима от «поста ещё нет», а
+		// цикл молча повторялся бы вечно.
+		m.log.Error("чтение цели поста перед тредом", "note", n.ID, "sink", sink.Name(), "err", err)
+		return ""
+	}
+	if !found || postID == "" {
 		return ""
 	}
 	thread, err := ts.StartThread(ctx, n, postID)
@@ -639,11 +645,15 @@ func (m *Mirror) startThreadEarly(ctx context.Context, sink Sink, n store.Note) 
 	if !ok {
 		return
 	}
-	if _, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, n.ID); err != nil ||
-		(found && thread != "") {
+	_, thread, found, err := m.st.Target(ctx, sink.Name(), store.TargetNoteThread, n.ID)
+	if err != nil {
+		m.log.Error("чтение корня треда перед постом", "note", n.ID, "sink", sink.Name(), "err", err)
 		return
 	}
-	thread, err := ts.StartThread(ctx, n, "")
+	if found && thread != "" {
+		return
+	}
+	thread, err = ts.StartThread(ctx, n, "")
 	if err != nil {
 		m.log.Warn("тред не открыт до поста", "note", n.ID, "sink", sink.Name(), "err", err)
 		return
