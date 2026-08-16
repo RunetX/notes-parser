@@ -278,7 +278,7 @@ CREATE TABLE settings (
 // migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
 // migrations[i] переводит схему на версию i+1, применяется по возрастанию.
 func (s *Store) migrate(ctx context.Context) error {
-	migrations := []string{
+	return s.migrateList(ctx, []string{
 		schemaSQL,    // v1 — базовая схема
 		migrateV2SQL, // v2 — аватар автора заметки и иллюстрации
 		migrateV3SQL, // v3 — флаг «комментарии закрыты»
@@ -288,7 +288,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		migrateV7SQL, // v7 — типизированные подписки (kind/target)
 		migrateV8SQL, // v8 — выбор мессенджера доставки ЛС
 		migrateV9SQL, // v9 — амвон: свои реплики под заметками и рантайм-флаги
-	}
+	})
+}
+
+// migrateList — тело migrate, вынесено ради теста на обрыв посередине.
+//
+// Каждая миграция идёт СВОЕЙ транзакцией вместе с записью user_version:
+// падение на полпути (диск, блокировка, kill) откатывает и схему, и версию,
+// поэтому следующий запуск начинает эту миграцию заново, а не спотыкается о
+// полусостояние. Раньше деструктивные v4/v7 (DROP TABLE + RENAME) могли
+// оставить БД, которую не поднять без рук. Частичный прогресс между версиями
+// валиден по построению: версии накатываются по одной.
+//
+// Правило на будущее: миграции, которой нужен FK=OFF, эта обёртка не годится
+// — PRAGMA foreign_keys нельзя переключить внутри транзакции. Такая миграция
+// обязана взять выделенный sql.Conn, снять прагму ДО BeginTx и вернуть после.
+func (s *Store) migrateList(ctx context.Context, migrations []string) error {
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("чтение user_version: %w", err)
@@ -298,13 +313,26 @@ func (s *Store) migrate(ctx context.Context) error {
 		if version >= target {
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx, migration); err != nil {
+		if err := s.applyMigration(ctx, migration, target); err != nil {
 			return fmt.Errorf("миграция v%d: %w", target, err)
-		}
-		// PRAGMA не биндит параметры; target — наш внутренний int, не ввод.
-		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", target)); err != nil {
-			return err
 		}
 	}
 	return nil
+}
+
+func (s *Store) applyMigration(ctx context.Context, migration string, target int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // после Commit это no-op
+	if _, err := tx.ExecContext(ctx, migration); err != nil {
+		return err
+	}
+	// PRAGMA user_version — часть заголовка БД, поэтому откатывается вместе с
+	// транзакцией. Параметры PRAGMA не биндит; target — наш внутренний int.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", target)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

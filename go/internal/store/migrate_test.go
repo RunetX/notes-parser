@@ -250,6 +250,61 @@ func TestMigrateV5ToV6(t *testing.T) {
 // kind/target. Главное здесь — сохранённые id: они уехали в payload кнопок «✖»
 // в чужую историю чатов, и после миграции старое нажатие обязано снимать ту же
 // подписку, а не соседнюю.
+// TestMigrationRollsBackOnError: миграция и запись user_version живут в одной
+// транзакции. Обрыв на полпути (диск, блокировка, kill) откатывает и схему, и
+// версию — иначе деструктивные v4/v7 (DROP TABLE + RENAME) оставили бы БД,
+// которую не поднять руками, а после починки повтор натыкался бы на «table
+// already exists».
+func TestMigrationRollsBackOnError(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	var before int
+	if err := st.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	// Миграция «сделала половину и упала»: таблица создана, следом мусор.
+	broken := []string{
+		`CREATE TABLE t_half (x INTEGER);`,
+		`CREATE TABLE t_half2 (x INTEGER); это не sql;`,
+	}
+	list := make([]string, before, before+len(broken))
+	list = append(list, broken...)
+	if err := st.migrateList(ctx, list); err == nil {
+		t.Fatal("битая миграция должна возвращать ошибку")
+	}
+
+	// Первая (целая) миграция применилась и подняла версию, вторая откатилась.
+	var after int
+	if err := st.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before+1 {
+		t.Fatalf("версия после обрыва: %d, ожидалась %d", after, before+1)
+	}
+	var name string
+	err = st.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE name = 't_half2'`).Scan(&name)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("таблица упавшей миграции должна откатиться: name=%q err=%v", name, err)
+	}
+
+	// Повтор после «починки» проходит: версия не сдвинулась, полусостояния нет.
+	fixed := append(list[:len(list)-1], `CREATE TABLE t_half2 (x INTEGER);`)
+	if err := st.migrateList(ctx, fixed); err != nil {
+		t.Fatalf("повтор починенной миграции: %v", err)
+	}
+	if err := st.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE name = 't_half2'`).Scan(&name); err != nil {
+		t.Fatalf("после починки таблица должна появиться: %v", err)
+	}
+}
+
 func TestMigrateV6ToV7(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "v6.db")
