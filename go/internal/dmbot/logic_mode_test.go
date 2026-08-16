@@ -50,6 +50,23 @@ func TestTalksOnlyRejectsCommandBotCommands(t *testing.T) {
 	}
 }
 
+// Меню бота переписки и список разрешённых ему команд — один источник: команда,
+// которую мессенджер показывает в списке, не должна получать отлуп.
+func TestTalksMenuCommandsAccepted(t *testing.T) {
+	ctx := context.Background()
+	const user = 43
+	st := openTestStore(t)
+	l, tr := newTestTalksLogic(t, st, store.MessengerTelegram)
+	l.SetTalkRouter(&fakeRouter{ret: true})
+
+	for _, c := range botCommands(true, true, true) {
+		l.HandleText(ctx, user, "1", "/"+c.Name)
+		if strings.Contains(tr.lastSent(), "Здесь только личная переписка") {
+			t.Errorf("/%s есть в меню бота переписки, но отфутболена: %q", c.Name, tr.lastSent())
+		}
+	}
+}
+
 // Приветствия под роль: у бота переписки свой список, у бота команд строки про
 // диалоги появляются только когда переписку ведёт он сам.
 func TestStartMessageByRole(t *testing.T) {

@@ -69,9 +69,17 @@ type Logic struct {
 }
 
 // talksCommands — что умеет бот переписки; остальные команды он отфутболивает
-// к боту команд, чтобы у пользователя не двоились /login и заметки.
-var talksCommands = map[string]bool{
-	"/start": true, "/talks": true, "/talk": true, "/delivery": true, "/cancel": true,
+// к боту команд, чтобы у пользователя не двоились /login и заметки. Список
+// выведен из его же меню: два ручных перечня разъехались бы, и команда из меню
+// мессенджера получала бы отлуп «здесь только переписка».
+var talksCommands = commandSet(botCommands(true, true, true))
+
+func commandSet(cmds []kbd.Command) map[string]bool {
+	set := make(map[string]bool, len(cmds))
+	for _, c := range cmds {
+		set["/"+c.Name] = true
+	}
+	return set
 }
 
 // SetTalkRouter подключает роутер личной переписки (в runDaemon после сборки
@@ -245,12 +253,7 @@ func (l *Logic) showTalks(ctx context.Context, userID int64, page int, cb *kbd.C
 	if pages > 1 {
 		fmt.Fprintf(&b, "Страница %d из %d", page+1, pages)
 	}
-	kb := talksKeyboard(shown, page, pages)
-	if cb == nil {
-		l.tr.SendKeyboard(ctx, userID, b.String(), kb)
-		return
-	}
-	l.replace(ctx, userID, *cb, b.String(), kb)
+	l.show(ctx, userID, cb, b.String(), talksKeyboard(shown, page, pages))
 }
 
 // handleTalkOpen «залипает» на диалоге: следующие сообщения уйдут собеседнику.
@@ -383,11 +386,7 @@ func (l *Logic) handleMySubs(ctx context.Context, userID int64, cb *kbd.Callback
 			"заметках автора и о комментариях к выбранной заметке — кнопка «🔔 Подписаться» " +
 			"есть под каждой заметкой в канале."
 	}
-	if cb == nil {
-		l.tr.SendKeyboard(ctx, userID, text, subsKeyboard(subs))
-		return
-	}
-	l.replace(ctx, userID, *cb, text, subsKeyboard(subs))
+	l.show(ctx, userID, cb, text, subsKeyboard(subs))
 }
 
 func (l *Logic) handleStateInput(ctx context.Context, userID int64, state, messageID, text string) {
@@ -510,21 +509,33 @@ func (l *Logic) captureIdentity(ctx context.Context, userID int64, cookies []*ht
 	}
 }
 
-func (l *Logic) addNote(ctx context.Context, userID int64, text string, anonymous bool) {
+// siteCookies — куки сессии сайта для действия от имени человека. Ошибку
+// объясняет сама: нет сессии или она протухла — зовёт к /login. Общая для всех
+// таких действий (заметка, управление анкетой); false — говорить пользователю
+// уже нечего.
+func (l *Logic) siteCookies(ctx context.Context, userID int64) ([]*http.Cookie, bool) {
 	cookiesJSON, valid, err := l.st.SessionCookies(ctx, l.messenger, userID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && !valid) {
 		l.tr.Send(ctx, userID, "Сначала войдите на сайт: /login")
-		return
+		return nil, false
 	}
 	if err != nil {
 		l.log.Error("чтение сессии", "user", userID, "err", err)
 		l.tr.Send(ctx, userID, msgInternalError)
-		return
+		return nil, false
 	}
 	cookies, err := love.CookiesFromJSON([]byte(cookiesJSON), time.Now())
 	if err != nil || len(cookies) == 0 {
 		_ = l.st.SetSessionValid(ctx, l.messenger, userID, false, time.Now())
 		l.tr.Send(ctx, userID, "Сессия истекла. Сделайте /login ещё раз")
+		return nil, false
+	}
+	return cookies, true
+}
+
+func (l *Logic) addNote(ctx context.Context, userID int64, text string, anonymous bool) {
+	cookies, ok := l.siteCookies(ctx, userID)
+	if !ok {
 		return
 	}
 	if err := l.site.PostNote(ctx, cookies, text, anonymous); err != nil {

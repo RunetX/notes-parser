@@ -49,12 +49,7 @@ func (l *Logic) handleDelivery(ctx context.Context, userID int64, cb *kbd.Callba
 		l.tr.Send(ctx, userID, msgInternalError)
 		return
 	}
-	text, kb := l.deliveryText(userID, acc), l.deliveryKeyboard(userID, acc)
-	if cb == nil {
-		l.tr.SendKeyboard(ctx, userID, text, kb)
-		return
-	}
-	l.replace(ctx, userID, *cb, text, kb)
+	l.show(ctx, userID, cb, l.deliveryText(userID, acc), l.deliveryKeyboard(userID, acc))
 }
 
 // setDelivery записывает выбор и показывает получившееся состояние. Состояние

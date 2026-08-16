@@ -65,12 +65,7 @@ func (l *Logic) handlePulpit(ctx context.Context, userID int64, cb *kbd.Callback
 // showPulpit рисует отчёт с одной кнопкой: включить или выключить.
 func (l *Logic) showPulpit(ctx context.Context, userID int64, cb *kbd.Callback,
 	report string, enabled bool, offReason string) {
-	kb := pulpitKeyboard(enabled, offReason)
-	if cb == nil {
-		l.tr.SendKeyboard(ctx, userID, report, kb)
-		return
-	}
-	l.replace(ctx, userID, *cb, report, kb)
+	l.show(ctx, userID, cb, report, pulpitKeyboard(enabled, offReason))
 }
 
 // pulpitKeyboard — кнопка под отчётом. Включение после предохранителя ведёт

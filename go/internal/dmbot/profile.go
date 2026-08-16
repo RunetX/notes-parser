@@ -15,12 +15,10 @@ package dmbot
 import (
 	"context"
 	"errors"
-	"net/http"
 	"time"
 
 	"lovegw/internal/kbd"
 	"lovegw/internal/love"
-	"lovegw/internal/store"
 )
 
 const (
@@ -145,12 +143,7 @@ func (l *Logic) showProfile(ctx context.Context, userID int64, cb *kbd.Callback,
 	if !ctrl.Available {
 		text += "\n\n" + msgProfileGone
 	}
-	kb := profileKeyboard(ctrl)
-	if cb == nil {
-		l.tr.SendKeyboard(ctx, userID, text, kb)
-		return
-	}
-	l.replace(ctx, userID, *cb, text, kb)
+	l.show(ctx, userID, cb, text, profileKeyboard(ctrl))
 }
 
 func profileStateText(blocked bool) string {
@@ -171,28 +164,6 @@ func profileKeyboard(ctrl love.ProfileControl) *kbd.Keyboard {
 		verb, arg, icon = verbProfileSet, argProfileUnblock, "🔓 "
 	}
 	return kbd.New().Row(kbd.Button{Text: icon + ctrl.Label, Payload: kbd.Pack(verb, arg)})
-}
-
-// siteCookies — куки сессии сайта под канон addNote: нет сессии или она
-// протухла — зовём к /login и говорим об этом сами.
-func (l *Logic) siteCookies(ctx context.Context, userID int64) ([]*http.Cookie, bool) {
-	cookiesJSON, valid, err := l.st.SessionCookies(ctx, l.messenger, userID)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && !valid) {
-		l.tr.Send(ctx, userID, "Сначала войдите на сайт: /login")
-		return nil, false
-	}
-	if err != nil {
-		l.log.Error("чтение сессии", "user", userID, "err", err)
-		l.tr.Send(ctx, userID, msgInternalError)
-		return nil, false
-	}
-	cookies, err := love.CookiesFromJSON([]byte(cookiesJSON), time.Now())
-	if err != nil || len(cookies) == 0 {
-		_ = l.st.SetSessionValid(ctx, l.messenger, userID, false, time.Now())
-		l.tr.Send(ctx, userID, "Сессия истекла. Сделайте /login ещё раз")
-		return nil, false
-	}
-	return cookies, true
 }
 
 // reportProfileError различает ровно то, что стоит различать: недействительную

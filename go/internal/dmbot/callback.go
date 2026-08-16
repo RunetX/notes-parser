@@ -182,6 +182,17 @@ func (l *Logic) replace(ctx context.Context, userID int64, cb kbd.Callback, text
 	l.tr.EditMessage(ctx, userID, cb.MessageID, text, kb)
 }
 
+// show показывает экран, пришедший двумя дорогами: командой (cb == nil — ответ
+// новым сообщением) или кнопкой (правим то же сообщение). Так устроены все
+// экраны с состоянием — подписки, диалоги, доставка ЛС, анкета, амвон.
+func (l *Logic) show(ctx context.Context, userID int64, cb *kbd.Callback, text string, kb *kbd.Keyboard) {
+	if cb == nil {
+		l.tr.SendKeyboard(ctx, userID, text, kb)
+		return
+	}
+	l.replace(ctx, userID, *cb, text, kb)
+}
+
 func (l *Logic) cbLogin(ctx context.Context, userID int64, _ kbd.Callback, _ string) {
 	l.setState(ctx, userID, stateAwaitCredentials)
 	l.tr.SendKeyboard(ctx, userID, msgAskCredentials, cancelKeyboard())
