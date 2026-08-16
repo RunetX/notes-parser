@@ -10,19 +10,14 @@ package store
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 )
-
-const noteColumns = `id, author_id, author_name, text, author_avatar_url, status,
-       tg_message_id, tg_thread_id, first_seen_at, last_comment_at, comments_closed`
 
 // CommentsBetween возвращает комментарии окна (start, end] по времени сайта
 // с фолбэком на время вставки, сгруппированно по заметкам.
 func (s *Store) CommentsBetween(ctx context.Context, start, end time.Time) ([]Comment, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, note_id, author_name, author_age, author_link, avatar_url,
-		       published_at, text, tg_message_id, created_at
+		SELECT `+commentColumns+`
 		FROM comments
 		WHERE COALESCE(published_at, created_at) > ?
 		  AND COALESCE(published_at, created_at) <= ?
@@ -31,15 +26,7 @@ func (s *Store) CommentsBetween(ctx context.Context, start, end time.Time) ([]Co
 		return nil, err
 	}
 	defer rows.Close()
-	var comments []Comment
-	for rows.Next() {
-		c, err := scanComment(rows)
-		if err != nil {
-			return nil, err
-		}
-		comments = append(comments, c)
-	}
-	return comments, rows.Err()
+	return collectComments(rows)
 }
 
 // NotesSeenBetween возвращает заметки, впервые увиденные в окне (start, end].
@@ -70,7 +57,7 @@ func (s *Store) NotesByIDs(ctx context.Context, ids []string) (map[string]Note, 
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+noteColumns+`
-		FROM notes WHERE id IN (?`+strings.Repeat(", ?", len(ids)-1)+`)`, args...)
+		FROM notes WHERE id IN (`+placeholders(len(ids))+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -270,16 +257,4 @@ func (s *Store) PeakCommentHour(ctx context.Context) (hourStart time.Time, noteI
 		return time.Time{}, "", 0, err
 	}
 	return hourStart, noteID, n, nil
-}
-
-func collectNotes(rows *sql.Rows) ([]Note, error) {
-	var notes []Note
-	for rows.Next() {
-		n, err := scanNote(rows)
-		if err != nil {
-			return nil, err
-		}
-		notes = append(notes, n)
-	}
-	return notes, rows.Err()
 }

@@ -14,8 +14,7 @@ var ErrNotFound = errors.New("запись не найдена")
 // NoteByID возвращает заметку по id сайта.
 func (s *Store) NoteByID(ctx context.Context, id string) (Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, author_id, author_name, text, author_avatar_url, status,
-		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at, comments_closed
+		SELECT `+noteColumns+`
 		FROM notes WHERE id = ?`, id)
 	if err != nil {
 		return Note{}, err

@@ -298,59 +298,24 @@ func (s *Store) RemoveSubscriptionByID(ctx context.Context, messenger string, us
 
 // KnownNoteIDs возвращает id всех известных заметок (для фильтра ленты).
 func (s *Store) KnownNoteIDs(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM notes`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := make(map[string]bool)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids[id] = true
-	}
-	return ids, rows.Err()
+	return s.queryIDs(ctx, `SELECT id FROM notes`)
 }
 
 // NotesByStatus возвращает заметки в заданном статусе.
 func (s *Store) NotesByStatus(ctx context.Context, status string) ([]Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, author_id, author_name, text, author_avatar_url, status,
-		       tg_message_id, tg_thread_id, first_seen_at, last_comment_at, comments_closed
+		SELECT `+noteColumns+`
 		FROM notes WHERE status = ? ORDER BY id`, status)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var notes []Note
-	for rows.Next() {
-		n, err := scanNote(rows)
-		if err != nil {
-			return nil, err
-		}
-		notes = append(notes, n)
-	}
-	return notes, rows.Err()
+	return collectNotes(rows)
 }
 
 // CommentIDs возвращает id всех сохранённых комментариев заметки.
 func (s *Store) CommentIDs(ctx context.Context, noteID string) (map[int64]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM comments WHERE note_id = ?`, noteID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := make(map[int64]bool)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids[id] = true
-	}
-	return ids, rows.Err()
+	return s.queryInt64Set(ctx, `SELECT id FROM comments WHERE note_id = ?`, noteID)
 }
 
 func scanComment(rows *sql.Rows) (Comment, error) {

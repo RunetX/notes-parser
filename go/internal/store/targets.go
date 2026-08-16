@@ -142,8 +142,7 @@ func (s *Store) CaptureNoteThread(ctx context.Context, messenger, postMessageID,
 // NoteByThread находит заметку по корню её треда в мессенджере.
 func (s *Store) NoteByThread(ctx context.Context, messenger, threadID string) (Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT n.id, n.author_id, n.author_name, n.text, n.author_avatar_url, n.status,
-		       n.tg_message_id, n.tg_thread_id, n.first_seen_at, n.last_comment_at, n.comments_closed
+		SELECT `+prefixed(noteColumns, "n")+`
 		FROM notes n
 		JOIN message_targets t ON t.ref_id = n.id
 		WHERE t.messenger = ? AND t.kind = ? AND t.thread_id = ?`,
@@ -164,8 +163,7 @@ func (s *Store) NoteByThread(ctx context.Context, messenger, threadID string) (N
 // CommentByTarget находит комментарий по id его сообщения в мессенджере.
 func (s *Store) CommentByTarget(ctx context.Context, messenger, messageID string) (Comment, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, c.note_id, c.author_name, c.author_age, c.author_link, c.avatar_url,
-		       c.published_at, c.text, c.tg_message_id, c.created_at
+		SELECT `+prefixed(commentColumns, "c")+`
 		FROM comments c
 		JOIN message_targets t ON t.ref_id = CAST(c.id AS TEXT)
 		WHERE t.messenger = ? AND t.kind = ? AND t.message_id = ?`,
@@ -225,8 +223,7 @@ func (s *Store) AddresseeMessage(ctx context.Context, messenger, noteID string,
 // мессенджер (включая застрявшие: тред мог быть не пойман в прошлый цикл).
 func (s *Store) UnsentCommentsFor(ctx context.Context, messenger, noteID string) ([]Comment, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, c.note_id, c.author_name, c.author_age, c.author_link, c.avatar_url,
-		       c.published_at, c.text, c.tg_message_id, c.created_at
+		SELECT `+prefixed(commentColumns, "c")+`
 		FROM comments c
 		LEFT JOIN message_targets t
 			ON t.messenger = ? AND t.kind = ? AND t.ref_id = CAST(c.id AS TEXT)
@@ -236,15 +233,7 @@ func (s *Store) UnsentCommentsFor(ctx context.Context, messenger, noteID string)
 		return nil, err
 	}
 	defer rows.Close()
-	var comments []Comment
-	for rows.Next() {
-		c, err := scanComment(rows)
-		if err != nil {
-			return nil, err
-		}
-		comments = append(comments, c)
-	}
-	return comments, rows.Err()
+	return collectComments(rows)
 }
 
 // UnsentNoteImagesFor возвращает иллюстрации заметки, ещё не отправленные

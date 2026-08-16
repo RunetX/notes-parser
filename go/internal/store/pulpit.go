@@ -172,18 +172,13 @@ func (s *Store) PulpitByState(ctx context.Context, states ...string) ([]PulpitCo
 	if len(states) == 0 {
 		return nil, nil
 	}
-	args := make([]any, 0, len(states))
-	holders := ""
+	args := make([]any, len(states))
 	for i, st := range states {
-		if i > 0 {
-			holders += ","
-		}
-		holders += "?"
-		args = append(args, st)
+		args[i] = st
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+pulpitColumns+` FROM pulpit_comments
-		WHERE state IN (`+holders+`) ORDER BY seen_at`, args...)
+		WHERE state IN (`+placeholders(len(states))+`) ORDER BY seen_at`, args...)
 	if err != nil {
 		return nil, err
 	}
