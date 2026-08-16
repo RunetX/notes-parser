@@ -2,6 +2,19 @@
 # Хост-требование: российский IP (сайт love.ngs.ru отдаёт 403 c не-RU IP).
 # Telegram при этом идёт через SOCKS5-прокси (см. telegram_proxy / LOVEGW_TG_PROXY).
 
+# Общий якорь ограничений. Все четыре сервиса — один бинарник, который ходит по
+# сети и пишет только в /data: своя ФС ему не нужна (read_only тома не трогает),
+# привилегии не нужны тем более. Временных файлов проект не создаёт (конвертация
+# голосовых идёт пайпом), но /tmp отдан под tmpfs — на случай, если библиотеке
+# понадобится скретч.
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64m
+
 services:
   lovegw:
     build:
@@ -9,6 +22,7 @@ services:
     image: lovegw:latest
     container_name: lovegw
     restart: unless-stopped
+    <<: *hardening
     volumes:
       # БД SQLite и файлы дайджеста лежат в ./data на хосте. Bind-mount годится
       # на Linux; порча базы («database disk image is malformed», 29 и 30 июля
@@ -37,6 +51,7 @@ services:
     image: lovegw:latest
     container_name: lovegw-modwatch
     restart: unless-stopped
+    <<: *hardening
     command: ["modwatch", "-config", "/config.json", "-db", "/data/modwatch.db", "watch"]
     volumes:
       - ./data:/data
@@ -51,6 +66,7 @@ services:
     image: lovegw:latest
     container_name: lovegw-guests
     restart: unless-stopped
+    <<: *hardening
     command: ["modwatch", "-config", "/config.json", "-db", "/data/modwatch.db", "guests", "watch"]
     volumes:
       - ./data:/data
@@ -72,6 +88,7 @@ services:
     image: lovegw:latest
     container_name: lovegw-activity
     restart: unless-stopped
+    <<: *hardening
     # -users — известные модераторы (Гадёныш, Хатуль мадан): их анкеты
     # опрашиваются КАЖДЫЙ такт, а не по очереди со всеми, поэтому присутствие
     # снимается с десятиминутной сеткой и его можно сверить с минутой удаления

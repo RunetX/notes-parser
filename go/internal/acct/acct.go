@@ -85,9 +85,10 @@ func WithSecret(k secret.Key) Option {
 }
 
 // Open открывает (при необходимости создавая) базу аккаунтов.
+// Каталог под 0700 — здесь куки технических сессий (см. Open в store).
 func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}
 	}
