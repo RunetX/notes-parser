@@ -123,7 +123,7 @@ func (g *fakeGen) GenerateJSON(_ context.Context, system, prompt string, _ map[s
 		return []byte(out), err
 	}
 	// Форму берём из разрешённых в этом запросе — так же, как это сделала бы
-	// модель: набор сужается кулдауном, и подставлять «укор» всегда значило бы
+	// модель: набор сужается кулдауном, и подставлять «буквально» всегда значило бы
 	// ловить брак там, где его в бою не будет.
 	return []byte(`{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.",
 		"form":"` + allowedForm(prompt) + `","idea":"обида"}`), nil
@@ -134,13 +134,13 @@ func allowedForm(prompt string) string {
 	const marker = "В этот раз возьми одну из форм: "
 	i := strings.Index(prompt, marker)
 	if i < 0 {
-		return sermonForms[0]
+		return quipForms[0]
 	}
 	rest := prompt[i+len(marker):]
 	if j := strings.IndexAny(rest, ",."); j > 0 {
 		return rest[:j]
 	}
-	return sermonForms[0]
+	return quipForms[0]
 }
 
 func (g *fakeGen) lastPrompt() string {
@@ -263,12 +263,12 @@ func TestResumeAfterCrashConfirmsWithoutDuplicate(t *testing.T) {
 	if _, err := st.TryClaimPulpitNote(ctx, "n1", store.PulpitQueued, "", now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.TryStartPulpitPost(ctx, "n1", "укор", "проповедь", now); err != nil {
+	if _, err := st.TryStartPulpitPost(ctx, "n1", "буквально", "своя реплика", now); err != nil {
 		t.Fatal(err)
 	}
 	// Реплика на сайте на самом деле есть — POST дошёл до падения.
 	site.threads["n1"] = []love.Comment{
-		{ID: 777, AuthorID: ownID, AuthorName: myNick, Text: "проповедь"},
+		{ID: 777, AuthorID: ownID, AuthorName: myNick, Text: "своя реплика"},
 	}
 
 	svc.cycle(ctx)
@@ -374,7 +374,7 @@ func TestVanishedNoteIsNotAMiss(t *testing.T) {
 }
 
 // TestColdStartMarksWithoutPosting — рестарт демона не должен выдавать очередь
-// проповедей под старьё из ленты.
+// реплик под старьё из ленты.
 func TestColdStartMarksWithoutPosting(t *testing.T) {
 	ctx := context.Background()
 	site := newFakeSite(note("n1"), note("n2"))
@@ -420,14 +420,14 @@ func TestDisabledWritesNothing(t *testing.T) {
 		t.Errorf("выключенный амвон трогает БД: %v", err)
 	}
 
-	// Включение взводит холодный старт: под старыми заметками ленты проповедей
+	// Включение взводит холодный старт: под старыми заметками ленты реплик
 	// быть не должно.
 	if err := svc.SetPulpitEnabled(ctx, true, "admin:1"); err != nil {
 		t.Fatal(err)
 	}
 	svc.cycle(ctx)
 	if site.postCount() != 0 {
-		t.Error("включение выдало проповедь под старой заметкой")
+		t.Error("включение выдало реплику под старой заметкой")
 	}
 }
 
@@ -477,9 +477,9 @@ func TestGenerationRetryUsesReason(t *testing.T) {
 	gen := &fakeGen{answer: func(_, _ string) (string, error) {
 		calls++
 		if calls == 1 {
-			return `{"text":"**Гордыня**","form":"укор","idea":"гордыня"}`, nil
+			return `{"text":"**Гордыня**","form":"буквально","idea":"гордыня"}`, nil
 		}
-		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"укор","idea":"обида"}`, nil
+		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"буквально","idea":"обида"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
@@ -502,7 +502,7 @@ func TestGenerationFailureDoesNotPost(t *testing.T) {
 	ctx := context.Background()
 	site := newFakeSite(note("n1"))
 	gen := &fakeGen{answer: func(_, _ string) (string, error) {
-		return `{"text":"[b]коротко[/b]","form":"укор","idea":"и"}`, nil
+		return `{"text":"[b]коротко[/b]","form":"буквально","idea":"и"}`, nil
 	}}
 	svc, st, _ := newTestService(t, site, gen, nil)
 
@@ -516,6 +516,37 @@ func TestGenerationFailureDoesNotPost(t *testing.T) {
 		t.Fatal(err)
 	}
 	if row.State != store.PulpitFailed {
+		t.Fatalf("строка: %+v", row)
+	}
+}
+
+// TestSkipUnderGrief — модель отказалась шутить: на сайт не уходит ничего, а
+// строка помечается пропуском, а не неудачей. Красная линия — часть голоса:
+// под настоящей бедой молчание и есть правильный ответ, и переспрашивать
+// («ну попробуй пошутить») нельзя.
+func TestSkipUnderGrief(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	calls := 0
+	gen := &fakeGen{answer: func(_, _ string) (string, error) {
+		calls++
+		return `{"skip":true,"text":"","form":"","idea":"умерла мать"}`, nil
+	}}
+	svc, st, _ := newTestService(t, site, gen, nil)
+
+	svc.cycle(ctx)
+
+	if site.postCount() != 0 {
+		t.Fatal("под заметкой о беде появилась реплика")
+	}
+	if calls != 1 {
+		t.Fatalf("попыток генерации %d, отказ шутить не переспрашивают", calls)
+	}
+	row, err := st.PulpitNote(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != store.PulpitSkipped || row.Reason != reasonNoJoke {
 		t.Fatalf("строка: %+v", row)
 	}
 }
@@ -569,7 +600,7 @@ func TestReplySentWithPrefix(t *testing.T) {
 		if strings.Contains(system, "Тебе ответили") {
 			return `{"text":"Смирение не в том, чтобы молчать.","idea":"смирение"}`, nil
 		}
-		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"укор","idea":"обида"}`, nil
+		return `{"text":"Обида кормится вниманием. Не корми ее - и она уйдет следом.","form":"буквально","idea":"обида"}`, nil
 	}}, func(c *Config) { c.ReplyProbability = 1 })
 	svc.rand = func() float64 { return 0 } // всегда «отвечать»
 

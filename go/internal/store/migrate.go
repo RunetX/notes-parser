@@ -242,7 +242,7 @@ CREATE TABLE pulpit_comments (
     note_id    TEXT PRIMARY KEY,                 -- заметка сайта (без FK, см. выше)
     state      TEXT NOT NULL,                    -- queued|posting|posted|confirmed|missing|vanished|skipped|failed
     reason     TEXT NOT NULL DEFAULT '',         -- почему пропустили/не вышло
-    form       TEXT NOT NULL DEFAULT '',         -- форма проповеди (укор, притча, …)
+    form       TEXT NOT NULL DEFAULT '',         -- форма реплики (гипербола, сценка, …)
     text       TEXT NOT NULL DEFAULT '',         -- отправленный текст
     comment_id INTEGER,                          -- id своей реплики на сайте (после верификации)
     seen_at    TEXT NOT NULL,                    -- когда заметка занята: от него считается свежесть

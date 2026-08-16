@@ -17,9 +17,9 @@ import (
 type action int
 
 const (
-	actIdle   action = iota // ничего не писать в БД (фича выключена, заметка занята)
-	actMark                 // записать строку skipped с причиной и не трогать заметку
-	actPreach               // писать реплику
+	actIdle action = iota // ничего не писать в БД (фича выключена, заметка занята)
+	actMark               // записать строку skipped с причиной и не трогать заметку
+	actPost               // писать реплику
 )
 
 // Причины пропуска. Строки уходят в БД и в логи — читаются глазами при разборе
@@ -36,7 +36,8 @@ const (
 	reasonNoteGone  = "note_gone"
 	reasonNoReply   = "no_reply"
 	reasonDeleted   = "deleted"
-	reasonCoin      = "coin" // монетка легла «не отвечать»
+	reasonCoin      = "coin"    // монетка легла «не отвечать»
+	reasonNoJoke    = "no_joke" // в заметке настоящая беда: шутить нечем
 )
 
 // decideInput — всё, от чего зависит решение по заметке.
@@ -67,7 +68,7 @@ func decide(in decideInput) (action, string) {
 	case in.MaxPerDay > 0 && in.Today >= in.MaxPerDay:
 		return actMark, reasonQuota
 	default:
-		return actPreach, ""
+		return actPost, ""
 	}
 }
 
@@ -127,12 +128,12 @@ func (s *Service) handleNote(ctx context.Context, n love.Note, cold bool, today 
 		s.log.Error("амвон: занять заметку", "note", n.ID, "err", err)
 		return false
 	}
-	if !claimed || act != actPreach {
+	if !claimed || act != actPost {
 		// Не занята нами — значит уже разобрана (в том числе прошлым обходом
 		// или колбэком зеркала); помеченную заметку трогать больше незачем.
 		return false
 	}
-	return s.preach(ctx, n, now)
+	return s.postQuip(ctx, n, now)
 }
 
 // resumeQueued дожимает строки, застрявшие в queued: демон упал между claim'ом
@@ -157,7 +158,7 @@ func (s *Service) resumeQueued(ctx context.Context) {
 			Enabled: true, Age: time.Since(row.SeenAt), Freshness: s.cfg.Freshness,
 			Today: today, MaxPerDay: s.cfg.MaxPerDay,
 		})
-		if act != actPreach {
+		if act != actPost {
 			if _, err := s.st.CASPulpitState(ctx, row.NoteID, store.PulpitQueued,
 				store.PulpitSkipped, reason); err != nil {
 				s.log.Error("амвон: снятие с очереди", "note", row.NoteID, "err", err)
@@ -169,7 +170,7 @@ func (s *Service) resumeQueued(ctx context.Context) {
 			s.log.Warn("амвон: заметка из очереди не читается", "note", row.NoteID, "err", err)
 			continue
 		}
-		if s.preach(ctx, n, row.SeenAt) {
+		if s.postQuip(ctx, n, row.SeenAt) {
 			today++
 		}
 	}

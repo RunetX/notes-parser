@@ -28,10 +28,10 @@ const samplePool = 200
 // sampleCount — сколько образцов показываем модели.
 const sampleCount = 4
 
-// preach генерирует реплику и отправляет её под заметку. Возвращает true, если
-// POST состоялся (для суточного счёта). Заметка к этому моменту уже занята
+// postQuip генерирует реплику и отправляет её под заметку. Возвращает true,
+// если POST состоялся (для суточного счёта). Заметка к этому моменту уже занята
 // строкой queued — сюда приходят только с ней.
-func (s *Service) preach(ctx context.Context, n love.Note, seenAt time.Time) bool {
+func (s *Service) postQuip(ctx context.Context, n love.Note, seenAt time.Time) bool {
 	if s.gen == nil {
 		s.skip(ctx, n.ID, store.PulpitFailed, reasonNoLLM)
 		return false
@@ -42,7 +42,14 @@ func (s *Service) preach(ctx context.Context, n love.Note, seenAt time.Time) boo
 		s.skip(ctx, n.ID, store.PulpitFailed, shortReason(err))
 		return false
 	}
-	// Опоздавшая проповедь противоречит смыслу фичи (быть первым) и при этом
+	if sm.Skip {
+		// Под настоящей бедой шутить нечем, и это штатный исход, а не сбой:
+		// молчание тут — часть голоса, а не его отказ.
+		s.log.Info("амвон: под этой заметкой не шутим", "note", n.ID, "о_чём", sm.Idea)
+		s.skip(ctx, n.ID, store.PulpitSkipped, reasonNoJoke)
+		return false
+	}
+	// Опоздавшая реплика противоречит смыслу фичи (быть первым) и при этом
 	// стоит того же риска, что своевременная: молчим.
 	if late := time.Since(seenAt); late > s.cfg.MaxLatency {
 		s.log.Warn("амвон: реплика опоздала, не отправляю",
@@ -83,13 +90,13 @@ func (s *Service) preach(ctx context.Context, n love.Note, seenAt time.Time) boo
 // Draft генерирует реплику под заметку, ничего не отправляя. Экспортируется для
 // CLI (`lovegw pulpit draft <id>`): промпт правится по вчерашним заметкам
 // локально, а не боевыми публикациями.
-func (s *Service) Draft(ctx context.Context, n love.Note) (Sermon, error) {
+func (s *Service) Draft(ctx context.Context, n love.Note) (Quip, error) {
 	genCtx, cancel := context.WithTimeout(ctx, s.cfg.GenerateTimeout)
 	defer cancel()
 
 	history, forms := s.history(ctx)
-	allowed := pickForms(forms, sermonForms, s.cfg.FormCooldown)
-	base := buildSermonPrompt(promptInput{
+	allowed := pickForms(forms, quipForms, s.cfg.FormCooldown)
+	base := buildQuipPrompt(promptInput{
 		Note:       n.Text,
 		AuthorName: n.AuthorName,
 		Anonymous:  n.AuthorID == "" || n.AuthorID == "0",
@@ -108,16 +115,16 @@ func (s *Service) Draft(ctx context.Context, n love.Note) (Sermon, error) {
 		// это отклик на текст, а не письмо человеку.
 		Nicks: []string{n.AuthorName, s.currentNick()},
 	}
-	sm, err := s.ask(genCtx, sermonSystem, base, sermonSchema, cfg)
-	return Sermon(sm), err
+	sm, err := s.ask(genCtx, quipSystem, base, quipSchema, cfg)
+	return Quip(sm), err
 }
 
-// Sermon — сгенерированная реплика (наружу её показывает только CLI-черновик).
-type Sermon = sermon
+// Quip — сгенерированная реплика (наружу её показывает только CLI-черновик).
+type Quip = quip
 
 // ask — общий цикл «спросить, починить, проверить, переспросить». Причина
 // брака едет хвостом в промпт: слепой повтор повторил бы и брак.
-func (s *Service) ask(ctx context.Context, system, base string, schema map[string]any, cfg validateConfig) (sermon, error) {
+func (s *Service) ask(ctx context.Context, system, base string, schema map[string]any, cfg validateConfig) (quip, error) {
 	var lastErr error
 	for attempt := range generateRetries {
 		prompt := base
@@ -133,27 +140,32 @@ func (s *Service) ask(ctx context.Context, system, base string, schema map[strin
 		}
 		lastErr = err
 		if !retriable {
-			return sermon{}, err
+			return quip{}, err
 		}
 	}
-	return sermon{}, fmt.Errorf("попытки исчерпаны: %w", lastErr)
+	return quip{}, fmt.Errorf("попытки исчерпаны: %w", lastErr)
 }
 
 // askOnce — одна попытка: запрос, разбор, нормализация, проверка. retriable
 // отделяет брак ответа (пришёл, но не годится) от ошибки запроса — её повторять
 // незачем, сеть и 429/5xx SDK уже отретраил сам.
-func (s *Service) askOnce(ctx context.Context, system, prompt string, schema map[string]any, cfg validateConfig) (_ sermon, retriable bool, err error) {
+func (s *Service) askOnce(ctx context.Context, system, prompt string, schema map[string]any, cfg validateConfig) (_ quip, retriable bool, err error) {
 	raw, err := s.gen.GenerateJSON(ctx, system, prompt, schema)
 	if err != nil {
-		return sermon{}, false, err
+		return quip{}, false, err
 	}
-	var sm sermon
+	var sm quip
 	if err := json.Unmarshal(raw, &sm); err != nil {
-		return sermon{}, true, fmt.Errorf("разбор ответа модели: %w", err)
+		return quip{}, true, fmt.Errorf("разбор ответа модели: %w", err)
+	}
+	if sm.Skip {
+		// Отказ шутить проверять нечем: текста нет, и он не нужен. Переспрос
+		// тут был бы уговором — а красная линия на то и красная.
+		return quip{Skip: true, Idea: sm.Idea}, false, nil
 	}
 	sm.Text = normalize(sm.Text)
 	if reason := validate(sm.Text, sm.Form, cfg); reason != "" {
-		return sermon{}, true, fmt.Errorf("%s", reason)
+		return quip{}, true, fmt.Errorf("%s", reason)
 	}
 	return sm, false, nil
 }
@@ -182,14 +194,15 @@ func (s *Service) history(ctx context.Context) (texts, forms []string) {
 
 // styleSamples — собственные комментарии владельца из живой БД: они задают
 // манеру (длина фразы, пунктуация, финальная точка), а не регистр — регистр
-// задан отдельно, системным промптом.
+// задан отдельно, системным промптом. Из пула берутся те, где владелец смеялся
+// (preferFunny): манеру шутки лучше показывать шуткой, а не спором.
 func (s *Service) styleSamples(ctx context.Context, seed string) []string {
 	pool, err := s.st.OwnerComments(ctx, s.cfg.OwnerProfileID, s.cfg.MinRunes, s.cfg.MaxRunes, samplePool)
 	if err != nil {
 		s.log.Error("амвон: чтение своих комментариев", "err", err)
 		return nil
 	}
-	return pickSamples(pool, seed, sampleCount)
+	return pickSamples(preferFunny(pool), seed, sampleCount)
 }
 
 // skip помечает строку пропущенной/неудавшейся, не трогая уже отправленное.

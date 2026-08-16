@@ -19,7 +19,7 @@ func TestDecide(t *testing.T) {
 		{
 			name: "свежая заметка при включённой фиче",
 			in:   base,
-			want: actPreach,
+			want: actPost,
 		},
 		{
 			name:   "тумблер выключен — в БД ни строчки",
@@ -56,7 +56,7 @@ func TestDecide(t *testing.T) {
 			in: withInput(base, func(in *decideInput) {
 				in.Today, in.MaxPerDay = 100, 0
 			}),
-			want: actPreach,
+			want: actPost,
 		},
 		{
 			name: "занятая заметка молчит даже на холодном старте",

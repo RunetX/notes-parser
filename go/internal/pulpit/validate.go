@@ -52,6 +52,11 @@ var (
 	reHTMLTag  = regexp.MustCompile(`(?i)<\s*/?\s*[a-z][a-z0-9]*(\s[^>\n]*)?>`)
 	reThinking = regexp.MustCompile(`(?i)<\s*/?\s*thinking`)
 	reWordSep  = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	// reJokeTag — метка собственной шутки. Смешному она не нужна, несмешное не
+	// спасает, а в реплике выдаёт того, кто боится, что его не поймут. Правило
+	// узкое намеренно: каждый переспрос стоит 10–30 секунд, то есть ровно той
+	// валюты, ради которой амвон и спешит быть первым.
+	reJokeTag = regexp.MustCompile(`(?i)\((шутка|сарказм|ирония)\)|/сарказм|\b(lol|лол)\b|ахах|бугага`)
 )
 
 // dashes / quotes — что чиним подстановкой. Замер площадки: длинное тире у
@@ -160,6 +165,9 @@ func validate(text, form string, cfg validateConfig) string {
 	if bad := typographyHit(text); bad != "" {
 		return "знак " + bad + " на площадке почти не встречается — только дефис и обычная кавычка"
 	}
+	if m := reJokeTag.FindString(text); m != "" {
+		return "метка шутки «" + m + "»: если смешно, она не нужна, если не смешно — не спасёт"
+	}
 	lines := strings.Split(text, "\n")
 	if cfg.MaxLines > 0 && len(lines) > cfg.MaxLines {
 		return "строк " + strconv.Itoa(len(lines)) + ", потолок " + strconv.Itoa(cfg.MaxLines)
@@ -181,7 +189,7 @@ func validate(text, form string, cfg validateConfig) string {
 	if share := overlapShare(text, cfg.NoteText); share > maxOverlapShare {
 		return "пересказ заметки: слишком много общих оборотов"
 	}
-	if len(cfg.Forms) > 0 && !contains(cfg.Forms, form) {
+	if len(cfg.Forms) > 0 && !hasForm(cfg.Forms, form) {
 		return "форма «" + form + "» не из предложенных (" + strings.Join(cfg.Forms, ", ") + ")"
 	}
 	return ""
@@ -321,6 +329,18 @@ func words(s string) []string {
 		}
 	}
 	return out
+}
+
+// hasForm — назвала ли модель одну из предложенных форм. Сравнение через
+// formKey: «ложная серьезность» без «ё» — та же форма, а не повод переспрашивать.
+func hasForm(forms []string, form string) bool {
+	key := formKey(form)
+	for _, f := range forms {
+		if formKey(f) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(list []string, v string) bool {

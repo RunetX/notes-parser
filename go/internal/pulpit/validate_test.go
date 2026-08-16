@@ -48,7 +48,7 @@ func TestNormalizeBlankLines(t *testing.T) {
 func TestValidate(t *testing.T) {
 	cfg := validateConfig{
 		MinRunes: 10, MaxRunes: 200, MaxLines: 12, AllowEmoji: true,
-		Forms: sermonForms, NoteText: "Муж ушёл к другой, а я осталась с ипотекой и котом",
+		Forms: quipForms, NoteText: "Муж ушёл к другой, а я осталась с ипотекой и котом",
 	}
 	ok := "Обида кормится вниманием. Не корми - и она уйдёт следом за ним."
 
@@ -59,29 +59,29 @@ func TestValidate(t *testing.T) {
 		cfg  validateConfig
 		bad  bool
 	}{
-		{name: "годная реплика", text: ok, form: "укор", cfg: cfg},
-		{name: "пустой текст", text: "   ", form: "укор", cfg: cfg, bad: true},
-		{name: "коротко", text: "Терпи.", form: "укор", cfg: cfg, bad: true},
-		{name: "длинно", text: strings.Repeat("слово ", 100), form: "укор", cfg: cfg, bad: true},
-		{name: "BB-код", text: "[b]Гордыня[/b] тебя и подвела, не он.", form: "укор", cfg: cfg, bad: true},
-		{name: "markdown", text: "**Гордыня** тебя и подвела, а вовсе не он.", form: "укор", cfg: cfg, bad: true},
-		{name: "HTML", text: "<b>Гордыня</b> тебя и подвела, а вовсе не он.", form: "укор", cfg: cfg, bad: true},
+		{name: "годная реплика", text: ok, form: "буквально", cfg: cfg},
+		{name: "пустой текст", text: "   ", form: "буквально", cfg: cfg, bad: true},
+		{name: "коротко", text: "Терпи.", form: "буквально", cfg: cfg, bad: true},
+		{name: "длинно", text: strings.Repeat("слово ", 100), form: "буквально", cfg: cfg, bad: true},
+		{name: "BB-код", text: "[b]Гордыня[/b] тебя и подвела, не он.", form: "буквально", cfg: cfg, bad: true},
+		{name: "markdown", text: "**Гордыня** тебя и подвела, а вовсе не он.", form: "буквально", cfg: cfg, bad: true},
+		{name: "HTML", text: "<b>Гордыня</b> тебя и подвела, а вовсе не он.", form: "буквально", cfg: cfg, bad: true},
 		{
 			name: "служебный тег размышления",
 			text: "<thinking>надо помягче</thinking> Гордыня тебя и подвела.",
-			form: "укор", cfg: cfg, bad: true,
+			form: "буквально", cfg: cfg, bad: true,
 		},
 		{
 			name: "длинное тире дожило до валидатора",
 			text: "Обида — не любовь, и кормить её не надо ни днём, ни ночью.",
-			form: "укор", cfg: cfg, bad: true,
+			form: "буквально", cfg: cfg, bad: true,
 		},
 		{
 			name: "обращение к автору в теле",
 			text: "Марина, обида кормится вниманием, и ты кормишь её щедро.",
-			form: "укор",
+			form: "буквально",
 			cfg: validateConfig{MinRunes: 10, MaxRunes: 200, MaxLines: 12,
-				AllowEmoji: true, Forms: sermonForms, Nicks: []string{"Марина", myNick}},
+				AllowEmoji: true, Forms: quipForms, Nicks: []string{"Марина", myNick}},
 			bad: true,
 		},
 		{
@@ -89,36 +89,58 @@ func TestValidate(t *testing.T) {
 			// жирным настоящие ники, а переспрос стоит тех самых секунд.
 			name: "оборот перед запятой — не обращение",
 			text: "Смирение не в том, чтобы молчать, когда стоило бы уйти.",
-			form: "укор",
+			form: "буквально",
 			cfg: validateConfig{MinRunes: 10, MaxRunes: 200, MaxLines: 12,
-				AllowEmoji: true, Forms: sermonForms, Nicks: []string{"Марина", myNick}},
+				AllowEmoji: true, Forms: quipForms, Nicks: []string{"Марина", myNick}},
 		},
 		{
 			name: "чужая форма",
 			text: ok, form: "хайку", cfg: cfg, bad: true,
 		},
 		{
+			// Модель пишет название формы своей строкой, и «е» вместо «ё» —
+			// не повод жечь 10–30 секунд на переспрос.
+			name: "форма без ё — та же форма",
+			text: ok, form: "ложная серьезность", cfg: cfg,
+		},
+		{
+			name: "метка шутки в скобках",
+			text: "Кофе тут ни при чём, конечно (сарказм). Дело в очереди.",
+			form: "буквально", cfg: cfg, bad: true,
+		},
+		{
+			name: "смех вместо шутки",
+			text: "Ахаха, ну ты даёшь, сосед с перфоратором это сильно.",
+			form: "буквально", cfg: cfg, bad: true,
+		},
+		{
+			// Скобка-улыбка — родная пунктуация площадки, и она не метка.
+			name: "скобка-улыбка не метка",
+			text: "Сосед с перфоратором тоже ищет свою половину, судя по темпу)",
+			form: "буквально", cfg: cfg,
+		},
+		{
 			name: "пересказ заметки",
 			text: "Муж ушёл к другой, а я осталась с ипотекой и котом. Так бывает.",
-			form: "укор", cfg: cfg, bad: true,
+			form: "буквально", cfg: cfg, bad: true,
 		},
 		{
 			name: "эмодзи при запрете",
 			text: "Обида кормится вниманием. Не корми - и она уйдёт следом 🙏",
-			form: "укор",
+			form: "буквально",
 			cfg: validateConfig{MinRunes: 10, MaxRunes: 200, MaxLines: 12,
-				AllowEmoji: false, Forms: sermonForms},
+				AllowEmoji: false, Forms: quipForms},
 			bad: true,
 		},
 		{
 			name: "широкий рисунок",
 			text: "Смирение приходит не сразу.\n~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~\nЖди.",
-			form: "притча", cfg: cfg, bad: true,
+			form: "сценка", cfg: cfg, bad: true,
 		},
 		{
 			name: "узкий рисунок годится",
 			text: "Смирение приходит не сразу.\n~ ~ ~\nЖди и не проси лишнего.",
-			form: "притча", cfg: cfg,
+			form: "сценка", cfg: cfg,
 		},
 	}
 	for _, tc := range cases {
@@ -138,19 +160,50 @@ func TestValidate(t *testing.T) {
 // шрифт на площадке пропорциональный.
 func TestValidateArtBlockHeight(t *testing.T) {
 	art := strings.Repeat("/\\_/\\\n", 6)
-	reason := validate("Гляди в оба.\n"+art, "притча", validateConfig{
-		MinRunes: 5, MaxRunes: 400, MaxLines: 20, AllowEmoji: true, Forms: sermonForms,
+	reason := validate("Гляди в оба.\n"+art, "сценка", validateConfig{
+		MinRunes: 5, MaxRunes: 400, MaxLines: 20, AllowEmoji: true, Forms: quipForms,
 	})
 	if reason == "" {
 		t.Error("высокий рисунок должен браковаться")
 	}
 }
 
-func TestPickForms(t *testing.T) {
-	all := []string{"укор", "заповедь", "притча", "приговор"}
+// TestPreferFunny — образцы манеры берутся из тех своих комментариев, где
+// владелец смеялся. Отметка смеха на площадке — незакрытая скобка, а обычные
+// скобки баланс не рушат.
+func TestPreferFunny(t *testing.T) {
+	funny := make([]string, 0, minFunnyPool)
+	for range minFunnyPool {
+		funny = append(funny, "ну ты даёшь)")
+	}
+	pool := append([]string{
+		"Считаю, что тут всё сложнее (и это видно по треду).",
+		"Никакой улыбки, сплошная серьёзность.",
+	}, funny...)
 
-	got := pickForms([]string{"укор", "заповедь"}, all, 2)
-	if contains(got, "укор") || contains(got, "заповедь") {
+	got := preferFunny(pool)
+	if len(got) != minFunnyPool {
+		t.Fatalf("осталось %d образцов, ожидалось %d: %v", len(got), minFunnyPool, got)
+	}
+	for _, s := range got {
+		if strings.Count(s, ")") <= strings.Count(s, "(") {
+			t.Errorf("в отбор попал комментарий без смеха: %q", s)
+		}
+	}
+
+	// Смешного мало — берём пул целиком: четыре образца из горстки это уже не
+	// манера, а заучивание конкретных шуток.
+	small := []string{"ну ты даёшь)", "серьёзно и по делу", "(в скобках)"}
+	if got := preferFunny(small); len(got) != len(small) {
+		t.Errorf("маленький пул должен возвращаться целиком: %v", got)
+	}
+}
+
+func TestPickForms(t *testing.T) {
+	all := []string{"буквально", "гипербола", "сценка", "самоирония"}
+
+	got := pickForms([]string{"буквально", "гипербола"}, all, 2)
+	if contains(got, "буквально") || contains(got, "гипербола") {
 		t.Errorf("формы последних реплик должны выпасть: %v", got)
 	}
 	if len(got) != 2 {
@@ -164,8 +217,8 @@ func TestPickForms(t *testing.T) {
 	}
 
 	// История короче кулдауна — не паникуем и режем по факту.
-	got = pickForms([]string{"укор"}, all, 5)
-	if contains(got, "укор") || len(got) != 3 {
+	got = pickForms([]string{"буквально"}, all, 5)
+	if contains(got, "буквально") || len(got) != 3 {
 		t.Errorf("короткая история: %v", got)
 	}
 }

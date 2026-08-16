@@ -17,7 +17,7 @@ const (
 func branch() []love.Comment {
 	return []love.Comment{
 		{ID: 90, AuthorID: "u1", AuthorName: "Чужой", Text: "реплика в корне заметки"},
-		{ID: 100, ParentID: 0, AuthorID: ownID, AuthorName: myNick, Text: "проповедь"},
+		{ID: 100, ParentID: 0, AuthorID: ownID, AuthorName: myNick, Text: "своя реплика"},
 		{ID: 101, ParentID: myID, AuthorID: "u2", AuthorName: "Лампочка", Text: "Рантье, ты опять за своё"},
 		{ID: 102, ParentID: myID, AuthorID: "u3", AuthorName: "Мавр", Text: "Лампочка, да он всегда такой"},
 		{ID: 103, ParentID: 90, AuthorID: "u4", AuthorName: "Птичка", Text: "Рантье, а ты кто такой"},
@@ -47,7 +47,7 @@ func TestReplyCandidates(t *testing.T) {
 // построению: до него там были только мы, даже без обращения по нику.
 func TestReplyCandidatesFirstInBranch(t *testing.T) {
 	comments := []love.Comment{
-		{ID: 100, AuthorID: ownID, AuthorName: myNick, Text: "проповедь"},
+		{ID: 100, AuthorID: ownID, AuthorName: myNick, Text: "своя реплика"},
 		{ID: 101, ParentID: myID, AuthorID: "u2", AuthorName: "Лампочка", Text: "ну и зануда"},
 		{ID: 102, ParentID: myID, AuthorID: "u3", AuthorName: "Мавр", Text: "Лампочка, точно"},
 	}
@@ -61,7 +61,7 @@ func TestReplyCandidatesFirstInBranch(t *testing.T) {
 // видно ровно так: обращённые к нам реплики перестают быть кандидатами.
 func TestReplyCandidatesStaleNick(t *testing.T) {
 	comments := []love.Comment{
-		{ID: 100, AuthorID: ownID, AuthorName: myNick, Text: "проповедь"},
+		{ID: 100, AuthorID: ownID, AuthorName: myNick, Text: "своя реплика"},
 		{ID: 101, ParentID: myID, AuthorID: "u9", AuthorName: "Некто", Text: "мимо проходил"},
 		{ID: 102, ParentID: myID, AuthorID: "u2", AuthorName: "Лампочка", Text: "Рантье, ты опять за своё"},
 	}

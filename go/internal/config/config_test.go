@@ -179,7 +179,8 @@ func TestLoadASREnvOverrides(t *testing.T) {
 }
 
 // Амвон по умолчанию выключен, а пороги длины сняты с самого владельца
-// (p25 = 42 руны): порог 60 отсекал бы четверть его собственной манеры.
+// (p25 = 42 руны, p50 = 79) и подрезаны под голос прикольщика: удар шутки
+// бывает в четыре слова, а длинная шутка — уже рассказ.
 func TestLoadPulpitDefaults(t *testing.T) {
 	cfg, err := Load(writeConfig(t, `{"site": {"base_url": "https://love.ngs.ru"}}`))
 	if err != nil {
@@ -187,7 +188,8 @@ func TestLoadPulpitDefaults(t *testing.T) {
 	}
 	p := cfg.Pulpit
 	if p.Enabled || p.FeedIntervalS != 20 || p.FreshnessMin != 15 || p.MaxPerDay != 25 ||
-		p.MinRunes != 40 || p.MaxRunes != 400 || !p.AllowEmoji || p.Effort != "low" ||
+		p.GenerateTimeoutS != 90 || p.MinRunes != 25 || p.MaxRunes != 300 ||
+		!p.AllowEmoji || p.Effort != "medium" ||
 		p.ReplyProbability != 0.15 || p.FuseMisses != 3 {
 		t.Errorf("дефолты амвона: %+v", p)
 	}

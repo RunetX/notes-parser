@@ -51,7 +51,7 @@ func TestNeedsRecheck(t *testing.T) {
 func TestOwnComment(t *testing.T) {
 	comments := []love.Comment{
 		{ID: 700, AuthorID: "u9", Text: "чужая"},
-		{ID: 701, AuthorID: ownID, Text: "проповедь"},
+		{ID: 701, AuthorID: ownID, Text: "своя реплика"},
 		{ID: 705, AuthorID: ownID, Text: "Лампочка, ответ"},
 	}
 	c, ok := ownComment(comments, ownID)
