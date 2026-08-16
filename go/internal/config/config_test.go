@@ -189,7 +189,7 @@ func TestLoadPulpitDefaults(t *testing.T) {
 	p := cfg.Pulpit
 	if p.Enabled || p.FeedIntervalS != 20 || p.FreshnessMin != 15 || p.MaxPerDay != 25 ||
 		p.GenerateTimeoutS != 90 || p.MinRunes != 25 || p.MaxRunes != 300 ||
-		!p.AllowEmoji || p.Effort != "medium" ||
+		!p.AllowEmoji || p.Effort != "low" ||
 		p.ReplyProbability != 0.15 || p.FuseMisses != 3 {
 		t.Errorf("дефолты амвона: %+v", p)
 	}
