@@ -34,7 +34,7 @@ func (s *Store) SetNoteArchived(ctx context.Context, id string, at time.Time) er
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE notes SET status = ?, archived_at = ? WHERE id = ?`,
 		StatusArchived, fmtTime(at), id)
-	return err
+	return wrap(err, "архивация заметки %s", id)
 }
 
 // MarkNoteCommentsClosed помечает заметку закрытой для новых комментариев
@@ -45,7 +45,7 @@ func (s *Store) MarkNoteCommentsClosed(ctx context.Context, id string) (bool, er
 		UPDATE notes SET comments_closed = 1
 		WHERE id = ? AND comments_closed = 0`, id)
 	if err != nil {
-		return false, fmt.Errorf("mark comments closed %s: %w", id, err)
+		return false, fmt.Errorf("отметка «комментарии закрыты» %s: %w", id, err)
 	}
 	affected, _ := res.RowsAffected()
 	return affected > 0, nil
@@ -56,7 +56,7 @@ func (s *Store) MarkNoteCommentsClosed(ctx context.Context, id string) (bool, er
 func (s *Store) SetNoteLastCommentAt(ctx context.Context, id string, at time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE notes SET last_comment_at = ? WHERE id = ?`, fmtTime(at), id)
-	return err
+	return wrap(err, "время последнего комментария заметки %s", id)
 }
 
 // SentCommentTGMessageIDs — id отправленных в Telegram сообщений комментариев
@@ -108,7 +108,7 @@ func (s *Store) DeleteNote(ctx context.Context, noteID string) error {
 		`DELETE FROM notes WHERE id = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, noteID); err != nil {
-			return err
+			return fmt.Errorf("удаление заметки %s: %w", noteID, err)
 		}
 	}
 	return tx.Commit()

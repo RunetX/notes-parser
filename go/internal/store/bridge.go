@@ -57,11 +57,11 @@ func (s *Store) SetSessionValid(ctx context.Context, messenger string, userID in
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE sessions SET valid = 1, last_ok_at = ? WHERE messenger = ? AND user_id = ?`,
 			fmtTime(now), messenger, userID)
-		return err
+		return wrap(err, "отметка сессии %s/%d рабочей", messenger, userID)
 	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET valid = 0 WHERE messenger = ? AND user_id = ?`, messenger, userID)
-	return err
+	return wrap(err, "сброс сессии %s/%d", messenger, userID)
 }
 
 // DialogState возвращает состояние диалога ЛС-бота ("" — нет состояния).
@@ -82,11 +82,11 @@ func (s *Store) SetDialogState(ctx context.Context, messenger string, userID int
 		ON CONFLICT(messenger, user_id) DO UPDATE SET
 			state = excluded.state, updated_at = excluded.updated_at`,
 		messenger, userID, state, fmtTime(now))
-	return err
+	return wrap(err, "состояние диалога %s/%d", messenger, userID)
 }
 
 // ClearDialogState сбрасывает состояние диалога.
 func (s *Store) ClearDialogState(ctx context.Context, messenger string, userID int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM dialog_states WHERE messenger = ? AND user_id = ?`, messenger, userID)
-	return err
+	return wrap(err, "снятие состояния диалога %s/%d", messenger, userID)
 }

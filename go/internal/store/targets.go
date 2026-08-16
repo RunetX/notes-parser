@@ -49,7 +49,7 @@ func (s *Store) SetTarget(ctx context.Context, messenger, kind, refID, messageID
 			thread_id  = COALESCE(excluded.thread_id, thread_id)`,
 		messenger, kind, refID, nullStr(messageID), nullStr(threadID),
 		fmtTime(time.Now())); err != nil {
-		return fmt.Errorf("set target %s/%s/%s: %w", messenger, kind, refID, err)
+		return fmt.Errorf("привязка сообщения %s/%s/%s: %w", messenger, kind, refID, err)
 	}
 	if err := writeThroughLegacy(ctx, tx, messenger, kind, refID, messageID, threadID); err != nil {
 		return err
@@ -80,7 +80,7 @@ func writeThroughLegacy(ctx context.Context, tx *sql.Tx, messenger, kind, refID,
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, q, val, refID); err != nil {
-		return fmt.Errorf("write-through %s/%s: %w", kind, refID, err)
+		return fmt.Errorf("легаси-колонки %s/%s: %w", kind, refID, err)
 	}
 	return nil
 }
@@ -128,7 +128,7 @@ func (s *Store) CaptureNoteThread(ctx context.Context, messenger, postMessageID,
 		VALUES (?, ?, ?, ?, ?)`,
 		messenger, TargetNoteThread, noteID, threadID, fmtTime(time.Now()))
 	if err != nil {
-		return "", false, fmt.Errorf("capture thread %s/%s: %w", messenger, noteID, err)
+		return "", false, fmt.Errorf("привязка треда %s/%s: %w", messenger, noteID, err)
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
 		return "", false, nil // тред уже пойман
@@ -268,7 +268,7 @@ func (s *Store) UnsentNoteImagesFor(ctx context.Context, messenger, noteID strin
 func (s *Store) SetNoteStatusPosted(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE notes SET status = ? WHERE id = ?`, StatusPosted, id)
-	return err
+	return wrap(err, "отметка заметки %s запощенной", id)
 }
 
 // nullStr: пустая строка хранится как NULL.

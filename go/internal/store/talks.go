@@ -60,7 +60,7 @@ func (s *Store) UpsertTalkPeer(ctx context.Context, p TalkPeer) (int64, error) {
 			avatar_url = CASE WHEN excluded.avatar_url != '' THEN excluded.avatar_url ELSE avatar_url END`,
 		p.Messenger, p.OwnerUserID, p.PassportID, p.ProfileID, p.Nick, p.AvatarURL,
 		nullTime(p.LastEventAt), fmtTime(time.Now())); err != nil {
-		return 0, fmt.Errorf("upsert talk peer %s/%d/%s: %w", p.Messenger, p.OwnerUserID, p.PassportID, err)
+		return 0, fmt.Errorf("сохранение собеседника talks %s/%d/%s: %w", p.Messenger, p.OwnerUserID, p.PassportID, err)
 	}
 	var id int64
 	if err := s.db.QueryRowContext(ctx, `
@@ -118,7 +118,7 @@ func (s *Store) SetPeerCursor(ctx context.Context, peerID int64, cursorMsgID str
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE talks_peers SET cursor_msg_id = ?, last_event_at = ? WHERE id = ?`,
 		cursorMsgID, nullTime(lastEventAt), peerID)
-	return err
+	return wrap(err, "курсор диалога %d", peerID)
 }
 
 // InsertTalkMessage сохраняет сообщение, дедуплицируя входящие по
@@ -134,7 +134,7 @@ func (s *Store) InsertTalkMessage(ctx context.Context, m TalkMessage) (id int64,
 		m.PeerID, nullStr(m.SiteMsgID), m.Direction, m.Text, m.MediaURL,
 		nullTime(m.SentAt), fmtTime(time.Now()))
 	if err != nil {
-		return 0, false, fmt.Errorf("insert talk message peer=%d: %w", m.PeerID, err)
+		return 0, false, fmt.Errorf("запись сообщения talks peer=%d: %w", m.PeerID, err)
 	}
 	if affected, _ := res.RowsAffected(); affected > 0 {
 		id, _ = res.LastInsertId()
@@ -240,7 +240,7 @@ func (s *Store) SetSessionIdentity(ctx context.Context, messenger string, userID
 		UPDATE sessions SET site_profile_id = ?, site_passport_id = ?, site_nick = ?
 		WHERE messenger = ? AND user_id = ?`,
 		profileID, passportID, nick, messenger, userID)
-	return err
+	return wrap(err, "site-идентичность сессии %s/%d", messenger, userID)
 }
 
 // PurgeTalksOlderThan удаляет сообщения talks старше cutoff (ретеншен

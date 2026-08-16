@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -247,7 +248,7 @@ func (s *Store) PeakCommentHour(ctx context.Context) (hourStart time.Time, noteI
 		LIMIT 1`)
 	var hour string
 	if err = row.Scan(&noteID, &hour, &n); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return time.Time{}, "", 0, nil
 		}
 		return time.Time{}, "", 0, err

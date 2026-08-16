@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"math"
 	"sort"
 	"time"
@@ -125,7 +126,7 @@ func (s *Store) diagAccounts(ctx context.Context, ids []int64) (map[int64]DiagAc
 			FROM users u LEFT JOIN comments c ON c.author_id = u.id
 			WHERE u.id = ? GROUP BY u.id`, id).Scan(
 			&a.Name, &a.Age, &a.Comments, &a.Notes, &a.ActiveFrom, &a.ActiveTo)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			a.Name = "(нет в архиве)"
 		} else if err != nil {
 			return nil, err
@@ -318,7 +319,7 @@ func (s *Store) fillNames(ctx context.Context, names map[int64]string) error {
 	for id := range names {
 		var n string
 		err := s.db.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, id).Scan(&n)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			n = "?"
 		} else if err != nil {
 			return err

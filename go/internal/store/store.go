@@ -124,7 +124,7 @@ func (s *Store) InsertNote(ctx context.Context, n Note) (bool, error) {
 		nullID(n.TGMessageID), nullID(n.TGThreadID),
 		fmtTime(n.FirstSeenAt), nullTime(n.LastCommentAt))
 	if err != nil {
-		return false, fmt.Errorf("insert note %s: %w", n.ID, err)
+		return false, fmt.Errorf("запись заметки %s: %w", n.ID, err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected > 0 && n.TGMessageID != 0 {
@@ -148,7 +148,7 @@ func (s *Store) InsertNoteImage(ctx context.Context, noteID string, position int
 		INSERT OR IGNORE INTO note_images (note_id, position, url)
 		VALUES (?, ?, ?)`, noteID, position, url)
 	if err != nil {
-		return fmt.Errorf("insert note image %s: %w", noteID, err)
+		return fmt.Errorf("запись картинки заметки %s: %w", noteID, err)
 	}
 	return nil
 }
@@ -164,7 +164,7 @@ func (s *Store) InsertComment(ctx context.Context, c Comment) (bool, error) {
 		c.ID, c.NoteID, c.AuthorName, c.AuthorAge, c.AuthorLink, c.AvatarURL,
 		nullTime(c.PublishedAt), c.Text, nullID(c.TGMessageID), fmtTime(c.CreatedAt))
 	if err != nil {
-		return false, fmt.Errorf("insert comment %d: %w", c.ID, err)
+		return false, fmt.Errorf("запись комментария %d: %w", c.ID, err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected > 0 && c.TGMessageID != 0 {
@@ -181,7 +181,7 @@ func (s *Store) InsertComment(ctx context.Context, c Comment) (bool, error) {
 func (s *Store) UpsertSession(ctx context.Context, messenger string, userID int64, cookiesJSON string, now time.Time) error {
 	stored, err := s.key.Seal(secret.SessionAAD(messenger, userID), cookiesJSON)
 	if err != nil {
-		return fmt.Errorf("upsert session %s/%d: %w", messenger, userID, err)
+		return fmt.Errorf("сохранение сессии %s/%d: %w", messenger, userID, err)
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at)
@@ -190,7 +190,7 @@ func (s *Store) UpsertSession(ctx context.Context, messenger string, userID int6
 			cookies = excluded.cookies, valid = 1, updated_at = excluded.updated_at`,
 		messenger, userID, stored, fmtTime(now))
 	if err != nil {
-		return fmt.Errorf("upsert session %s/%d: %w", messenger, userID, err)
+		return fmt.Errorf("сохранение сессии %s/%d: %w", messenger, userID, err)
 	}
 	return nil
 }
@@ -209,7 +209,7 @@ func (s *Store) AddSubscription(ctx context.Context, sub Subscription) (bool, er
 		INSERT OR IGNORE INTO subscriptions (messenger, user_id, kind, target)
 		VALUES (?, ?, ?, ?)`, sub.Messenger, sub.UserID, sub.Kind, sub.Target)
 	if err != nil {
-		return false, fmt.Errorf("insert subscription: %w", err)
+		return false, fmt.Errorf("добавление подписки: %w", err)
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
 		return false, tx.Commit() // дубль: предел тут ни при чём
@@ -234,7 +234,7 @@ func (s *Store) RemoveSubscription(ctx context.Context, messenger string, userID
 		WHERE messenger = ? AND user_id = ? AND kind = ? AND target = ?`,
 		messenger, userID, kind, target)
 	if err != nil {
-		return false, fmt.Errorf("delete subscription: %w", err)
+		return false, fmt.Errorf("снятие подписки: %w", err)
 	}
 	affected, _ := res.RowsAffected()
 	return affected > 0, nil
@@ -291,7 +291,7 @@ func (s *Store) RemoveSubscriptionByID(ctx context.Context, messenger string, us
 		return Subscription{}, false, nil
 	}
 	if err != nil {
-		return Subscription{}, false, fmt.Errorf("delete subscription %d: %w", id, err)
+		return Subscription{}, false, fmt.Errorf("снятие подписки %d: %w", id, err)
 	}
 	return sub, true, nil
 }
@@ -379,6 +379,17 @@ func nullTime(t time.Time) any {
 		return nil
 	}
 	return fmtTime(t)
+}
+
+// wrap приклеивает к ошибке БД место, где она случилась. Драйвер сообщает
+// только «database is locked» или «no such column», и в логе демона такая
+// строка не указывает ни на таблицу, ни на операцию. nil остаётся nil — вызов
+// ставится прямо в return однострочного апдейта.
+func wrap(err error, format string, args ...any) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err)
 }
 
 func fmtTime(t time.Time) string {
