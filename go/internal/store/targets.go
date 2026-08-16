@@ -153,6 +153,9 @@ func (s *Store) NoteByThread(ctx context.Context, messenger, threadID string) (N
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Note{}, err
+		}
 		return Note{}, fmt.Errorf("заметка с тредом %s/%s: %w", messenger, threadID, ErrNotFound)
 	}
 	return scanNote(rows)
@@ -172,6 +175,9 @@ func (s *Store) CommentByTarget(ctx context.Context, messenger, messageID string
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Comment{}, err
+		}
 		return Comment{}, fmt.Errorf("комментарий с id %s/%s: %w", messenger, messageID, ErrNotFound)
 	}
 	return scanComment(rows)

@@ -394,7 +394,15 @@ func (w *Watcher) deliverOne(ctx context.Context, tr PMTransport, owner int64, p
 	if m.FromSelf || rowID == 0 {
 		return false, false // своё исходящее не доставляем; курсор идёт дальше
 	}
-	if _, _, found, _ := w.st.Target(ctx, tr.Name(), store.TargetPMMessage, itoa(rowID)); found {
+	_, _, found, err := w.st.Target(ctx, tr.Name(), store.TargetPMMessage, itoa(rowID))
+	if err != nil {
+		// Эта проверка — единственный дедуп доставки: ошибка БД здесь не
+		// «не доставлено», а «неизвестно». Останавливаемся, не двигая курсор:
+		// задержка лучше дубля в ЛС.
+		w.log.Error("проверка доставки ЛС talks", "peer", peer.ID, "row", rowID, "err", err)
+		return false, true
+	}
+	if found {
 		return false, false // уже доставлено ранее
 	}
 	msgID, err := tr.SendPM(ctx, owner, formatIncoming(w.cfg.BaseURL, peer, m))

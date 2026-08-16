@@ -22,6 +22,9 @@ func (s *Store) NoteByID(ctx context.Context, id string) (Note, error) {
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Note{}, err
+		}
 		return Note{}, fmt.Errorf("заметка %s: %w", id, ErrNotFound)
 	}
 	return scanNote(rows)

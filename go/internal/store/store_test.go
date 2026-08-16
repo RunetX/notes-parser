@@ -59,6 +59,40 @@ func TestNoteAvatarRoundtrip(t *testing.T) {
 	}
 }
 
+// TestSingleRowErrorIsNotNotFound закрепляет контракт однострочных выборок:
+// ошибка БД не маскируется под ErrNotFound. Вызывающие различают эти случаи
+// (bridge молча отбрасывает «не найдено», но обязан логировать ошибку БД).
+func TestSingleRowErrorIsNotNotFound(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close() // закрытая БД: любой вызов обязан вернуть ошибку, но не ErrNotFound
+
+	calls := map[string]func() error{
+		"NoteByID":        func() error { _, err := st.NoteByID(ctx, "1"); return err },
+		"NoteByThread":    func() error { _, err := st.NoteByThread(ctx, MessengerTelegram, "t1"); return err },
+		"CommentByTarget": func() error { _, err := st.CommentByTarget(ctx, MessengerTelegram, "m1"); return err },
+		"TalkPeerByID":    func() error { _, err := st.TalkPeerByID(ctx, 1); return err },
+		"TalkMessageByID": func() error { _, err := st.TalkMessageByID(ctx, 1); return err },
+		"PeerByDeliveredPM": func() error {
+			_, err := st.PeerByDeliveredPM(ctx, MessengerTelegram, "m1")
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := call()
+		if err == nil {
+			t.Errorf("%s: закрытая БД должна давать ошибку", name)
+			continue
+		}
+		if errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: ошибка БД замаскирована под ErrNotFound: %v", name, err)
+		}
+	}
+}
+
 func TestNoteImagesUnsentAndMark(t *testing.T) {
 	ctx := context.Background()
 	st := openTest(t)

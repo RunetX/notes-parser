@@ -105,6 +105,9 @@ func (s *Store) TalkPeerByID(ctx context.Context, id int64) (TalkPeer, error) {
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return TalkPeer{}, err
+		}
 		return TalkPeer{}, fmt.Errorf("собеседник talks %d: %w", id, ErrNotFound)
 	}
 	return scanTalkPeer(rows)
@@ -182,6 +185,9 @@ func (s *Store) TalkMessageByID(ctx context.Context, id int64) (TalkMessage, err
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return TalkMessage{}, err
+		}
 		return TalkMessage{}, fmt.Errorf("сообщение talks %d: %w", id, ErrNotFound)
 	}
 	return scanTalkMessage(rows)
@@ -204,6 +210,9 @@ func (s *Store) PeerByDeliveredPM(ctx context.Context, messenger, deliveredMsgID
 	}
 	defer rows.Close()
 	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return TalkPeer{}, err
+		}
 		return TalkPeer{}, fmt.Errorf("диалог по доставленному ЛС %s/%s: %w", messenger, deliveredMsgID, ErrNotFound)
 	}
 	return scanTalkPeer(rows)
