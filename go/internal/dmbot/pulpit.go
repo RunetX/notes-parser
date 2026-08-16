@@ -37,9 +37,8 @@ type PulpitControl interface {
 }
 
 // SetPulpit подключает ручку амвона: /pulpit станет доступна пользователю
-// adminID. Ставится, как и SetNews, уже после старта поллера — тот же латентный
-// дата-рейс, что и у всех остальных Set*-подключений (чинить его стоит разом
-// для всех, отдельной задачей).
+// adminID. Как и все Set*-инжекции, зовётся строго до старта поллеров (фаза
+// wire в runDaemon) — поля не под мьютексом.
 func (l *Logic) SetPulpit(svc PulpitControl, adminID int64) {
 	if svc == nil || adminID == 0 {
 		return

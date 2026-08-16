@@ -260,15 +260,21 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	// Распознавание голосовых в тредах: сервис поднимаем до ботов, чтобы хук
-	// был на месте раньше старта поллинга. Выключен — гейт работает как раньше.
+	// Сборка идёт в три фазы: build (создать объекты) → wire (все Set*-инжекции)
+	// → start (поднять поллеры и службы). Старты копятся здесь и запускаются
+	// одним циклом в самом конце: ЛЮБАЯ Set*-инжекция после старта поллера —
+	// это data race по модели памяти Go (поля ботов не под мьютексом), поэтому
+	// новые g.Go в середину функции не добавлять — только в starts.
+	var starts []func(context.Context) error
+
+	// Распознавание голосовых в тредах. Выключен — гейт работает как раньше.
 	var asrSvc *asr.Service
 	if cfg.ASR.Enabled {
 		var err error
 		if asrSvc, err = newASR(cfg, st, log); err != nil {
 			return err
 		}
-		g.Go(func() error { return asrSvc.Run(gctx) })
+		starts = append(starts, asrSvc.Run)
 		log.Info("распознавание голосовых включено", "provider", cfg.ASR.Provider,
 			"max_duration_sec", cfg.ASR.MaxDurationSec,
 			"daily_limit_sec", cfg.ASR.UserDailyLimitSec, "concurrency", cfg.ASR.Concurrency)
@@ -315,8 +321,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 				return err
 			}
 			talksBot := tgTalks
-			g.Go(func() error {
-				talksBot.Start(gctx)
+			starts = append(starts, func(ctx context.Context) error {
+				talksBot.Start(ctx)
 				return nil
 			})
 		}
@@ -363,13 +369,13 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			tg.SetVoiceHandler(tgx.NewVoiceHandler(tg, asrSvc, tgCfg.DiscussionChatID, log).Handle)
 		}
 
-		g.Go(func() error {
-			tg.Start(gctx) // блокируется до отмены контекста
+		starts = append(starts, func(ctx context.Context) error {
+			tg.Start(ctx) // блокируется до отмены контекста
 			return nil
 		})
 		if dm != nil {
-			g.Go(func() error {
-				dm.Start(gctx)
+			starts = append(starts, func(ctx context.Context) error {
+				dm.Start(ctx)
 				return nil
 			})
 		}
@@ -436,16 +442,16 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// ЛС-команды; бот переписки — только диалоги talks.
 		maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
 		maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
-		g.Go(func() error {
-			mx.Start(gctx, mx.Dispatch(maxCore, maxDM))
+		starts = append(starts, func(ctx context.Context) error {
+			mx.Start(ctx, mx.Dispatch(maxCore, maxDM))
 			return nil
 		})
 		if maxTalks != mx {
 			pm := maxTalks
 			maxTalksDM = dmbot.NewTalksLogic(st, pm, store.MessengerMax, log)
 			talksLogic := maxTalksDM
-			g.Go(func() error {
-				pm.Start(gctx, pm.Dispatch(nil, talksLogic))
+			starts = append(starts, func(ctx context.Context) error {
+				pm.Start(ctx, pm.Dispatch(nil, talksLogic))
 				return nil
 			})
 		}
@@ -526,7 +532,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			if maxTalks == mx && maxDM != nil {
 				maxDM.SetTalkRouter(watcher) // один бот на всё — как раньше
 			}
-			g.Go(func() error { return watcher.Run(gctx) })
+			starts = append(starts, watcher.Run)
 			log.Info("talks включён", "admin_only", cfg.Talks.AdminOnly,
 				"allow_send", cfg.Talks.AllowSend, "store_text", cfg.Talks.StoreText,
 				"мессенджеров", len(transports))
@@ -535,7 +541,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		// независимо от наличия транспортов.
 		if cfg.Talks.RetentionDays > 0 {
 			days := cfg.Talks.RetentionDays
-			g.Go(func() error { return talks.PurgeLoop(gctx, st, days, log) })
+			starts = append(starts, func(ctx context.Context) error {
+				return talks.PurgeLoop(ctx, st, days, log)
+			})
 		}
 	}
 
@@ -612,7 +620,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			dcfg.LLM = lc
 			llmModel = lc.Model()
 		}
-		g.Go(func() error { return digest.RunSchedule(gctx, st, dcfg, log) })
+		starts = append(starts, func(ctx context.Context) error {
+			return digest.RunSchedule(ctx, st, dcfg, log)
+		})
 		log.Info("дайджест включён", "слот",
 			fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir,
 			"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel)
@@ -634,15 +644,14 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 			return err
 		}
 		onNewNote = svc.OnNewNote
-		g.Go(func() error {
-			if err := svc.Run(gctx); err != nil && !errors.Is(err, context.Canceled) {
+		starts = append(starts, func(ctx context.Context) error {
+			if err := svc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Error("амвон остановлен", "err", err)
 			}
 			return nil
 		})
 		// Ручка /pulpit — админам тех мессенджеров, где есть ЛС-бот команд.
-		// Ставится после старта поллера, как и SetNews: тот же латентный
-		// дата-рейс, что у всех Set*-подключений проекта.
+		// Как и все Set*, ставится до стартов поллеров (фаза wire).
 		if dm != nil && tgCfg.AdminUserID != 0 {
 			dm.SetPulpit(svc, tgCfg.AdminUserID)
 		}
@@ -665,7 +674,14 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		"tg_talks_bot", tgTalks != nil && tgTalks != dm,
 		"max_talks_bot", maxTalks != nil && maxTalks != mx, "log_level", cfg.LogLevel)
 	log.Debug("debug-логирование включено") // видна только на уровне debug
-	g.Go(func() error { return mir.Run(gctx) })
+
+	// Фаза start: сборка и все Set*-инжекции позади, теперь поллеры можно
+	// поднимать без гонок.
+	starts = append(starts, mir.Run)
+	for _, run := range starts {
+		run := run
+		g.Go(func() error { return run(gctx) })
+	}
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
