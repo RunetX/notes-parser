@@ -391,12 +391,21 @@ func (m *Mirror) cachedFileID(kind, url string) string {
 	return m.mediaCache[kind+"\x00"+url]
 }
 
+// mediaCacheLimit — потолок числа записей кэша file_id. Сам file_id
+// бессрочен (в отличие от токенов MAX), поэтому срока жизни у записей нет,
+// но демон живёт месяцами: без потолка карта росла бы по числу уникальных
+// URL аватаров. Промах стоит одной лишней загрузки картинки.
+const mediaCacheLimit = 4096
+
 func (m *Mirror) rememberFileID(kind, url, fileID string) {
 	if url == "" || fileID == "" {
 		return
 	}
 	m.cmu.Lock()
 	defer m.cmu.Unlock()
+	if len(m.mediaCache) >= mediaCacheLimit {
+		m.mediaCache = make(map[string]string)
+	}
 	m.mediaCache[kind+"\x00"+url] = fileID
 }
 
