@@ -607,7 +607,8 @@ func (m *Mirror) applyNoteHeader(ctx context.Context, n store.Note, header *love
 
 // startThread просит приёмник-ThreadStarter открыть тред заметки и
 // фиксирует пойманный корень. "" — приёмник не умеет или не смог (повторим
-// следующим циклом).
+// следующим циклом). Пост заметки к этому моменту уже есть: его id уходит в
+// StartThread, чтобы кнопка «Обсудить» вела в ветку.
 func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) string {
 	ts, ok := sink.(ThreadStarter)
 	if !ok {
@@ -623,17 +624,7 @@ func (m *Mirror) startThread(ctx context.Context, sink Sink, n store.Note) strin
 	if !found || postID == "" {
 		return ""
 	}
-	thread, err := ts.StartThread(ctx, n, postID)
-	if err != nil {
-		m.log.Warn("тред не открыт", "note", n.ID, "sink", sink.Name(), "err", err)
-		return ""
-	}
-	if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNoteThread, n.ID, "", thread); err != nil {
-		m.log.Error("фиксация треда", "note", n.ID, "sink", sink.Name(), "err", err)
-		return ""
-	}
-	m.log.Info("тред открыт приёмником", "note", n.ID, "sink", sink.Name(), "thread", thread)
-	return thread
+	return m.openThread(ctx, ts, sink, n, postID, "тред открыт приёмником")
 }
 
 // startThreadEarly открывает тред до поста в канал — у приёмника, который
@@ -653,16 +644,24 @@ func (m *Mirror) startThreadEarly(ctx context.Context, sink Sink, n store.Note) 
 	if found && thread != "" {
 		return
 	}
-	thread, err = ts.StartThread(ctx, n, "")
+	m.openThread(ctx, ts, sink, n, "", "тред открыт до поста")
+}
+
+// openThread — общая часть обоих входов: открыть тред и зафиксировать корень.
+// postMsgID пустой у раннего входа (поста ещё нет).
+func (m *Mirror) openThread(ctx context.Context, ts ThreadStarter, sink Sink,
+	n store.Note, postMsgID, logMsg string) string {
+	thread, err := ts.StartThread(ctx, n, postMsgID)
 	if err != nil {
-		m.log.Warn("тред не открыт до поста", "note", n.ID, "sink", sink.Name(), "err", err)
-		return
+		m.log.Warn("тред не открыт", "note", n.ID, "sink", sink.Name(), "err", err)
+		return ""
 	}
 	if err := m.st.SetTarget(ctx, sink.Name(), store.TargetNoteThread, n.ID, "", thread); err != nil {
 		m.log.Error("фиксация треда", "note", n.ID, "sink", sink.Name(), "err", err)
-		return
+		return ""
 	}
-	m.log.Info("тред открыт до поста", "note", n.ID, "sink", sink.Name(), "thread", thread)
+	m.log.Info(logMsg, "note", n.ID, "sink", sink.Name(), "thread", thread)
+	return thread
 }
 
 // sendUnsent отправляет неотправленное содержимое заметки в тред каждого

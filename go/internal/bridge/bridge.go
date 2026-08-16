@@ -74,46 +74,40 @@ func (h *Handler) captureFromThread(ctx context.Context, msg *models.Message) {
 	if root == nil || msg.MessageThreadID == 0 || root.ID != msg.MessageThreadID {
 		return
 	}
-	if root.ForwardOrigin == nil || root.ForwardOrigin.MessageOriginChannel == nil {
-		return
-	}
-	origin := root.ForwardOrigin.MessageOriginChannel
-	if origin.Chat.ID != h.channelID {
-		return
-	}
-	noteID, ok, err := h.st.CaptureNoteThread(ctx, store.MessengerTelegram,
-		strconv.Itoa(origin.MessageID), strconv.Itoa(root.ID))
-	if err != nil {
-		h.log.Error("запасной захват треда", "channel_message", origin.MessageID, "err", err)
-		return
-	}
-	if !ok {
-		return // тред уже пойман (обычный случай) или пост не наш
-	}
-	h.log.Info("тред пойман запасным путём", "note", noteID,
-		"channel_message", origin.MessageID, "thread", root.ID)
+	h.capture(ctx, root, "запасным путём")
 }
 
 // captureForward связывает пост канала с его автофорвардом в группе:
 // id форварда становится корнем треда для комментариев.
 func (h *Handler) captureForward(ctx context.Context, msg *models.Message) {
-	if msg.ForwardOrigin == nil || msg.ForwardOrigin.MessageOriginChannel == nil {
+	h.capture(ctx, msg, "")
+}
+
+// capture — общая часть обоих входов: forward — сообщение-автофорвард (сам
+// апдейт или корень ветки, в который ответили), его id и становится корнем
+// треда. Не автофорвард нашего канала — молча выходим: это чужой пост.
+func (h *Handler) capture(ctx context.Context, forward *models.Message, how string) {
+	if forward.ForwardOrigin == nil || forward.ForwardOrigin.MessageOriginChannel == nil {
 		return
 	}
-	origin := msg.ForwardOrigin.MessageOriginChannel
+	origin := forward.ForwardOrigin.MessageOriginChannel
 	if origin.Chat.ID != h.channelID {
 		return
 	}
 	noteID, ok, err := h.st.CaptureNoteThread(ctx, store.MessengerTelegram,
-		strconv.Itoa(origin.MessageID), strconv.Itoa(msg.ID))
+		strconv.Itoa(origin.MessageID), strconv.Itoa(forward.ID))
 	if err != nil {
-		h.log.Error("захват автофорварда", "channel_message", origin.MessageID, "err", err)
+		h.log.Error("захват треда", "как", how, "channel_message", origin.MessageID, "err", err)
 		return
 	}
 	if !ok {
-		// Форвард чужого/старого поста — не наша заметка или тред уже пойман.
+		// Тред уже пойман (обычный случай) или пост не наш.
 		return
 	}
-	h.log.Info("тред пойман", "note", noteID,
-		"channel_message", origin.MessageID, "thread", msg.ID)
+	msg := "тред пойман"
+	if how != "" {
+		msg += " " + how
+	}
+	h.log.Info(msg, "note", noteID,
+		"channel_message", origin.MessageID, "thread", forward.ID)
 }
