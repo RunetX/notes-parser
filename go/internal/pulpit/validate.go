@@ -251,6 +251,9 @@ func validate(q quip, cfg validateConfig) string {
 	if frag := tailFragment(text); frag != "" {
 		return "обрывок «" + frag + "» в конце: после панча не остаётся ничего"
 	}
+	if frag := latinFragment(text); frag != "" {
+		return "латинский огрызок «" + frag + "» в русском тексте: мусор генерации"
+	}
 	if !cfg.AllowEmoji && hasEmoji(text) {
 		return "эмодзи, а в этот раз без них"
 	}
@@ -272,6 +275,29 @@ func validate(q quip, cfg validateConfig) string {
 		// Деталь названа, но её в заметке нет — значит шутка выросла из темы
 		// вообще (или из выдуманного факта), а не из того, что автор написал.
 		return "детали «" + q.Hook + "» в заметке нет: цепляйся за то, что написал автор"
+	}
+	return ""
+}
+
+// maxStrayLatin — до скольки букв латинский огрызок в русском тексте считается
+// мусором генерации. Живые слова латиницей на площадке длиннее (WhatsApp,
+// Instagram), а «pt», «ru», «th» — это хвост, отвалившийся от модели.
+const maxStrayLatin = 3
+
+var reLatinRun = regexp.MustCompile(`[a-zA-Z]+`)
+
+// latinFragment — латинский огрызок в русской реплике ("" — чисто). Родня
+// reMixedWord, но ловит несклеенный случай: «Календарь справился бы быстрее.pt»
+// (живой черновик 16.08.2026) — точка между ними, и проверка на смешанное слово
+// молчит. Реплика целиком на латинице (её у нас не бывает) не судится.
+func latinFragment(text string) string {
+	if !strings.ContainsFunc(text, func(r rune) bool { return unicode.Is(unicode.Cyrillic, r) }) {
+		return ""
+	}
+	for _, m := range reLatinRun.FindAllString(text, -1) {
+		if utf8.RuneCountInString(m) <= maxStrayLatin {
+			return m
+		}
 	}
 	return ""
 }
