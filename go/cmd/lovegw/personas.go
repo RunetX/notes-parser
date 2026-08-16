@@ -120,7 +120,7 @@ func cmdPersonas(ctx context.Context, args []string) error {
 		"topics": true, "min-hits": true, "min-notes": true, "evidence": true,
 		"rel-min-replies": true, "cand-replies": true, "band-min": true, "band-top": true,
 		"exchanges": true, "report-top": true, "active-days": true, "tg-user": true, "note": true,
-		"account": true,
+		"account":    true,
 		"lex-weight": true, "lex-min-tokens": true, "lex-dims": true, "author": true, "notes": true,
 		"suspect": true, "null": true, "min-author-notes": true, "genre": true,
 		"from": true, "to": true, "min-text": true, "max-comments": true,
