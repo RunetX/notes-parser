@@ -13,6 +13,8 @@ import (
 
 	"lovegw/internal/chantext"
 	"lovegw/internal/store"
+	"lovegw/internal/subnotice"
+	"lovegw/internal/textutil"
 )
 
 // Предел одного сообщения MAX. Меряется ГОТОВАЯ строка вместе с разметкой, а не
@@ -115,7 +117,7 @@ const authorFieldLimit = 100
 // ограничен, поэтому укладывается в бюджет MAX; шапка и подпись в бюджет
 // заложены.
 func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
-	name := html.EscapeString(truncateRunes(n.AuthorName, authorFieldLimit))
+	name := html.EscapeString(textutil.TruncateTrim(n.AuthorName, authorFieldLimit))
 	var head strings.Builder
 	if n.AuthorID == "" || n.AuthorID == "0" {
 		fmt.Fprintf(&head, "<b>%s:</b>\n", name)
@@ -135,8 +137,8 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 // комментариев заметки навсегда.
 func ComposeCommentMessage(c store.Comment) string {
 	inner := fmt.Sprintf("%s, %s:",
-		html.EscapeString(truncateRunes(c.AuthorName, authorFieldLimit)),
-		html.EscapeString(truncateRunes(c.AuthorAge, authorFieldLimit)))
+		html.EscapeString(textutil.TruncateTrim(c.AuthorName, authorFieldLimit)),
+		html.EscapeString(textutil.TruncateTrim(c.AuthorAge, authorFieldLimit)))
 	if c.AuthorLink != "" {
 		inner = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), inner)
 	}
@@ -145,55 +147,9 @@ func ComposeCommentMessage(c store.Comment) string {
 }
 
 // Выдержки в уведомлении подписчика: длиннее сайт всё равно покажет по ссылке.
-const (
-	subNoticeCommentLimit = 400
-	subNoticeNoteLimit    = 120
-)
-
-// ComposeSubNotice собирает HTML уведомления подписчика: повод (reason —
-// готовая строка от mirror.SubEvent), кто написал (ссылкой на профиль), под
-// чьей заметкой и выдержка текста. Раньше уходила строка «Новый комментарий…»
-// с одной ссылкой — по ней нельзя было понять ни автора, ни повод.
-// Нулевой комментарий (c.ID == 0) — повод «новая заметка автора»: цитировать
-// нечего, показываем саму заметку. Порт tgx.ComposeSubNotice.
+// ComposeSubNotice собирает HTML уведомления подписчика (общий композер —
+// subnotice.Compose; здесь только подпись ссылки: в MAX она ведёт прямо на
+// сообщение комментария).
 func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "<b>%s</b>\n\n", html.EscapeString(reason))
-
-	if c.ID == 0 {
-		fmt.Fprintf(&b, "<b>%s</b>:\n%s", html.EscapeString(n.AuthorName),
-			html.EscapeString(truncateRunes(n.Text, subNoticeCommentLimit)))
-		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", html.EscapeString(link))
-		return b.String()
-	}
-
-	author := html.EscapeString(c.AuthorName)
-	if c.AuthorAge != "" {
-		author += ", " + html.EscapeString(c.AuthorAge)
-	}
-	if c.AuthorLink != "" {
-		author = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), author)
-	}
-	fmt.Fprintf(&b, "<b>%s</b> в заметке <i>%s</i>", author,
-		html.EscapeString(truncateRunes(oneLine(n.AuthorName+": "+n.Text), subNoticeNoteLimit)))
-	if !c.PublishedAt.IsZero() {
-		fmt.Fprintf(&b, " (%s)", c.PublishedAt.Format("02.01 15:04"))
-	}
-	b.WriteString(":\n")
-	b.WriteString(html.EscapeString(truncateRunes(c.Text, subNoticeCommentLimit)))
-	fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть комментарий</a>", html.EscapeString(link))
-	return b.String()
-}
-
-// oneLine сводит текст в одну строку (заметка упоминается одной строкой).
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
-// truncateRunes режет текст по границе руны, добавляя многоточие.
-func truncateRunes(s string, limit int) string {
-	if r := []rune(s); len(r) > limit {
-		return strings.TrimSpace(string(r[:limit])) + "…"
-	}
-	return s
+	return subnotice.Compose(reason, n, c, link, "Открыть комментарий")
 }

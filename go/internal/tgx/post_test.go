@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/go-telegram/bot"
-	"golang.org/x/time/rate"
 
+	"lovegw/internal/msglimit"
 	"lovegw/internal/store"
 )
 
@@ -39,7 +39,7 @@ func postMirror(t *testing.T, subBot string) (*Mirror, func() map[string]string)
 	}
 	m := &Mirror{
 		b: b, hc: srv.Client(), log: testLogger(), channelID: -1001234567890,
-		limiters: map[int64]*rate.Limiter{-1001234567890: rate.NewLimiter(rate.Inf, 1)},
+		limiters: msglimit.Unlimited(),
 	}
 	m.SetSubscribeBot(subBot)
 	return m, func() map[string]string { return last }

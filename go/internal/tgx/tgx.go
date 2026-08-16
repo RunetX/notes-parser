@@ -18,11 +18,12 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
-	"golang.org/x/time/rate"
 
 	"lovegw/internal/alerts"
 	"lovegw/internal/kbd"
+	"lovegw/internal/msglimit"
 	"lovegw/internal/store"
+	"lovegw/internal/subnotice"
 )
 
 // Интервалы отправки: группа обсуждения упирается в лимит Telegram
@@ -50,8 +51,7 @@ type Mirror struct {
 	// иначе с российского IP они недоступны.
 	hc *http.Client
 
-	mu       sync.Mutex
-	limiters map[int64]*rate.Limiter
+	limiters *msglimit.Limiters
 
 	// onVoice — необязательный хук распознавания голосовых (nil — фича
 	// выключена). Ставится до старта поллинга, читается из его горутин.
@@ -106,7 +106,6 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
 		log:              log,
 		hc:               hc,
-		limiters:         make(map[int64]*rate.Limiter),
 		mediaCache:       make(map[string]string),
 	}
 	opts := []bot.Option{
@@ -135,6 +134,7 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 		return nil, fmt.Errorf("создание бота: %w", err)
 	}
 	m.b = b
+	m.limiters = msglimit.New(m.sendInterval)
 	return m, nil
 }
 
@@ -552,7 +552,7 @@ func (m *Mirror) SendSilent(ctx context.Context, chatID int64, text string) (int
 // send пропускает вызов через пер-чатовый лимитер и один раз повторяет
 // после 429, выждав retry_after.
 func send(ctx context.Context, m *Mirror, chatID int64, fn func(ctx context.Context) (*models.Message, error)) (*models.Message, error) {
-	if err := m.limiterFor(chatID).Wait(ctx); err != nil {
+	if err := m.limiters.For(chatID).Wait(ctx); err != nil {
 		return nil, err
 	}
 	msg, err := fn(ctx)
@@ -573,24 +573,17 @@ func send(ctx context.Context, m *Mirror, chatID int64, fn func(ctx context.Cont
 	return fn(ctx)
 }
 
-func (m *Mirror) limiterFor(chatID int64) *rate.Limiter {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if lim, ok := m.limiters[chatID]; ok {
-		return lim
-	}
-	var interval time.Duration
+// sendInterval — темп отправки по адресату: группа обсуждения упирается в
+// лимит Telegram «20 сообщений в минуту в группу», канал и ЛС мягче.
+func (m *Mirror) sendInterval(chatID int64) time.Duration {
 	switch chatID {
 	case m.channelID:
-		interval = channelSendInterval
+		return channelSendInterval
 	case m.discussionChatID:
-		interval = groupSendInterval
+		return groupSendInterval
 	default:
-		interval = dmSendInterval
+		return dmSendInterval
 	}
-	lim := rate.NewLimiter(rate.Every(interval), 1)
-	m.limiters[chatID] = lim
-	return lim
 }
 
 // ComposeNoteMessage собирает HTML-текст поста заметки. Имя и текст
@@ -683,57 +676,11 @@ func composeComment(c store.Comment, limit int) string {
 func ComposeCommentCaption(c store.Comment) string { return composeComment(c, captionLimit) }
 
 // Выдержки в уведомлении подписчика: длиннее сайт всё равно покажет по ссылке.
-const (
-	subNoticeCommentLimit = 400
-	subNoticeNoteLimit    = 120
-)
-
-// ComposeSubNotice собирает HTML уведомления подписчика: повод (reason —
-// готовая строка от mirror.SubEvent), кто написал (ссылкой на профиль автора
-// комментария), под чьей заметкой и выдержка текста. Раньше уходил один голый
-// URL — по нему нельзя было понять ни автора, ни повод.
-// Нулевой комментарий (c.ID == 0) — повод «новая заметка автора»: цитировать
-// нечего, показываем саму заметку.
+// ComposeSubNotice собирает HTML уведомления подписчика (общий композер —
+// subnotice.Compose; здесь только подпись ссылки: в Telegram комментарий
+// открывается в ветке обсуждения).
 func ComposeSubNotice(reason string, n store.Note, c store.Comment, link string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "<b>%s</b>\n\n", html.EscapeString(reason))
-
-	if c.ID == 0 {
-		fmt.Fprintf(&b, "<b>%s</b>:\n%s", html.EscapeString(n.AuthorName),
-			html.EscapeString(truncateRunes(n.Text, subNoticeCommentLimit)))
-		fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть заметку</a>", html.EscapeString(link))
-		return b.String()
-	}
-
-	author := html.EscapeString(c.AuthorName)
-	if c.AuthorAge != "" {
-		author += ", " + html.EscapeString(c.AuthorAge)
-	}
-	if c.AuthorLink != "" {
-		author = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), author)
-	}
-	fmt.Fprintf(&b, "<b>%s</b> в заметке <i>%s</i>", author,
-		html.EscapeString(truncateRunes(oneLine(n.AuthorName+": "+n.Text), subNoticeNoteLimit)))
-	if !c.PublishedAt.IsZero() {
-		fmt.Fprintf(&b, " (%s)", c.PublishedAt.Format("02.01 15:04"))
-	}
-	b.WriteString(":\n")
-	b.WriteString(html.EscapeString(truncateRunes(c.Text, subNoticeCommentLimit)))
-	fmt.Fprintf(&b, "\n\n<a href=\"%s\">Открыть в обсуждении</a>", html.EscapeString(link))
-	return b.String()
-}
-
-// oneLine сводит текст в одну строку: заметка упоминается одной строкой-курсивом.
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
-}
-
-// truncateRunes режет текст по границе руны, добавляя многоточие.
-func truncateRunes(s string, limit int) string {
-	if r := []rune(s); len(r) > limit {
-		return strings.TrimSpace(string(r[:limit])) + "…"
-	}
-	return s
+	return subnotice.Compose(reason, n, c, link, "Открыть в обсуждении")
 }
 
 // DeepLink строит ссылку t.me/c/... на комментарий в треде группы обсуждения.

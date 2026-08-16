@@ -15,11 +15,11 @@ package dmbot
 import (
 	"context"
 	"strconv"
-	"strings"
 	"sync"
 
 	"lovegw/internal/kbd"
 	"lovegw/internal/store"
+	"lovegw/internal/textutil"
 )
 
 // Глаголы нажатий. Аргумент — только идентификатор или перечисление: в payload
@@ -263,7 +263,7 @@ func (l *Logic) cbSubComments(ctx context.Context, userID int64, cb kbd.Callback
 	if !ok {
 		return
 	}
-	title := shorten(oneLine(n.AuthorName+": "+n.Text), subLineRunes)
+	title := textutil.Fit(textutil.OneLine(n.AuthorName+": "+n.Text), subLineRunes)
 	l.addSubscription(ctx, userID, cb, store.SubNoteComments, n.ID,
 		"Подписал на комментарии заметки «"+title+"». Пока заметка живая, буду "+
 			"присылать новые; уйдёт в архив — сниму подписку сам.",
@@ -442,7 +442,7 @@ func subLines(subs []store.Subscription) []string {
 			out = append(out, subIcon(s.Kind)+" заметки автора "+subTarget(s))
 		case store.SubNoteComments:
 			out = append(out, subIcon(s.Kind)+" комментарии к заметке «"+
-				shorten(subTarget(s), subLineRunes)+"»")
+				textutil.Fit(subTarget(s), subLineRunes)+"»")
 		default:
 			out = append(out, subIcon(s.Kind)+" слово «"+s.Target+"»")
 		}
@@ -456,7 +456,7 @@ func subsKeyboard(subs []store.Subscription) *kbd.Keyboard {
 	kb := kbd.New()
 	for _, s := range subs {
 		kb.Row(kbd.Button{
-			Text:    "✖ " + subIcon(s.Kind) + " " + shorten(subTarget(s), buttonTextRunes),
+			Text:    "✖ " + subIcon(s.Kind) + " " + textutil.Fit(subTarget(s), buttonTextRunes),
 			Payload: kbd.Pack(verbUnsub, strconv.FormatInt(s.ID, 10)),
 		})
 	}
@@ -503,7 +503,7 @@ func talksKeyboard(peers []store.TalkPeer, page, pages int) *kbd.Keyboard {
 	kb := kbd.New()
 	for _, p := range peers {
 		kb.Row(kbd.Button{
-			Text:    "💬 " + shorten(nickOrPassport(p), buttonTextRunes),
+			Text:    "💬 " + textutil.Fit(nickOrPassport(p), buttonTextRunes),
 			Payload: kbd.Pack(verbTalk, strconv.FormatInt(p.ID, 10)),
 		})
 	}
@@ -520,21 +520,6 @@ func talksKeyboard(peers []store.TalkPeer, page, pages int) *kbd.Keyboard {
 			Payload: kbd.Pack(verbTalks, strconv.Itoa(page+1))})
 	}
 	return kb.Row(nav...)
-}
-
-// shorten укорачивает подпись кнопки по рунам (кириллица — не байты).
-func shorten(s string, limit int) string {
-	r := []rune(s)
-	if len(r) <= limit {
-		return s
-	}
-	return string(r[:limit-1]) + "…"
-}
-
-// oneLine сводит текст в одну строку: заметка в подписи и в списке подписок
-// упоминается одной строкой, а в ней бывают абзацы.
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
 }
 
 // mainMenu — главное меню бота. У бота переписки своё, короткое: вход, заметки

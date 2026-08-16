@@ -19,6 +19,7 @@ import (
 	"lovegw/internal/love"
 	"lovegw/internal/news"
 	"lovegw/internal/store"
+	"lovegw/internal/textutil"
 )
 
 // Transport — отправка и удаление личных сообщений в мессенджере, плюс
@@ -342,7 +343,7 @@ func (l *Logic) offerSubscribe(ctx context.Context, userID int64, noteID string)
 		return
 	}
 	l.tr.SendKeyboard(ctx, userID,
-		msgAskSubKind+"\n\n"+shorten(oneLine(n.AuthorName+": "+n.Text), subLineRunes),
+		msgAskSubKind+"\n\n"+textutil.Fit(textutil.OneLine(n.AuthorName+": "+n.Text), subLineRunes),
 		subKindKeyboard(n))
 }
 

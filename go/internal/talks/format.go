@@ -11,6 +11,7 @@ import (
 
 	"lovegw/internal/love"
 	"lovegw/internal/store"
+	"lovegw/internal/textutil"
 )
 
 // maxTextLen — предел длины текста в одном сообщении (запас под лимиты
@@ -29,7 +30,7 @@ func formatIncoming(baseURL string, peer store.TalkPeer, m love.TalkMessage) str
 	}
 	b.WriteString("\n\n")
 	if t := strings.TrimSpace(m.Text); t != "" {
-		b.WriteString(html.EscapeString(truncate(t, maxTextLen)))
+		b.WriteString(html.EscapeString(textutil.Truncate(t, maxTextLen)))
 	}
 	if m.MediaURL != "" {
 		if strings.TrimSpace(m.Text) != "" {
@@ -55,12 +56,4 @@ func profileLink(baseURL, profileID string) string {
 		return ""
 	}
 	return "<a href=\"" + html.EscapeString(strings.TrimRight(baseURL, "/")+"/profile/"+profileID+"/") + "\">анкета</a>"
-}
-
-func truncate(s string, limit int) string {
-	r := []rune(s)
-	if len(r) <= limit {
-		return s
-	}
-	return string(r[:limit]) + "…"
 }

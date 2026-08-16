@@ -16,10 +16,10 @@ import (
 
 	maxbot "github.com/max-messenger/max-bot-api-client-go/v2"
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
-	"golang.org/x/time/rate"
 
 	"lovegw/internal/alerts"
 	"lovegw/internal/kbd"
+	"lovegw/internal/msglimit"
 	"lovegw/internal/store"
 )
 
@@ -56,8 +56,7 @@ type Mirror struct {
 	baseURL          string
 	log              *slog.Logger
 
-	mu       sync.Mutex
-	limiters map[int64]*rate.Limiter
+	limiters *msglimit.Limiters
 
 	// discussionLink — ссылка-приглашение чата обсуждения для кнопки
 	// «Обсудить» на постах канала; снимается через GetChat лениво (один раз).
@@ -111,16 +110,17 @@ func NewMirror(p Params, log *slog.Logger) (*Mirror, error) {
 	if err != nil {
 		return nil, fmt.Errorf("создание MAX-бота: %w", err)
 	}
-	return &Mirror{
+	m := &Mirror{
 		api:              api,
 		channelID:        p.ChannelID,
 		discussionChatID: p.DiscussionChatID,
 		signature:        p.Signature,
 		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
 		log:              log,
-		limiters:         make(map[int64]*rate.Limiter),
 		up:               newUploader(api),
-	}, nil
+	}
+	m.limiters = msglimit.New(m.sendInterval)
+	return m, nil
 }
 
 // Name — имя мессенджера для message_targets.
@@ -385,7 +385,7 @@ func (m *Mirror) attachImage(ctx context.Context, msg *maxbot.Message, url strin
 // send пропускает отправку через пер-чатовый лимитер и один раз повторяет
 // после 429. Возвращает mid отправленного сообщения.
 func (m *Mirror) send(ctx context.Context, limiterKey int64, msg *maxbot.Message) (string, error) {
-	if err := m.limiterFor(limiterKey).Wait(ctx); err != nil {
+	if err := m.limiters.For(limiterKey).Wait(ctx); err != nil {
 		return "", err
 	}
 	res, err := m.api.Messages.Send(ctx, msg)
@@ -424,22 +424,13 @@ func isTooManyRequests(err error) bool {
 // limiterFor — пер-чатовый лимитер. Ключи не пересекаются: id каналов и
 // групповых чатов MAX отрицательные (снято на Ф0-спайке), id пользователей
 // для ЛС — положительные.
-func (m *Mirror) limiterFor(key int64) *rate.Limiter {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if lim, ok := m.limiters[key]; ok {
-		return lim
-	}
-	var interval time.Duration
+func (m *Mirror) sendInterval(key int64) time.Duration {
 	switch key {
 	case m.channelID:
-		interval = channelSendInterval
+		return chatSendInterval
 	case m.discussionChatID:
-		interval = chatSendInterval
+		return chatSendInterval
 	default:
-		interval = dmSendInterval
+		return dmSendInterval
 	}
-	lim := rate.NewLimiter(rate.Every(interval), 1)
-	m.limiters[key] = lim
-	return lim
 }

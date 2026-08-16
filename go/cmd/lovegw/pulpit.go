@@ -18,6 +18,7 @@ import (
 	"lovegw/internal/love"
 	"lovegw/internal/pulpit"
 	"lovegw/internal/store"
+	"lovegw/internal/textutil"
 )
 
 func cmdPulpit(ctx context.Context, args []string) error {
@@ -85,7 +86,7 @@ func pulpitDraft(ctx context.Context, cfg *config.Config, st *store.Store, noteI
 			fmt.Printf("=== заметка %s: реплика не получена: %v\n\n", id, err)
 			continue
 		}
-		fmt.Printf("=== заметка %s (%s)\n%s\n\n", id, noteAuthor(n), truncRunes(n.Text, 400))
+		fmt.Printf("=== заметка %s (%s)\n%s\n\n", id, noteAuthor(n), textutil.Truncate(n.Text, 400))
 		if sm.Skip {
 			// Штатный исход, а не сбой: под настоящей бедой шутить нечем.
 			fmt.Printf("--- шутить нельзя [%s, %s]\n\n",
@@ -104,14 +105,6 @@ func noteAuthor(n love.Note) string {
 		return "анонимно"
 	}
 	return n.AuthorName
-}
-
-func truncRunes(s string, limit int) string {
-	r := []rune(s)
-	if len(r) <= limit {
-		return s
-	}
-	return string(r[:limit]) + "…"
 }
 
 // newPulpit собирает службу амвона из конфига. Общий конструктор для демона и

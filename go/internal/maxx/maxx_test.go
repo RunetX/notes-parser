@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/max-messenger/max-bot-api-client-go/v2/model"
-	"golang.org/x/time/rate"
 
 	"lovegw/internal/kbd"
+	"lovegw/internal/msglimit"
 	"lovegw/internal/store"
 )
 
@@ -205,9 +205,7 @@ func newTestMirror(t *testing.T, f *fakeMax) *Mirror {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// В тестах лимитеры не задерживают.
-	m.limiters[100] = rate.NewLimiter(rate.Inf, 1)
-	m.limiters[200] = rate.NewLimiter(rate.Inf, 1)
+	m.limiters = msglimit.Unlimited() // в тестах лимитеры не задерживают
 	return m
 }
 
@@ -462,27 +460,13 @@ func TestPostNoteImageByToken(t *testing.T) {
 	}
 }
 
-// Порт tgx.ComposeSubNotice не должен разъезжаться с оригиналом: подписчик в
-// MAX видит тот же состав — слово, автора, заметку, выдержку и ссылку.
-func TestComposeSubNotice(t *testing.T) {
-	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "Ищу того,\nкто пьёт чай"}
-	c := store.Comment{ID: 7, AuthorName: "Виктор <3", AuthorAge: "45 лет",
-		AuthorLink:  "https://love.ngs.ru/profile/1",
-		PublishedAt: time.Date(2026, 7, 30, 14, 5, 0, 0, time.UTC),
-		Text:        "выпьем рюмку чая & закусим"}
-	got := ComposeSubNotice("🔔 Ключевое слово «рюмк»", n, c, "https://max.ru/c/200/AZ-t-FzlEyg")
-
-	for _, want := range []string{
-		"<b>🔔 Ключевое слово «рюмк»</b>",
-		`<a href="https://love.ngs.ru/profile/1">Виктор &lt;3, 45 лет</a>`,
-		"Мария: Ищу того, кто пьёт чай",
-		"(30.07 14:05)",
-		"выпьем рюмку чая &amp; закусим",
-		`<a href="https://max.ru/c/200/AZ-t-FzlEyg">Открыть комментарий</a>`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("нет %q в:\n%s", want, got)
-		}
+// Транспортная часть — подпись ссылки: в MAX она ведёт прямо на сообщение
+// комментария. Состав уведомления проверяет пакет subnotice.
+func TestComposeSubNoticeLinkLabel(t *testing.T) {
+	got := ComposeSubNotice("к", store.Note{AuthorName: "А", Text: "т"},
+		store.Comment{ID: 7, AuthorName: "Б", Text: "к"}, "https://max.ru/c/200/AZ-t-FzlEyg")
+	if !strings.Contains(got, `<a href="https://max.ru/c/200/AZ-t-FzlEyg">Открыть комментарий</a>`) {
+		t.Errorf("подпись ссылки MAX: %q", got)
 	}
 }
 
@@ -491,7 +475,7 @@ func TestComposeSubNotice(t *testing.T) {
 func TestNotifySubscriberDeepLink(t *testing.T) {
 	f := &fakeMax{t: t}
 	m := newTestMirror(t, f)
-	m.limiters[7] = rate.NewLimiter(rate.Inf, 1)
+	m.limiters = msglimit.Unlimited()
 
 	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "т"}
 	c := store.Comment{ID: 7, AuthorName: "Виктор", Text: "выпьем рюмку чая"}
@@ -515,7 +499,7 @@ func TestNotifySubscriberDeepLink(t *testing.T) {
 func TestNotifySubscriberFallsBackToSite(t *testing.T) {
 	f := &fakeMax{t: t}
 	m := newTestMirror(t, f)
-	m.limiters[7] = rate.NewLimiter(rate.Inf, 1)
+	m.limiters = msglimit.Unlimited()
 
 	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "т"}
 	c := store.Comment{ID: 7, AuthorName: "Виктор", Text: "выпьем рюмку чая"}
@@ -535,7 +519,7 @@ func TestNotifySubscriberFallsBackToSite(t *testing.T) {
 func TestNotifyAuthorNoteWithUnsubButton(t *testing.T) {
 	f := &fakeMax{t: t}
 	m := newTestMirror(t, f)
-	m.limiters[7] = rate.NewLimiter(rate.Inf, 1)
+	m.limiters = msglimit.Unlimited()
 
 	n := store.Note{ID: "312818", AuthorName: "Мария", Text: "Ищу того,\nкто пьёт чай"}
 	link := m.SubNoteLink(n, "mid.ffffb9b4e305e2e5019fadf85ce51329")
