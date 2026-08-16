@@ -476,6 +476,99 @@ func TestClosedNoteStaysTracked(t *testing.T) {
 	}
 }
 
+// Пропавшая из БД заметка — постоянное состояние: воркер выходит, а не
+// ретраит вечно.
+func TestPollNoteExitsWhenNoteGone(t *testing.T) {
+	m, _ := newTestMirror(t, &fakeSite{}, &fakeSink{}, false)
+	m.retryPause = 10 * time.Millisecond
+	done := make(chan struct{})
+	go func() { m.pollNote(context.Background(), "нет-такой"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("воркер должен завершиться, когда заметки нет в БД")
+	}
+}
+
+// Ошибка БД (не «не найдено») — преходящая: воркер не умирает, а ретраит,
+// пока его не отменят. До этой правки разовая ошибка NoteByID убивала воркер
+// навсегда, и комментарии заметки переставали зеркалиться до рестарта демона.
+func TestPollNoteSurvivesDBError(t *testing.T) {
+	m, st := newTestMirror(t, &fakeSite{}, &fakeSink{}, false)
+	if _, err := st.InsertNote(context.Background(), store.Note{
+		ID: "n1", Text: "т", Status: store.StatusPosted, FirstSeenAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	st.Close() // теперь NoteByID возвращает ошибку БД, но не ErrNotFound
+	m.retryPause = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { m.pollNote(ctx, "n1"); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("воркер умер от ошибки БД")
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("воркер не вышел по отмене контекста")
+	}
+}
+
+// Менеджер чистит running по завершении воркера и подбирает posted-заметки
+// ре-сканом: заметка, чей воркер закончился (архив), после возврата в posted
+// снова получает воркер — без события в канале events и без рестарта демона.
+func TestManagerRescanRestartsWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m, st := newTestMirror(t, &fakeSite{}, &fakeSink{}, false)
+	m.rescanEvery = 20 * time.Millisecond
+	m.retryPause = 10 * time.Millisecond
+
+	// Старая тихая заметка: воркер заархивирует её и завершится.
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if _, err := st.InsertNote(ctx, store.Note{
+		ID: "n1", Text: "т", Status: store.StatusPosted, FirstSeenAt: old,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	managerDone := make(chan struct{})
+	go func() { m.managePollers(ctx); close(managerDone) }()
+
+	waitStatus := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if n, err := st.NoteByID(ctx, "n1"); err == nil && n.Status == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("заметка не перешла в %q", want)
+	}
+
+	waitStatus(store.StatusArchived) // первый воркер отработал и вышел
+
+	// Возврат в posted: подобрать заметку может только ре-скан, и только если
+	// running очищен по done — иначе start() решит, что воркер ещё жив.
+	if err := st.SetNoteStatusPosted(ctx, "n1"); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(store.StatusArchived) // второй воркер стартовал и снова заархивировал
+
+	cancel()
+	select {
+	case <-managerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("менеджер не вышел по отмене контекста")
+	}
+}
+
 // notifies отбирает из журнала приёмника только уведомления подписчикам.
 func notifies(calls []sinkCall) []sinkCall {
 	var out []sinkCall

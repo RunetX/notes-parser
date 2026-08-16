@@ -19,6 +19,16 @@ import (
 	"lovegw/internal/store"
 )
 
+const (
+	// rescanInterval — период страховочного ре-скана posted-заметок в
+	// managePollers: подбирает заметки, потерянные на переполнении events
+	// или из-за упавшего стартового чтения.
+	rescanInterval = 5 * time.Minute
+	// workerRetryPause — пауза воркера заметки после ошибки чтения БД перед
+	// новой попыткой.
+	workerRetryPause = 30 * time.Second
+)
+
 // SiteClient — то, что mirror требует от клиента сайта.
 type SiteClient interface {
 	FetchNotes(ctx context.Context) ([]love.Note, error)
@@ -97,6 +107,11 @@ type Mirror struct {
 	subNotify    map[string]SubNotify
 	onNewNote    func(ctx context.Context, n love.Note)
 
+	// Интервалы менеджера воркеров; поля (а не константы), чтобы тесты могли
+	// их сжать. Продовые значения ставит New.
+	rescanEvery time.Duration
+	retryPause  time.Duration
+
 	events chan string // id заметок для запуска воркеров
 }
 
@@ -144,6 +159,8 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 		seedFirst:    cfg.SeedFirst,
 		subNotify:    cfg.SubNotify,
 		onNewNote:    cfg.OnNewNote,
+		rescanEvery:  rescanInterval,
+		retryPause:   workerRetryPause,
 		events:       make(chan string, 16),
 	}
 }
@@ -390,8 +407,8 @@ func (m *Mirror) postNote(ctx context.Context, n store.Note) bool {
 	select {
 	case m.events <- n.ID:
 	default:
-		// Менеджер подберёт заметку при следующем старте — не блокируемся.
-		m.log.Warn("очередь событий переполнена", "note", n.ID)
+		// Не блокируемся: заметку подберёт страховочный ре-скан managePollers.
+		m.log.Warn("очередь событий переполнена, заметка уйдёт в ре-скан", "note", n.ID)
 	}
 	return true
 }
@@ -403,6 +420,7 @@ func (m *Mirror) managePollers(ctx context.Context) {
 	defer wg.Wait()
 
 	running := make(map[string]bool)
+	done := make(chan string)
 	start := func(id string) {
 		if running[id] {
 			return
@@ -412,22 +430,44 @@ func (m *Mirror) managePollers(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			m.pollNote(ctx, id)
+			// Завершившийся воркер вычёркивается из running — иначе заметку
+			// нельзя было бы взять заново до рестарта демона. На выключении
+			// менеджер уже не читает done, поэтому уходим по ctx.
+			select {
+			case done <- id:
+			case <-ctx.Done():
+			}
 		}()
 	}
 
-	posted, err := m.st.NotesByStatus(ctx, store.StatusPosted)
-	if err != nil {
-		m.log.Error("чтение отслеживаемых заметок", "err", err)
+	startPosted := func() {
+		posted, err := m.st.NotesByStatus(ctx, store.StatusPosted)
+		if err != nil {
+			m.log.Error("чтение отслеживаемых заметок", "err", err)
+			return
+		}
+		for _, n := range posted {
+			start(n.ID)
+		}
 	}
-	for _, n := range posted {
-		start(n.ID)
-	}
-	m.log.Info("воркеры комментариев запущены", "count", len(posted))
+
+	startPosted()
+	m.log.Info("воркеры комментариев запущены", "count", len(running))
+
+	// Ре-скан — страховка: заметка, потерянная на переполнении events или
+	// из-за упавшего стартового чтения, подберётся следующим ре-сканом, а не
+	// рестартом демона.
+	rescan := time.NewTicker(m.rescanEvery)
+	defer rescan.Stop()
 
 	for {
 		select {
 		case id := <-m.events:
 			start(id)
+		case id := <-done:
+			delete(running, id)
+		case <-rescan.C:
+			startPosted()
 		case <-ctx.Done():
 			return
 		}
@@ -440,8 +480,25 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 	for {
 		n, err := m.st.NoteByID(ctx, noteID)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, store.ErrNotFound) {
+				// Заметку удалили из БД (например, руками через CLI) —
+				// воркеру здесь больше нечего делать.
+				m.log.Warn("воркер: заметка исчезла из БД", "note", noteID)
+				return
+			}
+			// Ошибка БД почти всегда преходящая (busy/IO): воркер ждёт и
+			// пробует снова, а не умирает — иначе комментарии заметки
+			// перестали бы зеркалиться до рестарта демона.
 			m.log.Error("воркер: чтение заметки", "note", noteID, "err", err)
-			return
+			select {
+			case <-time.After(m.retryPause):
+			case <-ctx.Done():
+				return
+			}
+			continue
 		}
 		if n.Status == store.StatusArchived {
 			return
