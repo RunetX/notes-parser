@@ -35,6 +35,21 @@ func firstSubmatch(re *regexp.Regexp, body []byte) string {
 	return ""
 }
 
+// unescapeJS разворачивает \uXXXX и экранированные кавычки: ник лежит внутри
+// JS-объекта страницы, и сайт печатает кириллицу escape-последовательностями.
+// Регулярка выше берёт значение сырым, поэтому без этого в `sessions` и
+// `accounts` оседает «Па...» вместо «Паноптикум».
+func unescapeJS(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var out string
+	if err := json.Unmarshal([]byte(`"`+s+`"`), &out); err != nil {
+		return s // не разобралось — отдаём как есть, ник не критичен
+	}
+	return out
+}
+
 // Селекторы разметки talks (единый блок, дисциплина как у selNote* в parse.go).
 const (
 	// Список диалогов (buddy list). Элемент собеседника несёт data-атрибуты.
@@ -158,7 +173,7 @@ func (c *Client) SiteIdentity(ctx context.Context, cookies []*http.Cookie) (prof
 	}
 	profileID = firstSubmatch(reLoveUser, body)
 	passportID = firstSubmatch(rePassportID, body)
-	nick = firstSubmatch(reLayoutNick, body)
+	nick = unescapeJS(firstSubmatch(reLayoutNick, body))
 	if profileID == "" && passportID == "" {
 		return "", "", "", &SchemaError{Op: "identity", Detail: "Love.user/passport_id не найдены (гость?)"}
 	}

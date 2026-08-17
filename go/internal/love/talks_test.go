@@ -183,3 +183,20 @@ func TestSiteIdentityRegex(t *testing.T) {
 		t.Errorf("nick: %q", got)
 	}
 }
+
+// Живая страница печатает кириллицу в нике escape-последовательностями — так
+// в accounts.db и оседало «Па...» вместо «Паноптикум».
+func TestSiteIdentityNickEscaped(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`Паноптикум`, "Паноптикум"},
+		{"Рантье", "Рантье"},
+		{`Отвали`, "Отвали"},
+		{`\"кавычки\"`, `"кавычки"`},
+		{`битый \u04`, `битый \u04`}, // не разобралось — отдаём как есть
+	}
+	for _, c := range cases {
+		if got := unescapeJS(c.in); got != c.want {
+			t.Errorf("unescapeJS(%q) = %q, ожидалось %q", c.in, got, c.want)
+		}
+	}
+}
