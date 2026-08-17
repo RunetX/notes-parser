@@ -36,6 +36,9 @@ const (
 	reasonNoteGone  = "note_gone"
 	reasonNoReply   = "no_reply"
 	reasonDeleted   = "deleted"
+	// reasonSendFailed — POST реплики не дошёл (5xx, обрыв). Отсутствие такой
+	// реплики в треде объяснено сбоем отправки и уликой запрета не является.
+	reasonSendFailed = "send_failed"
 	reasonCoin      = "coin"    // монетка легла «не отвечать»
 	reasonNoJoke    = "no_joke" // в заметке настоящая беда: шутить нечем
 )

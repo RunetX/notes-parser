@@ -96,6 +96,18 @@ func (s *Service) postQuip(ctx context.Context, n love.Note, seenAt time.Time) b
 	if err := s.site.PostComment(ctx, cookies, n.ID, "", sm.Text); err != nil {
 		// Строка остаётся в posting: сайт мог реплику принять и всё равно
 		// ответить ошибкой. Верификация решит, что там на самом деле.
+		//
+		// Но причину записываем сразу: тред-то читается, и без этой отметки
+		// «реплики нет» стало бы уликой запрета писать в «Заметки» — то есть
+		// 5xx-шторм сайта гасил бы фичу предохранителем (17.08.2026 сайт
+		// отвечал 500 на любой комментарий, включая чужие, и первый промах
+		// засчитался). Тот же state в CAS — не опечатка: меняем только
+		// причину, а условие state=posting стережёт от затирания строки,
+		// которую другой цикл успел увести дальше.
+		if _, cerr := s.st.CASPulpitState(ctx, n.ID,
+			store.PulpitPosting, store.PulpitPosting, reasonSendFailed); cerr != nil {
+			s.log.Error("амвон: отметка сбоя отправки", "note", n.ID, "err", cerr)
+		}
 		s.log.Error("амвон: отправка реплики не удалась", "note", n.ID, "err", err)
 		return true
 	}

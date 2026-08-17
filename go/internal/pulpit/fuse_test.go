@@ -25,6 +25,16 @@ func TestFuseVerdict(t *testing.T) {
 			says: "запрет",
 		},
 		{
+			// 17.08.2026: сайт отвечал 500 на любой комментарий, включая чужие.
+			// Три заметки подряд остались без реплики — и ни одного повода
+			// заподозрить запрет писать.
+			name: "5xx-шторм: не дошедшие отправки полосу не растят",
+			in: fuseInput{
+				Recent:  []outcome{outcomeNeutral, outcomeNeutral, outcomeNeutral},
+				Profile: profileOK,
+			},
+		},
+		{
 			name: "исчезнувшая заметка полосу не рвёт и не растит",
 			in: fuseInput{Recent: []outcome{
 				outcomeMissing, outcomeVanished, outcomeMissing, outcomeVanished, outcomeMissing,
@@ -93,6 +103,9 @@ func TestOutcomeOf(t *testing.T) {
 		{store.PulpitComment{State: store.PulpitConfirmed}, outcomeConfirmed},
 		{store.PulpitComment{State: store.PulpitMissing, Reason: reasonNoReply}, outcomeMissing},
 		{store.PulpitComment{State: store.PulpitMissing, Reason: reasonDeleted}, outcomeDeleted},
+		// POST не дошёл: тред читался, реплики в нём нет — и это ничего не
+		// говорит о запрете писать.
+		{store.PulpitComment{State: store.PulpitMissing, Reason: reasonSendFailed}, outcomeNeutral},
 		{store.PulpitComment{State: store.PulpitVanished, Reason: reasonNoteGone}, outcomeVanished},
 		{store.PulpitComment{State: store.PulpitPosted}, outcomeNeutral},
 		{store.PulpitComment{State: store.PulpitSkipped, Reason: reasonColdStart}, outcomeNeutral},

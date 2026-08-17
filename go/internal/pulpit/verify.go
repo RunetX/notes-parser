@@ -93,11 +93,17 @@ func (s *Service) verifyNote(ctx context.Context, row store.PulpitComment) {
 	if checks < verifyAttempts {
 		return
 	}
-	if err := s.st.SetPulpitState(ctx, row.NoteID, store.PulpitMissing, reasonNoReply, now); err != nil {
+	// Причину сбоя отправки сохраняем: реплики нет потому, что она не ушла, —
+	// предохранителю такое отсутствие ни о чём не говорит (см. outcomeOf).
+	reason := reasonNoReply
+	if row.Reason == reasonSendFailed {
+		reason = reasonSendFailed
+	}
+	if err := s.st.SetPulpitState(ctx, row.NoteID, store.PulpitMissing, reason, now); err != nil {
 		s.log.Error("амвон: отметка пропажи", "note", row.NoteID, "err", err)
 		return
 	}
-	s.log.Warn("амвон: реплики нет в треде", "note", row.NoteID, "проверок", checks)
+	s.log.Warn("амвон: реплики нет в треде", "note", row.NoteID, "проверок", checks, "причина", reason)
 }
 
 // recheckConfirmed смотрит, на месте ли уже подтверждённая реплика: её могла

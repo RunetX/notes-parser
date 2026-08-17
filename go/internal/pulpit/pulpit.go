@@ -416,6 +416,9 @@ func lastStateText(row store.PulpitComment) string {
 	case store.PulpitConfirmed:
 		return "на месте"
 	case store.PulpitMissing:
+		if row.Reason == reasonSendFailed {
+			return "отправка не дошла до сайта"
+		}
 		return "в треде не найдена"
 	case store.PulpitVanished:
 		return "заметку снесли"

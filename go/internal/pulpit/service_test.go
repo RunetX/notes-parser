@@ -35,7 +35,8 @@ type fakeSite struct {
 	profErr   error
 	nick      string
 	nextID    int64
-	autoShow  bool // после POST реплика появляется в треде (обычное поведение сайта)
+	autoShow  bool  // после POST реплика появляется в треде (обычное поведение сайта)
+	postErr   error // сайт не принимает комментарии (5xx-шторм)
 }
 
 func newFakeSite(notes ...love.Note) *fakeSite {
@@ -80,6 +81,9 @@ func (f *fakeSite) PostComment(_ context.Context, _ []*http.Cookie, noteID, comA
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.posts = append(f.posts, postCall{NoteID: noteID, ComAPIID: comAPIID, Text: text})
+	if f.postErr != nil {
+		return f.postErr
+	}
 	if !f.autoShow {
 		return nil
 	}
@@ -449,6 +453,40 @@ func TestLoadErrorIsNotAMiss(t *testing.T) {
 	}
 	if len(*alertsSent) != 0 {
 		t.Errorf("алерты при штормe сайта: %v", *alertsSent)
+	}
+}
+
+// TestSendFailureIsNotAMiss — 5xx на отправке не улика запрета, хотя тред после
+// него читается прекрасно и реплики в нём нет (17.08.2026: сайт отвечал 500 на
+// любой комментарий, включая чужие). Без этого шторм гасил бы фичу за три
+// заметки, диагностировав запрет там, где анкета цела.
+func TestSendFailureIsNotAMiss(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	site.postErr = errors.New("отправка комментария к заметке n1: статус 500")
+	svc, st, alertsSent := newTestService(t, site, &fakeGen{}, nil)
+
+	svc.cycle(ctx) // занять заметку и попытаться отправить
+	for i := 0; i < verifyAttempts+1; i++ {
+		svc.cycle(ctx) // перечитать тред: страница читается, реплики в ней нет
+	}
+
+	row, err := st.PulpitNote(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.State != store.PulpitMissing || row.Reason != reasonSendFailed {
+		t.Fatalf("строка после сбоя отправки: %+v", row)
+	}
+	if got := outcomeOf(row); got != outcomeNeutral {
+		t.Errorf("исход %v: не дошедший POST промахом не считается", got)
+	}
+	if len(*alertsSent) != 0 {
+		t.Errorf("алерты при штормe сайта: %v", *alertsSent)
+	}
+	// И повторной отправки не было: точка невозврата на месте.
+	if len(site.posts) != 1 {
+		t.Errorf("отправок %d, ожидалась одна", len(site.posts))
 	}
 }
 
