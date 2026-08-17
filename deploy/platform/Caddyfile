@@ -16,6 +16,10 @@ t3h.ru {
 		root * /srv/media
 		file_server
 		header Cache-Control "public, max-age=31536000, immutable"
+		# Тип берётся из расширения файла (его задаёт хранилище по содержимому,
+		# а не по ссылке), и угадывать браузеру нечего: загруженный когда-нибудь
+		# «аватар», оказавшийся html, не должен исполниться на нашем домене.
+		header X-Content-Type-Options nosniff
 	}
 
 	reverse_proxy platform:8080

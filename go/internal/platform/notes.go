@@ -1,0 +1,273 @@
+package platform
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// MaxBodyRunes — потолок длины текста. Это санитарная граница, а не продуктовое
+// решение: она существует, чтобы случайный или злонамеренный мегабайт не стал
+// строкой в базе. Самые длинные заметки НГС — единицы тысяч знаков.
+const MaxBodyRunes = 20000
+
+// ErrEmptyBody — пустой текст.
+var ErrEmptyBody = errors.New("пустой текст")
+
+// ErrTooLong — текст длиннее допустимого.
+var ErrTooLong = fmt.Errorf("текст длиннее %d знаков", MaxBodyRunes)
+
+// ErrCommentsClosed — комментарии к заметке закрыты.
+var ErrCommentsClosed = errors.New("комментарии к заметке закрыты")
+
+const noteColumns = `id, author_id, anonymous, body, status, comments_closed,
+	comment_count, published_at, published_exact, last_comment_at, edited_at, created_at`
+
+func scanNote(row pgx.Row) (Note, error) {
+	var (
+		n      Note
+		author *int64
+	)
+	err := row.Scan(&n.ID, &author, &n.Anonymous, &n.Body, &n.Status, &n.CommentsClosed,
+		&n.CommentCount, &n.PublishedAt, &n.PublishedExact, &n.LastCommentAt, &n.EditedAt, &n.CreatedAt)
+	n.AuthorID = idOf(author)
+	return n, err
+}
+
+// noteViewColumns — те же заметки, но уже замаскированные.
+//
+// Маскирование стоит в SELECT, а не в Go, намеренно: так автор анонимной
+// публикации не покидает базу вовсе, и никакой забывчивый шаблон выше его не
+// покажет. Аватар отдаётся нашим путём (sha + mime), ссылка на hsmedia.ru
+// наружу не уходит никогда — иначе смерть НГС забирает с собой наши страницы, а
+// до тех пор сообщает ему каждого нашего читателя.
+const noteViewColumns = `
+	n.id, n.anonymous, n.body, n.status, n.comments_closed, n.comment_count,
+	n.published_at, n.published_exact, n.last_comment_at, n.edited_at,
+	CASE WHEN n.anonymous THEN NULL ELSE n.author_id     END,
+	CASE WHEN n.anonymous THEN NULL ELSE u.nick          END,
+	CASE WHEN n.anonymous THEN NULL ELSE u.avatar_sha    END,
+	CASE WHEN n.anonymous THEN NULL ELSE m.mime          END,
+	coalesce(n.author_id = $1, false)`
+
+const noteViewFrom = `
+	FROM notes n
+	LEFT JOIN users u ON u.id = n.author_id
+	LEFT JOIN media m ON m.sha256 = u.avatar_sha`
+
+func scanNoteView(row pgx.Row) (NoteView, error) {
+	var (
+		v      NoteView
+		author *int64
+		nick   *string
+		sha    []byte
+		mime   *string
+	)
+	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.CommentCount,
+		&v.PublishedAt, &v.PublishedExact, &v.LastCommentAt, &v.EditedAt,
+		&author, &nick, &sha, &mime, &v.Own)
+	v.Author = Author{ID: idOf(author), Nick: strOf(nick), AvatarURL: MediaURL(sha, strOf(mime))}
+	return v, err
+}
+
+// feedQuery — лента. Запрос вынесен в константу, чтобы тест мог спросить у
+// Postgres план РОВНО того SQL, который выполняется, и убедиться, что берётся
+// частичный индекс notes_feed, а не seq scan: переезд ленты на полный перебор —
+// это отказ, который не виден ни в одном тесте на поведение.
+//
+// Пролистывание идёт по ключу (published_at, id), а не по OFFSET: OFFSET на
+// живой ленте и дублирует, и теряет строки, когда во время чтения приходит новая
+// заметка. Границы страницы подставляются одним сравнением кортежей, а первая
+// страница — это те же параметры со значением NULL, поэтому запрос ровно один.
+const feedQuery = `
+	SELECT ` + noteViewColumns + noteViewFrom + `
+	 WHERE n.status = 0
+	   AND (n.published_at, n.id) < (coalesce($2, 'infinity'::timestamptz), coalesce($3, 9223372036854775807))
+	 ORDER BY n.published_at DESC, n.id DESC
+	 LIMIT $4`
+
+// FeedCursor — место, с которого продолжать ленту: последняя показанная заметка.
+// Пролистывание идёт по ключу (published_at, id), а не по OFFSET: OFFSET на
+// живой ленте и дублирует, и теряет строки, когда во время чтения приходит новая
+// заметка.
+type FeedCursor struct {
+	PublishedAt time.Time
+	ID          int64
+}
+
+// IsZero — курсор пуст: показываем первую страницу.
+func (c FeedCursor) IsZero() bool { return c.ID == 0 && c.PublishedAt.IsZero() }
+
+// Feed — лента заметок от новых к старым. Возвращает страницу и курсор
+// продолжения (нулевой, если это конец).
+//
+// Скрытые публикации отсекаются по notes.status, а не соединением с users:
+// рубильник «скрыть все мои публикации» (users.hide_all) обязан исполняться
+// записью статусов, а не проверкой на чтении. Иначе отзыв согласия стоил бы
+// join'а на каждой странице ленты — и однажды его бы оттуда убрали. Тому, кто
+// будет делать hide_all: менять надо статусы публикаций, а не этот запрос.
+func (p *Platform) Feed(ctx context.Context, v Viewer, cur FeedCursor, limit int) ([]NoteView, FeedCursor, error) {
+	limit = clampLimit(limit)
+	var (
+		at *time.Time
+		id *int64
+	)
+	if !cur.IsZero() {
+		at, id = &cur.PublishedAt, &cur.ID
+	}
+	rows, err := p.pool.Query(ctx, feedQuery, v.UserID, at, id, limit)
+	if err != nil {
+		return nil, FeedCursor{}, fmt.Errorf("лента: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]NoteView, 0, limit)
+	for rows.Next() {
+		n, err := scanNoteView(rows)
+		if err != nil {
+			return nil, FeedCursor{}, fmt.Errorf("лента, разбор строки: %w", err)
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, FeedCursor{}, fmt.Errorf("лента: %w", err)
+	}
+	next := FeedCursor{}
+	if len(out) == limit {
+		last := out[len(out)-1]
+		next = FeedCursor{PublishedAt: last.PublishedAt, ID: last.ID}
+	}
+	return out, next, nil
+}
+
+// NoteViewByID — заметка для показа.
+func (p *Platform) NoteViewByID(ctx context.Context, v Viewer, id int64) (NoteView, error) {
+	n, err := scanNoteView(p.pool.QueryRow(ctx,
+		`SELECT `+noteViewColumns+noteViewFrom+` WHERE n.id = $2`, v.UserID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NoteView{}, fmt.Errorf("заметка %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return NoteView{}, fmt.Errorf("чтение заметки %d: %w", id, err)
+	}
+	return n, nil
+}
+
+// NoteRow — сырая строка заметки, вместе с настоящим автором анонимки. Для служб
+// (приём, модерация, права субъекта), не для показа: показывает NoteViewByID.
+func (p *Platform) NoteRow(ctx context.Context, id int64) (Note, error) {
+	n, err := scanNote(p.pool.QueryRow(ctx, `SELECT `+noteColumns+` FROM notes WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Note{}, fmt.Errorf("заметка %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return Note{}, fmt.Errorf("чтение заметки %d: %w", id, err)
+	}
+	return n, nil
+}
+
+// IngestNote принимает заметку с НГС. Идемпотентна по id: повтор ничего не
+// меняет и возвращает false. Тень автора заводится в той же транзакции, иначе
+// внешний ключ поймал бы гонку приёма заметки и первого комментария.
+func (p *Platform) IngestNote(ctx context.Context, in MirroredNote) (bool, error) {
+	if !IsNGS(in.ID) {
+		return false, fmt.Errorf("заметка НГС ожидается с id из полосы сайта, получен %d", in.ID)
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("приём заметки %d: %w", in.ID, err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	author, err := ensureShadow(ctx, tx, in.Author)
+	if err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO notes (id, author_id, anonymous, body, comments_closed, published_at, published_exact)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (id) DO NOTHING`,
+		in.ID, nullID(author), in.Anonymous, in.Body, in.CommentsClosed, in.PublishedAt, in.PublishedExact)
+	if err != nil {
+		return false, fmt.Errorf("приём заметки %d: %w", in.ID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("приём заметки %d: %w", in.ID, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetCommentsClosed переносит отметку сайта «не актуальна». Возвращает true при
+// первом переходе — чтобы событие логировалось один раз, а не каждый обход.
+//
+// На архивацию эта отметка НЕ влияет и влиять не должна: сайт ставит её через
+// минуты после публикации, пока комментарии продолжают приходить.
+func (p *Platform) SetCommentsClosed(ctx context.Context, id int64, closed bool) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE notes SET comments_closed = $2 WHERE id = $1 AND comments_closed <> $2`, id, closed)
+	if err != nil {
+		return false, fmt.Errorf("отметка «комментарии закрыты» у заметки %d: %w", id, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// CreateNote публикует нативную заметку и возвращает её id.
+//
+// У анонимной заметки автор сохраняется НАСТОЯЩИЙ: он должен видеть её среди
+// своих и мочь удалить, модерация — забанить анонимного флудера, а ограничение
+// частоты — считать по человеку. Скрытие живёт в границе показа (см. types.go),
+// и это осознанный размен: компрометация базы деанонимизирует автора, зато
+// анонимность не отменяет ни прав субъекта, ни модерации.
+func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
+	body, err := cleanBody(in.Body)
+	if err != nil {
+		return 0, err
+	}
+	if in.AuthorID == 0 {
+		return 0, errors.New("нативная заметка без автора")
+	}
+	var id int64
+	err = p.pool.QueryRow(ctx, `
+		INSERT INTO notes (id, author_id, anonymous, body, published_at, published_exact)
+		VALUES (nextval('notes_native_seq'), $1, $2, $3, now(), true)
+		RETURNING id`, in.AuthorID, in.Anonymous, body).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("публикация заметки: %w", err)
+	}
+	return id, nil
+}
+
+// cleanBody приводит текст к виду, в котором он хранится: без пробельного мусора
+// по краям и без нулевых байтов (Postgres не хранит \x00 в text вовсе, и лучше
+// сказать об этом отказом, чем получить ошибку драйвера в середине транзакции).
+func cleanBody(s string) (string, error) {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\x00", ""))
+	if s == "" {
+		return "", ErrEmptyBody
+	}
+	if utf8.RuneCountInString(s) > MaxBodyRunes {
+		return "", ErrTooLong
+	}
+	return s, nil
+}
+
+const (
+	defaultLimit = 50
+	maxLimit     = 100
+)
+
+func clampLimit(n int) int {
+	switch {
+	case n <= 0:
+		return defaultLimit
+	case n > maxLimit:
+		return maxLimit
+	default:
+		return n
+	}
+}

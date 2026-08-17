@@ -62,6 +62,22 @@ func ChildPath(parent string, id int64) (string, error) {
 	return b.String(), nil
 }
 
+// ClampParent укорачивает путь родителя так, чтобы ответ на него поместился в
+// MaxDepth: лишние сегменты с конца отбрасываются. Ветка визуально схлопывается,
+// как это делает и сам сайт, — но ребро reply_to_id при этом остаётся настоящим.
+// Разделение важное: путь это раскладка, а адресат это факт, и терять факт из-за
+// раскладки нельзя (иначе «кому ответили» переписывается вёрсткой).
+func ClampParent(parent string) string {
+	for PathDepth(parent) >= MaxDepth {
+		p, ok := ParentPath(parent)
+		if !ok {
+			return ""
+		}
+		parent = p
+	}
+	return parent
+}
+
 // PathDepth — глубина пути: 1 у корневого комментария, 0 у пустого.
 func PathDepth(path string) int {
 	if path == "" {

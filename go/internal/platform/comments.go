@@ -1,0 +1,348 @@
+package platform
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// commentViewColumns — комментарии, замаскированные там же, где читаются.
+//
+// Последние четыре поля — адресат: соединение с самим собой по reply_to_id даёт
+// ТЕКУЩИЙ ник того, кому отвечали. Именно поэтому префикс «Ник, » не хранится в
+// теле: переименование и обезличивание меняют подпись сразу везде, включая чужие
+// ответы, а обезличить человека, размазанного по чужим телам, было бы нечем.
+const commentViewColumns = `
+	c.id, c.note_id, c.anonymous, c.body, c.path, c.depth, c.status, c.published_at, c.edited_at,
+	CASE WHEN c.anonymous THEN NULL ELSE c.author_id      END,
+	CASE WHEN c.anonymous THEN NULL ELSE u.nick           END,
+	CASE WHEN c.anonymous THEN NULL ELSE u.avatar_sha     END,
+	CASE WHEN c.anonymous THEN NULL ELSE m.mime           END,
+	CASE WHEN c.anonymous THEN NULL ELSE c.author_display END,
+	coalesce(c.author_id = $1, false),
+	rc.id, rc.anonymous,
+	CASE WHEN rc.anonymous THEN NULL
+	     ELSE coalesce(nullif(ru.nick, ''), nullif(rc.author_display, '')) END`
+
+const commentViewFrom = `
+	FROM comments c
+	LEFT JOIN users    u  ON u.id  = c.author_id
+	LEFT JOIN media    m  ON m.sha256 = u.avatar_sha
+	LEFT JOIN comments rc ON rc.id = c.reply_to_id
+	LEFT JOIN users    ru ON ru.id = rc.author_id`
+
+func scanCommentView(row pgx.Row) (CommentView, error) {
+	var (
+		c         CommentView
+		depth     int16
+		author    *int64
+		nick      *string
+		sha       []byte
+		mime      *string
+		display   *string
+		replyID   *int64
+		replyAnon *bool
+		replyNick *string
+	)
+	err := row.Scan(&c.ID, &c.NoteID, &c.Anonymous, &c.Body, &c.Path, &depth, &c.Status,
+		&c.PublishedAt, &c.EditedAt,
+		&author, &nick, &sha, &mime, &display, &c.Own,
+		&replyID, &replyAnon, &replyNick)
+	if err != nil {
+		return CommentView{}, err
+	}
+	c.Depth = int(depth)
+	c.Author = Author{ID: idOf(author), Nick: strOf(nick), AvatarURL: MediaURL(sha, strOf(mime))}
+	c.Display = strOf(display)
+	// Адресат рисуется, только если строка адресата ещё существует: снесённого
+	// модерацией родителя подписать нечем, и ветка просто теряет обращение.
+	if replyID != nil {
+		c.ReplyTo = &ReplyRef{CommentID: *replyID, Nick: strOf(replyNick)}
+		if replyAnon != nil {
+			c.ReplyTo.Anonymous = *replyAnon
+		}
+	}
+	return c, nil
+}
+
+// threadQuery и flatQuery вынесены в константы по той же причине, что и
+// feedQuery: тест спрашивает у Postgres план ровно этого SQL. Древовидный вид
+// обязан идти по comments_tree, плоский — по comments_flat; молчаливый переезд
+// любого из них на сортировку в памяти проваливает всю затею с путями.
+//
+// COLLATE "C" в условии и в порядке написан явно и обязан совпадать с индексом:
+// без него сравнение пойдёт по локали базы, где «.» и цифры упорядочены иначе,
+// а индекс перестанет подходить — тихо, с правильным ответом и полным перебором.
+const threadQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.status = 0 AND c.path COLLATE "C" > $3
+	 ORDER BY c.path COLLATE "C"
+	 LIMIT $4`
+
+const flatQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.status = 0 AND c.id > $3
+	 ORDER BY c.id
+	 LIMIT $4`
+
+// Thread — страница треда в древовидном виде: одним range-scan по
+// (note_id, path). Сортировки в памяти нет — порядок даёт сам индекс, потому что
+// путь устроен так, что побайтовое сравнение и есть обход дерева.
+//
+// Курсор — путь последнего показанного комментария. Пустой курсор — начало.
+// Второе значение пусто, когда страница последняя.
+func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64, after string, limit int) ([]CommentView, string, error) {
+	limit = clampLimit(limit)
+	rows, err := p.pool.Query(ctx, threadQuery, v.UserID, noteID, after, limit)
+	if err != nil {
+		return nil, "", fmt.Errorf("тред заметки %d: %w", noteID, err)
+	}
+	out, err := collectComments(rows, limit)
+	if err != nil {
+		return nil, "", fmt.Errorf("тред заметки %d: %w", noteID, err)
+	}
+	next := ""
+	if len(out) == limit {
+		next = out[len(out)-1].Path
+	}
+	return out, next, nil
+}
+
+// Flat — та же страница в плоском виде, по возрастанию id, то есть строго по
+// времени. Отдельный индекс (note_id, id), а не сортировка выборки дерева:
+// переключатель «дерево / плоский» на сайте живой, им пользуются.
+func (p *Platform) Flat(ctx context.Context, v Viewer, noteID, afterID int64, limit int) ([]CommentView, int64, error) {
+	limit = clampLimit(limit)
+	rows, err := p.pool.Query(ctx, flatQuery, v.UserID, noteID, afterID, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
+	}
+	out, err := collectComments(rows, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
+	}
+	var next int64
+	if len(out) == limit {
+		next = out[len(out)-1].ID
+	}
+	return out, next, nil
+}
+
+func collectComments(rows pgx.Rows, limit int) ([]CommentView, error) {
+	defer rows.Close()
+	out := make([]CommentView, 0, limit)
+	for rows.Next() {
+		c, err := scanCommentView(rows)
+		if err != nil {
+			return nil, fmt.Errorf("разбор комментария: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CommentRow — сырая строка комментария, с настоящим автором анонимки. Для служб.
+func (p *Platform) CommentRow(ctx context.Context, id int64) (Comment, error) {
+	var (
+		c          Comment
+		author     *int64
+		branchRoot *int64
+		replyTo    *int64
+	)
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, note_id, author_id, author_display, anonymous, body,
+		       branch_root_id, reply_to_id, reply_source, path, depth, status,
+		       published_at, edited_at, created_at
+		  FROM comments WHERE id = $1`, id).
+		Scan(&c.ID, &c.NoteID, &author, &c.AuthorDisplay, &c.Anonymous, &c.Body,
+			&branchRoot, &replyTo, &c.ReplySource, &c.Path, &c.Depth, &c.Status,
+			&c.PublishedAt, &c.EditedAt, &c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Comment{}, fmt.Errorf("комментарий %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return Comment{}, fmt.Errorf("чтение комментария %d: %w", id, err)
+	}
+	c.AuthorID, c.BranchRootID, c.ReplyToID = idOf(author), idOf(branchRoot), idOf(replyTo)
+	return c, nil
+}
+
+// IngestComment принимает комментарий с НГС. Идемпотентен по id.
+//
+// Автор без анкеты (Author.ID == 0) сохраняется снимком ника в author_display —
+// единственное отступление от правила «истории ников нет»: показать такого
+// комментатора больше нечем.
+func (p *Platform) IngestComment(ctx context.Context, in MirroredComment) (bool, error) {
+	if !IsNGS(in.ID) {
+		return false, fmt.Errorf("комментарий НГС ожидается с id из полосы сайта, получен %d", in.ID)
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("приём комментария %d: %w", in.ID, err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	author, err := ensureShadow(ctx, tx, in.Author)
+	if err != nil {
+		return false, err
+	}
+	display := ""
+	if author == 0 {
+		display = in.Author.Nick
+	}
+	path, branchRoot, err := placeComment(ctx, tx, in.NoteID, in.ReplyToID, in.ID)
+	if err != nil {
+		return false, fmt.Errorf("приём комментария %d: %w", in.ID, err)
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO comments (id, note_id, author_id, author_display, body,
+		                      branch_root_id, reply_to_id, reply_source, path, depth, published_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO NOTHING`,
+		in.ID, in.NoteID, nullID(author), display, in.Body,
+		nullID(branchRoot), nullID(in.ReplyToID), in.ReplySource, path, PathDepth(path), in.PublishedAt)
+	if err != nil {
+		return false, fmt.Errorf("приём комментария %d: %w", in.ID, err)
+	}
+	inserted := tag.RowsAffected() > 0
+	if inserted {
+		if err := bumpNote(ctx, tx, in.NoteID, in.PublishedAt); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("приём комментария %d: %w", in.ID, err)
+	}
+	return inserted, nil
+}
+
+// CreateComment публикует нативный комментарий и возвращает его id.
+func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, error) {
+	body, err := cleanBody(in.Body)
+	if err != nil {
+		return 0, err
+	}
+	if in.AuthorID == 0 {
+		return 0, errors.New("нативный комментарий без автора")
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("публикация комментария: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	var (
+		closed bool
+		status Status
+	)
+	err = tx.QueryRow(ctx, `SELECT comments_closed, status FROM notes WHERE id = $1`, in.NoteID).
+		Scan(&closed, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("заметка %d: %w", in.NoteID, ErrNotFound)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("публикация комментария к заметке %d: %w", in.NoteID, err)
+	}
+	if status != StatusVisible {
+		// Скрытая заметка для пишущего просто отсутствует: рассказывать, что она
+		// есть, но спрятана, — значит показывать работу модерации посторонним.
+		return 0, fmt.Errorf("заметка %d: %w", in.NoteID, ErrNotFound)
+	}
+	if closed {
+		return 0, ErrCommentsClosed
+	}
+
+	var id int64
+	if err := tx.QueryRow(ctx, `SELECT nextval('comments_native_seq')`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("выдача id комментария: %w", err)
+	}
+	path, branchRoot, err := placeComment(ctx, tx, in.NoteID, in.ReplyToID, id)
+	if err != nil {
+		return 0, fmt.Errorf("публикация комментария: %w", err)
+	}
+	now := time.Now()
+	source := ReplyNone
+	if in.ReplyToID != 0 {
+		source = ReplyNative // отвечали у нас: адресат известен точно, а не угадан
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO comments (id, note_id, author_id, anonymous, body,
+		                      branch_root_id, reply_to_id, reply_source, path, depth, published_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		id, in.NoteID, in.AuthorID, in.Anonymous, body,
+		nullID(branchRoot), nullID(in.ReplyToID), source, path, PathDepth(path), now); err != nil {
+		return 0, fmt.Errorf("публикация комментария: %w", err)
+	}
+	if err := bumpNote(ctx, tx, in.NoteID, now); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("публикация комментария: %w", err)
+	}
+	return id, nil
+}
+
+// placeComment считает место комментария в дереве: путь и корень ветки.
+//
+// Отсутствующий адресат — рабочий случай, а не ошибка: родителя могла снести
+// модерация, и комментарий просто становится корневым. Слишком глубокую ветку
+// схлопываем (ClampParent), но ребро reply_to_id при этом остаётся настоящим:
+// путь — раскладка, адресат — факт, и терять факт из-за раскладки нельзя.
+func placeComment(ctx context.Context, q querier, noteID, replyToID, id int64) (path string, branchRoot int64, err error) {
+	parent := ""
+	if replyToID != 0 {
+		err := q.QueryRow(ctx, `SELECT path FROM comments WHERE id = $1 AND note_id = $2`,
+			replyToID, noteID).Scan(&parent)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return "", 0, fmt.Errorf("путь адресата %d: %w", replyToID, err)
+		}
+	}
+	path, err = ChildPath(ClampParent(parent), id)
+	if err != nil {
+		return "", 0, err
+	}
+	// Корень ветки — первый сегмент пути. У корневого комментария это он сам,
+	// и писать в branch_root_id ссылку на себя незачем: ноль читается как «я и
+	// есть корень». Значение здесь выведено из НАШЕГО дерева, то есть ровно
+	// настолько верно, насколько верен адресат; reply_scan по мобильной версии
+	// (Ш6) уточняет и то, и другое.
+	if root, err := BranchRootID(path); err == nil && root != id {
+		branchRoot = root
+	}
+	return path, branchRoot, nil
+}
+
+// bumpNote двигает денормализованные счётчики заметки. Явно, а не триггером:
+// триггер невидим при чтении кода, и через год никто не вспомнит, почему число
+// меняется само.
+//
+// Счётчик считает ВСЕ принятые комментарии, включая позже скрытые: скрытие
+// обязано его поправить (иначе лента врёт), и для починки расхождений есть
+// RecountComments.
+func bumpNote(ctx context.Context, q querier, noteID int64, at time.Time) error {
+	_, err := q.Exec(ctx, `
+		UPDATE notes
+		   SET comment_count = comment_count + 1,
+		       last_comment_at = greatest(coalesce(last_comment_at, 'epoch'::timestamptz), $2)
+		 WHERE id = $1`, noteID, at)
+	return wrapf(err, "счётчики заметки %d", noteID)
+}
+
+// RecountComments пересчитывает счётчик заметки по факту. Починка расхождений,
+// а не рабочий путь: на 61 тыс. комментариев это дешёвая операция, но в ленте
+// она бы стоила COUNT(*) на каждую строку.
+func (p *Platform) RecountComments(ctx context.Context, noteID int64) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx, `
+		UPDATE notes SET comment_count = (
+		    SELECT count(*) FROM comments WHERE note_id = $1 AND status = 0)
+		 WHERE id = $1
+		 RETURNING comment_count`, noteID).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
+	}
+	return n, wrapf(err, "пересчёт комментариев заметки %d", noteID)
+}

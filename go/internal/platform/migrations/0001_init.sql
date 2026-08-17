@@ -140,6 +140,9 @@ CREATE TABLE comments (
     edited_at      timestamptz,
     created_at     timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT comments_id_band CHECK (id > 0 AND id < 200000000000),
+    -- Границу правит 0002: depth < 12 — это одиннадцать уровней, а решение было
+    -- про двенадцать. Здесь оставлено как есть: миграции не переписывают, иначе
+    -- уже накатанная база разойдётся с файлом молча.
     CONSTRAINT comments_depth   CHECK (depth >= 0 AND depth < 12)
 );
 COMMENT ON COLUMN comments.reply_source IS '0 нет, 1 префикс «Ник, …», 2 мобильное дерево, 3 нативный ответ, 4 parent_id десктопа';
