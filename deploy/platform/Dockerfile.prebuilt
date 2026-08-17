@@ -1,0 +1,27 @@
+# Тонкий образ вокруг ГОТОВОГО бинарника: собирается он на рабочей машине
+# (`GOOS=linux CGO_ENABLED=0 go build`), сюда приезжает сжатым и кладётся рядом с
+# этим файлом.
+#
+# Почему не многостадийная сборка, как в go/Dockerfile: на этом хосте одно ядро,
+# и `go build` просит ~1,5 ГБ RSS и 25 минут — сборка уронила бы и площадку, и
+# зеркало, которые на нём же и работают. Здесь сборка занимает секунды.
+#
+# Плата за это — ответственность за то, что собрано ПРАВИЛЬНО. Два условия
+# незаметны, пока не сломаются: PEM'ы Минцифры для MAX должны лежать в
+# go/internal/maxx/cacert/ ДО сборки (иначе TLS к MAX не встанет: российского
+# корневого сертификата в distroless нет), а сам бинарник обязан быть статичным.
+
+FROM mwader/static-ffmpeg:7.1 AS ffmpeg
+
+FROM gcr.io/distroless/static-debian12:nonroot
+# Те же переменные, что в go/Dockerfile, и по той же причине: конфиг демона
+# хранит относительный db_path, а WORKDIR здесь /data — без явного пути база
+# завелась бы в /data/data/lovegw.db, то есть пустая и не та. В distroless нет
+# ни шелла, ни осмысленного PATH, поэтому и путь к ffmpeg задаётся явно.
+ENV LOVEGW_DB_PATH=/data/lovegw.db
+ENV LOVEGW_ASR_FFMPEG=/usr/local/bin/ffmpeg
+WORKDIR /data
+COPY lovegw /lovegw
+# Конвертер голосовых для ASR: статичный бинарник, в distroless едет как есть.
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+ENTRYPOINT ["/lovegw"]

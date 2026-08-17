@@ -385,24 +385,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("pulpit.min_runes (%d) больше pulpit.max_runes (%d) — ни одна реплика не пройдёт валидатор",
 			c.Pulpit.MinRunes, c.Pulpit.MaxRunes)
 	}
-	return c.validatePlatform()
-}
-
-// validatePlatform — площадка. Оба поля проверяются на старте, а не по месту
-// использования: падать на первом запросе к базе хуже, чем не стартовать вовсе,
-// иначе контейнер молча уйдёт в рестарт-петлю.
-func (c *Config) validatePlatform() error {
-	if !c.Platform.Enabled {
-		return nil
-	}
-	if c.Platform.DSN == "" {
-		return fmt.Errorf("platform.enabled, но platform.dsn пуст (задайте LOVEGW_PLATFORM_DSN)")
-	}
-	// Без каталога медиа аватары и иллюстрации зеркала девать некуда, а страницы
-	// площадки не имеют права ходить за ними на hsmedia.ru.
-	if c.Platform.MediaDir == "" {
-		return fmt.Errorf("platform.enabled, но platform.media_dir пуст (задайте LOVEGW_PLATFORM_MEDIA_DIR)")
-	}
+	// Полноту секции platform здесь НЕ проверяем, хотя соблазн есть. Конфиг
+	// один на все команды одного образа, а площадка нужна троим из семи: у
+	// modwatch, guests и activity её `enabled` — просто чужая строка в общем
+	// файле, и падать на ней они не должны (проверено собой 17.08.2026: `guests`
+	// ушёл в рестарт-петлю из-за отсутствующего DSN, который ему не нужен).
+	// Проверяют те, кто открывает базу: `run`, `web` и `platform *`.
 	return nil
 }
 

@@ -661,6 +661,16 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	if !cfg.Platform.Enabled {
 		return nil
 	}
+	// Полнота секции проверяется здесь, а не в config.validate: конфиг один на
+	// все команды образа, и наблюдателям (modwatch, guests, activity) площадка
+	// не нужна вовсе — общая проверка отправила бы их в рестарт-петлю из-за
+	// чужой строки.
+	if cfg.Platform.DSN == "" {
+		return fmt.Errorf("площадка включена, но platform.dsn пуст (задайте LOVEGW_PLATFORM_DSN)")
+	}
+	if cfg.Platform.MediaDir == "" {
+		return fmt.Errorf("площадка включена, но platform.media_dir пуст (задайте LOVEGW_PLATFORM_MEDIA_DIR)")
+	}
 	p, err := platform.Open(ctx, cfg.Platform.DSN)
 	if err != nil {
 		return fmt.Errorf("площадка: %w", err)
