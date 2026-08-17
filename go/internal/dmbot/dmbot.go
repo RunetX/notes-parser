@@ -176,10 +176,10 @@ func (d *Bot) SetNews(svc *news.Service, adminID int64) { d.logic.SetNews(svc, a
 // SetPulpit подключает ручку амвона админом (/pulpit).
 func (d *Bot) SetPulpit(svc PulpitControl, adminID int64) { d.logic.SetPulpit(svc, adminID) }
 
-// AskDelivery спрашивает, куда носить личные сообщения (зовёт поллер talks,
-// увидев один сайт-аккаунт в двух мессенджерах).
-func (d *Bot) AskDelivery(ctx context.Context, userID int64, current store.TalksOwner) {
-	d.logic.AskDelivery(ctx, userID, current)
+// AskTalksScan спрашивает согласия читать личную переписку (зовёт поллер talks,
+// увидев сайт-аккаунт без согласия).
+func (d *Bot) AskTalksScan(ctx context.Context, userID int64, alsoElsewhere bool) {
+	d.logic.AskTalksScan(ctx, userID, alsoElsewhere)
 }
 
 // PublishCommands публикует меню команд бота. Зовётся после SetTalkRouter:
@@ -426,7 +426,7 @@ func startMessage(talksOnly, withTalks, withProfile bool) string {
 		return `Привет! Я бот личной переписки НГС.Лав. Я умею:
 /talks — мои диалоги на сайте
 /talk <номер> — писать в выбранный диалог
-/delivery — куда присылать личные сообщения
+/delivery — личные сообщения: читать ли их и куда слать
 /cancel — выйти из диалога
 Ответить на входящее ЛС можно просто реплаем.
 Вход на сайт, заметки и подписки — у основного бота (там же /login).
@@ -445,7 +445,7 @@ func startMessage(talksOnly, withTalks, withProfile bool) string {
 	}
 	if withTalks {
 		msg += "\n/talks — мои личные диалоги на сайте\n/talk <номер> — писать в выбранный диалог" +
-			"\n/delivery — куда присылать личные сообщения"
+			"\n/delivery — личные сообщения: читать ли их и куда слать"
 	}
 	return msg + "\nТо же самое — кнопками ниже."
 }

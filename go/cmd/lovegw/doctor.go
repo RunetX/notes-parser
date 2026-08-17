@@ -170,9 +170,9 @@ func cmdDoctor(ctx context.Context, args []string) error {
 			}
 			checked = true
 			label := "talks/" + m.name
-			// Мультисессия (admin_only=false): обходим ВСЕ валидные сессии —
-			// показываем их число (кого зеркалим). Admin-only — проверяем сессию
-			// админа поимённо.
+			// Мультисессия (admin_only=false): в обход идут валидные сессии, чьи
+			// владельцы согласились на чтение переписки (сколько их — строкой
+			// talks/чтение ниже). Admin-only — проверяем сессию админа поимённо.
 			if !cfg.Talks.AdminOnly {
 				owners, err := st.SessionOwners(ctx, m.name)
 				switch {
@@ -181,7 +181,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 				case len(owners) == 0:
 					warn(label, "мультисессия: нет валидных сессий сайта — некого обходить")
 				default:
-					ok(label, fmt.Sprintf("мультисессия: %d валидных сессий будут обходиться", len(owners)))
+					ok(label, fmt.Sprintf("мультисессия: %d валидных сессий (обходим согласившихся)", len(owners)))
 				}
 				continue
 			}
@@ -211,7 +211,7 @@ func cmdDoctor(ctx context.Context, args []string) error {
 		if !cfg.Talks.AllowSend {
 			warn("talks", "allow_send=false — только чтение, ответы на сайт не уходят")
 		}
-		checkDeliveryDuplicates(ctx, st, ok, warn, fail)
+		checkDeliveryConsent(ctx, st, ok, warn, fail)
 	}
 
 	if cfg.ASR.Enabled {
@@ -333,21 +333,44 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 	return nil
 }
 
+// checkDeliveryConsent показывает, чью переписку обход вообще читает: без
+// согласия человека (кнопка «читать и присылать сюда») сайт-аккаунт не трогают
+// вовсе. Молчание согласием не считается, поэтому «ждут ответа» — рабочее
+// состояние, а не поломка.
+func checkDeliveryConsent(ctx context.Context, st *store.Store,
+	ok func(name, detail string), warn func(name, detail string), fail func(name string, err error)) {
+	owners, err := st.TalksOwners(ctx)
+	if err != nil {
+		fail("talks/чтение", err)
+		return
+	}
+	groups := store.GroupByAccount(owners)
+	var reading, waiting, refused int
+	for _, group := range groups {
+		switch {
+		case store.ScanAllowed(group):
+			reading++
+		case group[0].Scan == store.ScanOff:
+			refused++
+		default:
+			waiting++
+		}
+	}
+	ok("talks/чтение", fmt.Sprintf("читаем переписку %d из %d сайт-аккаунтов (ждут ответа %d, отказались %d)",
+		reading, len(groups), waiting, refused))
+	checkDeliveryDuplicates(groups, ok, warn)
+}
+
 // checkDeliveryDuplicates ищет сайт-аккаунты, залогиненные больше чем в одном
 // мессенджере: ЛС достанутся ровно одному из них (сайт помечает сообщение
 // прочитанным на первом же дозаборе), а остальные будут молча пустовать. Кому
 // носим — видно здесь же; поменять это человек может сам, кнопкой /delivery.
-func checkDeliveryDuplicates(ctx context.Context, st *store.Store,
-	ok func(name, detail string), warn func(name, detail string), fail func(name string, err error)) {
-	owners, err := st.TalksOwners(ctx)
-	if err != nil {
-		fail("talks/доставка", err)
-		return
-	}
+func checkDeliveryDuplicates(groups [][]store.TalksOwner,
+	ok func(name, detail string), warn func(name, detail string)) {
 	dupes := 0
-	for _, group := range store.GroupByAccount(owners) {
-		if len(group) < 2 {
-			continue
+	for _, group := range groups {
+		if len(group) < 2 || !store.ScanAllowed(group) {
+			continue // у нечитаемого аккаунта спор о получателе беспредметен
 		}
 		dupes++
 		win, delivered := store.PickDelivery(group)

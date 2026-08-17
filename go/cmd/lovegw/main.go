@@ -571,19 +571,19 @@ func (d *daemon) setupTalks() {
 		if len(transports) == 0 {
 			log.Warn("talks включён, но нет мессенджера с ЛС-доставкой — пропускаю")
 		} else {
-			// Вопрос «куда носить ЛС» задаёт диалоговое ядро того мессенджера, где
-			// человек вошёл на сайт: у поллера кнопок нет. Спрашивает бот
-			// переписки — тот, что эти ЛС и доставляет.
-			askDelivery := func(ctx context.Context, messenger string, userID int64, current store.TalksOwner) {
+			// Вопрос «читать ли переписку и носить ли сюда» задаёт диалоговое
+			// ядро того мессенджера, где человек вошёл на сайт: у поллера кнопок
+			// нет. Спрашивает бот переписки — тот, что эти ЛС и доставляет.
+			askScan := func(ctx context.Context, messenger string, userID int64, alsoElsewhere bool) {
 				switch {
 				case messenger == store.MessengerTelegram && tgTalks != nil:
-					tgTalks.AskDelivery(ctx, userID, current)
+					tgTalks.AskTalksScan(ctx, userID, alsoElsewhere)
 				case messenger == store.MessengerMax && maxTalksDM != nil:
-					maxTalksDM.AskDelivery(ctx, userID, current)
+					maxTalksDM.AskTalksScan(ctx, userID, alsoElsewhere)
 				case messenger == store.MessengerMax && maxDM != nil:
-					maxDM.AskDelivery(ctx, userID, current) // переписку ведёт бот зеркала
+					maxDM.AskTalksScan(ctx, userID, alsoElsewhere) // переписку ведёт бот зеркала
 				default:
-					log.Warn("некому спросить про доставку ЛС", "messenger", messenger, "user", userID)
+					log.Warn("некому спросить про чтение переписки", "messenger", messenger, "user", userID)
 				}
 			}
 			watcher := talks.New(st, talksSite{client}, transports, talks.Config{
@@ -598,7 +598,7 @@ func (d *daemon) setupTalks() {
 				MaxReqPerMin: cfg.Talks.MaxRequestsPerMin,
 				ExcludeUsers: cfg.Talks.ExcludeUsers,
 				AlertSend:    fanOutAlerts(d.alerters),
-				AskDelivery:  askDelivery,
+				AskScan:      askScan,
 			}, log)
 			if tgTalks != nil {
 				tgTalks.SetTalkRouter(watcher)

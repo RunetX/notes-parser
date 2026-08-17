@@ -37,6 +37,10 @@ const (
 	// аргументом, потому что тост у них разный — у показа его нет.
 	verbDeliv    = "deliv"
 	verbDelivSet = "delivset" // аргумент — argDeliveryOn/argDeliveryOff
+	// Отказ от чтения переписки. Без аргумента и без пары: обратно чтение
+	// включает verbDelivSet:on — «читать и присылать сюда» это одна кнопка, а
+	// читать переписку, не отдавая её человеку, незачем.
+	verbScanOff = "scanoff"
 	// Своя анкета на сайте: показать, спросить подтверждение блокировки,
 	// нажать кнопку сайта. Три глагола, потому что тост у них разный, а у
 	// показа его нет вовсе.
@@ -116,6 +120,7 @@ var callbackVerbs = map[string]verbHandler{
 	verbTalk:        {talks: true, fn: (*Logic).cbTalk},
 	verbDeliv:       {talks: true, fn: (*Logic).cbDelivery},
 	verbDelivSet:    {ack: "Записал", talks: true, fn: (*Logic).cbDeliverySet},
+	verbScanOff:     {ack: "Записал", talks: true, fn: (*Logic).cbScanOff},
 	verbProfile:     {fn: (*Logic).cbProfile},
 	verbProfileAsk:  {fn: (*Logic).cbProfileAsk},
 	verbProfileSet:  {ack: "Отправляю на сайт…", fn: (*Logic).cbProfileSet},
@@ -324,6 +329,11 @@ func (l *Logic) cbDeliverySet(ctx context.Context, userID int64, cb kbd.Callback
 	l.setDelivery(ctx, userID, cb, arg)
 }
 
+// cbScanOff — отказ от чтения переписки: обход сайта под этой сессией прекращается.
+func (l *Logic) cbScanOff(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
+	l.setScanOff(ctx, userID, cb)
+}
+
 // cbProfile — «моя анкета» из главного меню: состояние приходит новым
 // сообщением, меню не затираем.
 func (l *Logic) cbProfile(ctx context.Context, userID int64, _ kbd.Callback, _ string) {
@@ -384,7 +394,7 @@ func botCommands(talksOnly, withTalks, withProfile bool) []kbd.Command {
 			{Name: "start", Description: "начать и показать меню"},
 			{Name: "talks", Description: "мои диалоги на сайте"},
 			{Name: "talk", Description: "писать в выбранный диалог"},
-			{Name: "delivery", Description: "куда присылать личные сообщения"},
+			{Name: "delivery", Description: "личные сообщения: читать ли и куда слать"},
 			{Name: "cancel", Description: "выйти из диалога"},
 		}
 	}
@@ -405,7 +415,7 @@ func botCommands(talksOnly, withTalks, withProfile bool) []kbd.Command {
 		cmds = append(cmds,
 			kbd.Command{Name: "talks", Description: "мои личные диалоги на сайте"},
 			kbd.Command{Name: "talk", Description: "писать в выбранный диалог"},
-			kbd.Command{Name: "delivery", Description: "куда присылать личные сообщения"})
+			kbd.Command{Name: "delivery", Description: "личные сообщения: читать ли и куда слать"})
 	}
 	return append(cmds, kbd.Command{Name: "cancel", Description: "отменить текущий шаг"})
 }

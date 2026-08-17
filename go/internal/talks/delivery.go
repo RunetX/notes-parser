@@ -1,11 +1,18 @@
 package talks
 
-// Куда носить личные сообщения. Одно входящее ЛС нельзя доставить в два
-// мессенджера: сайт помечает сообщение прочитанным в тот момент, когда поллер
-// забирает историю, — второй сессии достанется пустота (жалоба «просмотрены, но
-// не отправлены», разбор 11.08.2026). Поэтому у сайт-аккаунта ровно один
-// получатель. Выбирает его человек кнопкой в ЛС (dmbot, `/delivery`); пока
-// выбора нет, носим в самый свежий вход и один раз спрашиваем.
+// Читать ли переписку и куда её носить.
+//
+// Читать — только с согласия человека: обход ходит по сайту под его кукой, сайт
+// при чтении истории помечает сообщения прочитанными (собеседник видит
+// «просмотрено») и всё это время держит человека онлайн. Пока согласия нет,
+// сайт-аккаунт не трогаем вовсе — ни списка диалогов, ни истории — и один раз
+// спрашиваем (`sessions.talks_scan`, миграция v10).
+//
+// Носить — ровно в один мессенджер: то же самое чтение истории гасит
+// непрочитанное, и второй сессии достанется пустота (жалоба «просмотрены, но не
+// отправлены», разбор 11.08.2026). Выбирает человек кнопкой в ЛС (dmbot,
+// `/delivery`); нажатая в ответ на вопрос кнопка «читать и присылать сюда» —
+// это сразу и согласие, и выбор.
 
 import (
 	"context"
@@ -26,11 +33,17 @@ func (w *Watcher) plan(ctx context.Context) map[string][]store.TalksOwner {
 	}
 	out := make(map[string][]store.TalksOwner, len(w.transports))
 	for _, group := range store.GroupByAccount(w.live(all)) {
+		if !store.ScanAllowed(group) {
+			// Согласия читать переписку нет — спрашиваем один раз и уходим.
+			// Проверка стоит после live(): у отсеянного админом ничего не
+			// спрашиваем, за него уже решили.
+			w.askScan(ctx, group)
+			continue
+		}
 		win, ok := store.PickDelivery(group)
 		if !ok {
 			continue // человек отказался от доставки во всех мессенджерах
 		}
-		w.askDelivery(ctx, group, win)
 		if w.unreachable[ownerKey{win.Messenger, win.UserID}] {
 			// Выбранному доставлять некуда (заблокировал бота). Молча увести
 			// личную переписку в другой мессенджер нельзя — это его выбор.
@@ -60,29 +73,26 @@ func (w *Watcher) live(all []store.TalksOwner) []store.TalksOwner {
 	return live
 }
 
-// askDelivery один раз спрашивает человека, куда носить ЛС, когда его
-// сайт-аккаунт залогинен в нескольких мессенджерах. Спрашиваем во всех — где
-// нажмут, туда и понесём; до ответа носим в win. Отметка «спросили» живёт в БД,
-// иначе каждый рестарт демона переспрашивал бы заново.
-func (w *Watcher) askDelivery(ctx context.Context, group []store.TalksOwner, win store.TalksOwner) {
-	if w.cfg.AskDelivery == nil || len(group) < 2 {
+// askScan один раз спрашивает у человека согласия читать его переписку.
+// Сайт-аккаунт, залогиненный в нескольких мессенджерах, спрашиваем во всех: где
+// нажмут, туда ЛС и понесём (нажатая кнопка отвечает сразу на оба вопроса).
+// Отметка «спросили» живёт в БД, иначе каждый рестарт демона переспрашивал бы
+// заново; неотвеченный вопрос оставляет переписку непрочитанной — настройка
+// ждёт человека под `/delivery`.
+func (w *Watcher) askScan(ctx context.Context, group []store.TalksOwner) {
+	if w.cfg.AskScan == nil {
 		return
-	}
-	for _, o := range group {
-		if o.Delivery != store.DeliveryUnset {
-			return // выбор уже сделан — спрашивать не о чем
-		}
 	}
 	for _, o := range group {
 		if o.Asked {
 			continue
 		}
-		w.cfg.AskDelivery(ctx, o.Messenger, o.UserID, win)
+		w.cfg.AskScan(ctx, o.Messenger, o.UserID, len(group) > 1)
 		if err := w.st.MarkTalksAsked(ctx, o.Messenger, o.UserID, time.Now()); err != nil {
-			w.log.Error("отметка вопроса о доставке ЛС", "messenger", o.Messenger, "user", o.UserID, "err", err)
+			w.log.Error("отметка вопроса о чтении переписки", "messenger", o.Messenger, "user", o.UserID, "err", err)
 		}
-		w.log.Info("спросил, куда носить личные сообщения",
-			"messenger", o.Messenger, "user", o.UserID, "пока_носим_в", win.Messenger)
+		w.log.Info("спросил согласия читать личную переписку",
+			"messenger", o.Messenger, "user", o.UserID, "сессий_у_аккаунта", len(group))
 	}
 }
 

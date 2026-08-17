@@ -275,20 +275,44 @@ CREATE TABLE settings (
 );
 `
 
-// migrate накатывает недостающие миграции. Версия схемы — PRAGMA user_version;
-// migrations[i] переводит схему на версию i+1, применяется по возрастанию.
+// migrateV10SQL — согласие на чтение личной переписки. Обход ЛС ходит по сайту
+// под кукой человека, а сайт при чтении истории помечает сообщения
+// прочитанными и держит его онлайн, — поэтому молчание перестаёт быть
+// согласием: пустое значение talks_scan означает «не читаем».
+//
+// Явное «носи ЛС сюда» — это и есть данное согласие, его переносим. Всем
+// остальным сбрасываем отметку «спросили»: вопрос теперь другой (не «куда
+// носить», а «читать ли вообще»), и старая отметка на него не отвечает.
+//
+// Аддитивна, откат бинарника на той же БД безопасен: старый код колонки не
+// видит и обходит всех валидных, как раньше.
+const migrateV10SQL = `
+ALTER TABLE sessions ADD COLUMN talks_scan TEXT NOT NULL DEFAULT '';
+UPDATE sessions SET talks_scan = 'on' WHERE talks_delivery = 'on';
+UPDATE sessions SET talks_asked_at = NULL WHERE talks_delivery <> 'on';
+`
+
+// migrations — вся история схемы: migrations[i] переводит её на версию i+1 и
+// применяется по возрастанию. Версия схемы — PRAGMA user_version.
+var migrations = []string{
+	schemaSQL,     // v1 — базовая схема
+	migrateV2SQL,  // v2 — аватар автора заметки и иллюстрации
+	migrateV3SQL,  // v3 — флаг «комментарии закрыты»
+	migrateV4SQL,  // v4 — message_targets и измерение messenger (гейт MAX)
+	migrateV5SQL,  // v5 — личные сообщения сайта (talks)
+	migrateV6SQL,  // v6 — кэш расшифровок и суточная квота ASR
+	migrateV7SQL,  // v7 — типизированные подписки (kind/target)
+	migrateV8SQL,  // v8 — выбор мессенджера доставки ЛС
+	migrateV9SQL,  // v9 — амвон: свои реплики под заметками и рантайм-флаги
+	migrateV10SQL, // v10 — согласие на чтение личной переписки
+}
+
+// schemaVersion — версия схемы, на которую рассчитан этот бинарник.
+func schemaVersion() int { return len(migrations) }
+
+// migrate накатывает недостающие миграции.
 func (s *Store) migrate(ctx context.Context) error {
-	return s.migrateList(ctx, []string{
-		schemaSQL,    // v1 — базовая схема
-		migrateV2SQL, // v2 — аватар автора заметки и иллюстрации
-		migrateV3SQL, // v3 — флаг «комментарии закрыты»
-		migrateV4SQL, // v4 — message_targets и измерение messenger (гейт MAX)
-		migrateV5SQL, // v5 — личные сообщения сайта (talks)
-		migrateV6SQL, // v6 — кэш расшифровок и суточная квота ASR
-		migrateV7SQL, // v7 — типизированные подписки (kind/target)
-		migrateV8SQL, // v8 — выбор мессенджера доставки ЛС
-		migrateV9SQL, // v9 — амвон: свои реплики под заметками и рантайм-флаги
-	})
+	return s.migrateList(ctx, migrations)
 }
 
 // migrateList — тело migrate, вынесено ради теста на обрыв посередине.

@@ -54,9 +54,17 @@ func bothMessengers() Config {
 	return cfg
 }
 
-// Один сайт-аккаунт в двух мессенджерах: ЛС уезжают только в один (в тот, где
-// вход свежее), а человека один раз спрашивают, куда носить.
-func TestDuplicateAccountDeliversOnceAndAsks(t *testing.T) {
+// askRecorder — конфиг, запоминающий, у кого спросили согласия.
+type askRecorder struct {
+	messenger string
+	user      int64
+	elsewhere bool
+}
+
+// Пока согласия нет, сайт не трогаем ВОВСЕ: ни списка диалогов, ни истории —
+// иначе сообщения молча пометились бы прочитанными, а человек всё это время
+// числился бы в сети. Вместо обхода — один вопрос в каждый мессенджер.
+func TestNoConsentAsksAndLeavesSiteAlone(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	old := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
@@ -70,31 +78,27 @@ func TestDuplicateAccountDeliversOnceAndAsks(t *testing.T) {
 	tg := &fakeTransport{name: store.MessengerTelegram}
 	mx := &fakeTransport{name: store.MessengerMax}
 
-	type ask struct {
-		messenger string
-		user      int64
-		current   string
-	}
-	var asks []ask
+	var asks []askRecorder
 	cfg := bothMessengers()
-	cfg.AskDelivery = func(_ context.Context, messenger string, userID int64, current store.TalksOwner) {
-		asks = append(asks, ask{messenger, userID, current.Messenger})
+	cfg.AskScan = func(_ context.Context, messenger string, userID int64, alsoElsewhere bool) {
+		asks = append(asks, askRecorder{messenger, userID, alsoElsewhere})
 	}
 	w := New(st, site, []PMTransport{tg, mx}, cfg, nil)
 
 	w.pollOnce(ctx)
-	if len(tg.sent) != 0 {
-		t.Errorf("вход в telegram старее — ЛС туда не носим: %+v", tg.sent)
+	if site.dialogCalls != 0 || site.historyCalls != 0 {
+		t.Errorf("без согласия сайт не трогаем: диалогов %d, историй %d",
+			site.dialogCalls, site.historyCalls)
 	}
-	if len(mx.sent) != 1 {
-		t.Fatalf("ожидалась одна доставка в MAX, got %d", len(mx.sent))
+	if len(tg.sent) != 0 || len(mx.sent) != 0 {
+		t.Errorf("без согласия ЛС не доставляем: tg=%d max=%d", len(tg.sent), len(mx.sent))
 	}
 	if len(asks) != 2 {
 		t.Fatalf("спросить надо в обоих мессенджерах: %+v", asks)
 	}
 	for _, a := range asks {
-		if a.current != store.MessengerMax {
-			t.Errorf("в вопросе называем нынешнего получателя: %+v", a)
+		if !a.elsewhere {
+			t.Errorf("аккаунт залогинен дважды — это должно быть видно в вопросе: %+v", a)
 		}
 	}
 
@@ -105,17 +109,16 @@ func TestDuplicateAccountDeliversOnceAndAsks(t *testing.T) {
 	}
 }
 
-// Выбор человека сильнее свежести входа: после /delivery в telegram ЛС едут
-// туда, а MAX перестаёт выгребать историю (и гасить непрочитанное на сайте).
-func TestChoiceOverridesFreshestLogin(t *testing.T) {
+// Согласие даётся кнопкой «читать и присылать сюда»: она же выбирает мессенджер.
+// После неё ЛС едут в telegram, хотя вход в MAX свежее, а MAX истории не читает
+// (и не гасит непрочитанное на сайте).
+func TestConsentChoosesMessengerAndStartsPolling(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	old := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	seedOwner(t, st, store.MessengerTelegram, 100, "777", old)
 	seedOwner(t, st, store.MessengerMax, 200, "777", old.Add(24*time.Hour))
-	if _, err := st.SetTalksDelivery(ctx, store.MessengerTelegram, 100, store.DeliveryOn, time.Now()); err != nil {
-		t.Fatal(err)
-	}
+	allowScan(t, st, store.MessengerTelegram, 100)
 
 	site := &fakeSite{
 		dialogs: []love.TalkDialog{{PassportID: "555", Nick: "Мария", LastMsgID: "m1"}},
@@ -125,7 +128,7 @@ func TestChoiceOverridesFreshestLogin(t *testing.T) {
 	mx := &fakeTransport{name: store.MessengerMax}
 	asked := 0
 	cfg := bothMessengers()
-	cfg.AskDelivery = func(context.Context, string, int64, store.TalksOwner) { asked++ }
+	cfg.AskScan = func(context.Context, string, int64, bool) { asked++ }
 	w := New(st, site, []PMTransport{tg, mx}, cfg, nil)
 
 	w.pollOnce(ctx)
@@ -133,19 +136,50 @@ func TestChoiceOverridesFreshestLogin(t *testing.T) {
 		t.Fatalf("ЛС должны уйти в telegram: tg=%d max=%d", len(tg.sent), len(mx.sent))
 	}
 	if asked != 0 {
-		t.Errorf("выбор сделан — спрашивать не о чем, спросили %d раз(а)", asked)
+		t.Errorf("согласие дано — спрашивать не о чем, спросили %d раз(а)", asked)
 	}
 	if site.historyCalls != 1 {
 		t.Errorf("историю читает только выбранный мессенджер: %d запросов", site.historyCalls)
 	}
 }
 
-// Отказ от доставки: сессия живая (мост «ответ в чате → комментарий» работает),
-// но диалоги не опрашиваются вовсе — читать чужие ЛС, гася их на сайте, незачем.
+// Отказ от чтения: сессия живая (мост «ответ в чате → комментарий» работает),
+// но обход к сайту под ней больше не ходит — ни разу и ни за чем.
+func TestScanOffStopsPolling(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedOwner(t, st, store.MessengerTelegram, 100, "777", time.Now())
+	allowScan(t, st, store.MessengerTelegram, 100)
+	if err := st.SetTalksScan(ctx, store.MessengerTelegram, 100, store.ScanOff, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	site := &fakeSite{
+		dialogs: []love.TalkDialog{{PassportID: "555", LastMsgID: "m1"}},
+		history: map[string][]love.TalkMessage{"555": {{SiteMsgID: "m1", Text: "привет"}}},
+	}
+	tg := &fakeTransport{name: store.MessengerTelegram}
+	asked := 0
+	cfg := bothMessengers()
+	cfg.AskScan = func(context.Context, string, int64, bool) { asked++ }
+	w := New(st, site, []PMTransport{tg}, cfg, nil)
+
+	w.pollOnce(ctx)
+	if len(tg.sent) != 0 || site.dialogCalls != 0 || site.historyCalls != 0 {
+		t.Errorf("отказавшегося не обходим: доставок %d, диалогов %d, историй %d",
+			len(tg.sent), site.dialogCalls, site.historyCalls)
+	}
+	if asked != 0 {
+		t.Errorf("отказ — это ответ, переспрашивать нечего: спросили %d раз(а)", asked)
+	}
+}
+
+// Отказ от доставки при одной сессии: носить ЛС становится некуда, и обход
+// прекращается сам — читать чужие ЛС, гася их на сайте, незачем.
 func TestDeliveryOffStopsPolling(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	seedOwner(t, st, store.MessengerTelegram, 100, "777", time.Now())
+	allowScan(t, st, store.MessengerTelegram, 100)
 	if _, err := st.SetTalksDelivery(ctx, store.MessengerTelegram, 100, store.DeliveryOff, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +197,34 @@ func TestDeliveryOffStopsPolling(t *testing.T) {
 	}
 }
 
+// Запрет админа (talks.exclude_users) сильнее согласия человека — и вопроса ему
+// тоже не задают: за него уже решили.
+func TestExcludedIsNotAsked(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	seedOwner(t, st, store.MessengerTelegram, 100, "777", time.Now())
+	site := &fakeSite{dialogs: []love.TalkDialog{{PassportID: "555", LastMsgID: "m1"}}}
+	tg := &fakeTransport{name: store.MessengerTelegram}
+	asked := 0
+	cfg := bothMessengers()
+	cfg.ExcludeUsers = map[string][]int64{store.MessengerTelegram: {100}}
+	cfg.AskScan = func(context.Context, string, int64, bool) { asked++ }
+	w := New(st, site, []PMTransport{tg}, cfg, nil)
+
+	w.pollOnce(ctx)
+	if asked != 0 || site.dialogCalls != 0 {
+		t.Errorf("запрещённого админом не спрашиваем и не обходим: спросили %d, диалогов %d",
+			asked, site.dialogCalls)
+	}
+}
+
 // Сессия без паспорта (заведена до появления talks): поллер снимает его сам,
 // иначе два входа одного человека не связать. Попытка одна на запуск.
 func TestCaptureIdentityFillsPassport(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	seedOwner(t, st, store.MessengerTelegram, 100, "", time.Now())
+	allowScan(t, st, store.MessengerTelegram, 100)
 	site := &siteWithIdentity{fakeSite: &fakeSite{}, passport: "777"}
 	tg := &fakeTransport{name: store.MessengerTelegram}
 	w := New(st, site, []PMTransport{tg}, bothMessengers(), nil)

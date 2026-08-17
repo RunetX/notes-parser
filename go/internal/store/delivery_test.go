@@ -158,6 +158,80 @@ func TestTalksOwnersSkipsInvalidButKeepsChoice(t *testing.T) {
 	}
 }
 
+// Свежая сессия переписку читать не разрешает: молчание — не согласие.
+// Согласие даёт кнопка «читать и присылать сюда», то есть DeliveryOn, и оно
+// общее на весь сайт-аккаунт — иначе второй мессенджер продолжил бы вычитывать
+// ту же переписку.
+func TestScanConsentComesWithDeliveryAndCoversAccount(t *testing.T) {
+	ctx := context.Background()
+	st := newDeliveryStore(t)
+	now := time.Now()
+	seedOwner(t, st, MessengerTelegram, 100, "777", now)
+	seedOwner(t, st, MessengerMax, 200, "777", now.Add(time.Hour))
+
+	owners, err := st.TalksOwners(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ScanAllowed(GroupByAccount(owners)[0]) {
+		t.Fatal("без согласия переписку не читаем")
+	}
+
+	if _, err := st.SetTalksDelivery(ctx, MessengerTelegram, 100, DeliveryOn, now); err != nil {
+		t.Fatal(err)
+	}
+	owners, _ = st.TalksOwners(ctx)
+	for _, o := range owners {
+		if o.Scan != ScanOn {
+			t.Errorf("согласие — на весь аккаунт: %+v", o)
+		}
+	}
+
+	// Отказ от мессенджера согласия не снимает: человек сказал «не сюда», а не
+	// «не читай» (носить при этом станет некуда — это решает PickDelivery).
+	if _, err := st.SetTalksDelivery(ctx, MessengerTelegram, 100, DeliveryOff, now); err != nil {
+		t.Fatal(err)
+	}
+	owners, _ = st.TalksOwners(ctx)
+	if !ScanAllowed(GroupByAccount(owners)[0]) {
+		t.Error("«не присылать сюда» — не отказ от чтения")
+	}
+}
+
+// Отказ от чтения гасит весь сайт-аккаунт и не задевает чужой.
+func TestSetTalksScanOffCoversAccountOnly(t *testing.T) {
+	ctx := context.Background()
+	st := newDeliveryStore(t)
+	now := time.Now()
+	seedOwner(t, st, MessengerTelegram, 100, "777", now)
+	seedOwner(t, st, MessengerMax, 200, "777", now)
+	seedOwner(t, st, MessengerMax, 201, "888", now) // чужой аккаунт
+	if _, err := st.SetTalksDelivery(ctx, MessengerMax, 201, DeliveryOn, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetTalksDelivery(ctx, MessengerTelegram, 100, DeliveryOn, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.SetTalksScan(ctx, MessengerMax, 200, ScanOff, now); err != nil {
+		t.Fatal(err)
+	}
+	owners, _ := st.TalksOwners(ctx)
+	for _, group := range GroupByAccount(owners) {
+		want := group[0].PassportID == "888"
+		if got := ScanAllowed(group); got != want {
+			t.Errorf("паспорт %s: чтение %v, ожидалось %v", group[0].PassportID, got, want)
+		}
+	}
+
+	if err := st.SetTalksScan(ctx, MessengerTelegram, 999, ScanOff, now); !errors.Is(err, ErrNotFound) {
+		t.Errorf("без сессии ожидался ErrNotFound, got %v", err)
+	}
+	if err := st.SetTalksScan(ctx, MessengerTelegram, 100, "может быть", now); err == nil {
+		t.Error("третьего значения у согласия нет")
+	}
+}
+
 // Спросили один раз — отметка легла в БД (рестарт демона не переспрашивает).
 func TestMarkTalksAsked(t *testing.T) {
 	ctx := context.Background()

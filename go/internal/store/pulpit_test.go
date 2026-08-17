@@ -300,8 +300,8 @@ func TestMigrateV9Additive(t *testing.T) {
 	if err := st.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 {
-		t.Fatalf("версия схемы %d, ожидалась 9", version)
+	if version != schemaVersion() {
+		t.Fatalf("версия схемы %d, ожидалась %d", version, schemaVersion())
 	}
 	for _, table := range []string{"pulpit_comments", "pulpit_replies", "settings"} {
 		var name string

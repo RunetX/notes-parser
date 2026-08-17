@@ -305,6 +305,70 @@ func TestMigrationRollsBackOnError(t *testing.T) {
 	}
 }
 
+// v9 → v10: явное «носи ЛС сюда» — это уже данное согласие читать переписку,
+// оно переносится. Всем остальным согласия нет, а отметка «спросили» снимается:
+// вопрос теперь другой, и старая отметка на него не отвечает.
+func TestMigrateV9ToV10Consent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v9.db")
+
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations[:9] {
+		if _, err := db.Exec(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := []string{
+		`INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at, site_passport_id, talks_delivery, talks_asked_at)
+		 VALUES ('telegram', 100, '[]', 1, '2026-08-01T00:00:00Z', '777', 'on', '2026-08-01T00:00:00Z')`,
+		`INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at, site_passport_id, talks_delivery, talks_asked_at)
+		 VALUES ('max', 200, '[]', 1, '2026-08-01T00:00:00Z', '777', 'off', '2026-08-01T00:00:00Z')`,
+		`INSERT INTO sessions (messenger, user_id, cookies, valid, updated_at, site_passport_id, talks_delivery)
+		 VALUES ('telegram', 300, '[]', 1, '2026-08-01T00:00:00Z', '888', '')`,
+		`PRAGMA user_version = 9`,
+	}
+	for _, q := range seed {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	owners, err := st.TalksOwners(ctx)
+	if err != nil || len(owners) != 3 {
+		t.Fatalf("сессии после миграции: %+v %v", owners, err)
+	}
+	byUser := make(map[int64]TalksOwner, len(owners))
+	for _, o := range owners {
+		byUser[o.UserID] = o
+	}
+	if got := byUser[100]; got.Scan != ScanOn || !got.Asked {
+		t.Errorf("явный выбор «носи сюда» — это согласие, и переспрашивать незачем: %+v", got)
+	}
+	if got := byUser[200]; got.Scan != ScanUnset || got.Asked {
+		t.Errorf("у второй сессии выбора не было — спросим заново: %+v", got)
+	}
+	if got := byUser[300]; got.Scan != ScanUnset || got.Asked {
+		t.Errorf("несогласившегося не читаем: %+v", got)
+	}
+	// Согласие аккаунта берётся по любой его сессии: 200 читаем за компанию с 100.
+	for _, group := range GroupByAccount(owners) {
+		want := group[0].PassportID == "777"
+		if got := ScanAllowed(group); got != want {
+			t.Errorf("паспорт %s: чтение %v, ожидалось %v", group[0].PassportID, got, want)
+		}
+	}
+}
+
 func TestMigrateV6ToV7(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "v6.db")

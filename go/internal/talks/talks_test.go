@@ -27,6 +27,7 @@ type fakeSite struct {
 	// markRead поле LastMsgID оставляем пустым — как в жизни.
 	markRead     bool
 	historyCalls int // сколько раз дозабирали историю (бюджет запросов к сайту)
+	dialogCalls  int // сколько раз брали список диалогов (0 — сайт не тронут вовсе)
 
 	sent       []sentToSite
 	sendReturn love.TalkMessage
@@ -42,6 +43,7 @@ func (f *fakeSite) Dialogs(_ context.Context, _ []*http.Cookie, _ int) ([]love.T
 	if f.dialogsErr != nil {
 		return nil, f.dialogsErr
 	}
+	f.dialogCalls++
 	return f.dialogs, nil
 }
 
@@ -127,6 +129,18 @@ func seedSession(t *testing.T, st *store.Store, owner int64) {
 		t.Fatal(err)
 	}
 	if err := st.UpsertSession(ctx, store.MessengerTelegram, owner, js, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Без согласия обход не ходит на сайт вовсе (delivery.go), поэтому базовая
+	// сессия его имеет; сам гейт согласия проверяет delivery_test.go.
+	allowScan(t, st, store.MessengerTelegram, owner)
+}
+
+// allowScan отмечает согласие читать переписку — так же, как нажатая человеком
+// кнопка «читать и присылать сюда».
+func allowScan(t *testing.T, st *store.Store, messenger string, userID int64) {
+	t.Helper()
+	if _, err := st.SetTalksDelivery(context.Background(), messenger, userID, store.DeliveryOn, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }

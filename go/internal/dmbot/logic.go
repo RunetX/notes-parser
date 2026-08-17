@@ -489,6 +489,9 @@ func (l *Logic) tryLogin(ctx context.Context, userID int64, messageID, text stri
 	l.captureIdentity(ctx, userID, cookies)
 	_ = l.st.ClearDialogState(ctx, l.stateNS, userID)
 	l.tr.Send(ctx, userID, "Успешный вход. Теперь ваши ответы в обсуждениях попадут на сайт")
+	// Личную переписку без отдельного согласия не читаем — спрашиваем прямо
+	// здесь, паспорт для этого уже снят выше.
+	l.askScanOnLogin(ctx, userID)
 }
 
 // captureIdentity снимает site-идентичность владельца сессии (id анкеты,
