@@ -125,8 +125,14 @@ func (p *Platform) SetNick(ctx context.Context, id int64, nick string) error {
 }
 
 // SetAvatar привязывает к пользователю аватар из хранилища медиа.
+//
+// Условие «уже не тот» — не украшение: зеркало приносит аватар с КАЖДЫМ
+// комментарием, и без него строка человека переписывалась бы на каждую реплику,
+// то есть на пустом месте пухли бы и WAL, и сама таблица.
 func (p *Platform) SetAvatar(ctx context.Context, id int64, sha []byte) error {
-	_, err := p.pool.Exec(ctx, `UPDATE users SET avatar_sha = $2 WHERE id = $1`, id, sha)
+	_, err := p.pool.Exec(ctx, `
+		UPDATE users SET avatar_sha = $2
+		 WHERE id = $1 AND avatar_sha IS DISTINCT FROM $2`, id, sha)
 	return wrapf(err, "аватар пользователя %d", id)
 }
 

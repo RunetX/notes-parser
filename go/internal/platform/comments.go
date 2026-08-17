@@ -170,6 +170,45 @@ func (p *Platform) CommentRow(ctx context.Context, id int64) (Comment, error) {
 	return c, nil
 }
 
+// CommentTally — сколько зеркальных комментариев у заметки и какой у них
+// максимальный id.
+type CommentTally struct {
+	Count int
+	MaxID int64
+}
+
+// MirroredCommentTallies — счётчики по всем заметкам разом. Сверке этого хватает,
+// чтобы найти расхождения, не читая ни одного комментария: пара «сколько и до
+// какого id» ловит и обычный догон (пришли новые), и дотянутый задним числом
+// старый тред (`pull -full`), где max не сдвинулся, а count вырос.
+func (p *Platform) MirroredCommentTallies(ctx context.Context) (map[int64]CommentTally, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT note_id, count(*), max(id) FROM comments WHERE id < $1 GROUP BY note_id`, NativeIDBase)
+	if err != nil {
+		return nil, fmt.Errorf("счётчики комментариев: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]CommentTally)
+	for rows.Next() {
+		var (
+			id int64
+			t  CommentTally
+		)
+		if err := rows.Scan(&id, &t.Count, &t.MaxID); err != nil {
+			return nil, fmt.Errorf("счётчики комментариев: %w", err)
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}
+
+// CommentIDs — id зеркальных комментариев заметки. Сверка спрашивает их у той
+// заметки, где счётчики разошлись, и досылает недостающие.
+func (p *Platform) CommentIDs(ctx context.Context, noteID int64) (map[int64]bool, error) {
+	return p.idSet(ctx, fmt.Sprintf("комментарии заметки %d", noteID),
+		`SELECT id FROM comments WHERE note_id = $1 AND id < $2`, noteID, NativeIDBase)
+}
+
 // IngestComment принимает комментарий с НГС. Идемпотентен по id.
 //
 // Автор без анкеты (Author.ID == 0) сохраняется снимком ника в author_display —

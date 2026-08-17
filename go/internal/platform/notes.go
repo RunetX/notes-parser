@@ -202,6 +202,23 @@ func (p *Platform) IngestNote(ctx context.Context, in MirroredNote) (bool, error
 	return tag.RowsAffected() > 0, nil
 }
 
+// MirroredNoteIDs — id всех заметок, пришедших с НГС. Нужен сверке: разница с
+// тем же множеством в lovegw.db и есть список того, что до площадки не доехало.
+// Нативные заметки в ответ не попадают — их в зеркале нет и быть не может.
+func (p *Platform) MirroredNoteIDs(ctx context.Context) (map[int64]bool, error) {
+	return p.idSet(ctx, "список зеркальных заметок",
+		`SELECT id FROM notes WHERE id < $1`, NativeIDBase)
+}
+
+// OpenNoteIDs — зеркальные заметки, у которых комментарии ещё открыты. Сверке
+// нужна именно эта сторона: отметку «не актуальна» сайт ставит уже после
+// публикации, у приёмника зеркала события про неё нет вовсе, и переносить её
+// может только сверка. Обратный переход (закрыли — открыли) на НГС не бывает.
+func (p *Platform) OpenNoteIDs(ctx context.Context) (map[int64]bool, error) {
+	return p.idSet(ctx, "список открытых заметок",
+		`SELECT id FROM notes WHERE id < $1 AND NOT comments_closed`, NativeIDBase)
+}
+
 // SetCommentsClosed переносит отметку сайта «не актуальна». Возвращает true при
 // первом переходе — чтобы событие логировалось один раз, а не каждый обход.
 //

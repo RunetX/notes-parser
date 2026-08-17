@@ -164,21 +164,51 @@ func (s *MediaStore) Has(sha []byte, mime string) bool {
 	return err == nil
 }
 
-// AttachNoteImage привязывает иллюстрацию к заметке. sha пуст — URL знаем, а
-// байты ещё не забрали (заберём позже, ссылка на hsmedia.ru наружу не уходит).
-func (p *Platform) AttachNoteImage(ctx context.Context, noteID int64, position int, sha []byte, url string) error {
+// AttachNoteImage привязывает иллюстрацию к заметке. sha пуст — ссылку знаем, а
+// байты ещё не забрали (заберём позже; наружу ссылка на hsmedia.ru не уходит).
+//
+// Ключ — ссылка, а позиция берётся следующей свободной. Так сделано потому, что
+// писателей двое и номера они знают по-разному: у живого зеркала порядкового
+// номера нет вовсе (в mirror.Sink его не передают), а сверка приходит со своим
+// из lovegw.db. Порядок при этом сохраняется: обе стороны привязывают картинки
+// заметки в порядке показа.
+func (p *Platform) AttachNoteImage(ctx context.Context, noteID int64, sha []byte, url string) error {
 	var shaArg any
 	if len(sha) > 0 {
 		shaArg = sha
 	}
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO note_images (note_id, position, sha256, url)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (note_id, position) DO UPDATE
-		   SET sha256 = coalesce(excluded.sha256, note_images.sha256),
-		       url    = excluded.url`,
-		noteID, position, shaArg, url)
-	return wrapf(err, "иллюстрация %d заметки %d", position, noteID)
+		SELECT $1, coalesce(max(position) + 1, 0), $2, $3
+		  FROM note_images WHERE note_id = $1
+		ON CONFLICT (note_id, url) DO UPDATE
+		   SET sha256 = coalesce(excluded.sha256, note_images.sha256)`,
+		noteID, shaArg, url)
+	return wrapf(err, "иллюстрация заметки %d (%s)", noteID, url)
+}
+
+// NoteImageCounts — сколько иллюстраций привязано к каждой заметке. Нужен
+// сверке: картинку автор может дописать к уже опубликованной заметке (сайт
+// отправляет её на премодерацию и возвращает), и заметить это иначе нечем.
+func (p *Platform) NoteImageCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT note_id, count(*) FROM note_images GROUP BY note_id`)
+	if err != nil {
+		return nil, fmt.Errorf("счётчики иллюстраций: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]int)
+	for rows.Next() {
+		var (
+			id int64
+			n  int
+		)
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("счётчики иллюстраций: %w", err)
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
 
 // NoteImages — иллюстрации заметки в порядке показа. URL наш; у не забранных

@@ -48,6 +48,8 @@ import (
 	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
 	"lovegw/internal/news"
+	"lovegw/internal/platform"
+	"lovegw/internal/platsink"
 	"lovegw/internal/store"
 	"lovegw/internal/talks"
 	"lovegw/internal/tgx"
@@ -262,7 +264,8 @@ type daemon struct {
 	starts    []func(context.Context) error
 
 	asrSvc     *asr.Service
-	dm         *dmbot.Bot // Telegram: бот команд (РюмкинЪ)
+	plat       *platform.Platform // площадка: пул Postgres, закрывается в run
+	dm         *dmbot.Bot         // Telegram: бот команд (РюмкинЪ)
 	tgTalks    *dmbot.Bot // Telegram: бот переписки (talks_token), иначе = dm
 	tg         *tgx.Mirror
 	mx         *maxx.Mirror // MAX: бот зеркала — канал, чат обсуждения и ЛС-команды
@@ -293,6 +296,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		return err
 	}
 	if err := d.setupMax(); err != nil {
+		return err
+	}
+	if err := d.setupPlatform(ctx); err != nil {
 		return err
 	}
 	// Алертеры собраны — подключаем к ним ASR: о сбое ключа или исчерпанном
@@ -640,6 +646,60 @@ func (d *daemon) setupTalks() {
 	}
 }
 
+// setupPlatform — собственная площадка (эпик E) третьим приёмником зеркала.
+// Выключена в конфиге — демон работает ровно как раньше.
+//
+// Правило на два вида отказа: ждём там, где поможет время, и отступаем там, где
+// поможет только человек. Недоступный на старте Postgres — отказ демона: его
+// перезапустит рестарт-политика, и через минуту всё поднимется само. А
+// разошедшаяся схема так не чинится, поэтому она не роняет демон — приёмник
+// просто не подключается (в чужую схему не пишем вовсе), админу уходит алерт, и
+// пропущенное досылает сверка после `platform migrate`. Зеркалит демон для
+// живых людей, и забытая миграция не должна стоить сообществу канала.
+func (d *daemon) setupPlatform(ctx context.Context) error {
+	cfg, log := d.cfg, d.log
+	if !cfg.Platform.Enabled {
+		return nil
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return fmt.Errorf("площадка: %w", err)
+	}
+	d.plat = p // закрывается в run
+
+	inDB, wanted, err := p.Version(ctx)
+	if err != nil {
+		return fmt.Errorf("площадка: %w", err)
+	}
+	if inDB != wanted {
+		msg := fmt.Sprintf("площадка отключена: схема v%d, а бинарник рассчитан на v%d — нужен `platform migrate`",
+			inDB, wanted)
+		log.Error(msg)
+		if alert := fanOutAlerts(d.alerters); alert != nil {
+			alert(ctx, msg)
+		}
+		return nil
+	}
+	media, err := platform.NewMediaStore(p, cfg.Platform.MediaDir)
+	if err != nil {
+		return fmt.Errorf("площадка: %w", err)
+	}
+	d.sinks = append(d.sinks, platsink.New(p, media, log))
+	// Подписок у площадки нет и быть не может: ЛС она никому не пишет, читатель
+	// приходит сам. Пустой уведомитель стоит здесь, чтобы зеркало не
+	// предупреждало на старте про «мессенджер без ЛС-бота» — площадка не
+	// мессенджер.
+	d.subNotify[platsink.Name] = func(context.Context, int64, mirror.SubEvent) {
+		// Уведомлять некого: подписки живут у ботов.
+	}
+
+	rec := platsink.NewReconciler(d.st, p, log)
+	d.starts = append(d.starts, rec.Run)
+	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
+		"reconcile", platsink.Interval)
+	return nil
+}
+
 // setupNews — новости проекта: админ пишет /news в ЛС командному боту, и текст
 // уходит постом в каналы мимо сайта (заметки на love.ngs.ru не появляется).
 // Приёмники — те же, что у зеркала.
@@ -774,6 +834,9 @@ func (d *daemon) setupPulpit() error {
 // без гонок.
 func (d *daemon) run(ctx context.Context) error {
 	cfg, log := d.cfg, d.log
+	if d.plat != nil {
+		defer d.plat.Close()
+	}
 	mir := mirror.New(d.st, d.client, d.sinks, mirror.Config{
 		NotesLimit:   cfg.NotesLimit,
 		FeedInterval: time.Duration(cfg.FeedIntervalS) * time.Second,

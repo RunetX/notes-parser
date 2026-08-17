@@ -385,10 +385,23 @@ func (c *Config) validate() error {
 		return fmt.Errorf("pulpit.min_runes (%d) больше pulpit.max_runes (%d) — ни одна реплика не пройдёт валидатор",
 			c.Pulpit.MinRunes, c.Pulpit.MaxRunes)
 	}
-	// Площадку без DSN поднимать нечем, а падать на первом же запросе к базе
-	// хуже, чем не стартовать вовсе: контейнер уйдёт в рестарт-петлю молча.
-	if c.Platform.Enabled && c.Platform.DSN == "" {
+	return c.validatePlatform()
+}
+
+// validatePlatform — площадка. Оба поля проверяются на старте, а не по месту
+// использования: падать на первом запросе к базе хуже, чем не стартовать вовсе,
+// иначе контейнер молча уйдёт в рестарт-петлю.
+func (c *Config) validatePlatform() error {
+	if !c.Platform.Enabled {
+		return nil
+	}
+	if c.Platform.DSN == "" {
 		return fmt.Errorf("platform.enabled, но platform.dsn пуст (задайте LOVEGW_PLATFORM_DSN)")
+	}
+	// Без каталога медиа аватары и иллюстрации зеркала девать некуда, а страницы
+	// площадки не имеют права ходить за ними на hsmedia.ru.
+	if c.Platform.MediaDir == "" {
+		return fmt.Errorf("platform.enabled, но platform.media_dir пуст (задайте LOVEGW_PLATFORM_MEDIA_DIR)")
 	}
 	return nil
 }

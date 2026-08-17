@@ -813,16 +813,10 @@ func (m *Mirror) fetchMedia(ctx context.Context, url, what string) []byte {
 // fetchRealAvatar качает аватар автора заметки только если это фото живого
 // человека; для дефолтного силуэта — nil (заметка уходит без аватара).
 func (m *Mirror) fetchRealAvatar(ctx context.Context, url string) []byte {
-	if !isRealAvatar(url) {
+	if !love.IsRealAvatar(url) {
 		return nil
 	}
 	return m.fetchMedia(ctx, url, "аватар автора")
-}
-
-// isRealAvatar отличает загруженное фото от дефолтного силуэта: плейсхолдеры
-// лежат в /static/ на самом сайте, реальные фото — на CDN (абсолютный URL).
-func isRealAvatar(url string) bool {
-	return strings.HasPrefix(url, "http") && !strings.Contains(url, "/static/")
 }
 
 // notifySubscribers шлёт ЛС подписчикам этого мессенджера, которых касается

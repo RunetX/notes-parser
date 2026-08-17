@@ -1,14 +1,18 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"lovegw/internal/config"
 	"lovegw/internal/platform"
+	"lovegw/internal/platsink"
+	"lovegw/internal/store"
 )
 
 // Команда platform — обслуживание собственной площадки «Заметки»: схема и
@@ -19,13 +23,15 @@ import (
 // Иначе рестарт после выкатки тихо перекраивает боевую базу.
 
 var platformSubcommands = map[string]bool{
-	"migrate": true,
-	"doctor":  true,
+	"migrate":   true,
+	"doctor":    true,
+	"reconcile": true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("platform", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.json", "путь к config.json")
+	dbPath := fs.String("db", "", "путь к боевой lovegw.db (по умолчанию из конфига)")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -43,9 +49,53 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformMigrate(ctx, cfg)
 	case "doctor":
 		return platformDoctor(ctx, cfg)
+	case "reconcile":
+		return platformReconcile(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
 	default:
-		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor)")
+		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor, reconcile)")
 	}
+}
+
+// platformReconcile — разовый проход сверки lovegw.db → Postgres. Он же бэкфилл:
+// на пустой площадке первый проход переносит всё зеркало целиком, отдельной
+// команды под это нет и не нужно.
+//
+// Безопасно при работающем демоне: приём идемпотентен по id, а направление
+// одностороннее — сверка только читает SQLite.
+func platformReconcile(ctx context.Context, cfg *config.Config, dbPath string) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	// Схема обязана совпадать с бинарником: приём в чужую схему — это порча
+	// данных, а не «наверное, обойдётся». Тем же правилом живёт и web.
+	inDB, wanted, err := p.Version(ctx)
+	if err != nil {
+		return err
+	}
+	if inDB != wanted {
+		return fmt.Errorf("схема площадки v%d, бинарник рассчитан на v%d — сначала `platform migrate`", inDB, wanted)
+	}
+
+	// Ключ шифрования не нужен: сессий сверка не касается вовсе, она читает
+	// заметки и комментарии (то же правило, что у modwatch activity).
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("боевая БД %s: %w", dbPath, err)
+	}
+	defer st.Close()
+
+	log := newLogger(cfg.LogLevel)
+	start := time.Now()
+	stats, err := platsink.NewReconciler(st, p, log).Once(ctx)
+	// Итог печатаем и при ошибке: на бэкфилле важно, сколько успело пройти —
+	// прерванный проход продолжается с того же места, повторять его не страшно.
+	fmt.Printf("сверка за %s: заметок %d, комментариев %d, иллюстраций %d, закрыто %d (сверено заметок %d)\n",
+		time.Since(start).Truncate(time.Second),
+		stats.Notes, stats.Comments, stats.Images, stats.Closed, stats.Scanned)
+	return err
 }
 
 func platformMigrate(ctx context.Context, cfg *config.Config) error {

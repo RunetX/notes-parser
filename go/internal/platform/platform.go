@@ -74,6 +74,25 @@ func (p *Platform) Pool() *pgxpool.Pool { return p.pool }
 // Migrate накатывает недостающие миграции схемы.
 func (p *Platform) Migrate(ctx context.Context) error { return Migrate(ctx, p.pool) }
 
+// idSet — выборка одной колонки bigint в множество. Общая для сверки с зеркалом:
+// ей нужны именно множества id (что уже есть, чего не хватает), а не строки.
+func (p *Platform) idSet(ctx context.Context, what, sql string, args ...any) (map[int64]bool, error) {
+	rows, err := p.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	defer rows.Close()
+	out := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("%s: %w", what, err)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // Version возвращает версию схемы в базе (0 — схемы ещё нет) и версию, на
 // которую рассчитан бинарник. Расхождение — не ошибка сама по себе: его
 // показывает doctor, а решает администратор.
