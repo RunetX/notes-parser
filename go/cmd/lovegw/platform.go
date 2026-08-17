@@ -5,11 +5,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"lovegw/internal/config"
+	"lovegw/internal/love"
 	"lovegw/internal/platform"
 	"lovegw/internal/platsink"
 	"lovegw/internal/store"
@@ -23,17 +27,19 @@ import (
 // Иначе рестарт после выкатки тихо перекраивает боевую базу.
 
 var platformSubcommands = map[string]bool{
-	"migrate":   true,
-	"doctor":    true,
-	"reconcile": true,
-	"media":     true,
+	"migrate":    true,
+	"doctor":     true,
+	"reconcile":  true,
+	"media":      true,
+	"reply-scan": true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("platform", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.json", "путь к config.json")
 	dbPath := fs.String("db", "", "путь к боевой lovegw.db (по умолчанию из конфига)")
-	limit := fs.Int("limit", 500, "media: сколько файлов забрать за проход")
+	limit := fs.Int("limit", 500, "media: сколько файлов забрать за проход; reply-scan: сколько заметок обойти")
+	note := fs.Int64("note", 0, "reply-scan: обойти только эту заметку")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -55,8 +61,10 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformReconcile(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
 	case "media":
 		return platformMedia(ctx, cfg, *limit)
+	case "reply-scan":
+		return platformReplyScan(ctx, cfg, *limit, *note)
 	default:
-		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor, reconcile, media)")
+		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor, reconcile, media, reply-scan)")
 	}
 }
 
@@ -239,3 +247,87 @@ func platformDoctor(ctx context.Context, cfg *config.Config) error {
 	}
 	return nil
 }
+
+// platformReplyScan уточняет дерево ответов по мобильной версии сайта и попутно
+// снимает пол участников с десктопной страницы комментариев.
+//
+// Зачем: живое зеркало знает адресата только по обращению «Ник, …» и разрешает
+// его в последнюю реплику этого человека — угадывание с точностью около
+// половины, и на странице это видно как ветка, выросшая не там. Настоящее
+// ребро есть только в мобильной версии.
+//
+// Окно закрывается вместе с сайтом, а не по нашему решению.
+func platformReplyScan(ctx context.Context, cfg *config.Config, limit int, note int64) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	log := newLogger(cfg.LogLevel)
+	site, err := replyScanClients(cfg, log)
+	if err != nil {
+		return err
+	}
+	scanner := platsink.NewReplyScanner(p, site, log)
+
+	start := time.Now()
+	var st platsink.ReplyScanStats
+	if note != 0 {
+		// Одна заметка — стенд для проверки: видно, что именно поменялось.
+		st, err = scanner.Note(ctx, note)
+	} else {
+		st, err = scanner.Once(ctx, limit)
+	}
+	fmt.Printf("дерево за %s: заметок %d (отказов %d), комментариев %d, рёбер %d, обращений снято %d, полов %d\n",
+		time.Since(start).Truncate(time.Second), st.Notes, st.Failed, st.Comments, st.Edges, st.Trimmed, st.Genders)
+	return err
+}
+
+// replyScanClients — две страницы одного сайта. Мобильная отдаёт дерево, но не
+// знает пола; десктопная — наоборот. Клиента поэтому два, у каждого свои база
+// и User-Agent: с десктопным UA мобильная версия уводит редиректом, а с
+// мобильным десктопная отдаёт свою вёрстку.
+func replyScanClients(cfg *config.Config, log *slog.Logger) (platsink.TreeSource, error) {
+	mobileBase, err := love.MobileBaseURL(cfg.Site.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	// Общий jar на оба клиента: куки DDoS-Guard живут между запросами, и без
+	// них каждый заход выглядит новым гостем.
+	hc := &http.Client{Timeout: replyScanTimeout, Jar: jar}
+	interval := time.Duration(cfg.Site.RequestIntervalMS) * time.Millisecond
+
+	mobile := love.NewWithClient(mobileBase, replyScanMobileUA, interval, hc, log)
+	mobile.StrictPacing()
+	desktop := love.NewWithClient(cfg.Site.BaseURL, replyScanDesktopUA, interval, hc, log)
+	desktop.StrictPacing()
+	return replyScanSite{tree: mobile, genders: desktop}, nil
+}
+
+type replyScanSite struct {
+	tree    *love.Client
+	genders *love.Client
+}
+
+func (s replyScanSite) FetchNoteReplyTree(ctx context.Context, noteID string) (map[int64]int64, error) {
+	return s.tree.FetchNoteReplyTree(ctx, noteID)
+}
+
+func (s replyScanSite) FetchGenders(ctx context.Context, noteID string) (map[int64]string, error) {
+	return s.genders.FetchGenders(ctx, noteID)
+}
+
+const (
+	// replyScanTimeout — тред целиком сайт рендерит долго: на 248 комментариях
+	// ~2 c, на 848 думал минуту и отвечал 500. Потолок щедрый, но конечный.
+	replyScanTimeout  = 45 * time.Second
+	replyScanMobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
+		"AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+	replyScanDesktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)

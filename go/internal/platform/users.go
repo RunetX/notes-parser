@@ -152,3 +152,26 @@ func wrapf(err error, format string, args ...any) error {
 	}
 	return fmt.Errorf(format+": %w", append(args, err)...)
 }
+
+// SetGenders проставляет пол участникам. Приезжает он даром — со страницы
+// комментариев, по которой и так идёт обход дерева, — поэтому отдельного
+// обхода анкет (как у `personas gender`) не нужно.
+//
+// Обезличенных не трогаем: возврат пола из зеркала отменял бы исполненное
+// требование субъекта, ровно как и возврат ника.
+func (p *Platform) SetGenders(ctx context.Context, byID map[int64]Gender) (int, error) {
+	changed := 0
+	for id, v := range byID {
+		if v == GenderUnknown {
+			continue
+		}
+		tag, err := p.pool.Exec(ctx, `
+			UPDATE users SET gender = $2
+			 WHERE id = $1 AND gender <> $2 AND anonymized_at IS NULL`, id, v)
+		if err != nil {
+			return changed, fmt.Errorf("пол участника %d: %w", id, err)
+		}
+		changed += int(tag.RowsAffected())
+	}
+	return changed, nil
+}

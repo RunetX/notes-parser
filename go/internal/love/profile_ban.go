@@ -225,4 +225,3 @@ func bladeUser(body []byte) (bladeUserData, error) {
 	}
 	return *blade.Layout.User, nil
 }
-

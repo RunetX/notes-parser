@@ -250,6 +250,25 @@ func TestCommentAvatarIsFullSize(t *testing.T) {
 	}
 }
 
+// [С] .lv-comment__author-info .lv-people__nickname._female { color:#ef4e4f },
+// ._male { color:#448dc8 } — ник покрашен по полу. В треде на четыре сотни
+// реплик цвет первым отделяет собеседников друг от друга.
+func TestNickCarriesGenderClass(t *testing.T) {
+	n := sampleNote()
+	n.Author.Gender = platform.GenderFemale
+	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
+	if !strings.Contains(do(h, pass(t, "GET", "/")).Body.String(), `class="nick _female"`) {
+		t.Error("ник не помечен полом")
+	}
+	// У анонима пола нет и быть не может: он приехал бы вместе с автором.
+	n.Anonymous, n.Author = true, platform.Author{}
+	h2 := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
+	body := do(h2, pass(t, "GET", "/")).Body.String()
+	if strings.Contains(body, "_female") || strings.Contains(body, "_male") {
+		t.Error("у анонимной заметки в разметке оказался пол")
+	}
+}
+
 // [С] Числа и цвета сайта: разделитель #c7d3d9, текст #3d4952, служебное #999,
 // ник женский #ef4e4f, мужской #448dc8. Тест держит их от случайной правки.
 func TestPaletteMatchesSite(t *testing.T) {

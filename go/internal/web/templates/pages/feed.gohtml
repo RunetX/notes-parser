@@ -14,7 +14,7 @@
          НГС; это первое, по чему постоянный читатель узнаёт страницу. */}}
     <div class="author">
       {{template "avatar" (av .Author.AvatarURL .Name)}}
-      <span class="nick{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
+      <span class="nick {{.Author.Gender.Class}}{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
     </div>
     <div class="nbody">
       {{/* Текст заметки показывается ЦЕЛИКОМ, без «читать дальше»: на НГС

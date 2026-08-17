@@ -22,6 +22,7 @@ const commentViewColumns = `
 	CASE WHEN c.anonymous THEN NULL ELSE u.avatar_sha     END,
 	CASE WHEN c.anonymous THEN NULL ELSE m.mime           END,
 	CASE WHEN c.anonymous THEN NULL ELSE c.author_display END,
+	CASE WHEN c.anonymous THEN 0    ELSE coalesce(u.gender, 0) END,
 	coalesce(c.author_id = $1, false),
 	rc.id, rc.anonymous,
 	CASE WHEN rc.anonymous THEN NULL
@@ -43,19 +44,20 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 		sha       []byte
 		mime      *string
 		display   *string
+		gender    Gender
 		replyID   *int64
 		replyAnon *bool
 		replyNick *string
 	)
 	err := row.Scan(&c.ID, &c.NoteID, &c.Anonymous, &c.Body, &c.Path, &depth, &c.Status,
 		&c.PublishedAt, &c.EditedAt,
-		&author, &nick, &sha, &mime, &display, &c.Own,
+		&author, &nick, &sha, &mime, &display, &gender, &c.Own,
 		&replyID, &replyAnon, &replyNick)
 	if err != nil {
 		return CommentView{}, err
 	}
 	c.Depth = int(depth)
-	c.Author = Author{ID: idOf(author), Nick: strOf(nick), AvatarURL: MediaURL(sha, strOf(mime))}
+	c.Author = Author{ID: idOf(author), Nick: strOf(nick), AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender}
 	c.Display = strOf(display)
 	// Адресат рисуется, только если строка адресата ещё существует: снесённого
 	// модерацией родителя подписать нечем, и ветка просто теряет обращение.

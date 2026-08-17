@@ -145,6 +145,28 @@ type Comment struct {
 
 // ---------------------------------------------------------------- виды показа
 
+// Gender — пол участника. Красит ник, как на НГС; у безанкетных комментаторов
+// зеркала неизвестен.
+type Gender int16
+
+const (
+	GenderUnknown Gender = 0
+	GenderMale    Gender = 1
+	GenderFemale  Gender = 2
+)
+
+// Class — класс ника для разметки: те же `_male` / `_female`, что на сайте.
+func (g Gender) Class() string {
+	switch g {
+	case GenderMale:
+		return "_male"
+	case GenderFemale:
+		return "_female"
+	default:
+		return ""
+	}
+}
+
 // Author — всё, что о человеке можно показать. AvatarURL — ТОЛЬКО наш путь
 // /media/…: ссылки на hsmedia.ru наружу не уходят, иначе смерть НГС забирает с
 // собой и наши страницы (и заодно сообщает ему каждого нашего читателя).
@@ -152,6 +174,7 @@ type Author struct {
 	ID        int64
 	Nick      string
 	AvatarURL string
+	Gender    Gender
 }
 
 // Known — за строкой есть анкета (а не безанкетный комментатор и не аноним).

@@ -9,7 +9,7 @@
   </nav>
   <div class="author">
     {{template "avatar" (av $n.Author.AvatarURL $n.Name)}}
-    <span class="nick{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
+    <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
   </div>
   <div class="nbody">
     <div class="text">{{body $n.Body}}</div>
@@ -36,7 +36,7 @@
     <div class="cava">{{template "avatar" (av .Author.AvatarURL .Name)}}</div>
     <div class="cbody">
       <div class="chead">
-        <span class="nick{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
+        <span class="nick {{.Author.Gender.Class}}{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
         <a class="anchor" href="#c{{.ID}}" title="Ссылка на этот комментарий">#</a>
         <div class="cdate">{{when .PublishedAt true}}</div>
       </div>
