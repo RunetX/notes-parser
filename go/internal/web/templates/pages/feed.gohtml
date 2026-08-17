@@ -1,0 +1,30 @@
+{{define "content"}}
+<h1 class="sr-only">Лента заметок</h1>
+
+{{if not .Notes}}
+<p class="empty">Пока пусто.</p>
+{{end}}
+
+{{$limit := .Limit}}
+<ol class="feed">
+{{range .Notes}}
+  <li class="card">
+    <div class="who">
+      {{template "avatar" (av .Author.AvatarURL .Name)}}
+      <div class="whotext">
+        <span class="nick{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
+        <span class="meta">{{when .PublishedAt .PublishedExact}}</span>
+      </div>
+    </div>
+    <div class="text">{{excerpt $limit .Body}}</div>
+    <p class="acts">
+      <a class="open" href="/n/{{.ID}}">{{if long $limit .Body}}Читать целиком{{else}}Открыть{{end}}</a>
+      <a class="cnt" href="/n/{{.ID}}">{{.CommentCount}}&nbsp;{{plural .CommentCount "комментарий" "комментария" "комментариев"}}</a>
+      {{if .CommentsClosed}}<span class="closed">комментарии закрыты</span>{{end}}
+    </p>
+  </li>
+{{end}}
+</ol>
+
+{{if .More}}<p class="more"><a href="{{.More}}">Ещё заметки</a></p>{{end}}
+{{end}}

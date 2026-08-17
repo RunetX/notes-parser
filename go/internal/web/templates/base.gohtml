@@ -1,0 +1,40 @@
+{{/* Каркас страницы. Один на всех: отдельной мобильной вёрстки у нас нет —
+     в отличие от НГС, где живут две несовместимые (lv- и lvmb-), и правка в
+     одной регулярно не доезжает до другой. */}}
+<!doctype html>
+<html lang="ru"{{if .Theme}} data-theme="{{.Theme}}"{{end}}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{/* Индексация запрещена и заголовком X-Robots-Tag, и здесь: площадка видна
+     только вошедшим, а чужие тексты не должны оседать в поисковой выдаче. */}}
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}}</title>
+<link rel="icon" href="{{asset "icon.svg"}}">
+<link rel="stylesheet" href="{{asset "style.css"}}">
+<script src="{{asset "app.js"}}" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="wrap topin">
+    <a class="brand" href="/">{{site}}</a>
+  </div>
+</header>
+
+<main class="wrap main">
+{{template "content" .}}
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <form class="themes" method="post" action="/theme">
+      <span class="lbl">Оформление</span>
+      <input type="hidden" name="back" value="{{.Back}}">
+      {{$cur := .Theme}}{{range themes}}<button type="submit" name="theme" value="{{.ID}}" class="tbtn{{if eq .ID $cur}} on{{end}}"{{if eq .ID $cur}} aria-current="true"{{end}}>{{.Name}}</button>{{end}}
+    </form>
+    <p class="fine">Зеркало раздела «Заметки» love.ngs.ru. Страница закрыта от поисковиков.</p>
+  </div>
+</footer>
+</body>
+</html>

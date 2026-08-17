@@ -71,6 +71,11 @@ func (p *Platform) Close() {
 // Pool — доступ к пулу для миграций и диагностики.
 func (p *Platform) Pool() *pgxpool.Pool { return p.pool }
 
+// Ping — база отвечает. Отдельный метод, а не Pool().Ping() у вызывающего:
+// веб-морда знает о ядре ровно через интерфейс чтения (см. web.Store), и
+// проверка здоровья не повод давать ей весь пул.
+func (p *Platform) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
+
 // Migrate накатывает недостающие миграции схемы.
 func (p *Platform) Migrate(ctx context.Context) error { return Migrate(ctx, p.pool) }
 

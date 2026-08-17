@@ -1,0 +1,259 @@
+/* Оформление площадки.
+ *
+ * Один файл, никакой сборки и ни одного внешнего запроса: CSP запрещает чужие
+ * хосты, а npm тут не окупается — весь стиль умещается в четыре экрана.
+ *
+ * Тема живёт в токенах :root. Их три набора плюс «как в системе»: без атрибута
+ * data-theme решает prefers-color-scheme, с атрибутом — человек. «Классика»
+ * повторяет палитру НГС: переезжающему она говорит «это то самое место»
+ * быстрее любого текста на главной.
+ *
+ * ВАЖНОЕ ОГРАНИЧЕНИЕ: inline-атрибут style запрещён политикой CSP (хеши и
+ * nonce к атрибутам неприменимы), поэтому ничего вычисленного на сервере в
+ * разметку не подставляется. Глубина ветки приезжает КЛАССОМ d1…d12, а
+ * величину отступа считает уже отсюда calc(). */
+
+:root {
+  --bg: #eef0f4;
+  --card: #ffffff;
+  --sunk: #f4f6f9;
+  --ink: #1a1d23;
+  --ink2: #5d6675;
+  --rule: #d7dbe3;
+  --link: #1f5fbf;
+  --accent: #c0392b;
+  --shadow: 0 1px 2px rgba(16, 20, 28, .06);
+  --step: 10px;
+  --radius: 10px;
+}
+
+/* «Как в системе» — тёмный набор берётся, только если человек ничего не выбрал. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #14171c;
+    --card: #1c2027;
+    --sunk: #222730;
+    --ink: #e4e8ee;
+    --ink2: #98a2b1;
+    --rule: #2c323b;
+    --link: #6fa5ee;
+    --accent: #e0715f;
+    --shadow: none;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #14171c;
+  --card: #1c2027;
+  --sunk: #222730;
+  --ink: #e4e8ee;
+  --ink2: #98a2b1;
+  --rule: #2c323b;
+  --link: #6fa5ee;
+  --accent: #e0715f;
+  --shadow: none;
+}
+
+:root[data-theme="classic"] {
+  --bg: #e9edf2;
+  --card: #ffffff;
+  --sunk: #f2f5f9;
+  --ink: #202020;
+  --ink2: #6b7280;
+  --rule: #ccd6e0;
+  --link: #14559e;
+  --accent: #d0021b;
+  --shadow: 0 1px 0 rgba(20, 85, 158, .08);
+  --radius: 4px;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.55 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+a { color: var(--link); }
+a:hover { color: var(--accent); }
+
+.wrap { max-width: 46rem; margin: 0 auto; padding: 0 12px; }
+
+/* ---------------------------------------------------------------- шапка */
+
+.top {
+  background: var(--card);
+  border-bottom: 1px solid var(--rule);
+}
+.topin { display: flex; align-items: center; gap: 16px; min-height: 52px; }
+.brand {
+  font-weight: 700; font-size: 19px; letter-spacing: -.01em;
+  color: var(--ink); text-decoration: none;
+}
+.brand:hover { color: var(--accent); }
+.main { padding: 16px 12px 40px; }
+
+/* ---------------------------------------------------------------- лента */
+
+.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+
+.card, .note {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+}
+.note { margin-bottom: 18px; }
+
+.who { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.whotext { display: flex; flex-direction: column; min-width: 0; }
+
+.ava {
+  width: 44px; height: 44px; flex: 0 0 44px;
+  border-radius: 50%; object-fit: cover; background: var(--sunk);
+}
+.ava.none {
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink2); font-weight: 700; font-size: 18px;
+  border: 1px solid var(--rule);
+}
+
+.nick { font-weight: 600; color: var(--link); overflow-wrap: anywhere; }
+.nick.anon { color: var(--ink2); font-style: italic; font-weight: 500; }
+.meta { color: var(--ink2); font-size: 13px; }
+
+.text { overflow-wrap: anywhere; }
+.text p { margin: 0 0 .7em; }
+.text p:last-child { margin-bottom: 0; }
+
+.acts {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline;
+  margin: 10px 0 0; font-size: 14px;
+}
+.acts .cnt { color: var(--ink2); text-decoration: none; }
+.acts .cnt:hover { color: var(--accent); text-decoration: underline; }
+.closed { color: var(--ink2); font-size: 13px; }
+.note-closed {
+  background: var(--sunk); border: 1px solid var(--rule); border-radius: var(--radius);
+  padding: 8px 12px; margin: 0 0 12px;
+}
+
+.shots { margin-top: 12px; display: grid; gap: 8px; }
+.shots img { max-width: 100%; height: auto; border-radius: var(--radius); display: block; }
+
+.more { margin: 18px 0 0; text-align: center; }
+.more a {
+  display: inline-block; padding: 9px 20px;
+  background: var(--card); border: 1px solid var(--rule); border-radius: var(--radius);
+  text-decoration: none;
+}
+.empty { color: var(--ink2); text-align: center; padding: 24px 0; }
+
+/* ---------------------------------------------------------------- тред */
+
+.threadhead {
+  display: flex; flex-wrap: wrap; gap: 8px 16px;
+  align-items: baseline; justify-content: space-between; margin: 20px 0 10px;
+}
+.threadhead h2 { font-size: 16px; margin: 0; }
+
+.switch { display: flex; gap: 1px; background: var(--rule); border-radius: var(--radius); overflow: hidden; }
+.switch a {
+  padding: 5px 12px; font-size: 14px; text-decoration: none;
+  background: var(--card); color: var(--ink2);
+}
+.switch a.on { background: var(--link); color: #fff; }
+
+.thread { list-style: none; margin: 0; padding: 0; }
+
+/* Отступ ветки: класс несёт только НОМЕР уровня, расстояние считает calc.
+   Так глубина не попадает в разметку значением и не требует inline-style. */
+.d1 { --d: 0 } .d2 { --d: 1 } .d3 { --d: 2 } .d4 { --d: 3 }
+.d5 { --d: 4 } .d6 { --d: 5 } .d7 { --d: 6 } .d8 { --d: 7 }
+.d9 { --d: 8 } .d10 { --d: 9 } .d11 { --d: 10 } .d12 { --d: 11 }
+
+.c {
+  margin: 0 0 8px calc(var(--d, 0) * var(--step));
+  padding: 9px 12px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: var(--radius);
+}
+.c:target { border-left-color: var(--accent); background: var(--sunk); }
+/* Плоский вид — строго по времени, отступов нет вовсе: это его смысл. */
+.thread.flat .c { margin-left: 0; }
+
+.chead { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
+.chead .ava { width: 26px; height: 26px; flex-basis: 26px; }
+.chead .ava.none { font-size: 12px; }
+.chead .nick { font-size: 14px; }
+.chead .meta { font-size: 12px; }
+
+.anchor { margin-left: auto; color: var(--ink2); text-decoration: none; font-size: 13px; }
+.anchor:hover { color: var(--accent); }
+
+/* Обращение «Ник, » — ребро, а не часть текста: в базе его нет, здесь оно
+   дорисовано из ТЕКУЩЕГО ника адресата. Выглядит как на сайте: началом первой
+   фразы, а не строкой сверху. */
+.to { font-weight: 600; text-decoration: none; }
+.to:hover { text-decoration: underline; }
+
+.fold {
+  font: inherit; font-size: 12px; line-height: 1;
+  padding: 3px 7px; margin-left: 4px;
+  background: var(--sunk); color: var(--ink2);
+  border: 1px solid var(--rule); border-radius: 999px; cursor: pointer;
+}
+.fold:hover { color: var(--accent); }
+
+/* ---------------------------------------------------------------- вход и ошибки */
+
+.gate, .oops { max-width: 30rem; margin: 8vh auto 0; text-align: center; }
+.gate h1 { margin: 0 0 12px; }
+.keyform { display: flex; flex-direction: column; gap: 8px; align-items: center; margin: 18px 0; }
+.keyform label { color: var(--ink2); font-size: 14px; }
+.keyform input {
+  font: inherit; width: 100%; max-width: 22rem; padding: 9px 12px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--card); color: var(--ink);
+}
+.keyform button, .oops a {
+  font: inherit; padding: 9px 22px; cursor: pointer;
+  background: var(--link); color: #fff; border: 0; border-radius: var(--radius);
+  text-decoration: none;
+}
+.bad { color: var(--accent); }
+.oops .code { font-size: 40px; font-weight: 700; margin: 0; color: var(--ink2); }
+.oops .msg { margin: 4px 0 18px; }
+
+/* ---------------------------------------------------------------- подвал */
+
+.foot { border-top: 1px solid var(--rule); background: var(--card); padding: 14px 0 28px; }
+.themes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.themes .lbl { color: var(--ink2); font-size: 13px; margin-right: 4px; }
+.tbtn {
+  font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer;
+  background: var(--sunk); color: var(--ink2);
+  border: 1px solid var(--rule); border-radius: 999px;
+}
+.tbtn.on { background: var(--link); color: #fff; border-color: var(--link); }
+.fine { color: var(--ink2); font-size: 12px; margin: 10px 0 0; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+
+/* На широком экране отступ ветки крупнее: места хватает, а дерево читается
+   тем лучше, чем яснее уровни. */
+@media (min-width: 40rem) {
+  :root { --step: 20px; }
+  .wrap { padding: 0 20px; }
+  .main { padding: 22px 20px 56px; }
+  .card, .note { padding: 14px 18px; }
+}

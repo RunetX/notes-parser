@@ -54,9 +54,11 @@ func cmdWeb(ctx context.Context, args []string) error {
 	}
 
 	srv := web.New(web.Config{
-		Listen:  cfg.Platform.Listen,
-		BaseURL: cfg.Platform.BaseURL,
-		Log:     log,
+		Listen:     cfg.Platform.Listen,
+		BaseURL:    cfg.Platform.BaseURL,
+		MediaDir:   cfg.Platform.MediaDir,
+		PreviewKey: cfg.Platform.PreviewKey,
+		Log:        log,
 	}, pf)
 	return srv.Run(ctx)
 }

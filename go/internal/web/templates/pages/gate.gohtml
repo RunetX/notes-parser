@@ -1,0 +1,14 @@
+{{define "content"}}
+<section class="gate">
+  <h1>{{site}}</h1>
+  <p>Площадка ещё собирается. Пока идёт стройка, посмотреть можно по общему ключу — он у владельца.</p>
+  {{if .Wrong}}<p class="bad">Ключ не подошёл.</p>{{end}}
+  <form method="post" action="/gate" class="keyform">
+    <input type="hidden" name="to" value="{{.To}}">
+    <label for="key">Ключ</label>
+    <input id="key" name="key" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit">Войти</button>
+  </form>
+  <p class="fine">Настоящий вход будет другим: код в поле «о себе» вашей анкеты на НГС — и весь ваш прежний след здесь станет вашим.</p>
+</section>
+{{end}}

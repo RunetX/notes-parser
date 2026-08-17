@@ -1,0 +1,54 @@
+{{define "content"}}
+{{$n := .Note}}
+<article class="note">
+  <div class="who">
+    {{template "avatar" (av $n.Author.AvatarURL $n.Name)}}
+    <div class="whotext">
+      <span class="nick{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
+      <span class="meta">{{when $n.PublishedAt $n.PublishedExact}}</span>
+    </div>
+  </div>
+  <div class="text">{{body $n.Body}}</div>
+  {{if .Images}}
+  <div class="shots">
+    {{range .Images}}{{if .URL}}
+    <a href="{{.URL}}"><img src="{{.URL}}" alt="Иллюстрация к заметке"{{if .Width}} width="{{.Width}}" height="{{.Height}}"{{end}} loading="lazy" decoding="async"></a>
+    {{end}}{{end}}
+  </div>
+  {{end}}
+</article>
+
+<div class="threadhead">
+  <h2>{{$n.CommentCount}}&nbsp;{{plural $n.CommentCount "комментарий" "комментария" "комментариев"}}</h2>
+  {{/* Переключатель серверный: без JS он обязан работать так же, поэтому это
+       две обычные ссылки, а выбор запоминается кукой. */}}
+  <nav class="switch">
+    <a href="{{.TreeURL}}"{{if not .Flat}} class="on" aria-current="page"{{end}}>Дерево</a>
+    <a href="{{.FlatURL}}"{{if .Flat}} class="on" aria-current="page"{{end}}>По времени</a>
+  </nav>
+</div>
+
+{{if $n.CommentsClosed}}
+<p class="closed note-closed">Комментарии к этой заметке закрыты.</p>
+{{end}}
+
+{{if not .Comments}}
+<p class="empty">Комментариев пока нет.</p>
+{{end}}
+
+<ol class="thread{{if .Flat}} flat{{end}}">
+{{range .Comments}}
+  <li class="c {{depth .Depth}}" id="c{{.ID}}" data-depth="{{.Depth}}">
+    <div class="chead">
+      {{template "avatar" (av .Author.AvatarURL .Name)}}
+      <span class="nick{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
+      <span class="meta">{{when .PublishedAt true}}</span>
+      <a class="anchor" href="#c{{.ID}}" title="Ссылка на этот комментарий">#</a>
+    </div>
+    <div class="text">{{commentBody .}}</div>
+  </li>
+{{end}}
+</ol>
+
+{{if .More}}<p class="more"><a href="{{.More}}">Дальше</a></p>{{end}}
+{{end}}

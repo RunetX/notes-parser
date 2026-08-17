@@ -175,6 +175,19 @@ type NoteView struct {
 	Own            bool // «моя» — чтобы автор видел свою анонимку среди своих
 }
 
+// Name — подпись под заметкой. Пара к CommentView.Name: подпись обязана
+// считаться в одном месте, иначе аноним где-нибудь окажется «без имени».
+func (n NoteView) Name() string {
+	switch {
+	case n.Anonymous:
+		return "Аноним"
+	case n.Author.Known() && n.Author.Nick != "":
+		return n.Author.Nick
+	default:
+		return "Без имени"
+	}
+}
+
 // ReplyRef — адресат ответа для дорисовки префикса «Ник, …». Ник берётся
 // ТЕКУЩИЙ, поэтому переименование и обезличивание меняют его и в чужих ответах.
 type ReplyRef struct {

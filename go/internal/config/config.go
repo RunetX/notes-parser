@@ -186,6 +186,12 @@ type Platform struct {
 	// Caddy напрямую, мимо Go: на одном ядре самый жирный по трафику путь не
 	// должен проходить через приложение.
 	MediaDir string `json:"media_dir"`
+	// PreviewKey — общий ключ доступа до настоящего входа (Ш4). Площадка стоит
+	// на публичном домене и показывает зеркало переписки живых людей, поэтому
+	// открытой она быть не может: пустой ключ означает не «пускать всех», а
+	// «не пускать никого» — страницы отвечают 403, healthz и robots.txt живут.
+	// Env: LOVEGW_PLATFORM_PREVIEW_KEY (боевое место — env, это секрет).
+	PreviewKey string `json:"preview_key,omitempty"`
 }
 
 type Config struct {
@@ -458,6 +464,7 @@ func (c *Config) applyPlatformEnv() error {
 	envString(&c.Platform.Listen, "LOVEGW_PLATFORM_LISTEN")
 	envString(&c.Platform.BaseURL, "LOVEGW_PLATFORM_BASE_URL")
 	envString(&c.Platform.MediaDir, "LOVEGW_PLATFORM_MEDIA_DIR")
+	envString(&c.Platform.PreviewKey, "LOVEGW_PLATFORM_PREVIEW_KEY")
 	return nil
 }
 
