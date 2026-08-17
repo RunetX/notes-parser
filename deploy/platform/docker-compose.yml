@@ -1,0 +1,94 @@
+# Площадка «Заметки» (эпик E): Postgres, веб-морда, реверс-прокси с TLS.
+# Запускать из каталога deploy/platform.
+#
+# Файл отдельный от deploy/docker-compose.yml намеренно и ВРЕМЕННО. Пока боевой
+# демон живёт на старом хосте, поднимать здесь весь общий compose нельзя: он
+# стартанёт второй экземпляр ботов на тех же токенах, а getUpdates у Telegram
+# single-consumer — это 409 и дубли в канале. После переезда демона сюда файлы
+# сливаются в один.
+#
+# Хост-требование: российский IP (love.ngs.ru отдаёт 403 остальному миру).
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: platform-pg
+    restart: unless-stopped
+    <<: *hardening
+    # Общий якорь снимает ВСЕ привилегии — он писался под distroless-бинарник,
+    # которому и не нужно ничего. Официальный образ Postgres устроен иначе:
+    # стартует от root, готовит каталоги и переключается на пользователя
+    # postgres, поэтому без этих четырёх он вечно перезапускается с
+    # «chown: Operation not permitted». Возвращаем ровно их, а не всё подряд.
+    # DAC_OVERRIDE здесь же: без него root внутри контейнера не может обойти
+    # права на каталогах данных и падает на «find: Permission denied».
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID]
+    # Портов НЕТ намеренно: база доступна только по внутренней сети compose.
+    # Открытый наружу 5432 — самый дешёвый способ отдать всю базу целиком.
+    volumes:
+      # Именованный том, а не bind-mount: на bind-mount проект уже дважды ловил
+      # «database disk image is malformed» (29 и 30 июля 2026, SQLite на
+      # Windows-хосте). Postgres к тому же требователен к правам и fsync.
+      #
+      # Монтируется /var/lib/postgresql ЦЕЛИКОМ, а не .../data. В postgres:18
+      # PGDATA переехал в /var/lib/postgresql/18/docker, и привычный по прошлым
+      # версиям путь .../data теперь бьёт мимо данных: контейнер поднимается,
+      # работает, а база живёт в анонимном томе и исчезает при пересоздании.
+      # Точка монтирования, объявленная самим образом, — именно эта.
+      - pgdata:/var/lib/postgresql
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    environment:
+      POSTGRES_DB: platform
+      POSTGRES_USER: platform
+    env_file: [./secrets.env] # POSTGRES_PASSWORD, LOVEGW_PLATFORM_DSN
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  platform:
+    image: lovegw:latest
+    container_name: platform-web
+    restart: unless-stopped
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    command: ["web", "-config", "/config.json"]
+    # Портов тоже НЕТ: наружу выпускает только caddy.
+    volumes:
+      - ./data:/data # /data/media — файловое хранилище (CAS)
+      - ./config.json:/config.json:ro
+    env_file: [./secrets.env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: platform-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # сертификаты ACME — их нельзя терять при пересоздании
+      - caddy_config:/config
+      # Медиа отдаёт Caddy напрямую, мимо Go: на одном ядре самый жирный по
+      # трафику путь не должен проходить через приложение.
+      - ./data/media:/srv/media:ro
+    depends_on: [platform]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

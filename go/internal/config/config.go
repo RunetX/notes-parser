@@ -171,6 +171,23 @@ type Pulpit struct {
 	FuseMisses       int     `json:"fuse_misses"` // столько «страница есть, реплики нет» подряд = выключаемся
 }
 
+// Platform — собственная площадка «Заметки» (эпик E): Postgres, SSR и API.
+// Секция гейтит саму службу; «работает ли она сейчас» решается не здесь.
+//
+// DSN держит пароль, поэтому боевое место ему — env LOVEGW_PLATFORM_DSN, а не
+// config.json: конфиг монтируется в контейнер файлом и попадает в бэкапы вместе
+// с каталогом развёртывания.
+type Platform struct {
+	Enabled bool   `json:"enabled"`
+	DSN     string `json:"dsn"`      // postgres://user:pass@host:5432/db?sslmode=disable
+	Listen  string `json:"listen"`   // адрес HTTP-сервера, за реверс-прокси — :8080
+	BaseURL string `json:"base_url"` // https://t3h.ru — для абсолютных ссылок и кук
+	// MediaDir — каталог CAS: /data/media/<2 hex>/<sha256>. Отдаёт эти файлы
+	// Caddy напрямую, мимо Go: на одном ядре самый жирный по трафику путь не
+	// должен проходить через приложение.
+	MediaDir string `json:"media_dir"`
+}
+
 type Config struct {
 	Site          Site        `json:"site"`
 	MirrorBot     MirrorBot   `json:"mirror_bot"`
@@ -181,6 +198,7 @@ type Config struct {
 	LLM           LLM         `json:"llm"`
 	ASR           ASR         `json:"asr"`
 	Pulpit        Pulpit      `json:"pulpit"`
+	Platform      Platform    `json:"platform"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
 	AdminTGUserID int64       `json:"admin_tg_user_id"`
@@ -288,6 +306,13 @@ func Load(path string) (*Config, error) {
 			ReplyWindowH:     24,
 			FuseMisses:       3,
 		},
+		// Площадка по умолчанию выключена. Слушает только петлю контейнера:
+		// наружу её выпускает реверс-прокси, у самого приложения портов быть
+		// не должно.
+		Platform: Platform{
+			Listen:   ":8080",
+			MediaDir: "data/media",
+		},
 	}
 
 	b, err := os.ReadFile(path)
@@ -316,6 +341,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.applyPulpitEnv(); err != nil {
+		return nil, err
+	}
+	if err := cfg.applyPlatformEnv(); err != nil {
 		return nil, err
 	}
 
@@ -356,6 +384,11 @@ func (c *Config) validate() error {
 	if c.Pulpit.MinRunes > c.Pulpit.MaxRunes && c.Pulpit.MaxRunes > 0 {
 		return fmt.Errorf("pulpit.min_runes (%d) больше pulpit.max_runes (%d) — ни одна реплика не пройдёт валидатор",
 			c.Pulpit.MinRunes, c.Pulpit.MaxRunes)
+	}
+	// Площадку без DSN поднимать нечем, а падать на первом же запросе к базе
+	// хуже, чем не стартовать вовсе: контейнер уйдёт в рестарт-петлю молча.
+	if c.Platform.Enabled && c.Platform.DSN == "" {
+		return fmt.Errorf("platform.enabled, но platform.dsn пуст (задайте LOVEGW_PLATFORM_DSN)")
 	}
 	return nil
 }
@@ -412,6 +445,19 @@ func (c *Config) applyPulpitEnv() error {
 	}
 	envString(&c.Pulpit.Model, "LOVEGW_PULPIT_MODEL")
 	return envFloat(&c.Pulpit.ReplyProbability, "LOVEGW_PULPIT_REPLY_PROBABILITY")
+}
+
+// applyPlatformEnv — переопределения секции platform. DSN держит пароль к
+// Postgres, поэтому его боевое место — именно env, рядом с токенами ботов.
+func (c *Config) applyPlatformEnv() error {
+	if err := envBool(&c.Platform.Enabled, "LOVEGW_PLATFORM_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.Platform.DSN, "LOVEGW_PLATFORM_DSN")
+	envString(&c.Platform.Listen, "LOVEGW_PLATFORM_LISTEN")
+	envString(&c.Platform.BaseURL, "LOVEGW_PLATFORM_BASE_URL")
+	envString(&c.Platform.MediaDir, "LOVEGW_PLATFORM_MEDIA_DIR")
+	return nil
 }
 
 // envString переопределяет значение, если переменная задана и непуста.

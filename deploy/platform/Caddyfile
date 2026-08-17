@@ -1,0 +1,49 @@
+# Реверс-прокси площадки. Caddy сам берёт и продлевает сертификат Let's Encrypt
+# (проверено: ACME-директория с этого хоста отвечает 200).
+#
+# Почему Caddy, а не nginx+certbot: при одном администраторе связка из трёх мест
+# (конфиг, крон продления, шаблон) — это три места, где что-то сгниёт молча.
+# И не autocert внутри Go: сертификатам нужна запись, а контейнер приложения
+# работает read_only, плюс статику пришлось бы отдавать через Go.
+
+t3h.ru {
+	encode zstd gzip
+
+	# Медиа адресуются по sha256, поэтому содержимое по ссылке неизменно —
+	# отсюда immutable на год. Файлы отдаёт Caddy, минуя приложение: это самый
+	# жирный по трафику путь, а ядро на хосте одно.
+	handle_path /media/* {
+		root * /srv/media
+		file_server
+		header Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	reverse_proxy platform:8080
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	# Сырых IP не храним нигде, включая логи: они персональные данные, а утечка
+	# — это 24 часа на уведомление РКН. Приложение хранит только HMAC, и лог
+	# прокси не должен быть дырой в этом правиле.
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip delete
+				request>client_ip delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+# Голый IP и любое другое имя — молча закрываем: сертификата на них нет, а
+# отвечать содержимым на неизвестный Host незачем.
+:80 {
+	respond 404
+}

@@ -119,6 +119,10 @@ func main() {
 		err = cmdPulpit(ctx, os.Args[2:])
 	case "secrets":
 		err = cmdSecrets(ctx, os.Args[2:])
+	case "platform":
+		err = cmdPlatform(ctx, os.Args[2:])
+	case "web":
+		err = cmdWeb(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
