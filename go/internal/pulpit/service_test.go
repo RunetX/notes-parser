@@ -490,6 +490,46 @@ func TestSendFailureIsNotAMiss(t *testing.T) {
 	}
 }
 
+// TestWritePauseSavesGenerations — пока сайт не принимает комментарии, новые
+// заметки не берём: каждая попытка стоит генерации и правки в Claude, а в тред
+// не попадает ничего. Заметку при этом НЕ помечаем — шторм кончится, и она
+// разберётся как обычно.
+func TestWritePauseSavesGenerations(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"), note("n2"), note("n3"))
+	site.postErr = errors.New("статус 500")
+	gen := &fakeGen{}
+	svc, st, _ := newTestService(t, site, gen, nil)
+
+	// Лента разбирается с конца (старые — первыми), то есть n3, n2, n1: две
+	// попытки взводят паузу, а n1 остаётся ждать.
+	svc.cycle(ctx)
+	if len(site.posts) != pauseAfterSendFails {
+		t.Fatalf("отправок %d, ожидалось %d: после двух отказов подряд ждём",
+			len(site.posts), pauseAfterSendFails)
+	}
+	gen.mu.Lock()
+	asked := len(gen.prompts)
+	gen.mu.Unlock()
+	if asked > 2*pauseAfterSendFails { // на реплику приходится черновик и правка
+		t.Errorf("обращений к LLM %d: под паузой генерировать нечего", asked)
+	}
+	if _, err := st.PulpitNote(ctx, "n1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("отложенную заметку помечать нельзя, иначе она пропадёт навсегда: %v", err)
+	}
+
+	// Сайт ожил: пробная заметка проходит, и успех снимает паузу немедленно.
+	site.postErr = nil
+	svc.noteSendResult(true)
+	if svc.writePaused(time.Now()) {
+		t.Fatal("успешная отправка обязана снимать паузу")
+	}
+	svc.cycle(ctx)
+	if _, err := st.PulpitNote(ctx, "n1"); err != nil {
+		t.Errorf("после шторма отложенная заметка разбирается как обычно: %v", err)
+	}
+}
+
 // TestVanishedNoteIsNotAMiss — снесённая заметка не про нас: без этого первый
 // же снос модератором выключил бы фичу.
 func TestVanishedNoteIsNotAMiss(t *testing.T) {

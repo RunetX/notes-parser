@@ -30,6 +30,12 @@ const (
 	PulpitFailed    = "failed"    // не сгенерировали/некому отправить
 )
 
+// PulpitReasonSendFailed — причина у missing-строки: POST реплики не дошёл
+// (5xx, обрыв), и потому её нет в треде. Живёт здесь, а не только в пакете
+// pulpit, потому что по ней фильтрует суточный счёт: несостоявшаяся реплика в
+// тредах не появилась и места в квоте не занимает.
+const PulpitReasonSendFailed = "send_failed"
+
 // Ключи рантайм-флагов амвона.
 const (
 	FlagPulpitEnabled   = "pulpit.enabled"
@@ -202,11 +208,17 @@ func (s *Store) PulpitRecent(ctx context.Context, limit int) ([]PulpitComment, e
 // PulpitSentSince — сколько реплик реально ушло на сайт с момента since
 // (включая непроверенные и потерянные: POST уже состоялся). Это суточный
 // предохранитель от «сайт выкатил в ленту архив», а не троттлинг.
+// Строки, про которые верификация уже сказала «не долетело», из счёта
+// исключаются: суточный потолок меряет, сколько раз мы появились в тредах, а
+// не сколько раз попытались. Пока исход неизвестен (posting), попытка место в
+// квоте занимает — сайт мог реплику принять и всё равно ответить ошибкой.
 func (s *Store) PulpitSentSince(ctx context.Context, since time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM pulpit_comments
-		WHERE posted_at IS NOT NULL AND posted_at > ?`, fmtTime(since)).Scan(&n)
+		WHERE posted_at IS NOT NULL AND posted_at > ?
+		  AND NOT (state = ? AND reason = ?)`,
+		fmtTime(since), PulpitMissing, PulpitReasonSendFailed).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("суточный счёт реплик: %w", err)
 	}

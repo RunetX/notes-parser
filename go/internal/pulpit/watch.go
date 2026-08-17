@@ -38,26 +38,37 @@ const (
 	reasonDeleted   = "deleted"
 	// reasonSendFailed — POST реплики не дошёл (5xx, обрыв). Отсутствие такой
 	// реплики в треде объяснено сбоем отправки и уликой запрета не является.
-	reasonSendFailed = "send_failed"
+	// Значение общее со store: по нему фильтруется суточный счёт.
+	reasonSendFailed = store.PulpitReasonSendFailed
+	// reasonSiteWrite — сайт не принимает запись, заметку откладываем. В БД
+	// строки не заводим (actIdle): шторм кончится, и заметку разберём как
+	// обычно — если к тому времени она не обживётся (свежесть проверяется по
+	// сайту уже после claim'а).
+	reasonSiteWrite = "site_write"
 	reasonCoin      = "coin"    // монетка легла «не отвечать»
 	reasonNoJoke    = "no_joke" // в заметке настоящая беда: шутить нечем
 )
 
 // decideInput — всё, от чего зависит решение по заметке.
 type decideInput struct {
-	Enabled   bool          // рантайм-тумблер
-	Cold      bool          // первый обход после старта или включения
-	Taken     bool          // заметку уже занял другой вход (claim не прошёл)
-	Age       time.Duration // сколько прошло с момента, когда мы её увидели
-	Freshness time.Duration
-	Today     int // сколько реплик уже ушло за сутки
-	MaxPerDay int
+	Enabled     bool          // рантайм-тумблер
+	Cold        bool          // первый обход после старта или включения
+	Taken       bool          // заметку уже занял другой вход (claim не прошёл)
+	WritePaused bool          // сайт не принимает комментарии — ждём, не тратя LLM
+	Age         time.Duration // сколько прошло с момента, когда мы её увидели
+	Freshness   time.Duration
+	Today       int // сколько реплик уже ушло за сутки
+	MaxPerDay   int
 }
 
 // decide — писать ли реплику под этой заметкой. Порядок проверок и есть
 // приоритет: выключенная фича молчит вовсе (в БД ни строчки), занятая заметка
-// не наша, холодный старт помечает и молчит, дальше свежесть и суточный
-// потолок.
+// не наша, холодный старт помечает и молчит, дальше пауза на время шторма,
+// свежесть и суточный потолок.
+//
+// Пауза стоит ПОСЛЕ холодного старта: иначе шторм в момент рестарта оставил бы
+// ленту непомеченной, и по его окончании амвон разом ответил бы под всё старьё
+// — ровно то, от чего холодный старт и заведён.
 func decide(in decideInput) (action, string) {
 	switch {
 	case !in.Enabled:
@@ -66,6 +77,8 @@ func decide(in decideInput) (action, string) {
 		return actIdle, reasonTaken
 	case in.Cold:
 		return actMark, reasonColdStart
+	case in.WritePaused:
+		return actIdle, reasonSiteWrite
 	case in.Freshness > 0 && in.Age > in.Freshness:
 		return actMark, reasonStale
 	case in.MaxPerDay > 0 && in.Today >= in.MaxPerDay:
@@ -116,9 +129,13 @@ func (s *Service) handleNote(ctx context.Context, n love.Note, cold bool, today 
 	}
 	act, reason := decide(decideInput{
 		Enabled: enabled, Cold: cold, Freshness: s.cfg.Freshness,
-		Today: today, MaxPerDay: s.cfg.MaxPerDay,
+		WritePaused: s.writePaused(time.Now()),
+		Today:       today, MaxPerDay: s.cfg.MaxPerDay,
 	})
 	if act == actIdle {
+		if reason == reasonSiteWrite {
+			s.log.Info("амвон: сайт не принимает комментарии — заметку отложил", "note", n.ID)
+		}
 		return false
 	}
 	state := store.PulpitQueued
@@ -159,8 +176,12 @@ func (s *Service) resumeQueued(ctx context.Context) {
 	for _, row := range rows {
 		act, reason := decide(decideInput{
 			Enabled: true, Age: time.Since(row.SeenAt), Freshness: s.cfg.Freshness,
-			Today: today, MaxPerDay: s.cfg.MaxPerDay,
+			WritePaused: s.writePaused(time.Now()),
+			Today:       today, MaxPerDay: s.cfg.MaxPerDay,
 		})
+		if act == actIdle {
+			continue // пауза на шторм: строка ждёт в queued, её возьмёт следующий такт
+		}
 		if act != actPost {
 			if _, err := s.st.CASPulpitState(ctx, row.NoteID, store.PulpitQueued,
 				store.PulpitSkipped, reason); err != nil {

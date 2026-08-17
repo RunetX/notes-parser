@@ -2,9 +2,11 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -166,6 +168,30 @@ func TestReplyWithoutSessionNotifies(t *testing.T) {
 	}
 	if !notified {
 		t.Error("пользователь должен получить подсказку про /login")
+	}
+}
+
+// Сайт отвечает 500: повтора не будет (at-most-once стоит до отправки), значит
+// человек обязан узнать сам — иначе он уверен, что комментарий ушёл, а его нет.
+func TestSiteErrorTellsTheAuthor(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _ := setup(t)
+	seedUserSession(t, st, userID)
+	st.InsertNote(ctx, store.Note{ID: "n1", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
+	site.err = errors.New("отправка комментария к заметке n1: статус 500")
+
+	var said string
+	h.core.notify = func(_ context.Context, _ int64, text string) { said = text }
+	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
+
+	if !strings.Contains(said, "не ушёл") {
+		t.Fatalf("автору должны сказать, что комментарий не ушёл: %q", said)
+	}
+	// Сессию при этом не гасим: 500 — это про сайт, а не про вход.
+	if _, valid, err := st.SessionCookies(ctx, store.MessengerTelegram, userID); err != nil || !valid {
+		t.Errorf("сессия после ошибки сайта: valid=%v err=%v", valid, err)
 	}
 }
 

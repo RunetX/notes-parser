@@ -67,7 +67,15 @@ func (c *Core) ProcessReply(ctx context.Context, replyMsgID string, userID int64
 		c.log.Warn("комментарий не ушёл на сайт", "note", noteID, "user", userID, "err", err)
 		if isAuthError(err) {
 			c.invalidateSession(ctx, userID)
+			return
 		}
+		// Отметка at-most-once уже стоит, повтора не будет никогда — значит
+		// человек обязан узнать сам, иначе он уверен, что комментарий ушёл, а
+		// его нет (17.08.2026 сайт отвечал 500 на любой комментарий, и мы
+		// теряли чужие ответы молча). Про истёкшую сессию не сюда: там свой
+		// текст и своя подсказка.
+		c.notify(ctx, userID, "Ваш ответ не ушёл на сайт: он отвечает ошибкой. "+
+			"Повторите позже — сам я не перешлю, чтобы не задвоить комментарий.")
 		return
 	}
 	if err := c.st.SetSessionValid(ctx, c.messenger, userID, true, time.Now()); err != nil {

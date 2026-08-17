@@ -94,6 +94,7 @@ func (s *Service) postQuip(ctx context.Context, n love.Note, seenAt time.Time) b
 		return false // строку уже забрал другой цикл
 	}
 	if err := s.site.PostComment(ctx, cookies, n.ID, "", sm.Text); err != nil {
+		s.noteSendResult(false)
 		// Строка остаётся в posting: сайт мог реплику принять и всё равно
 		// ответить ошибкой. Верификация решит, что там на самом деле.
 		//
@@ -111,12 +112,45 @@ func (s *Service) postQuip(ctx context.Context, n love.Note, seenAt time.Time) b
 		s.log.Error("амвон: отправка реплики не удалась", "note", n.ID, "err", err)
 		return true
 	}
+	s.noteSendResult(true)
 	if _, err := s.st.CASPulpitState(ctx, n.ID, store.PulpitPosting, store.PulpitPosted, ""); err != nil {
 		s.log.Error("амвон: фиксация отправленной реплики", "note", n.ID, "err", err)
 	}
 	s.log.Info("амвон: реплика отправлена", "note", n.ID, "форма", sm.Form,
 		"знаков", len([]rune(sm.Text)), "задержка", time.Since(seenAt).Round(time.Second))
 	return true
+}
+
+// pauseAfterSendFails — сколько не дошедших подряд POST'ов считаем штормом.
+// Двух хватает: одиночный 5xx у сайта бывает и в обычный день, а два подряд
+// означают, что запись лежит.
+const pauseAfterSendFails = 2
+
+// sendProbeAfter — через сколько после отказа пробуем снова. Одна пробная
+// заметка в десять минут: столько стоит узнать, что сайт ожил, и это дешевле
+// генерации под каждую заметку шторма.
+const sendProbeAfter = 10 * time.Minute
+
+// noteSendResult запоминает исход отправки. Успех снимает паузу немедленно:
+// сайт принял комментарий — значит запись работает.
+func (s *Service) noteSendResult(ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ok {
+		s.sendFails = 0
+		return
+	}
+	s.sendFails++
+	s.lastSendFail = time.Now()
+}
+
+// writePaused — ждём ли конца шторма. Полуоткрытое состояние: после
+// sendProbeAfter одна заметка проходит как проба, и её исход решает, ждать ли
+// дальше.
+func (s *Service) writePaused(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sendFails >= pauseAfterSendFails && now.Sub(s.lastSendFail) < sendProbeAfter
 }
 
 // noteAge — возраст заметки со страницы комментариев. Первоисточник —

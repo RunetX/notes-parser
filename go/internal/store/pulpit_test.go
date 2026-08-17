@@ -168,6 +168,32 @@ func TestPulpitStatsAndSentSince(t *testing.T) {
 	if last.NoteID != "new" || last.Text != "свежая" {
 		t.Fatalf("последняя реплика: %+v", last)
 	}
+
+	// Не долетевшая реплика место в суточной квоте не занимает: в тредах её
+	// нет, а потолок меряет появления, а не попытки.
+	if _, err := st.TryClaimPulpitNote(ctx, "lost", PulpitQueued, "", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.TryStartPulpitPost(ctx, "lost", "сценка", "не дошла", now); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.PulpitSentSince(ctx, day); err != nil || n != 2 {
+		t.Fatalf("пока исход неизвестен, попытка считается: %d %v", n, err)
+	}
+	if err := st.SetPulpitState(ctx, "lost", PulpitMissing, PulpitReasonSendFailed, now); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.PulpitSentSince(ctx, day); err != nil || n != 1 {
+		t.Fatalf("не дошедшая реплика из квоты уходит: %d %v", n, err)
+	}
+	// А обычная пропажа (тред прочитан, реплики нет) из квоты не уходит: там
+	// сайт POST принял, и мы вполне могли в треде побывать.
+	if err := st.SetPulpitState(ctx, "lost", PulpitMissing, "no_reply", now); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.PulpitSentSince(ctx, day); err != nil || n != 2 {
+		t.Fatalf("обычный промах остаётся в квоте: %d %v", n, err)
+	}
 }
 
 func TestPulpitReplyDecidedOnce(t *testing.T) {
