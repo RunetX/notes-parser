@@ -1,70 +1,68 @@
-/* Оформление площадки.
+/* Оформление площадки — перенос вида «Заметок» love.ngs.ru.
  *
- * Один файл, никакой сборки и ни одного внешнего запроса: CSP запрещает чужие
- * хосты, а npm тут не окупается — весь стиль умещается в четыре экрана.
+ * Мера тут не «красиво», а «человек не заметил переезда»: колонка автора слева
+ * с квадратным аватаром и ником под ним, нумерованная постраничка, дата вида
+ * 14.08.2026, 18:30:04, дерево с отступами по уровням. Числа и цвета взяты из
+ * настоящих стилей сайта (index.css/main.css, снято 18.08.2026), а не на глаз:
+ * разделитель #c7d3d9, текст #3d4952, служебное #999, ник женский #ef4e4f,
+ * мужской #448dc8, аватар 100×100, комментарий с отступом слева на 115px.
  *
- * Тема живёт в токенах :root. Их три набора плюс «как в системе»: без атрибута
- * data-theme решает prefers-color-scheme, с атрибутом — человек. «Классика»
- * повторяет палитру НГС: переезжающему она говорит «это то самое место»
- * быстрее любого текста на главной.
+ * Чего из оригинала нет и не будет: лайки, жалобы, «онлайн»-огонёк, боковая
+ * колонка новостей НГС. Первые три — функции, которых у площадки нет по
+ * решению (эпик E), последняя — чужой раздел.
  *
- * ВАЖНОЕ ОГРАНИЧЕНИЕ: inline-атрибут style запрещён политикой CSP (хеши и
- * nonce к атрибутам неприменимы), поэтому ничего вычисленного на сервере в
- * разметку не подставляется. Глубина ветки приезжает КЛАССОМ d1…d12, а
- * величину отступа считает уже отсюда calc(). */
+ * Тема живёт в токенах :root: без атрибута data-theme решает
+ * prefers-color-scheme, с атрибутом — человек. «Классика» и есть палитра НГС.
+ *
+ * ОГРАНИЧЕНИЕ: CSP без 'unsafe-inline' запрещает атрибут style, поэтому
+ * отступ ветки задаётся классом d1…d12, а расстояние считает calc(). На самом
+ * НГС это inline padding-left — нам так нельзя. */
 
 :root {
-  --bg: #eef0f4;
-  --card: #ffffff;
-  --sunk: #f4f6f9;
-  --ink: #1a1d23;
-  --ink2: #5d6675;
-  --rule: #d7dbe3;
-  --link: #1f5fbf;
-  --accent: #c0392b;
-  --shadow: 0 1px 2px rgba(16, 20, 28, .06);
-  --step: 10px;
-  --radius: 10px;
+  --page: #e9edf0;
+  --card: #fff;
+  --ink: #3d4952;
+  --meta: #999;
+  --rule: #c7d3d9;
+  --link: #448dc8;
+  --male: #448dc8;
+  --female: #ef4e4f;
+  --anon: #4a545c;
+  --nav: #4ba3dd;
+  --nav-ink: #fff;
+  --accent: #82b541;
+  --btn: #f4f6f7;
+  --step: 14px;
 }
 
-/* «Как в системе» — тёмный набор берётся, только если человек ничего не выбрал. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --bg: #14171c;
-    --card: #1c2027;
-    --sunk: #222730;
-    --ink: #e4e8ee;
-    --ink2: #98a2b1;
-    --rule: #2c323b;
-    --link: #6fa5ee;
-    --accent: #e0715f;
-    --shadow: none;
+    --page: #15181c;
+    --card: #1d2126;
+    --ink: #dbe2e8;
+    --meta: #8c959d;
+    --rule: #2e353c;
+    --link: #6fadde;
+    --male: #6fadde;
+    --female: #ef6f70;
+    --anon: #a8b1b9;
+    --nav: #23527a;
+    --btn: #242a30;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #14171c;
-  --card: #1c2027;
-  --sunk: #222730;
-  --ink: #e4e8ee;
-  --ink2: #98a2b1;
-  --rule: #2c323b;
-  --link: #6fa5ee;
-  --accent: #e0715f;
-  --shadow: none;
-}
-
-:root[data-theme="classic"] {
-  --bg: #e9edf2;
-  --card: #ffffff;
-  --sunk: #f2f5f9;
-  --ink: #202020;
-  --ink2: #6b7280;
-  --rule: #ccd6e0;
-  --link: #14559e;
-  --accent: #d0021b;
-  --shadow: 0 1px 0 rgba(20, 85, 158, .08);
-  --radius: 4px;
+  --page: #15181c;
+  --card: #1d2126;
+  --ink: #dbe2e8;
+  --meta: #8c959d;
+  --rule: #2e353c;
+  --link: #6fadde;
+  --male: #6fadde;
+  --female: #ef6f70;
+  --anon: #a8b1b9;
+  --nav: #23527a;
+  --btn: #242a30;
 }
 
 * { box-sizing: border-box; }
@@ -72,188 +70,203 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--page);
   color: var(--ink);
-  font: 16px/1.55 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: 14px/1.45 Arial, "Helvetica Neue", Helvetica, sans-serif;
 }
 
-a { color: var(--link); }
-a:hover { color: var(--accent); }
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
-.wrap { max-width: 46rem; margin: 0 auto; padding: 0 12px; }
+.wrap { max-width: 910px; margin: 0 auto; padding: 0 10px; }
 
 /* ---------------------------------------------------------------- шапка */
 
-.top {
-  background: var(--card);
-  border-bottom: 1px solid var(--rule);
+.top { background: var(--nav); }
+.topin { display: flex; align-items: center; gap: 20px; min-height: 44px; }
+.brand { color: var(--nav-ink); font-size: 17px; font-weight: 700; }
+.brand:hover { color: var(--nav-ink); text-decoration: none; }
+.tab {
+  color: var(--nav-ink); background: rgba(255, 255, 255, .18);
+  padding: 5px 14px; border-radius: 3px; font-size: 14px;
 }
-.topin { display: flex; align-items: center; gap: 16px; min-height: 52px; }
-.brand {
-  font-weight: 700; font-size: 19px; letter-spacing: -.01em;
-  color: var(--ink); text-decoration: none;
-}
-.brand:hover { color: var(--accent); }
-.main { padding: 16px 12px 40px; }
+
+.main { background: var(--card); padding: 16px 20px 28px; margin: 10px auto; max-width: 910px; }
+.ttl { font-size: 30px; font-weight: 400; margin: 0 0 16px; color: var(--ink); }
 
 /* ---------------------------------------------------------------- лента */
 
-.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.notes { list-style: none; margin: 0; padding: 0; }
 
-.card, .note {
-  background: var(--card);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: 12px 14px;
+.note {
+  border-top: 1px solid var(--rule);
+  padding: 20px 0 15px;
+  min-height: 135px;
+  display: flex;
+  gap: 20px;
+  position: relative;
 }
-.note { margin-bottom: 18px; }
+.notes .note:last-child { border-bottom: 1px solid var(--rule); }
+.notebox { border-top: 0; padding-top: 6px; }
+/* Под переключателем вида текст не идёт: на НГС он тоже стоит в своём углу. */
+.notebox .nbody { padding-right: 150px; }
 
-.who { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.whotext { display: flex; flex-direction: column; min-width: 0; }
-
+/* Колонка автора: 100px в ширину, ник под аватаром и по центру. */
+.author { width: 100px; flex: 0 0 100px; text-align: center; }
 .ava {
-  width: 44px; height: 44px; flex: 0 0 44px;
-  border-radius: 50%; object-fit: cover; background: var(--sunk);
+  width: 100px; height: 100px; display: block;
+  object-fit: cover; border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--btn);
 }
 .ava.none {
   display: flex; align-items: center; justify-content: center;
-  color: var(--ink2); font-weight: 700; font-size: 18px;
-  border: 1px solid var(--rule);
+  font-size: 34px; font-weight: 700; color: var(--meta);
 }
+.author .nick { display: inline-block; max-width: 100px; margin-top: 5px; overflow-wrap: anywhere; }
 
-.nick { font-weight: 600; color: var(--link); overflow-wrap: anywhere; }
-.nick.anon { color: var(--ink2); font-style: italic; font-weight: 500; }
-.meta { color: var(--ink2); font-size: 13px; }
+.nick { color: var(--link); }
+.nick.anon { color: var(--anon); }
+/* Пол на площадке не хранится (эпик E: анкетных полей не заводим), поэтому
+   цветными ники станут только вместе с ним. Классы заведены заранее, чтобы
+   разметка не менялась. */
+.nick._female { color: var(--female); }
+.nick._male { color: var(--male); }
 
+.nbody { flex: 1 1 auto; min-width: 0; }
 .text { overflow-wrap: anywhere; }
-.text p { margin: 0 0 .7em; }
+.text p { margin: 0 0 .8em; }
 .text p:last-child { margin-bottom: 0; }
 
-.acts {
-  display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline;
-  margin: 10px 0 0; font-size: 14px;
-}
-.acts .cnt { color: var(--ink2); text-decoration: none; }
-.acts .cnt:hover { color: var(--accent); text-decoration: underline; }
-.closed { color: var(--ink2); font-size: 13px; }
-.note-closed {
-  background: var(--sunk); border: 1px solid var(--rule); border-radius: var(--radius);
-  padding: 8px 12px; margin: 0 0 12px;
-}
+.nfoot { margin-top: 10px; color: var(--meta); font-size: 12px; }
+.date { color: var(--meta); }
+/* Время, снятое зеркалом, а не отданное сайтом: настоящего НГС не публикует.
+   Пунктир — единственный видимый след, чтобы вид не расходился с правдой. */
+.date._approx { border-bottom: 1px dotted var(--meta); cursor: help; }
+.clink { margin-left: 18px; }
+.cnt { font-size: 10px; color: var(--meta); }
 
-.shots { margin-top: 12px; display: grid; gap: 8px; }
-.shots img { max-width: 100%; height: auto; border-radius: var(--radius); display: block; }
+.shots { margin-top: 12px; }
+.shots img { max-width: 100%; height: auto; display: block; border: 1px solid var(--rule); }
 
-.more { margin: 18px 0 0; text-align: center; }
-.more a {
-  display: inline-block; padding: 9px 20px;
-  background: var(--card); border: 1px solid var(--rule); border-radius: var(--radius);
-  text-decoration: none;
+.empty { color: var(--meta); padding: 20px 0; }
+
+/* ---------------------------------------------------------------- постраничка */
+
+.pages { margin: 14px 0; }
+.pg {
+  display: inline-block; min-width: 26px; padding: 5px 9px; margin: 0 3px 4px 0;
+  text-align: center; border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--btn); color: var(--ink);
 }
-.empty { color: var(--ink2); text-align: center; padding: 24px 0; }
+.pg:hover { text-decoration: none; border-color: var(--link); color: var(--link); }
+.pg.cur { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pg.gap { border-color: transparent; background: none; }
+.pg.off { color: var(--meta); background: none; border-color: transparent; }
 
 /* ---------------------------------------------------------------- тред */
 
-.threadhead {
-  display: flex; flex-wrap: wrap; gap: 8px 16px;
-  align-items: baseline; justify-content: space-between; margin: 20px 0 10px;
-}
-.threadhead h2 { font-size: 16px; margin: 0; }
+.switch { position: absolute; top: 10px; right: 0; font-size: 12px; }
+.switch .sw { color: var(--meta); padding: 2px 6px; border: 1px solid transparent; border-radius: 3px; }
+.switch .sw.on { color: var(--ink); border-color: var(--rule); background: var(--btn); }
 
-.switch { display: flex; gap: 1px; background: var(--rule); border-radius: var(--radius); overflow: hidden; }
-.switch a {
-  padding: 5px 12px; font-size: 14px; text-decoration: none;
-  background: var(--card); color: var(--ink2);
-}
-.switch a.on { background: var(--link); color: #fff; }
+.cttl { font-size: 20px; font-weight: 700; margin: 22px 0 4px; }
+.cttl .cnt { font-size: 13px; font-weight: 400; }
+.cttl .closed { font-size: 13px; font-weight: 400; color: var(--meta); margin-left: 14px; }
 
 .thread { list-style: none; margin: 0; padding: 0; }
 
 /* Отступ ветки: класс несёт только НОМЕР уровня, расстояние считает calc.
-   Так глубина не попадает в разметку значением и не требует inline-style. */
+   На НГС это inline padding-left, но inline-стиль запрещён нашим CSP. */
 .d1 { --d: 0 } .d2 { --d: 1 } .d3 { --d: 2 } .d4 { --d: 3 }
 .d5 { --d: 4 } .d6 { --d: 5 } .d7 { --d: 6 } .d8 { --d: 7 }
 .d9 { --d: 8 } .d10 { --d: 9 } .d11 { --d: 10 } .d12 { --d: 11 }
 
 .c {
-  margin: 0 0 8px calc(var(--d, 0) * var(--step));
-  padding: 9px 12px;
-  background: var(--card);
-  border: 1px solid var(--rule);
-  border-left: 3px solid var(--rule);
-  border-radius: var(--radius);
+  display: flex; gap: 10px;
+  padding: 14px 0 12px;
+  margin-left: calc(var(--d, 0) * var(--step));
+  border-bottom: 1px solid var(--rule);
 }
-.c:target { border-left-color: var(--accent); background: var(--sunk); }
-/* Плоский вид — строго по времени, отступов нет вовсе: это его смысл. */
-.thread.flat .c { margin-left: 0; }
+.c:first-child { border-top: 1px solid var(--rule); }
+.c:target { background: #f3f6f9; }
+:root[data-theme="dark"] .c:target { background: #232a31; }
+.thread.linear .c { margin-left: 0; }
 
-.chead { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; flex-wrap: wrap; }
-.chead .ava { width: 26px; height: 26px; flex-basis: 26px; }
-.chead .ava.none { font-size: 12px; }
-.chead .nick { font-size: 14px; }
-.chead .meta { font-size: 12px; }
-
-.anchor { margin-left: auto; color: var(--ink2); text-decoration: none; font-size: 13px; }
-.anchor:hover { color: var(--accent); }
+.cava { flex: 0 0 72px; }
+.cava .ava { width: 72px; height: 72px; }
+.cava .ava.none { font-size: 26px; }
+.cbody { flex: 1 1 auto; min-width: 0; }
+/* Ник, под ним дата — как в комментариях на сайте. */
+.chead { margin-bottom: 6px; }
+.cdate { font-size: 12px; margin-top: 1px; }
+.anchor { color: var(--meta); font-size: 12px; margin-left: 8px; visibility: hidden; }
+.c:hover .anchor, .c:target .anchor { visibility: visible; }
 
 /* Обращение «Ник, » — ребро, а не часть текста: в базе его нет, здесь оно
-   дорисовано из ТЕКУЩЕГО ника адресата. Выглядит как на сайте: началом первой
-   фразы, а не строкой сверху. */
-.to { font-weight: 600; text-decoration: none; }
+   дорисовано из ТЕКУЩЕГО ника адресата. На сайте оно выделено жирным. */
+.to { font-weight: 700; color: var(--ink); }
 .to:hover { text-decoration: underline; }
 
+.replies { margin: 8px 0 0; font-size: 12px; color: var(--meta); }
+.rcount { cursor: default; }
 .fold {
-  font: inherit; font-size: 12px; line-height: 1;
-  padding: 3px 7px; margin-left: 4px;
-  background: var(--sunk); color: var(--ink2);
-  border: 1px solid var(--rule); border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--link);
+  background: none; border: 0; padding: 0; cursor: pointer;
 }
-.fold:hover { color: var(--accent); }
+.fold:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------- вход и ошибки */
 
-.gate, .oops { max-width: 30rem; margin: 8vh auto 0; text-align: center; }
-.gate h1 { margin: 0 0 12px; }
+.gate, .oops { max-width: 30rem; margin: 6vh auto; text-align: center; }
+.gate h1 { margin: 0 0 12px; font-weight: 400; }
 .keyform { display: flex; flex-direction: column; gap: 8px; align-items: center; margin: 18px 0; }
-.keyform label { color: var(--ink2); font-size: 14px; }
+.keyform label { color: var(--meta); }
 .keyform input {
-  font: inherit; width: 100%; max-width: 22rem; padding: 9px 12px;
-  border: 1px solid var(--rule); border-radius: var(--radius);
-  background: var(--card); color: var(--ink);
+  font: inherit; width: 100%; max-width: 22rem; padding: 8px 10px;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--card); color: var(--ink);
 }
-.keyform button, .oops a {
-  font: inherit; padding: 9px 22px; cursor: pointer;
-  background: var(--link); color: #fff; border: 0; border-radius: var(--radius);
-  text-decoration: none;
+.keyform button, .oops a.back {
+  font: inherit; padding: 8px 22px; cursor: pointer; border: 0; border-radius: 3px;
+  background: var(--link); color: #fff;
 }
-.bad { color: var(--accent); }
-.oops .code { font-size: 40px; font-weight: 700; margin: 0; color: var(--ink2); }
+.bad { color: var(--female); }
+.oops .code { font-size: 40px; margin: 0; color: var(--meta); }
 .oops .msg { margin: 4px 0 18px; }
 
 /* ---------------------------------------------------------------- подвал */
 
-.foot { border-top: 1px solid var(--rule); background: var(--card); padding: 14px 0 28px; }
+.foot { border-top: 1px solid var(--rule); background: var(--card); padding: 12px 0 24px; }
 .themes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.themes .lbl { color: var(--ink2); font-size: 13px; margin-right: 4px; }
+.themes .lbl { color: var(--meta); font-size: 12px; margin-right: 4px; }
 .tbtn {
-  font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer;
-  background: var(--sunk); color: var(--ink2);
-  border: 1px solid var(--rule); border-radius: 999px;
+  font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
+  background: var(--btn); color: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
 }
-.tbtn.on { background: var(--link); color: #fff; border-color: var(--link); }
-.fine { color: var(--ink2); font-size: 12px; margin: 10px 0 0; }
+.tbtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.fine { color: var(--meta); font-size: 11px; margin: 10px 0 0; }
 
 .sr-only {
   position: absolute; width: 1px; height: 1px; overflow: hidden;
   clip-path: inset(50%); white-space: nowrap;
 }
 
-/* На широком экране отступ ветки крупнее: места хватает, а дерево читается
-   тем лучше, чем яснее уровни. */
-@media (min-width: 40rem) {
-  :root { --step: 20px; }
-  .wrap { padding: 0 20px; }
-  .main { padding: 22px 20px 56px; }
-  .card, .note { padding: 14px 18px; }
+/* На телефоне колонка автора ужимается, а отступ ветки уменьшается вчетверо:
+   иначе десятый уровень уезжает за край экрана. Отдельной мобильной вёрстки
+   у нас нет — в отличие от НГС, где их две и правки в них расходятся. */
+@media (max-width: 700px) {
+  :root { --step: 8px; }
+  .main { padding: 12px 10px 20px; margin: 0; }
+  .ttl { font-size: 22px; }
+  .note { gap: 10px; min-height: 0; }
+  .author { width: 64px; flex-basis: 64px; }
+  .ava { width: 64px; height: 64px; }
+  .ava.none { font-size: 24px; }
+  .cava { flex-basis: 44px; }
+  .cava .ava { width: 44px; height: 44px; }
+  .cava .ava.none { font-size: 18px; }
+  .clink { margin-left: 0; display: block; margin-top: 4px; }
+}
+
+@media (min-width: 900px) {
+  :root { --step: 40px; }
 }

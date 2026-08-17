@@ -155,12 +155,9 @@ func TestThreadOrderIsTreeOrder(t *testing.T) {
 	ingestComment(t, p, 201, 312811, 3, 100)
 	ingestComment(t, p, 300, 312811, 1, 200)
 
-	got, next, err := p.Thread(context.Background(), Viewer{}, 312811, "", 50)
+	got, err := p.Thread(context.Background(), Viewer{}, 312811)
 	if err != nil {
 		t.Fatalf("тред: %v", err)
-	}
-	if next != "" {
-		t.Fatalf("курсор непустой на последней странице: %q", next)
 	}
 	wantIDs := []int64{100, 200, 300, 201, 101}
 	wantDepth := []int{1, 2, 3, 2, 1}
@@ -174,14 +171,14 @@ func TestThreadOrderIsTreeOrder(t *testing.T) {
 		}
 	}
 
-	// Плоский вид — тот же набор строго по времени.
-	flat, _, err := p.Flat(context.Background(), Viewer{}, 312811, 0, 50)
+	// Линейный вид — тот же набор, но от НОВЫХ к старым, как на НГС.
+	flat, err := p.Flat(context.Background(), Viewer{}, 312811, 0, 50)
 	if err != nil {
-		t.Fatalf("плоский вид: %v", err)
+		t.Fatalf("линейный вид: %v", err)
 	}
-	for i, want := range []int64{100, 101, 200, 201, 300} {
+	for i, want := range []int64{300, 201, 200, 101, 100} {
 		if flat[i].ID != want {
-			t.Fatalf("плоский вид, позиция %d: %d, ожидалось %d", i, flat[i].ID, want)
+			t.Fatalf("линейный вид, позиция %d: %d, ожидалось %d", i, flat[i].ID, want)
 		}
 	}
 }
@@ -228,7 +225,7 @@ func TestOrphanReplyBecomesRoot(t *testing.T) {
 		t.Fatalf("ребро потеряно: %d", c.ReplyToID)
 	}
 	// В показе адресата нет: подписать снесённого нечем.
-	got, _, err := p.Thread(context.Background(), Viewer{}, 312811, "", 10)
+	got, err := p.Thread(context.Background(), Viewer{}, 312811)
 	if err != nil {
 		t.Fatalf("тред: %v", err)
 	}
@@ -292,16 +289,19 @@ func TestAnonymousAuthorNeverLeavesTheDatabase(t *testing.T) {
 }
 
 // Лента листается ключом: без дублей и пропусков.
-func TestFeedKeysetPagination(t *testing.T) {
+func TestFeedPagesCoverEverythingOnce(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
 	for i := int64(1); i <= 5; i++ {
 		ingestNote(t, p, 1000+i, 175869, "Гадёныш")
 	}
+	total, err := p.CountNotes(ctx)
+	if err != nil || total != 5 {
+		t.Fatalf("счётчик ленты: %d, %v", total, err)
+	}
 	seen := map[int64]bool{}
-	cur := FeedCursor{}
-	for page := 0; page < 5; page++ {
-		got, next, err := p.Feed(ctx, Viewer{}, cur, 2)
+	for page := 0; page < 3; page++ {
+		got, err := p.Feed(ctx, Viewer{}, page*2, 2)
 		if err != nil {
 			t.Fatalf("лента: %v", err)
 		}
@@ -311,10 +311,6 @@ func TestFeedKeysetPagination(t *testing.T) {
 			}
 			seen[n.ID] = true
 		}
-		if next.IsZero() {
-			break
-		}
-		cur = next
 	}
 	if len(seen) != 5 {
 		t.Fatalf("лента отдала %d заметок из 5", len(seen))
@@ -333,7 +329,7 @@ func TestRenameChangesAddressPrefixEverywhere(t *testing.T) {
 	if err := p.SetNick(ctx, 1409563, "Земляника"); err != nil {
 		t.Fatalf("смена ника: %v", err)
 	}
-	got, _, err := p.Thread(ctx, Viewer{}, 312811, "", 10)
+	got, err := p.Thread(ctx, Viewer{}, 312811)
 	if err != nil {
 		t.Fatalf("тред: %v", err)
 	}
@@ -500,9 +496,9 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		args  []any
 		index string
 	}{
-		{"лента", feedQuery, []any{int64(0), (*time.Time)(nil), (*int64)(nil), 50}, "notes_feed"},
-		{"тред", threadQuery, []any{int64(0), int64(200001), "", 100}, "comments_tree"},
-		{"плоский вид", flatQuery, []any{int64(0), int64(200001), int64(0), 100}, "comments_flat"},
+		{"лента", feedQuery, []any{int64(0), 20, 0}, "notes_feed"},
+		{"тред", threadQuery, []any{int64(0), int64(200001), 100}, "comments_tree"},
+		{"линейный вид", flatQuery, []any{int64(0), int64(200001), 30, 0}, "comments_flat"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

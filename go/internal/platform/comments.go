@@ -78,57 +78,59 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 // а индекс перестанет подходить — тихо, с правильным ответом и полным перебором.
 const threadQuery = `
 	SELECT ` + commentViewColumns + commentViewFrom + `
-	 WHERE c.note_id = $2 AND c.status = 0 AND c.path COLLATE "C" > $3
+	 WHERE c.note_id = $2 AND c.status = 0
 	 ORDER BY c.path COLLATE "C"
-	 LIMIT $4`
+	 LIMIT $3`
 
 const flatQuery = `
 	SELECT ` + commentViewColumns + commentViewFrom + `
-	 WHERE c.note_id = $2 AND c.status = 0 AND c.id > $3
-	 ORDER BY c.id
-	 LIMIT $4`
+	 WHERE c.note_id = $2 AND c.status = 0
+	 ORDER BY c.id DESC
+	 LIMIT $3 OFFSET $4`
 
-// Thread — страница треда в древовидном виде: одним range-scan по
+// MaxThreadRows — потолок строк древовидного вида. Не постраничка, а
+// предохранитель: дерево показывается ЦЕЛИКОМ, как на НГС, — ветка, обрезанная
+// на середине, перестаёт быть деревом, и «дальше» в ней означало бы «продолжите
+// разговор на следующей странице». Самый длинный тред зеркала — 891 реплика,
+// так что потолок в 5000 отделяет нас от аварии, а не от людей.
+const MaxThreadRows = 5000
+
+// Thread — древовидный вид: ВСЕ комментарии заметки одним range-scan по
 // (note_id, path). Сортировки в памяти нет — порядок даёт сам индекс, потому что
 // путь устроен так, что побайтовое сравнение и есть обход дерева.
-//
-// Курсор — путь последнего показанного комментария. Пустой курсор — начало.
-// Второе значение пусто, когда страница последняя.
-func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64, after string, limit int) ([]CommentView, string, error) {
-	limit = clampLimit(limit)
-	rows, err := p.pool.Query(ctx, threadQuery, v.UserID, noteID, after, limit)
+func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64) ([]CommentView, error) {
+	rows, err := p.pool.Query(ctx, threadQuery, v.UserID, noteID, MaxThreadRows)
 	if err != nil {
-		return nil, "", fmt.Errorf("тред заметки %d: %w", noteID, err)
+		return nil, fmt.Errorf("тред заметки %d: %w", noteID, err)
 	}
-	out, err := collectComments(rows, limit)
+	out, err := collectComments(rows, 256)
 	if err != nil {
-		return nil, "", fmt.Errorf("тред заметки %d: %w", noteID, err)
+		return nil, fmt.Errorf("тред заметки %d: %w", noteID, err)
 	}
-	next := ""
-	if len(out) == limit {
-		next = out[len(out)-1].Path
-	}
-	return out, next, nil
+	return out, nil
 }
 
-// Flat — та же страница в плоском виде, по возрастанию id, то есть строго по
-// времени. Отдельный индекс (note_id, id), а не сортировка выборки дерева:
-// переключатель «дерево / плоский» на сайте живой, им пользуются.
-func (p *Platform) Flat(ctx context.Context, v Viewer, noteID, afterID int64, limit int) ([]CommentView, int64, error) {
+// Flat — линейный вид: страница комментариев от НОВЫХ к старым.
+//
+// Порядок именно такой, как на НГС, и это не мелочь: линейный вид там читают
+// как ленту свежих реплик — открыл заметку, увидел последнее. Восходящий
+// порядок заставлял бы листать в конец, чтобы узнать, чем всё кончилось.
+// Отдельный индекс (note_id, id), а не сортировка выборки дерева: переключатель
+// «дерево / линейный» на сайте живой, им пользуются.
+func (p *Platform) Flat(ctx context.Context, v Viewer, noteID int64, offset, limit int) ([]CommentView, error) {
 	limit = clampLimit(limit)
-	rows, err := p.pool.Query(ctx, flatQuery, v.UserID, noteID, afterID, limit)
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := p.pool.Query(ctx, flatQuery, v.UserID, noteID, limit, offset)
 	if err != nil {
-		return nil, 0, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
+		return nil, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
 	}
 	out, err := collectComments(rows, limit)
 	if err != nil {
-		return nil, 0, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
+		return nil, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
 	}
-	var next int64
-	if len(out) == limit {
-		next = out[len(out)-1].ID
-	}
-	return out, next, nil
+	return out, nil
 }
 
 func collectComments(rows pgx.Rows, limit int) ([]CommentView, error) {

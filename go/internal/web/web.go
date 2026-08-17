@@ -55,11 +55,12 @@ type Config struct {
 // минут — гонять их ради вёрстки незачем.
 type Store interface {
 	Ping(ctx context.Context) error
-	Feed(ctx context.Context, v platform.Viewer, cur platform.FeedCursor, limit int) ([]platform.NoteView, platform.FeedCursor, error)
+	CountNotes(ctx context.Context) (int, error)
+	Feed(ctx context.Context, v platform.Viewer, offset, limit int) ([]platform.NoteView, error)
 	NoteViewByID(ctx context.Context, v platform.Viewer, id int64) (platform.NoteView, error)
 	NoteImages(ctx context.Context, noteID int64) ([]platform.Media, error)
-	Thread(ctx context.Context, v platform.Viewer, noteID int64, after string, limit int) ([]platform.CommentView, string, error)
-	Flat(ctx context.Context, v platform.Viewer, noteID, afterID int64, limit int) ([]platform.CommentView, int64, error)
+	Thread(ctx context.Context, v platform.Viewer, noteID int64) ([]platform.CommentView, error)
+	Flat(ctx context.Context, v platform.Viewer, noteID int64, offset, limit int) ([]platform.CommentView, error)
 }
 
 // Server — HTTP-морда площадки.

@@ -15,7 +15,6 @@ import (
 	"html/template"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"lovegw/internal/textutil"
 )
@@ -60,27 +59,6 @@ func renderBody(prefix template.HTML, text string) template.HTML {
 		b.WriteString("</p>")
 	}
 	return template.HTML(b.String())
-}
-
-// excerptHTML — начало текста для ленты. Режем по границе слова: обрыв на
-// середине слова читается как испорченный текст, а не как «дальше есть ещё».
-func excerptHTML(limit int, text string) template.HTML {
-	return bodyHTML(cut(text, limit))
-}
-
-// isLong — текст в ленту не поместился целиком.
-func isLong(limit int, text string) bool { return utf8.RuneCountInString(text) > limit }
-
-func cut(text string, limit int) string {
-	if !isLong(limit, text) {
-		return text
-	}
-	r := []rune(text)
-	head := string(r[:limit])
-	if i := strings.LastIndexAny(head, " \n\t"); i > limit/2 {
-		head = head[:i]
-	}
-	return strings.TrimRight(head, " \n\t.,;:") + "…"
 }
 
 // paragraphs делит текст пустыми строками. Разделение сохраняется, потому что

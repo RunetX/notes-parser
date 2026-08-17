@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
+
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -80,49 +80,34 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 // частичный индекс notes_feed, а не seq scan: переезд ленты на полный перебор —
 // это отказ, который не виден ни в одном тесте на поведение.
 //
-// Пролистывание идёт по ключу (published_at, id), а не по OFFSET: OFFSET на
-// живой ленте и дублирует, и теряет строки, когда во время чтения приходит новая
-// заметка. Границы страницы подставляются одним сравнением кортежей, а первая
-// страница — это те же параметры со значением NULL, поэтому запрос ровно один.
+// Пролистывание — по НОМЕРУ страницы, то есть через OFFSET. Ключевой курсор был
+// бы устойчивее (OFFSET на живой ленте умеет и дублировать строку, и терять её,
+// если во время чтения пришла новая заметка), но нумерованная постраничка
+// «1 2 3 … 5933» без OFFSET не строится, а она — часть узнаваемого вида: на НГС
+// это `/notes/page~2/limit~20/`, и человек привык знать, на какой он странице и
+// уметь вернуться. Цена размена невелика: сдвиг случается только при публикации
+// новой заметки ровно в момент листания, и стоит он одной задвоенной строки.
 const feedQuery = `
 	SELECT ` + noteViewColumns + noteViewFrom + `
 	 WHERE n.status = 0
-	   AND (n.published_at, n.id) < (coalesce($2, 'infinity'::timestamptz), coalesce($3, 9223372036854775807))
 	 ORDER BY n.published_at DESC, n.id DESC
-	 LIMIT $4`
+	 LIMIT $2 OFFSET $3`
 
-// FeedCursor — место, с которого продолжать ленту: последняя показанная заметка.
-// Пролистывание идёт по ключу (published_at, id), а не по OFFSET: OFFSET на
-// живой ленте и дублирует, и теряет строки, когда во время чтения приходит новая
-// заметка.
-type FeedCursor struct {
-	PublishedAt time.Time
-	ID          int64
-}
-
-// IsZero — курсор пуст: показываем первую страницу.
-func (c FeedCursor) IsZero() bool { return c.ID == 0 && c.PublishedAt.IsZero() }
-
-// Feed — лента заметок от новых к старым. Возвращает страницу и курсор
-// продолжения (нулевой, если это конец).
+// Feed — страница ленты от новых к старым.
 //
 // Скрытые публикации отсекаются по notes.status, а не соединением с users:
 // рубильник «скрыть все мои публикации» (users.hide_all) обязан исполняться
 // записью статусов, а не проверкой на чтении. Иначе отзыв согласия стоил бы
 // join'а на каждой странице ленты — и однажды его бы оттуда убрали. Тому, кто
 // будет делать hide_all: менять надо статусы публикаций, а не этот запрос.
-func (p *Platform) Feed(ctx context.Context, v Viewer, cur FeedCursor, limit int) ([]NoteView, FeedCursor, error) {
+func (p *Platform) Feed(ctx context.Context, v Viewer, offset, limit int) ([]NoteView, error) {
 	limit = clampLimit(limit)
-	var (
-		at *time.Time
-		id *int64
-	)
-	if !cur.IsZero() {
-		at, id = &cur.PublishedAt, &cur.ID
+	if offset < 0 {
+		offset = 0
 	}
-	rows, err := p.pool.Query(ctx, feedQuery, v.UserID, at, id, limit)
+	rows, err := p.pool.Query(ctx, feedQuery, v.UserID, limit, offset)
 	if err != nil {
-		return nil, FeedCursor{}, fmt.Errorf("лента: %w", err)
+		return nil, fmt.Errorf("лента: %w", err)
 	}
 	defer rows.Close()
 
@@ -130,19 +115,27 @@ func (p *Platform) Feed(ctx context.Context, v Viewer, cur FeedCursor, limit int
 	for rows.Next() {
 		n, err := scanNoteView(rows)
 		if err != nil {
-			return nil, FeedCursor{}, fmt.Errorf("лента, разбор строки: %w", err)
+			return nil, fmt.Errorf("лента, разбор строки: %w", err)
 		}
 		out = append(out, n)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, FeedCursor{}, fmt.Errorf("лента: %w", err)
+		return nil, fmt.Errorf("лента: %w", err)
 	}
-	next := FeedCursor{}
-	if len(out) == limit {
-		last := out[len(out)-1]
-		next = FeedCursor{PublishedAt: last.PublishedAt, ID: last.ID}
-	}
-	return out, next, nil
+	return out, nil
+}
+
+// CountNotes — сколько заметок в ленте. Нужен постраничке: без общего числа
+// нельзя нарисовать ни номера страниц, ни последнюю.
+//
+// COUNT(*) здесь единственный на всю площадку и живёт он ровно ради этого. На
+// нынешних 300 строках он бесплатен; когда приедет архив (10,7 млн), его
+// придётся заменить оценкой из pg_class — считать точное число заметок 2011
+// года на каждый показ ленты незачем.
+func (p *Platform) CountNotes(ctx context.Context) (int, error) {
+	var n int
+	err := p.pool.QueryRow(ctx, `SELECT count(*) FROM notes WHERE status = 0`).Scan(&n)
+	return n, wrapf(err, "счётчик ленты")
 }
 
 // NoteViewByID — заметка для показа.

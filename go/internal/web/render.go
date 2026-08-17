@@ -56,8 +56,6 @@ var funcs = template.FuncMap{
 	"av":          newAvatar,
 	"body":        bodyHTML,
 	"commentBody": commentBodyHTML,
-	"excerpt":     excerptHTML,
-	"long":        isLong,
 	"when":        whenHTML,
 	"plural":      plural,
 	"depth":       depthClass,
@@ -174,30 +172,29 @@ func (s *Server) oops(w http.ResponseWriter, r *http.Request, what string, err e
 
 // ---------------------------------------------------------------- функции шаблонов
 
-// whenHTML — время публикации. Год печатается, только если он не нынешний:
-// в ленте свежих заметок «2026» в каждой строке — шум.
+// dateFormat — как время подписано на НГС: 14.08.2026, 18:30:04. С секундами и
+// всегда с годом. Читателю «Заметок» это привычная строка, по ней он сверяет
+// порядок реплик в длинном треде, поэтому «вчера в 18:30» тут было бы хуже.
+const dateFormat = "02.01.2006, 15:04:05"
+
+// whenHTML — время публикации новосибирское, как на сайте.
 //
 // Неточное время (published_exact = false) — это момент, когда заметку увидело
-// зеркало: настоящего сайт не отдаёт. Отсюда «≈» и подпись, а не молчаливая
-// подмена: расхождение бывает в минуты, а на границе суток и в дату.
+// зеркало: настоящего сайт не отдаёт. Молча подменять его нельзя (расхождение
+// бывает в минуты, а на границе суток и в дату), но и «≈» перед каждой датой
+// ленты ломает узнаваемость. Поэтому след остаётся, но тихий: пунктир и
+// подпись при наведении.
 func whenHTML(t time.Time, exact bool) template.HTML {
 	local := t.In(tz)
-	s := local.Format("2 ") + months[local.Month()-1]
-	if local.Year() != time.Now().In(tz).Year() {
-		s += local.Format(" 2006")
-	}
-	s += local.Format(", 15:04")
-	title := ""
+	class, title := "date", ""
 	if !exact {
-		s = "≈ " + s
+		class = "date _approx"
 		title = ` title="Точного времени публикации сайт не отдаёт: это момент, когда заметку увидело зеркало"`
 	}
-	return template.HTML(`<time datetime="` + local.Format(time.RFC3339) + `"` + title + `>` +
-		template.HTMLEscapeString(s) + `</time>`)
+	return template.HTML(`<time class="` + class + `" datetime="` +
+		local.Format(time.RFC3339) + `"` + title + `>` +
+		template.HTMLEscapeString(local.Format(dateFormat)) + `</time>`)
 }
-
-var months = [...]string{"января", "февраля", "марта", "апреля", "мая", "июня",
-	"июля", "августа", "сентября", "октября", "ноября", "декабря"}
 
 // plural — русское склонение при числительном.
 func plural(n int, one, few, many string) string {

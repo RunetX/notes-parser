@@ -1,30 +1,37 @@
 {{define "content"}}
-<h1 class="sr-only">Лента заметок</h1>
+<h1 class="ttl">Общая лента</h1>
+
+{{template "pager" .Pager}}
 
 {{if not .Notes}}
 <p class="empty">Пока пусто.</p>
 {{end}}
 
-{{$limit := .Limit}}
-<ol class="feed">
+<ul class="notes">
 {{range .Notes}}
-  <li class="card">
-    <div class="who">
+  <li class="note">
+    {{/* Автор — колонка слева: квадратный аватар, ник под ним. Ровно как на
+         НГС; это первое, по чему постоянный читатель узнаёт страницу. */}}
+    <div class="author">
       {{template "avatar" (av .Author.AvatarURL .Name)}}
-      <div class="whotext">
-        <span class="nick{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
-        <span class="meta">{{when .PublishedAt .PublishedExact}}</span>
+      <span class="nick{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
+    </div>
+    <div class="nbody">
+      {{/* Текст заметки показывается ЦЕЛИКОМ, без «читать дальше»: на НГС
+           лента так и устроена, её листают, а не раскрывают. */}}
+      <div class="text">{{body .Body}}</div>
+      <div class="nfoot">
+        {{when .PublishedAt .PublishedExact}}
+        {{if .CommentsClosed}}
+        <a class="clink" href="/n/{{.ID}}">Заметка не актуальна, но вы можете ознакомиться с её обсуждением <span class="cnt">{{.CommentCount}}</span></a>
+        {{else}}
+        <a class="clink" href="/n/{{.ID}}">Комментарии <span class="cnt">{{.CommentCount}}</span></a>
+        {{end}}
       </div>
     </div>
-    <div class="text">{{excerpt $limit .Body}}</div>
-    <p class="acts">
-      <a class="open" href="/n/{{.ID}}">{{if long $limit .Body}}Читать целиком{{else}}Открыть{{end}}</a>
-      <a class="cnt" href="/n/{{.ID}}">{{.CommentCount}}&nbsp;{{plural .CommentCount "комментарий" "комментария" "комментариев"}}</a>
-      {{if .CommentsClosed}}<span class="closed">комментарии закрыты</span>{{end}}
-    </p>
   </li>
 {{end}}
-</ol>
+</ul>
 
-{{if .More}}<p class="more"><a href="{{.More}}">Ещё заметки</a></p>{{end}}
+{{template "pager" .Pager}}
 {{end}}

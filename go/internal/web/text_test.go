@@ -3,7 +3,6 @@ package web
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"lovegw/internal/platform"
 )
@@ -51,24 +50,6 @@ func TestBodyDoesNotLinkForeignSchemes(t *testing.T) {
 	}
 }
 
-func TestExcerptCutsAtWordBoundary(t *testing.T) {
-	text := strings.Repeat("слово ", 40)
-	if !isLong(30, text) {
-		t.Fatal("длинный текст не опознан")
-	}
-	got := string(excerptHTML(30, text))
-	if !strings.Contains(got, "…") {
-		t.Errorf("нет отбивки продолжения: %s", got)
-	}
-	if strings.Contains(got, "сло<") || strings.Contains(got, "сло…") {
-		t.Errorf("обрыв на середине слова: %s", got)
-	}
-	// Короткий текст не трогаем вовсе.
-	if got := string(excerptHTML(30, "коротко")); got != "<p>коротко</p>" {
-		t.Errorf("короткий текст изменён: %s", got)
-	}
-}
-
 // Обращение «Ник, » — ребро, а не текст. Значит рисуется оно из ТЕКУЩЕГО ника
 // адресата, и внутри первого абзаца: на сайте оно выглядит началом фразы.
 func TestCommentBodyDrawsAddressee(t *testing.T) {
@@ -103,29 +84,6 @@ func TestPlural(t *testing.T) {
 	}
 }
 
-// Неточное время — это момент, когда заметку увидело зеркало: настоящего сайт
-// не отдаёт. Разница бывает в минуты, а на границе суток и в дату, поэтому оно
-// помечено, а не подменено молча.
-func TestWhenMarksInexactTime(t *testing.T) {
-	at := time.Date(2026, 8, 17, 5, 0, 0, 0, time.UTC) // 12:00 в Новосибирске
-	exact := string(whenHTML(at, true))
-	if !strings.Contains(exact, "17 августа, 12:00") {
-		t.Errorf("время не новосибирское: %s", exact)
-	}
-	if strings.Contains(exact, "≈") {
-		t.Error("точное время помечено как приблизительное")
-	}
-	if got := string(whenHTML(at, false)); !strings.Contains(got, "≈") || !strings.Contains(got, "title=") {
-		t.Errorf("неточное время не помечено: %s", got)
-	}
-	// Прошлый год печатается вместе с годом, нынешний — без: «2026» в каждой
-	// строке ленты это шум.
-	old := time.Date(2014, 3, 2, 5, 0, 0, 0, time.UTC)
-	if !strings.Contains(string(whenHTML(old, true)), "2014") {
-		t.Error("у старой записи не показан год")
-	}
-}
-
 func TestDepthClassClamped(t *testing.T) {
 	cases := map[int]string{0: "d1", 1: "d1", 5: "d5", 12: "d12", 40: "d12"}
 	for d, want := range cases {
@@ -145,17 +103,6 @@ func TestLocalPath(t *testing.T) {
 	for _, in := range []string{"", "//evil", `/\evil`, "https://evil", "/x\nSet-Cookie: a=b"} {
 		if got := localPath(in); got != "/" {
 			t.Errorf("%q увёл на %q", in, got)
-		}
-	}
-}
-
-func TestValidPathCursor(t *testing.T) {
-	if !validPathCursor("") || !validPathCursor("0000063207290.0000063207431") {
-		t.Error("настоящий путь отвергнут")
-	}
-	for _, bad := range []string{"../etc", "1;2", strings.Repeat("1", maxPathLen+1)} {
-		if validPathCursor(bad) {
-			t.Errorf("мусор принят: %q", bad)
 		}
 	}
 }

@@ -177,10 +177,13 @@ type NoteView struct {
 
 // Name — подпись под заметкой. Пара к CommentView.Name: подпись обязана
 // считаться в одном месте, иначе аноним где-нибудь окажется «без имени».
+//
+// «Анонимно», а не «Аноним»: ровно это слово стоит под аватаром анонимной
+// заметки на НГС (записанная лента, notes_feed.html).
 func (n NoteView) Name() string {
 	switch {
 	case n.Anonymous:
-		return "Аноним"
+		return "Анонимно"
 	case n.Author.Known() && n.Author.Nick != "":
 		return n.Author.Nick
 	default:

@@ -156,7 +156,7 @@ func TestSinkTakesLiveFlow(t *testing.T) {
 		t.Fatalf("приём второй реплики: %v", err)
 	}
 
-	got, _, err := e.p.Thread(ctx, platform.Viewer{}, 312811, "", 100)
+	got, err := e.p.Thread(ctx, platform.Viewer{}, 312811)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestReconcileBackfillsMirror(t *testing.T) {
 
 	// Дерево: обе реплики с обращением встали под первой, включая ту, где ник
 	// написан со строчной, — сравнение регистронезависимое.
-	thread, _, err := e.p.Thread(ctx, platform.Viewer{}, 312811, "", 100)
+	thread, err := e.p.Thread(ctx, platform.Viewer{}, 312811)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestReconcileCatchesUpAfterLiveSink(t *testing.T) {
 	if st.Notes != 0 || st.Comments != 1 {
 		t.Errorf("догон: %+v", st)
 	}
-	got, _, err := e.p.Flat(ctx, platform.Viewer{}, 312811, 0, 100)
+	got, err := e.p.Flat(ctx, platform.Viewer{}, 312811, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,12 +368,14 @@ func TestReconcileSeesBackdatedComment(t *testing.T) {
 	if st.Comments != 1 {
 		t.Errorf("догон старой реплики: %+v", st)
 	}
-	got, _, err := e.p.Flat(ctx, platform.Viewer{}, 312811, 0, 100)
+	got, err := e.p.Flat(ctx, platform.Viewer{}, 312811, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].ID != 63207290 {
-		t.Errorf("плоский вид: %d реплик, первая %d", len(got), got[0].ID)
+	// Линейный вид идёт от новых к старым, как на НГС, — дотянутая задним
+	// числом реплика встаёт последней, но встаёт.
+	if len(got) != 2 || got[1].ID != 63207290 {
+		t.Errorf("линейный вид: %d реплик, последняя %d", len(got), got[len(got)-1].ID)
 	}
 }
 

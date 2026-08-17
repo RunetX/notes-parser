@@ -28,30 +28,29 @@ const testKey = "секретный-ключ-стройки"
 
 type fakeStore struct {
 	notes      []platform.NoteView
-	feedNext   platform.FeedCursor
-	feedCursor platform.FeedCursor // что пришло в последний вызов
+	total      int
+	feedOffset int // что пришло в последний вызов
 
 	note    platform.NoteView
 	noteErr error
 	images  []platform.Media
 
-	thread     []platform.CommentView
-	threadNext string
-	threadFrom string
+	thread []platform.CommentView
 
-	flat     []platform.CommentView
-	flatNext int64
-	flatFrom int64
-	flatUsed bool
+	flat       []platform.CommentView
+	flatOffset int
+	flatUsed   bool
 
 	pingErr error
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 
-func (f *fakeStore) Feed(_ context.Context, _ platform.Viewer, cur platform.FeedCursor, _ int) ([]platform.NoteView, platform.FeedCursor, error) {
-	f.feedCursor = cur
-	return f.notes, f.feedNext, nil
+func (f *fakeStore) CountNotes(context.Context) (int, error) { return f.total, nil }
+
+func (f *fakeStore) Feed(_ context.Context, _ platform.Viewer, offset, _ int) ([]platform.NoteView, error) {
+	f.feedOffset = offset
+	return f.notes, nil
 }
 
 func (f *fakeStore) NoteViewByID(_ context.Context, _ platform.Viewer, id int64) (platform.NoteView, error) {
@@ -67,14 +66,13 @@ func (f *fakeStore) NoteImages(context.Context, int64) ([]platform.Media, error)
 	return f.images, nil
 }
 
-func (f *fakeStore) Thread(_ context.Context, _ platform.Viewer, _ int64, after string, _ int) ([]platform.CommentView, string, error) {
-	f.threadFrom = after
-	return f.thread, f.threadNext, nil
+func (f *fakeStore) Thread(context.Context, platform.Viewer, int64) ([]platform.CommentView, error) {
+	return f.thread, nil
 }
 
-func (f *fakeStore) Flat(_ context.Context, _ platform.Viewer, _ int64, afterID int64, _ int) ([]platform.CommentView, int64, error) {
-	f.flatUsed, f.flatFrom = true, afterID
-	return f.flat, f.flatNext, nil
+func (f *fakeStore) Flat(_ context.Context, _ platform.Viewer, _ int64, offset, _ int) ([]platform.CommentView, error) {
+	f.flatUsed, f.flatOffset = true, offset
+	return f.flat, nil
 }
 
 func quietLog() *slog.Logger {
@@ -110,6 +108,18 @@ func do(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
+}
+
+// sampleThread — три реплики: корень, ответ на него и ответ на ответ.
+func sampleThread() []platform.CommentView {
+	at := time.Date(2026, 8, 17, 12, 30, 0, 0, time.UTC)
+	return []platform.CommentView{
+		{ID: 1, Author: platform.Author{ID: 1, Nick: "Пух"}, Body: "Согласна.", Depth: 1, PublishedAt: at},
+		{ID: 2, Author: platform.Author{ID: 2, Nick: "Мавр"}, Body: "и правда", Depth: 2,
+			ReplyTo: &platform.ReplyRef{CommentID: 1, Nick: "Пух"}, PublishedAt: at},
+		{ID: 3, Author: platform.Author{ID: 1, Nick: "Пух"}, Body: "вот именно", Depth: 3,
+			ReplyTo: &platform.ReplyRef{CommentID: 2, Nick: "Мавр"}, PublishedAt: at},
+	}
 }
 
 func sampleNote() platform.NoteView {
@@ -219,14 +229,14 @@ func TestGateRejectsCrossSitePost(t *testing.T) {
 // ---------------------------------------------------------------- лента
 
 func TestFeedRendersNotes(t *testing.T) {
-	st := &fakeStore{notes: []platform.NoteView{sampleNote()}}
+	st := &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}}
 	h := openServer(t, st)
 	w := do(h, pass(t, "GET", "/"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("код %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"Рио", "Первый абзац.", `href="/n/312811"`, "3&nbsp;комментария"} {
+	for _, want := range []string{"Рио", "Первый абзац.", `href="/n/312811"`, "Комментарии"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в ленте нет %q", want)
 		}
@@ -239,7 +249,7 @@ func TestFeedRendersNotes(t *testing.T) {
 func TestFeedAnonymousNoteShowsNoAuthor(t *testing.T) {
 	n := sampleNote()
 	n.Anonymous, n.Author = true, platform.Author{}
-	h := openServer(t, &fakeStore{notes: []platform.NoteView{n}})
+	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
 	body := do(h, pass(t, "GET", "/")).Body.String()
 	if !strings.Contains(body, "Аноним") {
 		t.Error("анонимная заметка не подписана «Аноним»")
@@ -249,49 +259,10 @@ func TestFeedAnonymousNoteShowsNoAuthor(t *testing.T) {
 	}
 }
 
-func TestFeedCursorRoundTrip(t *testing.T) {
-	at := time.Date(2026, 8, 17, 12, 0, 0, 123456000, time.UTC)
-	st := &fakeStore{
-		notes:    []platform.NoteView{sampleNote()},
-		feedNext: platform.FeedCursor{PublishedAt: at, ID: 312800},
-	}
-	h := openServer(t, st)
-	body := do(h, pass(t, "GET", "/")).Body.String()
-
-	more := feedMoreURL(platform.FeedCursor{PublishedAt: at, ID: 312800})
-	if !strings.Contains(body, "?t=") {
-		t.Fatalf("в ленте нет ссылки на следующую страницу")
-	}
-	// Курсор обязан пережить дорогу туда и обратно с точностью хранения: у
-	// соседних заметок бэкфилла время совпадает до секунды, и потеря
-	// микросекунд начала бы дублировать строки на границе страниц.
-	do(h, pass(t, "GET", more))
-	if !st.feedCursor.PublishedAt.Equal(at) || st.feedCursor.ID != 312800 {
-		t.Fatalf("курсор доехал как %v/%d, ожидался %v/312800",
-			st.feedCursor.PublishedAt.UTC(), st.feedCursor.ID, at)
-	}
-}
-
-func TestFeedRejectsBrokenCursor(t *testing.T) {
-	h := openServer(t, &fakeStore{})
-	if got := do(h, pass(t, "GET", "/?t=вчера&id=5")).Code; got != http.StatusBadRequest {
-		t.Fatalf("код %d, ожидался 400", got)
-	}
-}
-
 // ---------------------------------------------------------------- заметка
 
 func TestNotePageShowsTreeByDefault(t *testing.T) {
-	st := &fakeStore{
-		note: sampleNote(),
-		thread: []platform.CommentView{
-			{ID: 63207290, Author: platform.Author{ID: 1, Nick: "Пух"}, Body: "Согласна.", Depth: 1,
-				PublishedAt: time.Date(2026, 8, 17, 12, 30, 0, 0, time.UTC)},
-			{ID: 63207431, Author: platform.Author{ID: 2, Nick: "Мавр"}, Body: "И правда.", Depth: 2,
-				ReplyTo:     &platform.ReplyRef{CommentID: 63207290, Nick: "Пух"},
-				PublishedAt: time.Date(2026, 8, 17, 12, 40, 0, 0, time.UTC)},
-		},
-	}
+	st := &fakeStore{note: sampleNote(), thread: sampleThread()}
 	h := openServer(t, st)
 	w := do(h, pass(t, "GET", "/n/312811"))
 	if w.Code != http.StatusOK {
@@ -301,7 +272,7 @@ func TestNotePageShowsTreeByDefault(t *testing.T) {
 	if st.flatUsed {
 		t.Error("по умолчанию тред обязан быть деревом")
 	}
-	for _, want := range []string{`id="c63207290"`, `class="c d2"`, `href="#c63207290"`, "Пух</a>, И правда."} {
+	for _, want := range []string{`id="c1"`, `class="c d2"`, `href="#c1"`, "Пух</a>, и правда"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в треде нет %q", want)
 		}
@@ -313,21 +284,18 @@ func TestNotePageShowsTreeByDefault(t *testing.T) {
 	}
 }
 
-func TestNotePageFlatViewAndCursor(t *testing.T) {
-	st := &fakeStore{note: sampleNote(), flatNext: 63207431}
+func TestNotePageLinearViewRemembered(t *testing.T) {
+	st := &fakeStore{note: sampleNote()}
 	h := openServer(t, st)
-	w := do(h, pass(t, "GET", "/n/312811?view=flat"))
+	w := do(h, pass(t, "GET", "/n/312811?view=linear"))
 	if !st.flatUsed {
-		t.Fatal("вид «по времени» не дошёл до хранилища")
-	}
-	if !strings.Contains(w.Body.String(), "after=63207431") {
-		t.Error("нет ссылки на следующую страницу плоского вида")
+		t.Fatal("линейный вид не дошёл до хранилища")
 	}
 	// Выбор вида запоминается: переключатель на сайте живой, и выбирать заново
 	// на каждой заметке — раздражение на ровном месте.
 	var remembered bool
 	for _, c := range w.Result().Cookies() {
-		if c.Name == viewCookie && c.Value == "flat" {
+		if c.Name == viewCookie && c.Value == "linear" {
 			remembered = true
 		}
 	}
@@ -340,7 +308,7 @@ func TestNotePageRemembersViewFromCookie(t *testing.T) {
 	st := &fakeStore{note: sampleNote()}
 	h := openServer(t, st)
 	r := pass(t, "GET", "/n/312811")
-	r.AddCookie(&http.Cookie{Name: viewCookie, Value: "flat"})
+	r.AddCookie(&http.Cookie{Name: viewCookie, Value: "linear"})
 	do(h, r)
 	if !st.flatUsed {
 		t.Error("запомненный вид не применился")
@@ -366,13 +334,6 @@ func TestHiddenNoteLooksMissing(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "Первый абзац") {
 		t.Error("скрытая заметка показала текст")
-	}
-}
-
-func TestNoteRejectsBrokenThreadCursor(t *testing.T) {
-	h := openServer(t, &fakeStore{note: sampleNote()})
-	if got := do(h, pass(t, "GET", "/n/312811?after=../etc")).Code; got != http.StatusBadRequest {
-		t.Fatalf("код %d, ожидался 400", got)
 	}
 }
 
