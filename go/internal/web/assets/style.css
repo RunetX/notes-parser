@@ -91,6 +91,21 @@ a:hover { text-decoration: underline; }
   padding: 5px 14px; border-radius: 3px; font-size: 14px;
 }
 
+/* Вход — в правом верхнем углу, как на НГС. margin-left:auto прижимает его к
+ * краю без распорок; на узком экране flex перенесёт его строкой ниже, а не
+ * выдавит наружу. Ссылка и кнопка выглядят одинаково: выход обязан быть POST
+ * (GET-ссылку браузер нажимает сам в префетче), но человеку это знать незачем. */
+.acct { margin-left: auto; }
+.acct form { margin: 0; }
+.enter {
+  display: inline-block; font: inherit; font-size: 14px; line-height: 1.45;
+  color: var(--nav-ink); background: rgba(255, 255, 255, .18);
+  padding: 5px 14px; border: 0; border-radius: 3px; cursor: pointer;
+}
+.enter:hover {
+  color: var(--nav-ink); text-decoration: none; background: rgba(255, 255, 255, .3);
+}
+
 .main { background: var(--card); padding: 16px 20px 28px; margin: 10px auto; max-width: 910px; }
 .ttl { font-size: 30px; font-weight: 400; margin: 0 0 16px; color: var(--ink); }
 

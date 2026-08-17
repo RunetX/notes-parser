@@ -1,0 +1,19 @@
+{{define "content"}}
+<section class="gate">
+  <h1>Вход</h1>
+  <p>Читать «Заметки» можно и без входа — вся лента и все обсуждения открыты. Вход понадобится, чтобы писать.</p>
+  {{if .Open}}
+  <p>Настоящий вход ещё делается. Пока идёт стройка, войти можно по общему ключу — он у владельца.</p>
+  {{if .Wrong}}<p class="bad">Ключ не подошёл.</p>{{end}}
+  <form method="post" action="/login" class="keyform">
+    <input type="hidden" name="to" value="{{.To}}">
+    <label for="key">Ключ</label>
+    <input id="key" name="key" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit">Войти</button>
+  </form>
+  {{else}}
+  <p>Войти пока некуда: вход ещё делается. Возвращайтесь — или просто читайте.</p>
+  {{end}}
+  <p class="fine">Вход будет таким: код в поле «о себе» вашей анкеты на НГС — и весь ваш прежний след здесь станет вашим.</p>
+</section>
+{{end}}

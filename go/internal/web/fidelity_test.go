@@ -46,7 +46,7 @@ func TestLinearShowsThirtyCommentsPerPage(t *testing.T) {
 func TestFeedHasNumberedPagerTopAndBottom(t *testing.T) {
 	st := &fakeStore{total: 100, notes: []platform.NoteView{sampleNote()}}
 	h := openServer(t, st)
-	body := do(h, pass(t, "GET", "/?page=2")).Body.String()
+	body := do(h, guest(t, "GET", "/?page=2")).Body.String()
 
 	if n := strings.Count(body, `class="pages"`); n != 2 {
 		t.Errorf("постраничка нарисована %d раз, ожидалось 2 (сверху и снизу)", n)
@@ -95,7 +95,7 @@ func TestPagerWindowMatchesOriginal(t *testing.T) {
 // Круглых аватарок на НГС нет нигде.
 func TestAuthorColumnIsSquareAvatarWithNickBelow(t *testing.T) {
 	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}})
-	body := do(h, pass(t, "GET", "/")).Body.String()
+	body := do(h, guest(t, "GET", "/")).Body.String()
 
 	img := regexp.MustCompile(`<img class="ava"[^>]*>`).FindString(body)
 	if img == "" {
@@ -140,7 +140,7 @@ func TestFeedCommentLinkWording(t *testing.T) {
 	closed.ID, closed.CommentsClosed = 312800, true
 
 	h := openServer(t, &fakeStore{total: 2, notes: []platform.NoteView{open, closed}})
-	body := do(h, pass(t, "GET", "/")).Body.String()
+	body := do(h, guest(t, "GET", "/")).Body.String()
 	if !strings.Contains(body, "Комментарии <span class=\"cnt\">3</span>") {
 		t.Error("нет ссылки «Комментарии N»")
 	}
@@ -154,7 +154,7 @@ func TestFeedShowsWholeNote(t *testing.T) {
 	n := sampleNote()
 	n.Body = strings.Repeat("длинная заметка. ", 200)
 	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
-	body := do(h, pass(t, "GET", "/")).Body.String()
+	body := do(h, guest(t, "GET", "/")).Body.String()
 	if strings.Contains(body, "…") || strings.Contains(body, "Читать целиком") {
 		t.Error("заметка в ленте обрезана, а на НГС она показана целиком")
 	}
@@ -165,7 +165,7 @@ func TestFeedShowsWholeNote(t *testing.T) {
 func TestTreeIsWholeAndCountsReplies(t *testing.T) {
 	st := &fakeStore{note: sampleNote(), thread: sampleThread()}
 	h := openServer(t, st)
-	body := do(h, pass(t, "GET", "/n/312811?view=tree")).Body.String()
+	body := do(h, guest(t, "GET", "/n/312811?view=tree")).Body.String()
 
 	if strings.Contains(body, `class="pages"`) {
 		t.Error("у дерева появилась постраничка")
@@ -185,7 +185,7 @@ func TestLinearIsPagedFromNewest(t *testing.T) {
 	st := &fakeStore{note: sampleNote()}
 	st.note.CommentCount = 95
 	h := openServer(t, st)
-	body := do(h, pass(t, "GET", "/n/312811?view=linear&page=2")).Body.String()
+	body := do(h, guest(t, "GET", "/n/312811?view=linear&page=2")).Body.String()
 
 	if !st.flatUsed {
 		t.Fatal("линейный вид не дошёл до хранилища")
@@ -206,7 +206,7 @@ func TestLinearIsPagedFromNewest(t *testing.T) {
 // ссылками: без JS он обязан работать так же.
 func TestViewSwitcherIsLinks(t *testing.T) {
 	h := openServer(t, &fakeStore{note: sampleNote()})
-	body := do(h, pass(t, "GET", "/n/312811")).Body.String()
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
 	for _, want := range []string{`href="/n/312811?view=tree"`, `href="/n/312811?view=linear"`, `class="sw tree on"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в переключателе нет %q", want)
@@ -219,7 +219,7 @@ func TestViewSwitcherIsLinks(t *testing.T) {
 // улучшение: в длинном треде иначе не найти, кому отвечали.
 func TestAddressPrefixIsBoldAtStart(t *testing.T) {
 	h := openServer(t, &fakeStore{note: sampleNote(), thread: sampleThread()})
-	body := do(h, pass(t, "GET", "/n/312811")).Body.String()
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
 	if !strings.Contains(body, `<p><a class="to" href="#c1">Пух</a>, `) {
 		t.Error("обращение не стоит началом первой фразы")
 	}
@@ -257,13 +257,13 @@ func TestNickCarriesGenderClass(t *testing.T) {
 	n := sampleNote()
 	n.Author.Gender = platform.GenderFemale
 	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
-	if !strings.Contains(do(h, pass(t, "GET", "/")).Body.String(), `class="nick _female"`) {
+	if !strings.Contains(do(h, guest(t, "GET", "/")).Body.String(), `class="nick _female"`) {
 		t.Error("ник не помечен полом")
 	}
 	// У анонима пола нет и быть не может: он приехал бы вместе с автором.
 	n.Anonymous, n.Author = true, platform.Author{}
 	h2 := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
-	body := do(h2, pass(t, "GET", "/")).Body.String()
+	body := do(h2, guest(t, "GET", "/")).Body.String()
 	if strings.Contains(body, "_female") || strings.Contains(body, "_male") {
 		t.Error("у анонимной заметки в разметке оказался пол")
 	}
@@ -283,6 +283,27 @@ func TestPaletteMatchesSite(t *testing.T) {
 	}
 }
 
+// [Ф] Шапка НГС: вход — в ПРАВОМ ВЕРХНЕМ углу верхней панели
+// (`lv-top-menu__user-menu`, подпись «Вход на сайт»). Читать сайт можно и не
+// входя, поэтому кнопка приглашает, а не преграждает: с 18.08.2026 площадка
+// устроена так же.
+func TestEnterSitsInTopRightCorner(t *testing.T) {
+	if !strings.Contains(cssText(t), ".acct { margin-left: auto; }") {
+		t.Error("вход не прижат к правому краю шапки")
+	}
+	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}})
+	head, _, ok := strings.Cut(do(h, guest(t, "GET", "/")).Body.String(), "</header>")
+	if !ok {
+		t.Fatal("на странице нет шапки")
+	}
+	if !strings.Contains(head, ">Вход<") {
+		t.Fatal("в шапке нет входа")
+	}
+	if strings.Index(head, `class="acct"`) < strings.Index(head, `class="brand"`) {
+		t.Error("вход стоит левее названия площадки")
+	}
+}
+
 func cssText(t *testing.T) string {
 	t.Helper()
 	a, ok := assets[strings.TrimPrefix(assetURL("style.css"), "/assets/")]
@@ -296,10 +317,10 @@ func cssText(t *testing.T) string {
 // страница вместо ответа хуже обоих.
 func TestPageNumberErrors(t *testing.T) {
 	h := openServer(t, &fakeStore{total: 5, notes: []platform.NoteView{sampleNote()}})
-	if got := do(h, pass(t, "GET", "/?page=вторая")).Code; got != http.StatusBadRequest {
+	if got := do(h, guest(t, "GET", "/?page=вторая")).Code; got != http.StatusBadRequest {
 		t.Errorf("мусор в номере: код %d, ожидался 400", got)
 	}
-	if got := do(h, pass(t, "GET", "/?page=99")).Code; got != http.StatusNotFound {
+	if got := do(h, guest(t, "GET", "/?page=99")).Code; got != http.StatusNotFound {
 		t.Errorf("страница за краем ленты: код %d, ожидался 404", got)
 	}
 }

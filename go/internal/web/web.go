@@ -40,8 +40,8 @@ type Config struct {
 	// MediaDir — каталог CAS. В бою файлы отдаёт Caddy, минуя Go; наш обработчик
 	// нужен разработке и на случай запроса мимо прокси.
 	MediaDir string
-	// PreviewKey — общий ключ доступа до настоящего входа (Ш4). Пустой ключ
-	// означает «не пускать никого», а не «пускать всех»: см. gate.go.
+	// PreviewKey — общий ключ входа до настоящего (Ш4). Чтение он не
+	// закрывает: пустой ключ означает «войти пока некуда», см. login.go.
 	PreviewKey string
 	Log        *slog.Logger
 }
@@ -69,7 +69,7 @@ type Server struct {
 	st    Store
 	log   *slog.Logger
 	http  *http.Server
-	gate  []byte       // sha256 ключа доступа; пусто — площадка закрыта
+	gate  []byte       // sha256 ключа входа; пусто — войти пока нельзя
 	media *mediaServer // nil, если каталог не задан
 	// secure — куки помечаются Secure и получают префикс __Host-. Выводится из
 	// BaseURL: по http браузер такие куки просто отбросит, и разработка встала
@@ -86,11 +86,11 @@ func New(cfg Config, st Store) *Server {
 		cfg:    cfg,
 		st:     st,
 		log:    log,
-		gate:   gateDigest(cfg.PreviewKey),
+		gate:   authDigest(cfg.PreviewKey),
 		secure: strings.HasPrefix(cfg.BaseURL, "https://"),
 	}
 	if len(s.gate) == 0 {
-		log.Warn("platform.preview_key не задан — страницы площадки закрыты (403), живы только /healthz и /robots.txt")
+		log.Warn("platform.preview_key не задан — читать площадку можно, войти нельзя")
 	}
 	if cfg.MediaDir != "" {
 		m, err := newMediaServer(cfg.MediaDir)
@@ -112,30 +112,25 @@ func New(cfg Config, st Store) *Server {
 	return s
 }
 
-// routes собирает роутер. Открытая часть — то, что обязано работать до входа:
-// проверка здоровья, robots, статика (иначе и сама страница входа будет голой)
-// и медиа. Всё остальное живёт за воротами.
+// routes собирает роутер. Слоя «за воротами» здесь больше нет: чтение открыто
+// всем, а вход — это отдельная страница, на которую ведёт кнопка в шапке.
 func (s *Server) routes() http.Handler {
-	open := http.NewServeMux()
-	open.HandleFunc("GET /healthz", s.handleHealth)
-	open.HandleFunc("GET /robots.txt", s.handleRobots)
-	open.HandleFunc("GET /assets/{name}", s.handleAsset)
-	open.HandleFunc("GET /gate", s.handleGate)
-	open.HandleFunc("POST /gate", s.handleGateSubmit)
-	// Тема живёт снаружи ворот намеренно: страница входа тоже должна
-	// перекрашиваться, иначе тёмная тема начинается только после пароля.
-	open.HandleFunc("POST /theme", s.handleTheme)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /robots.txt", s.handleRobots)
+	mux.HandleFunc("GET /assets/{name}", s.handleAsset)
+	mux.HandleFunc("GET /login", s.handleLogin)
+	mux.HandleFunc("POST /login", s.handleLoginSubmit)
+	mux.HandleFunc("POST /logout", s.handleLogout)
+	mux.HandleFunc("POST /theme", s.handleTheme)
 	if s.media != nil {
-		open.Handle("GET /media/", http.StripPrefix("/media/", s.media))
+		mux.Handle("GET /media/", http.StripPrefix("/media/", s.media))
 	}
+	mux.HandleFunc("GET /{$}", s.handleFeed)
+	mux.HandleFunc("GET /n/{id}", s.handleNote)
+	mux.HandleFunc("/", s.handleNotFound)
 
-	inner := http.NewServeMux()
-	inner.HandleFunc("GET /{$}", s.handleFeed)
-	inner.HandleFunc("GET /n/{id}", s.handleNote)
-	inner.HandleFunc("/", s.handleNotFound)
-	open.Handle("/", s.withGate(inner))
-
-	return s.withSecurityHeaders(s.withLog(open))
+	return s.withSecurityHeaders(s.withLog(mux))
 }
 
 // withSecurityHeaders ставит заголовки, которые дешевле завести сразу, чем
@@ -155,8 +150,10 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
-		// Площадка видна только вошедшим, поэтому индексация запрещена
-		// заголовком, а не только robots.txt: robots.txt соблюдают не все.
+		// Чтение открыто людям, но не поисковикам: зеркало чужой переписки в
+		// выдаче — это распространение персональных данных без согласия
+		// (ст. 10.1), и снимать запрет можно только вместе с бумагой (Ш9).
+		// Заголовком, а не только robots.txt: robots.txt соблюдают не все.
 		h.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 		next.ServeHTTP(w, r)
 	})
@@ -213,8 +210,8 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	s.fail(w, r, http.StatusNotFound, "Такой страницы нет.")
 }
 
-// viewer — кто смотрит. До Ш4 это всегда «никто»: ворота пускают всех с общим
-// ключом, и своей строки в users у гостя нет. Здесь же появится сессия.
+// viewer — кто смотрит. До Ш4 это всегда «никто»: общий ключ людей не
+// различает, и своей строки в users у вошедшего нет. Здесь появится сессия.
 func (s *Server) viewer(_ *http.Request) platform.Viewer { return platform.Viewer{} }
 
 // sameOrigin — первая линия защиты от CSRF: запрос пришёл с нашей же страницы.

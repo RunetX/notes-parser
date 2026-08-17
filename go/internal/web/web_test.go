@@ -95,12 +95,19 @@ func openServer(t *testing.T, st Store) http.Handler {
 	return newTestServer(t, st, Config{PreviewKey: testKey})
 }
 
-// pass — запрос с уже пройденными воротами.
-func pass(t *testing.T, method, target string) *http.Request {
+// guest — обычный посетитель: не вошёл и входить не собирался. Чтение открыто
+// всем, поэтому таким запросом проверяется почти всё.
+func guest(t *testing.T, method, target string) *http.Request {
+	t.Helper()
+	return httptest.NewRequest(method, target, nil)
+}
+
+// signedReq — запрос человека, вошедшего по общему ключу.
+func signedReq(t *testing.T, method, target string) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(method, target, nil)
 	sum := sha256.Sum256([]byte(testKey))
-	r.AddCookie(&http.Cookie{Name: gateCookie, Value: hex.EncodeToString(sum[:])})
+	r.AddCookie(&http.Cookie{Name: authCookie, Value: hex.EncodeToString(sum[:])})
 	return r
 }
 
@@ -133,47 +140,61 @@ func sampleNote() platform.NoteView {
 	}
 }
 
-// ---------------------------------------------------------------- ворота
+// ---------------------------------------------------------------- вход
 
-// Пустой ключ обязан читаться как «закрыто», а не как «открыто для всех»:
-// забытая настройка не должна распахивать зеркало чужой переписки в интернет.
-func TestNoKeyClosesEverything(t *testing.T) {
-	h := newTestServer(t, &fakeStore{notes: []platform.NoteView{sampleNote()}}, Config{})
-	for _, target := range []string{"/", "/n/312811", "/gate"} {
-		if got := do(h, httptest.NewRequest("GET", target, nil)).Code; got != http.StatusForbidden {
-			t.Errorf("%s: код %d, ожидался 403", target, got)
+// Чтение открыто всем — это решение владельца от 18.08.2026, и оно отменило
+// прежнее правило «пустой ключ закрывает всё». Незаданный ключ теперь означает
+// ровно одно: войти пока некуда, а читать можно.
+func TestReadingIsOpenWithoutKey(t *testing.T) {
+	st := &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}, note: sampleNote()}
+	h := newTestServer(t, st, Config{})
+	for _, target := range []string{"/", "/n/312811", "/login", "/healthz", "/robots.txt"} {
+		if got := do(h, httptest.NewRequest("GET", target, nil)).Code; got != http.StatusOK {
+			t.Errorf("%s: код %d, ожидался 200", target, got)
 		}
 	}
-	// Проверка здоровья и robots живут всегда: без них не работает ни
-	// оркестратор, ни запрет индексации.
-	if got := do(h, httptest.NewRequest("GET", "/healthz", nil)).Code; got != http.StatusOK {
-		t.Errorf("healthz: код %d, ожидался 200", got)
-	}
-	if got := do(h, httptest.NewRequest("GET", "/robots.txt", nil)).Code; got != http.StatusOK {
-		t.Errorf("robots.txt: код %d, ожидался 200", got)
+}
+
+// Без ключа страница входа честно говорит, что войти некуда, и не показывает
+// поле, к которому не подходит ни одно значение.
+func TestLoginWithoutKeyOffersNoForm(t *testing.T) {
+	h := newTestServer(t, &fakeStore{}, Config{})
+	body := do(h, httptest.NewRequest("GET", "/login", nil)).Body.String()
+	if strings.Contains(body, `action="/login"`) {
+		t.Error("форма входа показана, хотя ключ не задан")
 	}
 }
 
-func TestGateRedirectsAndRemembersDestination(t *testing.T) {
+// Кнопка «Вход» стоит в правом верхнем углу шапки — там же, где на НГС, — и
+// ведёт на страницу входа, запомнив, откуда человек пришёл.
+func TestHeaderOffersEnterAndRemembersPlace(t *testing.T) {
+	h := openServer(t, &fakeStore{note: sampleNote()})
+	body := do(h, guest(t, "GET", "/n/312811?view=linear")).Body.String()
+	if !strings.Contains(body, `class="acct"`) || !strings.Contains(body, ">Вход<") {
+		t.Error("в шапке нет кнопки «Вход»")
+	}
+	if !strings.Contains(body, `href="/login?to=%2fn%2f312811%3fview%3dlinear"`) {
+		t.Errorf("кнопка входа не помнит страницу, с которой нажали:\n%s", body)
+	}
+}
+
+// У вошедшего на том же месте «Выход», и это форма с POST: выход меняет
+// состояние, а GET-ссылку браузер нажимает сам в префетче.
+func TestHeaderOffersExitWhenSignedIn(t *testing.T) {
 	h := openServer(t, &fakeStore{})
-	w := do(h, httptest.NewRequest("GET", "/n/312811?view=flat", nil))
-	if w.Code != http.StatusSeeOther {
-		t.Fatalf("код %d, ожидался 303", w.Code)
+	body := do(h, signedReq(t, "GET", "/")).Body.String()
+	if !strings.Contains(body, `action="/logout"`) || !strings.Contains(body, ">Выход<") {
+		t.Error("вошедшему не предложен выход")
 	}
-	loc := w.Header().Get("Location")
-	u, err := url.Parse(loc)
-	if err != nil {
-		t.Fatalf("разбор Location %q: %v", loc, err)
-	}
-	if u.Path != "/gate" || u.Query().Get("to") != "/n/312811?view=flat" {
-		t.Fatalf("ворота потеряли адрес назначения: %q", loc)
+	if strings.Contains(body, ">Вход<") {
+		t.Error("вошедшему всё ещё предлагают войти")
 	}
 }
 
-func TestGateAcceptsKeyAndSetsCookie(t *testing.T) {
+func TestLoginAcceptsKeyAndSetsCookie(t *testing.T) {
 	h := openServer(t, &fakeStore{})
 	form := url.Values{"key": {testKey}, "to": {"/n/312811"}}
-	r := httptest.NewRequest("POST", "/gate", strings.NewReader(form.Encode()))
+	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := do(h, r)
@@ -183,15 +204,15 @@ func TestGateAcceptsKeyAndSetsCookie(t *testing.T) {
 	}
 	var got *http.Cookie
 	for _, c := range w.Result().Cookies() {
-		if c.Name == gateCookie {
+		if c.Name == authCookie {
 			got = c
 		}
 	}
 	if got == nil {
-		t.Fatal("кука доступа не поставлена")
+		t.Fatal("кука входа не поставлена")
 	}
 	if !got.HttpOnly {
-		t.Error("кука доступа должна быть HttpOnly")
+		t.Error("кука входа должна быть HttpOnly")
 	}
 	// В куке лежит хеш ключа, а не сам ключ: утечка куки не должна отдавать
 	// строку, которую владелец диктует голосом и, скорее всего, где-то повторит.
@@ -200,10 +221,10 @@ func TestGateAcceptsKeyAndSetsCookie(t *testing.T) {
 	}
 }
 
-func TestGateRejectsWrongKey(t *testing.T) {
+func TestLoginRejectsWrongKey(t *testing.T) {
 	h := openServer(t, &fakeStore{})
 	form := url.Values{"key": {"не тот"}, "to": {"/"}}
-	r := httptest.NewRequest("POST", "/gate", strings.NewReader(form.Encode()))
+	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	w := do(h, r)
@@ -215,14 +236,37 @@ func TestGateRejectsWrongKey(t *testing.T) {
 	}
 }
 
-func TestGateRejectsCrossSitePost(t *testing.T) {
+func TestLoginRejectsCrossSitePost(t *testing.T) {
 	h := openServer(t, &fakeStore{})
 	form := url.Values{"key": {testKey}}
-	r := httptest.NewRequest("POST", "/gate", strings.NewReader(form.Encode()))
+	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
 	if got := do(h, r).Code; got != http.StatusForbidden {
 		t.Fatalf("код %d, ожидался 403", got)
+	}
+}
+
+func TestLogoutClearsCookie(t *testing.T) {
+	h := openServer(t, &fakeStore{})
+	form := url.Values{"back": {"/n/312811"}}
+	r := httptest.NewRequest("POST", "/logout", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	sum := sha256.Sum256([]byte(testKey))
+	r.AddCookie(&http.Cookie{Name: authCookie, Value: hex.EncodeToString(sum[:])})
+	w := do(h, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/n/312811" {
+		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	var cleared bool
+	for _, c := range w.Result().Cookies() {
+		if c.Name == authCookie && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Error("кука входа не снята")
 	}
 }
 
@@ -231,7 +275,7 @@ func TestGateRejectsCrossSitePost(t *testing.T) {
 func TestFeedRendersNotes(t *testing.T) {
 	st := &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}}
 	h := openServer(t, st)
-	w := do(h, pass(t, "GET", "/"))
+	w := do(h, guest(t, "GET", "/"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("код %d", w.Code)
 	}
@@ -250,7 +294,7 @@ func TestFeedAnonymousNoteShowsNoAuthor(t *testing.T) {
 	n := sampleNote()
 	n.Anonymous, n.Author = true, platform.Author{}
 	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
-	body := do(h, pass(t, "GET", "/")).Body.String()
+	body := do(h, guest(t, "GET", "/")).Body.String()
 	if !strings.Contains(body, "Аноним") {
 		t.Error("анонимная заметка не подписана «Аноним»")
 	}
@@ -264,7 +308,7 @@ func TestFeedAnonymousNoteShowsNoAuthor(t *testing.T) {
 func TestNotePageShowsTreeByDefault(t *testing.T) {
 	st := &fakeStore{note: sampleNote(), thread: sampleThread()}
 	h := openServer(t, st)
-	w := do(h, pass(t, "GET", "/n/312811"))
+	w := do(h, guest(t, "GET", "/n/312811"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("код %d", w.Code)
 	}
@@ -287,7 +331,7 @@ func TestNotePageShowsTreeByDefault(t *testing.T) {
 func TestNotePageLinearViewRemembered(t *testing.T) {
 	st := &fakeStore{note: sampleNote()}
 	h := openServer(t, st)
-	w := do(h, pass(t, "GET", "/n/312811?view=linear"))
+	w := do(h, guest(t, "GET", "/n/312811?view=linear"))
 	if !st.flatUsed {
 		t.Fatal("линейный вид не дошёл до хранилища")
 	}
@@ -307,7 +351,7 @@ func TestNotePageLinearViewRemembered(t *testing.T) {
 func TestNotePageRemembersViewFromCookie(t *testing.T) {
 	st := &fakeStore{note: sampleNote()}
 	h := openServer(t, st)
-	r := pass(t, "GET", "/n/312811")
+	r := guest(t, "GET", "/n/312811")
 	r.AddCookie(&http.Cookie{Name: viewCookie, Value: "linear"})
 	do(h, r)
 	if !st.flatUsed {
@@ -317,7 +361,7 @@ func TestNotePageRemembersViewFromCookie(t *testing.T) {
 
 func TestNoteNotFound(t *testing.T) {
 	h := openServer(t, &fakeStore{noteErr: platform.ErrNotFound})
-	if got := do(h, pass(t, "GET", "/n/999")).Code; got != http.StatusNotFound {
+	if got := do(h, guest(t, "GET", "/n/999")).Code; got != http.StatusNotFound {
 		t.Fatalf("код %d, ожидался 404", got)
 	}
 }
@@ -328,7 +372,7 @@ func TestHiddenNoteLooksMissing(t *testing.T) {
 	n := sampleNote()
 	n.Status = platform.StatusHiddenMod
 	h := openServer(t, &fakeStore{note: n})
-	w := do(h, pass(t, "GET", "/n/312811"))
+	w := do(h, guest(t, "GET", "/n/312811"))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("код %d, ожидался 404", w.Code)
 	}
@@ -339,7 +383,7 @@ func TestHiddenNoteLooksMissing(t *testing.T) {
 
 func TestUnknownPathIsNotFound(t *testing.T) {
 	h := openServer(t, &fakeStore{})
-	if got := do(h, pass(t, "GET", "/такого-нет")).Code; got != http.StatusNotFound {
+	if got := do(h, guest(t, "GET", "/такого-нет")).Code; got != http.StatusNotFound {
 		t.Fatalf("код %d, ожидался 404", got)
 	}
 }
@@ -384,13 +428,13 @@ func TestThemeRefusesForeignReturn(t *testing.T) {
 
 func TestThemeCookieRendersAttribute(t *testing.T) {
 	h := openServer(t, &fakeStore{})
-	r := pass(t, "GET", "/")
+	r := guest(t, "GET", "/")
 	r.AddCookie(&http.Cookie{Name: themeCookie, Value: "classic"})
 	if !strings.Contains(do(h, r).Body.String(), `data-theme="classic"`) {
 		t.Error("тема из куки не доехала до разметки")
 	}
 	// Мусор в куке читается как «как в системе»: кука приходит от человека.
-	r2 := pass(t, "GET", "/")
+	r2 := guest(t, "GET", "/")
 	r2.AddCookie(&http.Cookie{Name: themeCookie, Value: `<script>alert(1)</script>`})
 	if strings.Contains(do(h, r2).Body.String(), "<script>alert") {
 		t.Error("значение куки попало в разметку")
@@ -401,7 +445,7 @@ func TestThemeCookieRendersAttribute(t *testing.T) {
 
 func TestSecurityHeaders(t *testing.T) {
 	h := openServer(t, &fakeStore{})
-	head := do(h, pass(t, "GET", "/")).Header()
+	head := do(h, guest(t, "GET", "/")).Header()
 	csp := head.Get("Content-Security-Policy")
 	for _, want := range []string{"default-src 'self'", "frame-ancestors 'none'", "form-action 'self'"} {
 		if !strings.Contains(csp, want) {
@@ -432,9 +476,9 @@ func TestAssetsAreHashedAndCacheable(t *testing.T) {
 	if got := do(h, r).Code; got != http.StatusNotModified {
 		t.Errorf("повторный запрос: код %d, ожидался 304", got)
 	}
-	// Статика открыта до ворот: иначе и страница входа приедет голой.
-	if do(h, httptest.NewRequest("GET", u, nil)).Code != http.StatusOK {
-		t.Error("статика закрыта воротами")
+	// Статика доступна и не вошедшему: страница входа тоже должна быть одета.
+	if do(h, guest(t, "GET", u)).Code != http.StatusOK {
+		t.Error("статика требует входа")
 	}
 }
 

@@ -6,8 +6,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{{/* Индексация запрещена и заголовком X-Robots-Tag, и здесь: площадка видна
-     только вошедшим, а чужие тексты не должны оседать в поисковой выдаче. */}}
+{{/* Индексация запрещена и заголовком X-Robots-Tag, и здесь: читать площадку
+     может каждый, но чужие тексты не должны оседать в поисковой выдаче. */}}
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="color-scheme" content="light dark">
 <title>{{.Title}}</title>
@@ -20,6 +20,19 @@
   <div class="wrap topin">
     <a class="brand" href="/">{{site}}</a>
     <a class="tab" href="/">Общая лента</a>
+    {{/* Правый верхний угол — там же, где вход на НГС (там он подписан «Вход
+         на сайт» и живёт в lv-top-menu__user-menu). Читать можно и не входя:
+         кнопка приглашает, а не преграждает. */}}
+    <div class="acct">
+      {{if .SignedIn}}
+      <form method="post" action="/logout">
+        <input type="hidden" name="back" value="{{.Back}}">
+        <button class="enter" type="submit">Выход</button>
+      </form>
+      {{else}}
+      <a class="enter" href="/login?to={{.Back}}">Вход</a>
+      {{end}}
+    </div>
   </div>
 </header>
 

@@ -101,9 +101,13 @@ func commentBodyHTML(c platform.CommentView) template.HTML {
 type page struct {
 	Title string
 	Theme string
-	// Back — куда вернуть человека после смены темы. Это текущий адрес, и он
-	// проходит localPath на приёме: подставить сюда чужой хост нельзя.
+	// Back — куда вернуть человека после смены темы, входа или выхода. Это
+	// текущий адрес, и он проходит localPath на приёме: подставить сюда чужой
+	// хост нельзя.
 	Back string
+	// SignedIn — что показать в правом верхнем углу: «Вход» или «Выход».
+	// Больше этот признак пока ничего не решает — до Ш4 вход не различает людей.
+	SignedIn bool
 }
 
 func (s *Server) newPage(r *http.Request, title string) page {
@@ -112,7 +116,12 @@ func (s *Server) newPage(r *http.Request, title string) page {
 	} else {
 		title = title + " — " + SiteName
 	}
-	return page{Title: title, Theme: s.theme(r), Back: localPath(r.URL.RequestURI())}
+	return page{
+		Title:    title,
+		Theme:    s.theme(r),
+		Back:     localPath(r.URL.RequestURI()),
+		SignedIn: s.signedIn(r),
+	}
 }
 
 // render собирает страницу В БУФЕР и только потом отдаёт. Иначе ошибка шаблона
