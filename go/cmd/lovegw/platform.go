@@ -26,12 +26,14 @@ var platformSubcommands = map[string]bool{
 	"migrate":   true,
 	"doctor":    true,
 	"reconcile": true,
+	"media":     true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("platform", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.json", "путь к config.json")
 	dbPath := fs.String("db", "", "путь к боевой lovegw.db (по умолчанию из конфига)")
+	limit := fs.Int("limit", 500, "media: сколько файлов забрать за проход")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -51,9 +53,42 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformDoctor(ctx, cfg)
 	case "reconcile":
 		return platformReconcile(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
+	case "media":
+		return platformMedia(ctx, cfg, *limit)
 	default:
-		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor, reconcile)")
+		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor, reconcile, media)")
 	}
+}
+
+// platformMedia добирает байты медиа по уже известным ссылкам.
+//
+// Живой поток зеркала наполняет хранилище сам, и обычно этой команды не нужно.
+// Нужна она ровно тогда, когда потока нет: строки, легшие бэкфиллом, знают
+// только ссылку, а 17.08.2026 НГС восстановился, но комментировать не разрешил
+// — новых реплик нет, значит и аватаров не будет. Окно закрывается вместе с
+// сайтом: пока hsmedia.ru отдаёт файлы, их надо забрать.
+func platformMedia(ctx context.Context, cfg *config.Config, limit int) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	if cfg.Platform.MediaDir == "" {
+		return fmt.Errorf("platform.media_dir не задан (или env LOVEGW_PLATFORM_MEDIA_DIR)")
+	}
+	media, err := platform.NewMediaStore(p, cfg.Platform.MediaDir)
+	if err != nil {
+		return err
+	}
+	log := newLogger(cfg.LogLevel)
+	start := time.Now()
+	// Клиент сайта тот же, что у зеркала: со своим лимитером и с RU-IP.
+	// Хранилище проверит, что приехала картинка, а не заглушка геоблока.
+	stats, err := platsink.NewMediaSweep(p, media, newSiteClient(cfg, log), log).Once(ctx, limit)
+	fmt.Printf("медиа за %s: аватаров %d, иллюстраций %d, не вышло %d\n",
+		time.Since(start).Truncate(time.Second), stats.Avatars, stats.Images, stats.Failed)
+	return err
 }
 
 // platformReconcile — разовый проход сверки lovegw.db → Postgres. Он же бэкфилл:

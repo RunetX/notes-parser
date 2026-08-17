@@ -207,7 +207,9 @@ func (c *Client) FetchMedia(ctx context.Context, rawURL string) ([]byte, error) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("аватар %s: статус %d", rawURL, resp.StatusCode)
+		// «медиа», а не «аватар»: этим же методом качаются иллюстрации заметок,
+		// и чужое слово в логе сбивает с толку ровно тогда, когда некогда.
+		return nil, fmt.Errorf("медиа %s: статус %d", rawURL, resp.StatusCode)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, mediaSizeLimit))
 }

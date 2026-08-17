@@ -187,6 +187,52 @@ func (p *Platform) AttachNoteImage(ctx context.Context, noteID int64, sha []byte
 	return wrapf(err, "иллюстрация заметки %d (%s)", noteID, url)
 }
 
+// MissingMedia — строка, у которой ссылка известна, а байтов нет. ID — человек
+// (аватар) или заметка (иллюстрация).
+type MissingMedia struct {
+	ID  int64
+	URL string
+}
+
+// MissingAvatars — люди, чей аватар мы видели ссылкой, но не забрали.
+//
+// Нужны отдельным обходом, потому что байты приезжают только живым потоком
+// зеркала: у исторических строк их взять неоткуда. Пока НГС жив, ссылки
+// работают, и это окно надо использовать — оно закрывается вместе с сайтом.
+func (p *Platform) MissingAvatars(ctx context.Context, limit int) ([]MissingMedia, error) {
+	return p.missingMedia(ctx, "аватары без байтов", `
+		SELECT id, ngs_avatar_url FROM users
+		 WHERE ngs_avatar_url <> '' AND avatar_sha IS NULL
+		 ORDER BY id
+		 LIMIT $1`, limit)
+}
+
+// MissingNoteImages — иллюстрации заметок, привязанные ссылкой без байтов.
+func (p *Platform) MissingNoteImages(ctx context.Context, limit int) ([]MissingMedia, error) {
+	return p.missingMedia(ctx, "иллюстрации без байтов", `
+		SELECT note_id, url FROM note_images
+		 WHERE sha256 IS NULL
+		 ORDER BY note_id, position
+		 LIMIT $1`, limit)
+}
+
+func (p *Platform) missingMedia(ctx context.Context, what, sql string, limit int) ([]MissingMedia, error) {
+	rows, err := p.pool.Query(ctx, sql, limit)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	defer rows.Close()
+	var out []MissingMedia
+	for rows.Next() {
+		var m MissingMedia
+		if err := rows.Scan(&m.ID, &m.URL); err != nil {
+			return nil, fmt.Errorf("%s: %w", what, err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // NoteImageCounts — сколько иллюстраций привязано к каждой заметке. Нужен
 // сверке: картинку автор может дописать к уже опубликованной заметке (сайт
 // отправляет её на премодерацию и возвращает), и заметить это иначе нечем.

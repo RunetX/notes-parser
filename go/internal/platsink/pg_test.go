@@ -65,12 +65,16 @@ func TestMain(m *testing.M) {
 // env — обе базы под один тест: чистая схема в Postgres и своя SQLite во
 // временном каталоге.
 type env struct {
-	st   *store.Store
-	p    *platform.Platform
-	sink *Sink
-	rec  *Reconciler
-	dir  string
+	st    *store.Store
+	p     *platform.Platform
+	sink  *Sink
+	rec   *Reconciler
+	media *platform.MediaStore
+	dir   string
 }
+
+// quietLog — логгер в никуда: тесты проверяют состояние баз, а не вывод.
+func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func newEnv(t *testing.T) env {
 	t.Helper()
@@ -95,13 +99,14 @@ func newEnv(t *testing.T) env {
 	if err != nil {
 		t.Fatalf("хранилище медиа: %v", err)
 	}
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	quiet := quietLog()
 	return env{
-		st:   st,
-		p:    shared,
-		sink: New(shared, media, quiet),
-		rec:  NewReconciler(st, shared, quiet),
-		dir:  filepath.Join(dir, "media"),
+		st:    st,
+		p:     shared,
+		sink:  New(shared, media, quiet),
+		rec:   NewReconciler(st, shared, quiet),
+		media: media,
+		dir:   filepath.Join(dir, "media"),
 	}
 }
 
