@@ -228,6 +228,28 @@ func TestAddressPrefixIsBoldAtStart(t *testing.T) {
 	}
 }
 
+// [С] .lv-note .lv-people__nickname { font-size:14px; font-weight:600 } —
+// ник на сайте полужирный, и в ленте, и в треде.
+func TestNickIsSemiBold(t *testing.T) {
+	if !strings.Contains(cssText(t), "font-weight: 600") {
+		t.Error("ник не полужирный, а на НГС он font-weight:600")
+	}
+}
+
+// [С] .lv-comment__avatar { width:100px; height:100px } — аватар в
+// комментарии такой же крупный, как у заметки, а не уменьшенный.
+func TestCommentAvatarIsFullSize(t *testing.T) {
+	css := cssText(t)
+	i := strings.Index(css, ".cava .ava {")
+	if i < 0 {
+		t.Fatal("нет правила для аватара комментария")
+	}
+	rule := css[i : i+strings.Index(css[i:], "}")]
+	if !strings.Contains(rule, "width: 100px") || !strings.Contains(rule, "height: 100px") {
+		t.Errorf("аватар комментария не 100×100: %s", rule)
+	}
+}
+
 // [С] Числа и цвета сайта: разделитель #c7d3d9, текст #3d4952, служебное #999,
 // ник женский #ef4e4f, мужской #448dc8. Тест держит их от случайной правки.
 func TestPaletteMatchesSite(t *testing.T) {

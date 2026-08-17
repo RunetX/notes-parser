@@ -124,7 +124,9 @@ a:hover { text-decoration: underline; }
 }
 .author .nick { display: inline-block; max-width: 100px; margin-top: 5px; overflow-wrap: anywhere; }
 
-.nick { color: var(--link); }
+/* Ник полужирный, 14px — .lv-note .lv-people__nickname { font-weight:600 }
+   в стилях сайта. Он тут главная опора взгляда: по нику ищут своих в треде. */
+.nick { color: var(--link); font-weight: 600; }
 .nick.anon { color: var(--anon); }
 /* Пол на площадке не хранится (эпик E: анкетных полей не заводим), поэтому
    цветными ники станут только вместе с ним. Классы заведены заранее, чтобы
@@ -182,7 +184,7 @@ a:hover { text-decoration: underline; }
 .d9 { --d: 8 } .d10 { --d: 9 } .d11 { --d: 10 } .d12 { --d: 11 }
 
 .c {
-  display: flex; gap: 10px;
+  display: flex; gap: 15px;
   padding: 14px 0 12px;
   margin-left: calc(var(--d, 0) * var(--step));
   border-bottom: 1px solid var(--rule);
@@ -192,9 +194,12 @@ a:hover { text-decoration: underline; }
 :root[data-theme="dark"] .c:target { background: #232a31; }
 .thread.linear .c { margin-left: 0; }
 
-.cava { flex: 0 0 72px; }
-.cava .ava { width: 72px; height: 72px; }
-.cava .ava.none { font-size: 26px; }
+/* Аватар комментария такой же, как у заметки: .lv-comment__avatar
+   { width:100px; height:100px }, а тело — с отступом 115px. Мельче он делает
+   тред плотнее, но лица в ленте реплик — это половина узнавания собеседника. */
+.cava { flex: 0 0 100px; }
+.cava .ava { width: 100px; height: 100px; }
+.cava .ava.none { font-size: 34px; }
 .cbody { flex: 1 1 auto; min-width: 0; }
 /* Ник, под ним дата — как в комментариях на сайте. */
 .chead { margin-bottom: 6px; }
@@ -261,9 +266,9 @@ a:hover { text-decoration: underline; }
   .author { width: 64px; flex-basis: 64px; }
   .ava { width: 64px; height: 64px; }
   .ava.none { font-size: 24px; }
-  .cava { flex-basis: 44px; }
-  .cava .ava { width: 44px; height: 44px; }
-  .cava .ava.none { font-size: 18px; }
+  .cava { flex-basis: 56px; }
+  .cava .ava { width: 56px; height: 56px; }
+  .cava .ava.none { font-size: 20px; }
   .clink { margin-left: 0; display: block; margin-top: 4px; }
 }
 
