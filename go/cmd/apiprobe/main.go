@@ -11,14 +11,19 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -70,6 +75,8 @@ func main() {
 	activity := flag.Int64("activity", 0, "анонимно показать last_activity этой анкеты и выйти")
 	acts := flag.String("acts", "list,history,get", "какие действия проверять в -presence: list,history,get")
 	presence := flag.Bool("presence", false, "опыт: светит ли обход человека «в сети» (долгий, ~30-60 мин)")
+	nchan := flag.Bool("nchan", false, "опыт: push-канал msg.love.ngs.ru — достижимость и доставка ЛС")
+	nchanPresence := flag.Bool("nchanpresence", false, "опыт: светит ли удержание WS-подписки «в сети» (долгий)")
 	flag.Parse()
 	if *userID == 0 {
 		fmt.Println("нужен -user")
@@ -108,7 +115,11 @@ func main() {
 	mobile := love.New(mbase, uaMobile, 2*time.Second, quiet)
 
 	if *page != "" {
-		dumpPage(ctx, mbase+*page, cookies)
+		host := mbase
+		if strings.HasPrefix(*page, "d:") {
+			host, *page = *base, strings.TrimPrefix(*page, "d:")
+		}
+		dumpPage(ctx, host+*page, cookies)
 		return
 	}
 
@@ -157,6 +168,14 @@ func main() {
 	}
 	if *presence {
 		runPresenceExperiment(ctx, desktop, cookies, passportID, *acctDB, *acctName, *acts)
+		return
+	}
+	if *nchan {
+		runNchanExperiment(ctx, desktop, cookies, *acctDB, *acctName)
+		return
+	}
+	if *nchanPresence {
+		runNchanPresenceExperiment(ctx, cookies, *acctDB, *acctName)
 		return
 	}
 	// Анонимный замер присутствия чужой анкеты: ползёт ли отметка сама.
@@ -487,6 +506,316 @@ func presenceOf(ctx context.Context, owner []*http.Cookie, passport string) stri
 
 var rePresence = regexp.MustCompile(`account-activity-info[^>]*>([^<]*)<`)
 
+// runNchanPresenceExperiment — решающий опыт: светит ли человека «в сети» само
+// удержание WebSocket-подписки на push-канал (без единого обращения к
+// love.ngs.ru под его кукой). Если нет — talks может держать постоянную
+// подписку и ходить на сайт только когда письмо реально пришло.
+//
+//  1. снять канал резерва с его домашней (это единственный заход под кукой — он
+//     засветит резерв, поэтому дальше ждём затухания);
+//  2. дождаться, пока резерв погаснет (глазами владельца, ~30 мин);
+//  3. держать WS-подписку несколько минут, БЕЗ обращений к love.ngs.ru;
+//  4. смотреть присутствие резерва глазами владельца.
+func runNchanPresenceExperiment(ctx context.Context, owner []*http.Cookie, acctPath, acctName string) {
+	as, err := acct.Open(ctx, acctPath)
+	if err != nil {
+		fmt.Println("база аккаунтов:", err)
+		return
+	}
+	defer as.Close()
+	account, reserveJSON, err := as.Get(ctx, acctName)
+	if err != nil {
+		fmt.Println("аккаунт:", err)
+		return
+	}
+	reserve, err := love.CookiesFromJSON([]byte(reserveJSON), time.Now())
+	if err != nil {
+		fmt.Println("куки аккаунта:", err)
+		return
+	}
+	hc := &http.Client{Timeout: 40 * time.Second}
+
+	home, err := getRaw(ctx, hc, siteBase+"/", reserve)
+	if err != nil {
+		fmt.Println("домашняя резерва:", err)
+		return
+	}
+	m := reChannelAssign.FindSubmatch(home)
+	if m == nil {
+		fmt.Println("имя push-канала не найдено")
+		return
+	}
+	channel := string(m[1])
+	fmt.Printf("канал резерва %s получен; жду затухания «в сети»\n", unescape(account.Nick))
+
+	if !waitUntilOffline(ctx, owner, account.PassportID) {
+		fmt.Println("резерв не погас за час — опыт прерван")
+		return
+	}
+
+	// Держим подписку в фоне и молча сливаем кадры — важно только соединение.
+	fmt.Println("резерв погас. Открываю WS-подписку и держу 5 мин, к сайту НЕ хожу…")
+	subCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	sink := make(chan string, 64)
+	go func() {
+		if err := subscribeWS(subCtx, channel, sink); err != nil {
+			fmt.Println("  WS:", err)
+		}
+		close(sink)
+	}()
+	go func() {
+		for range sink { // события нам тут не важны, просто не копим
+		}
+	}()
+
+	for _, wait := range []time.Duration{60, 120, 240} {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait * time.Second):
+		}
+		st := presenceOf(ctx, owner, account.PassportID)
+		online := strings.Contains(strings.ToLower(st), "online")
+		fmt.Printf("  держим подписку %d с → присутствие резерва: %q%s\n",
+			int(wait), st, map[bool]string{true: "  ⟵ СВЕТИТ", false: ""}[online])
+	}
+	cancel()
+	fmt.Println("готово: если все три замера НЕ online — удержание подписки не палит человека")
+}
+
+// reChannelAssign — присваивание имени push-канала на странице под сессией.
+// Форматы: Love.pushStreamMessagesChannelName = "…"; либо "…":"…" в JSON-блоке.
+var reChannelAssign = regexp.MustCompile(`pushStreamMessagesChannelName['"]?\s*[:=]\s*['"]([^'"]+)['"]`)
+
+// runNchanExperiment: (1) вытащить имя push-канала резерва из его домашней под
+// сессией, (2) проверить, отвечает ли msg.love.ngs.ru на подписку longpoll'ом,
+// (3) проверить доставку — владелец шлёт ЛС на резерв, слушаем канал резерва.
+// Имя канала — ключ к чужим уведомлениям, поэтому в вывод идёт только длина.
+func runNchanExperiment(ctx context.Context, site *love.Client, owner []*http.Cookie, acctPath, acctName string) {
+	as, err := acct.Open(ctx, acctPath)
+	if err != nil {
+		fmt.Println("база аккаунтов:", err)
+		return
+	}
+	defer as.Close()
+	account, reserveJSON, err := as.Get(ctx, acctName)
+	if err != nil {
+		fmt.Println("аккаунт:", err)
+		return
+	}
+	reserve, err := love.CookiesFromJSON([]byte(reserveJSON), time.Now())
+	if err != nil {
+		fmt.Println("куки аккаунта:", err)
+		return
+	}
+	hc := &http.Client{Timeout: 40 * time.Second}
+
+	// 1. Имя канала резерва — с его домашней под его сессией.
+	home, err := getRaw(ctx, hc, siteBase+"/", reserve)
+	if err != nil {
+		fmt.Println("домашняя резерва:", err)
+		return
+	}
+	m := reChannelAssign.FindSubmatch(home)
+	if m == nil {
+		fmt.Println("имя push-канала на странице не найдено (маркер есть? дрейф вёрстки)")
+		return
+	}
+	channel := string(m[1])
+	fmt.Printf("канал резерва %s: получен, длина имени %d\n", unescape(account.Nick), len(channel))
+
+	// 2. Подписка по WebSocket (транспорт подтверждён: 101 + ws+meta.nchan).
+	// Слушаем в фоне, ПОТОМ шлём — иначе новое соединение пропустит уже
+	// опубликованное. Куку не носим: канал сам себе капабилити, PHP-сессию
+	// хост не трогает (это отдельный nginx/nchan за DDoS-Guard).
+	frames := make(chan string, 16)
+	wsCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	go func() {
+		if err := subscribeWS(wsCtx, channel, frames); err != nil {
+			fmt.Println("  WS:", err)
+		}
+		close(frames)
+	}()
+	time.Sleep(3 * time.Second) // дать хендшейку встать
+
+	// 3. Владелец шлёт ЛС резерву.
+	needle := fmt.Sprintf("apiprobe-nchan-%d", time.Now().Unix()%100000)
+	if _, err := site.TalksSend(ctx, owner, account.PassportID, "проверка push "+needle); err != nil {
+		fmt.Println("отправка ЛС владельцем:", err)
+		cancel()
+		return
+	}
+	fmt.Printf("владелец отправил ЛС резерву (метка %s), слушаю канал до 45 с…\n", needle)
+
+	got := false
+	for f := range frames {
+		hit := strings.Contains(f, needle)
+		fmt.Printf("  кадр: %d б, метка внутри: %v%s\n", len(f), hit, clipFrame(f))
+		if hit {
+			got = true
+			decodeNchanFrame(f) // наше сообщение — безопасно показать структуру
+			cancel()
+		}
+	}
+	if got {
+		fmt.Println("=> push ДОСТАВЛЯЕТ уведомление о новом ЛС по WebSocket")
+	} else {
+		fmt.Println("=> метки в кадрах не было (см. выше)")
+	}
+}
+
+// subscribeWS — минимальный WebSocket-подписчик nchan поверх TLS, без
+// зависимостей. Пишет текстовые кадры в out, пока не истечёт ctx или сервер не
+// закроет соединение. Клиент ничего не отправляет после хендшейка (кроме pong),
+// поэтому маскирование исходящих данных не нужно; входящие кадры сервер шлёт
+// немаскированными.
+func subscribeWS(ctx context.Context, channel string, out chan<- string) error {
+	host := "msg.love.ngs.ru"
+	d := &tls.Dialer{Config: &tls.Config{ServerName: host}}
+	c, err := d.DialContext(ctx, "tcp", host+":443")
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	conn := c.(*tls.Conn)
+	defer conn.Close()
+	go func() { <-ctx.Done(); conn.Close() }() // разбудить чтение по таймауту
+
+	var keyb [16]byte
+	if _, err := rand.Read(keyb[:]); err != nil {
+		return err
+	}
+	key := base64.StdEncoding.EncodeToString(keyb[:])
+	req := "GET /sub/LOVE-" + channel + " HTTP/1.1\r\n" +
+		"Host: " + host + "\r\n" +
+		"User-Agent: " + uaDesktop + "\r\n" +
+		"Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"Sec-WebSocket-Key: " + key + "\r\n" +
+		"Sec-WebSocket-Protocol: ws+meta.nchan\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return fmt.Errorf("запрос апгрейда: %w", err)
+	}
+
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("ответ апгрейда: %w", err)
+	}
+	if !strings.Contains(status, "101") {
+		return fmt.Errorf("апгрейд отклонён: %s", strings.TrimSpace(status))
+	}
+	for { // дочитать заголовки до пустой строки
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+
+	for {
+		op, payload, err := readWSFrame(br)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil // штатный таймаут опыта
+			}
+			return err
+		}
+		switch op {
+		case 0x1, 0x2: // text / binary
+			out <- string(payload)
+		case 0x8: // close
+			return nil
+		case 0x9: // ping — можно не отвечать в рамках короткого опыта
+		}
+	}
+}
+
+// readWSFrame читает один кадр (сервер шлёт немаскированные кадры).
+func readWSFrame(br *bufio.Reader) (opcode byte, payload []byte, err error) {
+	h0, err := br.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	h1, err := br.ReadByte()
+	if err != nil {
+		return 0, nil, err
+	}
+	opcode = h0 & 0x0f
+	masked := h1&0x80 != 0
+	n := int(h1 & 0x7f)
+	switch n {
+	case 126:
+		var b [2]byte
+		if _, err = io.ReadFull(br, b[:]); err != nil {
+			return 0, nil, err
+		}
+		n = int(b[0])<<8 | int(b[1])
+	case 127:
+		var b [8]byte
+		if _, err = io.ReadFull(br, b[:]); err != nil {
+			return 0, nil, err
+		}
+		n = 0
+		for _, x := range b {
+			n = n<<8 | int(x)
+		}
+	}
+	var mask [4]byte
+	if masked {
+		if _, err = io.ReadFull(br, mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload = make([]byte, n)
+	if _, err = io.ReadFull(br, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= mask[i%4]
+		}
+	}
+	return opcode, payload, nil
+}
+
+// decodeNchanFrame разбирает кадр nchan ws+meta: строки метаданных, затем тело
+// {id, channel, text}, где text — URI-кодированный внутренний JSON события.
+// Печатает ключи внутреннего события — что именно несёт push.
+func decodeNchanFrame(f string) {
+	i := strings.LastIndex(f, "{")
+	if i < 0 {
+		return
+	}
+	var outer struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(f[i:]), &outer); err != nil {
+		fmt.Println("    (тело кадра не JSON)")
+		return
+	}
+	inner, err := url.QueryUnescape(outer.Text)
+	if err != nil {
+		inner = outer.Text
+	}
+	fmt.Printf("    внутреннее событие: %s\n", inner)
+}
+
+// clipFrame — короткая выдержка кадра для диагностики (может нести чужой ник).
+func clipFrame(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return ""
+	}
+	if len(s) > 90 {
+		s = s[:90] + "…"
+	}
+	return " | " + s
+}
+
 // dumpBuddy показывает запись одного диалога из списка — чтобы понять, есть ли
 // в списке текст последнего сообщения. Паспорт задаётся руками и должен быть
 // СВОИМ служебным: в чужих записях лежит чужая переписка.
@@ -566,8 +895,20 @@ func dumpPage(ctx context.Context, url string, cookies []*http.Cookie) {
 		fmt.Println("  ", string(m[1]))
 	}
 	fmt.Println("\nмаркеры:")
-	for _, marker := range []string{"LoveRun", "LoveSimpleRPC", "/ajax", "Love.user", "MobileNotesLimit"} {
-		fmt.Printf("  %-18s %d\n", marker, bytes.Count(body, []byte(marker)))
+	for _, marker := range []string{
+		"LoveRun", "LoveSimpleRPC", "/ajax", "Love.user", "MobileNotesLimit",
+		"msg.love.ngs.ru", "pushStreamMessagesChannelName", "DOMAIN_SUFFIX",
+		"lastMessagesCheckTime", "NchanSubscriber",
+	} {
+		fmt.Printf("  %-32s %d\n", marker, bytes.Count(body, []byte(marker)))
+	}
+	// Имя канала — это ключ: кто его знает, тот подписан на чужие уведомления.
+	// Поэтому только длина, никогда значение.
+	for _, m := range reChannel.FindAllSubmatch(body, -1) {
+		fmt.Printf("  канал push: есть, длина имени %d\n", len(m[1]))
+	}
+	for _, m := range reSuffix.FindAllSubmatch(body, -1) {
+		fmt.Printf("  DOMAIN_SUFFIX = %q\n", string(m[1]))
 	}
 	for _, m := range reToken.FindAllSubmatch(body, -1) {
 		fmt.Printf("  token             найден, длина значения %d\n", len(m[1]))
@@ -577,6 +918,8 @@ func dumpPage(ctx context.Context, url string, cookies []*http.Cookie) {
 var (
 	reScriptSrc = regexp.MustCompile(`<script[^>]+src="([^"]+)"`)
 	reToken     = regexp.MustCompile(`token"?\s*[:=]\s*"([^"]*)"`)
+	reChannel   = regexp.MustCompile(`pushStreamMessagesChannelName"?\s*[:=]\s*"([^"]*)"`)
+	reSuffix    = regexp.MustCompile(`DOMAIN_SUFFIX"?\s*[:=]\s*"([^"]*)"`)
 )
 
 func snapshot(ctx context.Context, mobile *love.Client, pid int64) string {
