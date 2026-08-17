@@ -14,6 +14,7 @@
 
   var items = Array.prototype.slice.call(list.querySelectorAll('.c'));
   var depth = function (el) { return parseInt(el.getAttribute('data-depth'), 10) || 1; };
+  var folds = [];
 
   items.forEach(function (el, i) {
     var box = el.querySelector('.rcount');
@@ -36,5 +37,27 @@
       btn.textContent = open ? 'Показать ' + label.toLowerCase() : label;
     });
     box.replaceWith(btn);
+    folds.push(btn);
   });
+
+  // «Свернуть все ответы» — как на НГС, справа от заголовка треда. Ставит его
+  // скрипт, а не шаблон: без JS сворачивать нечем, а мёртвая ссылка на
+  // странице хуже, чем её отсутствие.
+  if (folds.length === 0) return;
+  var head = document.querySelector('.cttl');
+  if (!head) return;
+  var all = document.createElement('button');
+  all.type = 'button';
+  all.className = 'fold foldall';
+  all.setAttribute('aria-expanded', 'true');
+  all.textContent = 'Свернуть все ответы';
+  all.addEventListener('click', function () {
+    var open = all.getAttribute('aria-expanded') === 'true';
+    folds.forEach(function (b) {
+      if ((b.getAttribute('aria-expanded') === 'true') === open) b.click();
+    });
+    all.setAttribute('aria-expanded', open ? 'false' : 'true');
+    all.textContent = open ? 'Развернуть все ответы' : 'Свернуть все ответы';
+  });
+  head.appendChild(all);
 })();
