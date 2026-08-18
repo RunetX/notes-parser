@@ -4,8 +4,16 @@
 // inline-скрипты, а внешних зависимостей (npm, CDN) у площадки нет.
 //
 // Дерево приходит ЦЕЛИКОМ, плоским списком с отступами, поэтому потомки
-// комментария — это идущие следом элементы с большей глубиной. Считать их
-// заново незачем: число уже посчитано на сервере и стоит в «Ответы N».
+// комментария — это идущие следом элементы с большей глубиной. Число ответов
+// заново не считается — оно уже стоит в «Ответы N» с сервера; считается только
+// ДЛИНА ветки, чтобы знать, докуда она тянется.
+//
+// Вид пересчитывается ЗАНОВО из состояния всех кнопок (apply), а не
+// переключается на месте у своих потомков: свёрнутая ветка внутри свёрнутой —
+// обычное дело, и разворот верхней вытаскивал бы наружу то, что свёрнуто
+// внутри неё. У НГС этой заботы нет вовсе: там ветка ПЛОСКАЯ — одна кнопка на
+// корневой комментарий и `$('.js-comment__replies-<id>').toggle()` на всех его
+// потомков сразу, — а у нас кнопка есть на каждом уровне.
 (function () {
   'use strict';
 
@@ -14,7 +22,9 @@
 
   var items = Array.prototype.slice.call(list.querySelectorAll('.c'));
   var depth = function (el) { return parseInt(el.getAttribute('data-depth'), 10) || 1; };
-  var folds = [];
+  var folds = [];   // кнопки ветвей в порядке страницы
+  var byItem = {};  // номер строки → её кнопка
+  var all = null;   // «Свернуть все ответы», если заголовок треда нашёлся
 
   items.forEach(function (el, i) {
     var box = el.querySelector('.rcount');
@@ -24,42 +34,64 @@
     for (var j = i + 1; j < items.length && depth(items[j]) > d; j++) n++;
     if (n === 0) return;
 
-    var label = box.textContent;
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'fold';
-    btn.setAttribute('aria-expanded', 'true');
-    btn.textContent = label;
+    var f = { btn: btn, label: box.textContent, off: false };
     btn.addEventListener('click', function () {
-      var open = btn.getAttribute('aria-expanded') === 'true';
-      for (var k = i + 1; k <= i + n; k++) items[k].hidden = open;
-      btn.setAttribute('aria-expanded', open ? 'false' : 'true');
-      btn.textContent = open ? 'Показать ' + label.toLowerCase() : label;
+      f.off = !f.off;
+      apply();
     });
     box.replaceWith(btn);
-    folds.push(btn);
+    byItem[i] = f;
+    folds.push(f);
   });
-
-  // «Свернуть все ответы» — как на НГС, справа от заголовка треда. Ставит его
-  // скрипт, а не шаблон: без JS сворачивать нечем, а мёртвая ссылка на
-  // странице хуже, чем её отсутствие.
   if (folds.length === 0) return;
-  var head = document.querySelector('.cttl');
-  if (!head) return;
-  var all = document.createElement('button');
-  all.type = 'button';
-  all.className = 'fold foldall';
-  all.setAttribute('aria-expanded', 'true');
-  all.textContent = 'Свернуть все ответы';
-  all.addEventListener('click', function () {
-    var open = all.getAttribute('aria-expanded') === 'true';
-    folds.forEach(function (b) {
-      if ((b.getAttribute('aria-expanded') === 'true') === open) b.click();
+
+  // Строка скрыта, если свёрнут хоть один её предок. cut — глубина ближайшего
+  // свёрнутого предка; его ветка кончается на первой строке не глубже него.
+  function apply() {
+    var cut = 0;
+    items.forEach(function (el, i) {
+      var d = depth(el);
+      if (cut && d <= cut) cut = 0;
+      var hide = cut > 0;
+      el.hidden = hide;
+      var f = byItem[i];
+      if (f && !hide && f.off) cut = d; // сама строка видна, потомки — нет
     });
-    all.setAttribute('aria-expanded', open ? 'false' : 'true');
-    all.textContent = open ? 'Развернуть все ответы' : 'Свернуть все ответы';
-  });
-  head.appendChild(all);
+    folds.forEach(function (f) {
+      f.btn.setAttribute('aria-expanded', f.off ? 'false' : 'true');
+      f.btn.textContent = f.off ? 'Показать ' + f.label.toLowerCase() : f.label;
+    });
+    if (!all) return;
+    // Подпись общей кнопки выведена из состояния ветвей, а не хранится своей:
+    // иначе, свернув всё и раскрыв одну ветку руками, человек читал бы на ней
+    // «Развернуть все ответы» и нажимал впустую.
+    var open = folds.some(function (f) { return !f.off; });
+    all.setAttribute('aria-expanded', open ? 'true' : 'false');
+    all.textContent = open ? 'Свернуть все ответы' : 'Развернуть все ответы';
+  }
+
+  // «Свернуть все ответы» — НАША кнопка, справа от заголовка треда; оригинал
+  // такой не знает, потому что у него дерево и открывается свёрнутым (ветки
+  // приходят с `lv-hidden` в разметке: на живой странице 256 строк из 325).
+  // Мы отдаём дерево развёрнутым — иначе без JS ответов не видно вовсе, — и
+  // тогда обратное действие нужно одним нажатием. Ставит её скрипт, а не
+  // шаблон: без JS сворачивать нечем, а мёртвая ссылка хуже её отсутствия.
+  var head = document.querySelector('.cttl');
+  if (head) {
+    all = document.createElement('button');
+    all.type = 'button';
+    all.className = 'fold foldall';
+    all.addEventListener('click', function () {
+      var off = folds.some(function (f) { return !f.off; }); // есть что сворачивать
+      folds.forEach(function (f) { f.off = off; });
+      apply();
+    });
+    head.appendChild(all);
+  }
+  apply();
 })();
 
 // Меню участника закрывается по клику мимо и по Escape. Открывает и закрывает
