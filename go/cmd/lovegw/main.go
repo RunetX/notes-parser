@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -49,6 +50,7 @@ import (
 	"lovegw/internal/mirror"
 	"lovegw/internal/news"
 	"lovegw/internal/platform"
+	"lovegw/internal/platout"
 	"lovegw/internal/platsink"
 	"lovegw/internal/store"
 	"lovegw/internal/talks"
@@ -694,6 +696,10 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("площадка: %w", err)
 	}
+	// Приёмники мессенджеров, снятые ДО добавления самой площадки: исходящему
+	// обходу нужны именно они. Приёмник, которому отдали бы его же запись,
+	// замкнул бы петлю.
+	msgSinks := slices.Clone(d.sinks)
 	d.sinks = append(d.sinks, platsink.New(p, media, log))
 	// Подписок у площадки нет и быть не может: ЛС она никому не пишет, читатель
 	// приходит сам. Пустой уведомитель стоит здесь, чтобы зеркало не
@@ -705,8 +711,16 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 
 	rec := platsink.NewReconciler(d.st, p, log)
 	d.starts = append(d.starts, rec.Run)
+
+	// Обратное направление: написанное на площадке уходит в каналы. Оно нужно
+	// именно теперь — с 17.08.2026 НГС не принимает комментарии, и площадка
+	// стала единственным местом, где разговор продолжается. Без этого обхода
+	// канал и площадка расходятся, а аудитория живёт в канале.
+	out := platout.New(p, d.st, media, msgSinks, cfg.Platform.BaseURL, log)
+	d.starts = append(d.starts, out.Run)
+
 	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
-		"reconcile", platsink.Interval)
+		"reconcile", platsink.Interval, "outbound", platout.Interval, "outbound_sinks", len(msgSinks))
 	return nil
 }
 

@@ -324,3 +324,73 @@ func TestPageNumberErrors(t *testing.T) {
 		t.Errorf("страница за краем ленты: код %d, ожидался 404", got)
 	}
 }
+
+// mediaBlock вырезает тело @media-правила из стилей: проверять надо именно то,
+// что действует на телефоне, а не то, что где-то в файле есть нужное слово.
+func mediaBlock(t *testing.T, css, header string) string {
+	t.Helper()
+	i := strings.Index(css, header)
+	if i < 0 {
+		t.Fatalf("в стилях нет правила %s", header)
+	}
+	depth, start := 0, -1
+	for j := i; j < len(css); j++ {
+		switch css[j] {
+		case '{':
+			if depth == 0 {
+				start = j + 1
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return css[start:j]
+			}
+		}
+	}
+	t.Fatalf("правило %s не закрыто", header)
+	return ""
+}
+
+// [Э] Переключатель вида — ИКОНКИ, как на НГС: там это два пустых <a> с одним
+// title, а картинку рисует CSS. Словами он резервировал 150 px, и на аппарате
+// с крупным системным шрифтом (viewport 288 CSS-пикселей) под текст заметки
+// оставалось два знака в строке — жалоба владельца 18.08.2026.
+func TestViewSwitcherIsIcons(t *testing.T) {
+	h := openServer(t, &fakeStore{note: sampleNote()})
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	if strings.Contains(body, ">Дерево<") || strings.Contains(body, ">Линейный<") {
+		t.Error("переключатель остался словами — на узком экране он съедает колонку текста")
+	}
+	if !strings.Contains(body, `title="Древовидный вид комментариев"`) ||
+		!strings.Contains(body, `aria-label="Линейный вид комментариев"`) {
+		t.Error("у значка нет ни title, ни aria-label: назначение кнопки не узнать ни мышью, ни экранным диктором")
+	}
+}
+
+// [Э] На телефоне блок заметки не резервирует ширину под переключатель: тот
+// уходит в свою строку. Резерв — свойство ШИРОКОГО экрана, и это ровно тот
+// случай, когда десктопное решение, дожившее до мобильной вёрстки, ломает
+// страницу целиком.
+func TestMobileFreesNoteTextWidth(t *testing.T) {
+	mobile := mediaBlock(t, cssText(t), "@media (max-width: 700px)")
+	if !strings.Contains(mobile, ".notebox .nbody { padding-right: 0; }") {
+		t.Error("на телефоне под текстом заметки остался резерв под переключатель")
+	}
+	if !strings.Contains(mobile, ".switch { position: static") {
+		t.Error("переключатель на телефоне остался в углу поверх текста")
+	}
+	// Ник шире своей колонки наезжал на текст: 100px при колонке в 64.
+	if !strings.Contains(mobile, ".author .nick { max-width: 100%; }") {
+		t.Error("ник автора на телефоне шире своей колонки")
+	}
+}
+
+// [Э] Шапка на узком экране ПЕРЕНОСИТСЯ, а не наезжает сама на себя. Правило
+// было описано в комментарии к стилям («flex перенесёт его строкой ниже»), но
+// flex-wrap не стоял, и «Общая лента» ложилась поверх названия площадки.
+func TestHeaderWrapsOnNarrowScreen(t *testing.T) {
+	if !strings.Contains(cssText(t), "flex-wrap: wrap; gap: 8px 20px") {
+		t.Error("шапка не переносится: на узком экране кнопки наедут на название")
+	}
+}

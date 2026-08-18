@@ -1,31 +1,55 @@
 {{define "content"}}
 {{$n := .Note}}
-<div class="note notebox">
+<div class="nblock">
   {{/* Переключатель вида — в правом верхнем углу блока заметки, как на НГС.
-       Две ссылки, а не кнопки: без JS он обязан работать так же. */}}
+       Две ссылки, а не кнопки: без JS он обязан работать так же.
+
+       Иконками, а не словами, и это тоже с оригинала: там два ПУСТЫХ <a> с
+       одним title, картинку рисует CSS. Словами он занимал 150 px ширины, и
+       на телефоне с крупным системным шрифтом (viewport 288 px) под текст
+       заметки оставалось два знака в строке — жалоба 18.08.2026.
+
+       Значки нарисованы здесь, а не картинкой в CSS: цвет берётся из
+       currentColor, поэтому состояние «выбрано» и тема меняют их даром. */}}
   <nav class="switch">
-    <a class="sw tree{{if not .Linear}} on{{end}}" href="{{.TreeURL}}" title="Древовидный вид комментариев">Дерево</a>
-    <a class="sw lin{{if .Linear}} on{{end}}" href="{{.FlatURL}}" title="Линейный вид комментариев">Линейный</a>
+    <a class="sw tree{{if not .Linear}} on{{end}}" href="{{.TreeURL}}"
+       title="Древовидный вид комментариев" aria-label="Древовидный вид комментариев">
+      <svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false">
+        <rect x="1" y="2" width="14" height="2.4" rx="1.2"/>
+        <rect x="5" y="6.8" width="10" height="2.4" rx="1.2"/>
+        <rect x="9" y="11.6" width="6" height="2.4" rx="1.2"/>
+      </svg>
+    </a>
+    <a class="sw lin{{if .Linear}} on{{end}}" href="{{.FlatURL}}"
+       title="Линейный вид комментариев" aria-label="Линейный вид комментариев">
+      <svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false">
+        <rect x="1" y="2" width="14" height="2.4" rx="1.2"/>
+        <rect x="1" y="6.8" width="14" height="2.4" rx="1.2"/>
+        <rect x="1" y="11.6" width="14" height="2.4" rx="1.2"/>
+      </svg>
+    </a>
   </nav>
-  <div class="author">
-    {{template "avatar" (av $n.Author.AvatarURL $n.Name)}}
-    <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
-  </div>
-  <div class="nbody">
-    <div class="text">{{body $n.Body}}</div>
-    {{if .Images}}
-    <div class="shots">
-      {{range .Images}}{{if .URL}}
-      <a href="{{.URL}}"><img src="{{.URL}}" alt="Иллюстрация к заметке"{{if .Width}} width="{{.Width}}" height="{{.Height}}"{{end}} loading="lazy" decoding="async"></a>
-      {{end}}{{end}}
+  <div class="note notebox">
+    <div class="author">
+      {{template "avatar" (av $n.Author.AvatarURL $n.Name)}}
+      <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
     </div>
-    {{end}}
-    <div class="nfoot">
-      {{when $n.PublishedAt $n.PublishedExact}}
-      {{/* Ссылка на правку живёт ровно столько, сколько окно: десять минут,
-           одна правка и до первого ответа. Условие считает Editable — то же
-           самое, что проверит ядро, чтобы кнопка не отвечала отказом. */}}
-      {{if .Editable}}<a class="editlink" href="/n/{{$n.ID}}/edit">Поправить</a>{{end}}
+    <div class="nbody">
+      <div class="text">{{body $n.Body}}</div>
+      {{if .Images}}
+      <div class="shots">
+        {{range .Images}}{{if .URL}}
+        <a href="{{.URL}}"><img src="{{.URL}}" alt="Иллюстрация к заметке"{{if .Width}} width="{{.Width}}" height="{{.Height}}"{{end}} loading="lazy" decoding="async"></a>
+        {{end}}{{end}}
+      </div>
+      {{end}}
+      <div class="nfoot">
+        {{when $n.PublishedAt $n.PublishedExact}}
+        {{/* Ссылка на правку живёт ровно столько, сколько окно: десять минут,
+             одна правка и до первого ответа. Условие считает Editable — то же
+             самое, что проверит ядро, чтобы кнопка не отвечала отказом. */}}
+        {{if .Editable}}<a class="editlink" href="/n/{{$n.ID}}/edit">Поправить</a>{{end}}
+      </div>
     </div>
   </div>
 </div>

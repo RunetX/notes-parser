@@ -225,3 +225,11 @@ func TestEscapeFitEdges(t *testing.T) {
 		t.Errorf("превышение бюджета на единицу: %d", apiLen(got))
 	}
 }
+
+// То же для MAX: у реплики с площадки возраста нет, и запятая в шапке лишняя.
+func TestComposeCommentWithoutAge(t *testing.T) {
+	got := ComposeCommentMessage(store.Comment{AuthorName: "Паноптикум", Text: "текст"})
+	if want := "<b>Паноптикум:</b>\nтекст"; got != want {
+		t.Errorf("шапка без возраста:\n%q\nждали:\n%q", got, want)
+	}
+}

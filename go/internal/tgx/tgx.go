@@ -651,6 +651,17 @@ func commentVisibleLen(c store.Comment) int {
 	return len([]rune(c.AuthorName)) + len([]rune(c.AuthorAge)) + len(", :\n") + len([]rune(c.Text))
 }
 
+// commentHead — «Ник, возраст:» шапки комментария. Возраст пустой у реплики,
+// написанной на площадке: анкетных полей она не заводит вовсе (решение эпика E,
+// ст. 10 — нет поля, нет спора о спецкатегориях). Без этой ветки шапка вышла бы
+// «Ник, :» — запятая на месте, а за ней пусто.
+func commentHead(name, age string) string {
+	if age == "" {
+		return html.EscapeString(name) + ":"
+	}
+	return fmt.Sprintf("%s, %s:", html.EscapeString(name), html.EscapeString(age))
+}
+
 // composeComment собирает HTML комментария с заголовком-ссылкой автора,
 // обрезая ТЕКСТ по границе руны под лимит видимой длины limit (Python резал
 // сырой HTML по байтам и мог сломать разметку). Заголовок в лимит заложен.
@@ -665,7 +676,7 @@ func composeComment(c store.Comment, limit int) string {
 	if r := []rune(text); len(r) > budget {
 		text = string(r[:budget]) + "…"
 	}
-	head := fmt.Sprintf("%s, %s:", html.EscapeString(c.AuthorName), html.EscapeString(c.AuthorAge))
+	head := commentHead(c.AuthorName, c.AuthorAge)
 	if c.AuthorLink != "" {
 		head = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), head)
 	}

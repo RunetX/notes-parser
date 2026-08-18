@@ -83,7 +83,9 @@ a:hover { text-decoration: underline; }
 /* ---------------------------------------------------------------- шапка */
 
 .top { background: var(--nav); }
-.topin { display: flex; align-items: center; gap: 20px; min-height: 44px; }
+/* flex-wrap обязателен: без него на узком экране «Общая лента» наезжает на
+   название, а «Вход» уезжает за край (жалоба 18.08.2026). */
+.topin { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 44px; padding: 5px 0; }
 .brand { color: var(--nav-ink); font-size: 17px; font-weight: 700; }
 .brand:hover { color: var(--nav-ink); text-decoration: none; }
 .tab {
@@ -123,8 +125,11 @@ a:hover { text-decoration: underline; }
 }
 .notes .note:last-child { border-bottom: 1px solid var(--rule); }
 .notebox { border-top: 0; padding-top: 6px; }
-/* Под переключателем вида текст не идёт: на НГС он тоже стоит в своём углу. */
-.notebox .nbody { padding-right: 150px; }
+/* Под переключателем вида текст не идёт: на НГС он тоже стоит в своём углу.
+   Резерв 76px — под ДВЕ ИКОНКИ; словами переключатель требовал 150px, и на
+   узком экране от колонки текста не оставалось ничего. */
+.nblock { position: relative; }
+.notebox .nbody { padding-right: 76px; }
 
 /* Колонка автора: 100px в ширину, ник под аватаром и по центру. */
 .author { width: 100px; flex: 0 0 100px; text-align: center; }
@@ -182,8 +187,15 @@ a:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------- тред */
 
-.switch { position: absolute; top: 10px; right: 0; font-size: 12px; }
-.switch .sw { color: var(--meta); padding: 2px 6px; border: 1px solid transparent; border-radius: 3px; }
+/* Переключатель вида — иконками, как на НГС (там два пустых <a> с title, а
+   картинку рисует CSS). Цвет значка = currentColor, поэтому «выбрано» и смена
+   темы работают одним свойством. */
+.switch { position: absolute; top: 12px; right: 0; display: flex; gap: 4px; }
+.switch .sw {
+  display: block; padding: 5px 7px; line-height: 0; color: var(--meta);
+  border: 1px solid transparent; border-radius: 3px;
+}
+.switch .sw:hover { color: var(--link); }
 .switch .sw.on { color: var(--ink); border-color: var(--rule); background: var(--btn); }
 
 .cttl { font-size: 20px; font-weight: 700; margin: 22px 0 4px; }
@@ -390,10 +402,31 @@ a:hover { text-decoration: underline; }
   .author { width: 64px; flex-basis: 64px; }
   .ava { width: 64px; height: 64px; }
   .ava.none { font-size: 24px; }
+  /* Ник шире своей колонки наезжал на текст: 100px при колонке в 64. */
+  .author .nick { max-width: 100%; }
   .cava { flex-basis: 56px; }
   .cava .ava { width: 56px; height: 56px; }
   .cava .ava.none { font-size: 20px; }
   .clink { margin-left: 0; display: block; margin-top: 4px; }
+  /* Переключатель уходит из угла в свою строку, а резерв под него снимается
+     совсем: 76px на телефоне — это треть строки. */
+  .switch { position: static; justify-content: flex-end; margin: 0 0 6px; }
+  .notebox .nbody { padding-right: 0; }
+}
+
+/* Совсем узкий экран — не редкость: аппарат 1080px с крупным системным шрифтом
+   даёт viewport 288 CSS-пикселей. Отступ ветки и аватар реплики ужимаются ещё,
+   иначе от колонки текста в глубине треда остаётся полслова. */
+@media (max-width: 400px) {
+  :root { --step: 6px; }
+  .c { gap: 10px; }
+  .cava { flex-basis: 48px; }
+  .cava .ava { width: 48px; height: 48px; }
+  .cava .ava.none { font-size: 18px; }
+  .note { gap: 8px; }
+  .author { width: 56px; flex-basis: 56px; }
+  .ava { width: 56px; height: 56px; }
+  .brand { font-size: 16px; }
 }
 
 @media (min-width: 900px) {

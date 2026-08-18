@@ -94,19 +94,44 @@ const VerbSubscribe = "sub"
 // startSubPrefix — префикс payload'а deep-link'а «подписаться на заметку».
 const startSubPrefix = "sub_"
 
+// nativeIDPrefixLen — длина идентификатора, выданного собственной площадкой
+// (platform.NativeIDBase — двенадцатизначное число). Продублирована здесь
+// длиной, а не импортом: kbd — листовой пакет намеренно, и ради одной
+// константы в него въехало бы всё ядро площадки вместе с pgx.
+const nativeIDLen = 12
+
+// Subscribable — предлагать ли подписку на эту заметку.
+//
+// Подписки живут в SQLite и знают только заметки НГС. У заметки, написанной НА
+// ПЛОЩАДКЕ, в зеркальной базе строки нет вовсе — кнопка привела бы человека в
+// «заметку не нашёл», а сработать подписка не смогла бы и потом: комментарии
+// такой заметки приносит не зеркало. Различает их полоса идентификаторов: у
+// НГС их шесть-восемь знаков, у нативных двенадцать.
+func Subscribable(noteID string) bool {
+	return numeric(noteID) && len(noteID) < nativeIDLen
+}
+
+// numeric — строка из одних цифр и непустая.
+func numeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // StartSub — payload ссылки t.me/<бот>?start=<payload>: кнопка под постом
 // канала ведёт в ЛС и приносит с собой id заметки. Так обходится главное
 // ограничение Telegram — бот не пишет первым тому, кто его не запускал.
 // Пусто — id не годится в payload: Telegram разрешает там только
 // [A-Za-z0-9_-] и не больше 64 знаков.
 func StartSub(noteID string) string {
-	if noteID == "" || len(startSubPrefix)+len(noteID) > PayloadLimit {
+	if !Subscribable(noteID) || len(startSubPrefix)+len(noteID) > PayloadLimit {
 		return ""
-	}
-	for _, r := range noteID {
-		if r < '0' || r > '9' {
-			return ""
-		}
 	}
 	return startSubPrefix + noteID
 }

@@ -278,3 +278,46 @@ func nullStr(v string) any {
 	}
 	return v
 }
+
+// SentTargets — какие из перечисленных сущностей уже отправлены в мессенджер.
+// Пакетная версия Target: исходящий обход площадки спрашивает про сотню строк
+// разом, и сотня отдельных запросов на такт была бы платой ни за что.
+//
+// Возвращается множество отправленных, а не список неотправленных: у зовущего
+// на руках сами строки, и ему нужен ответ «эту пропустить», а не второй список,
+// который придётся сшивать с первым.
+func (s *Store) SentTargets(ctx context.Context, messenger, kind string, refIDs []string) (map[string]bool, error) {
+	sent := make(map[string]bool, len(refIDs))
+	// Предел SQLite на число параметров запроса — 999; режем с запасом на
+	// messenger и kind.
+	const chunk = 400
+	for len(refIDs) > 0 {
+		n := min(chunk, len(refIDs))
+		args := make([]any, 0, n+2)
+		args = append(args, messenger, kind)
+		for _, id := range refIDs[:n] {
+			args = append(args, id)
+		}
+		q := `SELECT ref_id FROM message_targets WHERE messenger = ? AND kind = ? AND ref_id IN (?` +
+			strings.Repeat(", ?", n-1) + `)`
+		rows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, fmt.Errorf("отправленное %s/%s: %w", messenger, kind, err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			sent[id] = true
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		refIDs = refIDs[n:]
+	}
+	return sent, nil
+}

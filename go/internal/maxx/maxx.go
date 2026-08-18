@@ -175,7 +175,11 @@ func (m *Mirror) attachNoteButtons(ctx context.Context, msg *maxbot.Message, n s
 	}
 	// Кнопка подписки от чата обсуждения не зависит: даже когда ссылка не
 	// снялась, подписаться можно (раньше пост уходил вовсе без клавиатуры).
-	row.AddCallBack(btnSubscribe, kbd.Pack(kbd.VerbSubscribe, n.ID))
+	// А вот у заметки, написанной на площадке, подписки нет: она живёт в
+	// SQLite и знает только заметки НГС (см. kbd.Subscribable).
+	if kbd.Subscribable(n.ID) {
+		row.AddCallBack(btnSubscribe, kbd.Pack(kbd.VerbSubscribe, n.ID))
+	}
 	msg.AddKeyboard(kb)
 }
 

@@ -149,3 +149,17 @@ func TestDeepLink(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// У реплики, написанной на площадке, возраста нет: анкетных полей она не
+// заводит вовсе. Шапка обязана обойтись без запятой, иначе выйдет «Ник, :».
+func TestCommentHeadWithoutAge(t *testing.T) {
+	if got := commentHead("Паноптикум", ""); got != "Паноптикум:" {
+		t.Errorf("без возраста: %q", got)
+	}
+	if got := commentHead("Паноптикум", "48"); got != "Паноптикум, 48:" {
+		t.Errorf("с возрастом: %q", got)
+	}
+	if got := commentHead("<b>", ""); got != "&lt;b&gt;:" {
+		t.Errorf("экранирование: %q", got)
+	}
+}

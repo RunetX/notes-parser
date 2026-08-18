@@ -112,9 +112,14 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 // укладывая результат в бюджет MAX: непринятое сообщение остановило бы очередь
 // комментариев заметки навсегда.
 func ComposeCommentMessage(c store.Comment) string {
-	inner := fmt.Sprintf("%s, %s:",
-		html.EscapeString(textutil.TruncateTrim(c.AuthorName, authorFieldLimit)),
-		html.EscapeString(textutil.TruncateTrim(c.AuthorAge, authorFieldLimit)))
+	name := html.EscapeString(textutil.TruncateTrim(c.AuthorName, authorFieldLimit))
+	// Возраст пустой у реплики, написанной на площадке: анкетных полей она не
+	// заводит вовсе. Без этой ветки шапка вышла бы «Ник, :».
+	inner := name + ":"
+	if c.AuthorAge != "" {
+		inner = fmt.Sprintf("%s, %s:", name,
+			html.EscapeString(textutil.TruncateTrim(c.AuthorAge, authorFieldLimit)))
+	}
 	if c.AuthorLink != "" {
 		inner = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), inner)
 	}

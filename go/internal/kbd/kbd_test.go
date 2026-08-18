@@ -87,3 +87,29 @@ func TestKeyboardBuild(t *testing.T) {
 		t.Error("nil-клавиатура пуста")
 	}
 }
+
+// Подписку предлагают только на заметки НГС. У заметки, написанной на площадке,
+// в зеркальной SQLite строки нет вовсе: кнопка привела бы человека в «заметку не
+// нашёл», а сработать подписка не смогла бы и потом — комментарии такой заметки
+// приносит не зеркало. Различает их длина идентификатора.
+func TestSubscribableOnlyNGSNotes(t *testing.T) {
+	cases := []struct {
+		noteID string
+		want   bool
+	}{
+		{"313028", true},        // заметка НГС
+		{"63207290", true},      // восьмизначный id тоже с НГС
+		{"100000000000", false}, // нативная: полоса площадки
+		{"199999999999", false},
+		{"", false},
+		{"31a028", false},
+	}
+	for _, c := range cases {
+		if got := Subscribable(c.noteID); got != c.want {
+			t.Errorf("Subscribable(%q) = %v, ждали %v", c.noteID, got, c.want)
+		}
+		if c.want == false && StartSub(c.noteID) != "" {
+			t.Errorf("StartSub(%q) дал ссылку на подписку", c.noteID)
+		}
+	}
+}

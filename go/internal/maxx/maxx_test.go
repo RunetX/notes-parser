@@ -296,7 +296,8 @@ func TestPostNoteDiscussButton(t *testing.T) {
 	f := &fakeMax{t: t}
 	m := newTestMirror(t, f)
 
-	for _, id := range []string{"n1", "n2"} {
+	// Идентификаторы настоящие: по их полосе решается, предлагать ли подписку.
+	for _, id := range []string{"313027", "313028"} {
 		if _, err := m.PostNote(context.Background(),
 			store.Note{ID: id, AuthorName: "А", Text: "т"}, nil); err != nil {
 			t.Fatal(err)
@@ -311,7 +312,7 @@ func TestPostNoteDiscussButton(t *testing.T) {
 		t.Errorf("кнопка «Обсудить»: %+v", btn)
 	}
 	sub := kb.Payload.Buttons[0][1]
-	if sub.Type != model.ButtonCallback || sub.Payload != "1:sub:n2" {
+	if sub.Type != model.ButtonCallback || sub.Payload != "1:sub:313028" {
 		t.Errorf("кнопка «Подписаться»: %+v", sub)
 	}
 	if f.chatGets != 1 {
@@ -551,5 +552,26 @@ func TestSubNoteLinkFallsBackToSite(t *testing.T) {
 	n := store.Note{ID: "312818"}
 	if got := m.SubNoteLink(n, ""); got != "https://love.ngs.ru/notes/312818/" {
 		t.Errorf("запасная ссылка на заметку: %q", got)
+	}
+}
+
+// У заметки, написанной на площадке, кнопки «Подписаться» нет: подписки живут в
+// SQLite и знают только заметки НГС, так что нажатие привело бы в «заметку не
+// нашёл», а сработать подписка не смогла бы и потом. «Обсудить» при этом
+// остаётся — тред у такой заметки самый настоящий.
+func TestPostNativeNoteHasNoSubscribeButton(t *testing.T) {
+	f := &fakeMax{t: t}
+	m := newTestMirror(t, f)
+
+	if _, err := m.PostNote(context.Background(),
+		store.Note{ID: "100000000000", AuthorName: "А", Text: "т"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	kb := attachmentOf(t, f.last(), model.AttachInlineKeyboard)
+	if len(kb.Payload.Buttons) != 1 || len(kb.Payload.Buttons[0]) != 1 {
+		t.Fatalf("клавиатура: %+v", kb.Payload.Buttons)
+	}
+	if btn := kb.Payload.Buttons[0][0]; btn.Type != model.ButtonLink {
+		t.Errorf("осталась не только «Обсудить»: %+v", btn)
 	}
 }
