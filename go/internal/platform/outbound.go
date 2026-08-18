@@ -104,13 +104,33 @@ func (p *Platform) OutboundNotes(ctx context.Context, afterID int64, limit int) 
 	return out, rows.Err()
 }
 
+// OutboundDelay — сколько реплика «отлёживается», прежде чем её заберёт обход.
+//
+// Это не оптимизация, а закрытие гонки. Реплика, пришедшая ИЗ мессенджера,
+// публикуется на площадке, и сразу после этого мост помечает её отправленной в
+// тот мессенджер, откуда она пришла (иначе обход принесёт туда её же копию, а
+// человек и так видит своё сообщение в треде). Две записи идут в РАЗНЫЕ базы —
+// Postgres и SQLite, — одной транзакцией их не связать, и между ними есть
+// щель. Обход, попавший тактом ровно в неё, увидел бы реплику до отметки.
+//
+// Щель длится миллисекунды, такт — пятнадцать секунд, то есть сама по себе она
+// стреляла бы раз в несколько недель. Но стреляла бы видимым дублем в канале,
+// а пять секунд задержки не замечает никто.
+//
+// Порог считается ЧАСАМИ ВЫЗЫВАЮЩЕГО, а не Postgres (`now()`), и это не мелочь:
+// published_at проставляет тот же процесс, что публикует, — сравнивать его с
+// часами сервера значило бы мерить расстояние двумя разными линейками. На бою
+// они совпадают (демон и база на одной машине), а вот в тестах с рабочей машины
+// расходятся на секунды, и первая же проверка это поймала.
+const OutboundDelay = 5 * time.Second
+
 const outCommentQuery = `
 	SELECT c.id, c.note_id, c.body, c.reply_to_id, c.published_at,
 	       c.author_id, u.nick, u.avatar_sha, m.mime
 	  FROM comments c
 	  LEFT JOIN users u ON u.id = c.author_id
 	  LEFT JOIN media m ON m.sha256 = u.avatar_sha
-	 WHERE c.id > $1 AND c.status = 0
+	 WHERE c.id > $1 AND c.status = 0 AND c.published_at < $3
 	 ORDER BY c.id
 	 LIMIT $2`
 
@@ -118,7 +138,7 @@ const outCommentQuery = `
 // Порядок здесь не украшение: в треде мессенджера реплика обязана появиться
 // после того, на что отвечает, иначе цитировать будет нечего.
 func (p *Platform) OutboundComments(ctx context.Context, afterID int64, limit int) ([]OutComment, error) {
-	rows, err := p.pool.Query(ctx, outCommentQuery, floorNative(afterID), clampLimit(limit))
+	rows, err := p.pool.Query(ctx, outCommentQuery, floorNative(afterID), clampLimit(limit), time.Now().Add(-OutboundDelay))
 	if err != nil {
 		return nil, fmt.Errorf("исходящие комментарии: %w", err)
 	}
