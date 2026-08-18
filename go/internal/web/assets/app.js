@@ -61,3 +61,25 @@
   });
   head.appendChild(all);
 })();
+
+// Меню участника закрывается по клику мимо и по Escape. Открывает и закрывает
+// его сам браузер (details/summary) — здесь только то, чего разметка не умеет.
+// Поэтому и отдельной функцией: сворачивание веток выше выходит раньше, если
+// дерева на странице нет, а меню есть на каждой.
+(function () {
+  'use strict';
+
+  var menu = document.querySelector('details.acct');
+  if (!menu) return; // гость: меню нет, есть кнопка «Вход»
+
+  document.addEventListener('click', function (e) {
+    if (menu.open && !menu.contains(e.target)) menu.open = false;
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && menu.open) {
+      menu.open = false;
+      var btn = menu.querySelector('summary');
+      if (btn) btn.focus();
+    }
+  });
+})();

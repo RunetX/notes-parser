@@ -288,8 +288,8 @@ func TestPaletteMatchesSite(t *testing.T) {
 // входя, поэтому кнопка приглашает, а не преграждает: с 18.08.2026 площадка
 // устроена так же.
 func TestEnterSitsInTopRightCorner(t *testing.T) {
-	if !strings.Contains(cssText(t), ".acct { margin-left: auto; }") {
-		t.Error("вход не прижат к правому краю шапки")
+	if !strings.Contains(cssRule(t, cssText(t), ".acct {"), "margin-left: auto") {
+		t.Error("угол участника не прижат к правому краю шапки")
 	}
 	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}})
 	head, _, ok := strings.Cut(do(h, guest(t, "GET", "/")).Body.String(), "</header>")
@@ -325,9 +325,10 @@ func TestPageNumberErrors(t *testing.T) {
 	}
 }
 
-// mediaBlock вырезает тело @media-правила из стилей: проверять надо именно то,
-// что действует на телефоне, а не то, что где-то в файле есть нужное слово.
-func mediaBlock(t *testing.T, css, header string) string {
+// cssRule вырезает тело правила из стилей по его началу: проверять надо
+// именно то, что стоит В ЭТОМ правиле, а не то, что нужное слово где-то в
+// файле есть. Годится и для @media, и для обычного селектора.
+func cssRule(t *testing.T, css, header string) string {
 	t.Helper()
 	i := strings.Index(css, header)
 	if i < 0 {
@@ -373,7 +374,7 @@ func TestViewSwitcherIsIcons(t *testing.T) {
 // случай, когда десктопное решение, дожившее до мобильной вёрстки, ломает
 // страницу целиком.
 func TestMobileFreesNoteTextWidth(t *testing.T) {
-	mobile := mediaBlock(t, cssText(t), "@media (max-width: 700px)")
+	mobile := cssRule(t, cssText(t), "@media (max-width: 700px)")
 	if !strings.Contains(mobile, ".notebox .nbody { padding-right: 0; }") {
 		t.Error("на телефоне под текстом заметки остался резерв под переключатель")
 	}

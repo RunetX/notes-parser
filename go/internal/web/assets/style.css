@@ -82,7 +82,7 @@ a:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------- шапка */
 
-.top { background: var(--nav); }
+.top { background: var(--nav); position: relative; z-index: 20; }
 /* flex-wrap обязателен: без него на узком экране «Общая лента» наезжает на
    название, а «Вход» уезжает за край (жалоба 18.08.2026). */
 .topin { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 44px; padding: 5px 0; }
@@ -97,8 +97,37 @@ a:hover { text-decoration: underline; }
  * краю без распорок; на узком экране flex перенесёт его строкой ниже, а не
  * выдавит наружу. Ссылка и кнопка выглядят одинаково: выход обязан быть POST
  * (GET-ссылку браузер нажимает сам в префетче), но человеку это знать незачем. */
-.acct { margin-left: auto; }
+.acct { position: relative; margin-left: auto; }
 .acct form { margin: 0; }
+
+/* Меню участника: значок в углу, под ним список. Раскрывает его сам браузер
+   (details/summary), поэтому оно работает и без скрипта.
+   Треугольник-маркер снимаем: на НГС в этом углу только значок. */
+.acctbtn {
+  display: flex; align-items: center; gap: 7px; cursor: pointer;
+  color: var(--nav-ink); background: rgba(255, 255, 255, .18);
+  padding: 5px 12px; border-radius: 3px; list-style: none;
+}
+.acctbtn::-webkit-details-marker { display: none; }
+.acctbtn:hover, .acct[open] .acctbtn { background: rgba(255, 255, 255, .3); }
+.acctbtn .who { font-weight: 600; }
+
+/* Список выпадает ПОД кнопкой и поверх страницы, прижатый к правому краю —
+   как на НГС. z-index нужен вместе с ним и на самой шапке: без него список
+   уезжает под первую же заметку. */
+.acctmenu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
+  min-width: 190px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 3px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+}
+.acctmenu a, .acctmenu button {
+  display: block; width: 100%; text-align: left; font: inherit;
+  padding: 12px 18px; color: var(--ink); background: none;
+  border: 0; border-top: 1px solid var(--rule); cursor: pointer;
+}
+.acctmenu > :first-child, .acctmenu > form:first-child button { border-top: 0; }
+.acctmenu a:hover, .acctmenu button:hover { background: var(--btn); text-decoration: none; }
 .enter {
   display: inline-block; font: inherit; font-size: 14px; line-height: 1.45;
   color: var(--nav-ink); background: rgba(255, 255, 255, .18);
@@ -408,6 +437,9 @@ a:hover { text-decoration: underline; }
   .cava .ava { width: 56px; height: 56px; }
   .cava .ava.none { font-size: 20px; }
   .clink { margin-left: 0; display: block; margin-top: 4px; }
+  /* Ник рядом со значком уступает место: меню и без него понятно, а ширина в
+     шапке кончается раньше всего. */
+  .acctbtn .who { display: none; }
   /* Переключатель уходит из угла в свою строку, а резерв под него снимается
      совсем: 76px на телефоне — это треть строки. */
   .switch { position: static; justify-content: flex-end; margin: 0 0 6px; }

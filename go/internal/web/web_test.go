@@ -819,3 +819,53 @@ func TestHealthFollowsDatabase(t *testing.T) {
 		t.Fatalf("код %d, ожидался 503: живой контейнер с мёртвой базой обслужить ничего не может", got)
 	}
 }
+
+// [Ф] Угол участника устроен как на НГС: значок в правом верхнем углу, под ним
+// выпадающее меню. Пунктов там три, у нас два — отдельной страницы настроек
+// площадка не заводит, ник и согласия живут на /me.
+func TestAccountMenuHasProfileAndExit(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	grantBoth(t, auth, context.Background())
+
+	head, _, ok := strings.Cut(do(h, as(guest(t, "GET", "/"), token)).Body.String(), "</header>")
+	if !ok {
+		t.Fatal("на странице нет шапки")
+	}
+	for _, want := range []string{`<details class="acct">`, `<summary`, `href="/me"`,
+		"Мой профиль", `action="/logout"`, "Выход"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("в меню участника нет %q", want)
+		}
+	}
+}
+
+// Меню обязано открываться БЕЗ скрипта: details/summary раскрывает сам браузер.
+// Строгий CSP запрещает inline-скрипты, внешних зависимостей у площадки нет, и
+// пункт «Выход», доступный только при работающем JS, однажды перестал бы быть
+// доступным вовсе.
+func TestAccountMenuWorksWithoutScript(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	grantBoth(t, auth, context.Background())
+	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
+
+	menu := body[strings.Index(body, `<details class="acct">`):]
+	menu = menu[:strings.Index(menu, "</details>")]
+	if !strings.Contains(menu, "<summary") {
+		t.Fatal("меню не раскрывается разметкой: нет summary")
+	}
+	if !strings.Contains(menu, "Мой профиль") || !strings.Contains(menu, "Выход") {
+		t.Error("пункты меню приходят не с сервера — без JS их не будет")
+	}
+}
+
+// У гостя меню нет вовсе: ему нечего в нём открывать, а «Вход» остаётся.
+func TestGuestHasNoAccountMenu(t *testing.T) {
+	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}})
+	head, _, _ := strings.Cut(do(h, guest(t, "GET", "/")).Body.String(), "</header>")
+	if strings.Contains(head, `<details class="acct">`) {
+		t.Error("гостю показали меню участника")
+	}
+	if !strings.Contains(head, ">Вход<") {
+		t.Error("гостю не показали вход")
+	}
+}
