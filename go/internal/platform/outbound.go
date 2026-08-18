@@ -66,7 +66,7 @@ const outNoteQuery = `
 	  FROM notes n
 	  LEFT JOIN users u ON u.id = n.author_id
 	  LEFT JOIN media m ON m.sha256 = u.avatar_sha
-	 WHERE n.id > $1 AND n.status = 0
+	 WHERE n.id > $1 AND n.id < $3 AND n.status = 0
 	 ORDER BY n.id
 	 LIMIT $2`
 
@@ -77,7 +77,7 @@ const outNoteQuery = `
 // возвращённая до того, как её забрал обход, в канал не попадёт уже никогда;
 // это осознанный размен в пользу «снятое не всплывает».
 func (p *Platform) OutboundNotes(ctx context.Context, afterID int64, limit int) ([]OutNote, error) {
-	rows, err := p.pool.Query(ctx, outNoteQuery, floorNative(afterID), clampLimit(limit))
+	rows, err := p.pool.Query(ctx, outNoteQuery, floorNative(afterID), clampLimit(limit), RestoredIDBase)
 	if err != nil {
 		return nil, fmt.Errorf("исходящие заметки: %w", err)
 	}
@@ -130,7 +130,7 @@ const outCommentQuery = `
 	  FROM comments c
 	  LEFT JOIN users u ON u.id = c.author_id
 	  LEFT JOIN media m ON m.sha256 = u.avatar_sha
-	 WHERE c.id > $1 AND c.status = 0 AND c.published_at < $3
+	 WHERE c.id > $1 AND c.id < $4 AND c.status = 0 AND c.published_at < $3
 	 ORDER BY c.id
 	 LIMIT $2`
 
@@ -138,7 +138,8 @@ const outCommentQuery = `
 // Порядок здесь не украшение: в треде мессенджера реплика обязана появиться
 // после того, на что отвечает, иначе цитировать будет нечего.
 func (p *Platform) OutboundComments(ctx context.Context, afterID int64, limit int) ([]OutComment, error) {
-	rows, err := p.pool.Query(ctx, outCommentQuery, floorNative(afterID), clampLimit(limit), time.Now().Add(-OutboundDelay))
+	rows, err := p.pool.Query(ctx, outCommentQuery, floorNative(afterID), clampLimit(limit),
+		time.Now().Add(-OutboundDelay), RestoredIDBase)
 	if err != nil {
 		return nil, fmt.Errorf("исходящие комментарии: %w", err)
 	}
@@ -166,6 +167,14 @@ func (p *Platform) OutboundComments(ctx context.Context, afterID int64, limit in
 
 // floorNative опускает курсор не ниже начала нативной полосы: зеркальные строки
 // в канал уже отнесло само зеркало, и второй раз им туда не надо.
+//
+// Верхнюю границу (RestoredIDBase) ставит сам запрос, и она не симметричная
+// мелочь. Выше нативной полосы лежит восстановленное из чужих зеркал — реплики
+// августа 2010 года, которых на НГС давно нет. Курсор обхода живёт в памяти и на
+// старте всегда стоит в начале нативной полосы, то есть без этой границы первый
+// же такт после рестарта понёс бы в каналы одиннадцать тысяч сообщений
+// шестнадцатилетней давности. «Исходящее» — это написанное ЗДЕСЬ, и полоса
+// говорит об этом точнее любого условия по дате.
 func floorNative(afterID int64) int64 {
 	if afterID < NativeIDBase-1 {
 		return NativeIDBase - 1

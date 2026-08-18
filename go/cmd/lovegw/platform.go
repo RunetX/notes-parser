@@ -29,14 +29,15 @@ import (
 // Иначе рестарт после выкатки тихо перекраивает боевую базу.
 
 var platformSubcommands = map[string]bool{
-	"migrate":        true,
-	"doctor":         true,
-	"reconcile":      true,
-	"media":          true,
-	"reply-scan":     true,
-	"invite":         true,
-	"role":           true,
-	"import-archive": true,
+	"migrate":         true,
+	"doctor":          true,
+	"reconcile":       true,
+	"media":           true,
+	"reply-scan":      true,
+	"import-restored": true,
+	"invite":          true,
+	"role":            true,
+	"import-archive":  true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
@@ -48,11 +49,11 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	bind := fs.Int64("bind", 0, "invite: привязать приглашение к участнику (его прежний след станет своим)")
 	label := fs.String("note-text", "", "invite: пометка для себя, кому выдано")
 	days := fs.Int("days", 30, "invite: сколько дней действует")
-	archivePath := fs.String("archive", "", "import-archive: путь к archive.db")
+	archivePath := fs.String("archive", "", "import-archive / import-restored: путь к archive.db")
 	batch := fs.Int("batch", 0, "import-archive: комментариев в одной транзакции (0 — 50 000)")
-	onlyNotes := fs.Int("notes", 0, "import-archive: взять только столько заметок (0 — все)")
+	onlyNotes := fs.Int("notes", 0, "import-archive / import-restored: взять только столько заметок (0 — все)")
 	keepIdx := fs.Bool("keep-indexes", false, "import-archive: не снимать индексы comments")
-	dry := fs.Bool("dry-run", false, "import-archive: посчитать, ничего не записывая")
+	dry := fs.Bool("dry-run", false, "import-archive / import-restored: посчитать, ничего не записывая")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -87,6 +88,13 @@ func cmdPlatform(ctx context.Context, args []string) error {
 			Archive: *archivePath, Batch: *batch, Notes: *onlyNotes, OnlyNote: *note,
 			KeepIndexes: *keepIdx, DryRun: *dry,
 		})
+	case "import-restored":
+		if *archivePath == "" {
+			return fmt.Errorf("platform import-restored -archive <путь к archive.db>")
+		}
+		return platformImportRestored(ctx, cfg, platimport.RestoredOptions{
+			Archive: *archivePath, Notes: *onlyNotes, OnlyNote: *note, DryRun: *dry,
+		})
 	case "role":
 		if len(tail) != 2 {
 			return fmt.Errorf("platform role <id участника> <user|moderator|admin>")
@@ -98,7 +106,8 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformRole(ctx, cfg, id, tail[1])
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
-			"(migrate, doctor, reconcile, media, reply-scan, invite, role, import-archive)")
+			"(migrate, doctor, reconcile, media, reply-scan, invite, role, " +
+			"import-archive, import-restored)")
 	}
 }
 
@@ -459,6 +468,45 @@ const (
 // При работающем демоне безопасна: приём идемпотентен, а уже зеркалённые
 // заметки раскатка не трогает вовсе. На время работы у comments сняты индексы —
 // страницы треда идут перебором, то есть площадка жива, но медленна.
+// platformImportRestored доносит эпоху, которой нет на самом сайте.
+//
+// Отдельная команда, а не флаг раскатки: правила у неё обратные. Раскатка
+// архива пропускает заметку, уже лежащую на площадке, — здесь именно в такую
+// заметку и дописывается тред, потому что он пуст и другим уже не станет
+// (комментарии до конца 2013 года НГС стёр). Запускать можно в любой момент и
+// сколько угодно раз: ключи третьей полосы считаются из ключей архива, поэтому
+// повтор ничего не удваивает.
+func platformImportRestored(ctx context.Context, cfg *config.Config, opt platimport.RestoredOptions) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	log := newLogger(cfg.LogLevel)
+	start := time.Now()
+	st, err := platimport.RunRestored(ctx, p, opt, log)
+	fmt.Printf("добор восстановленного за %s:\n", time.Since(start).Truncate(time.Second))
+	fmt.Printf("  анкет %d, заметок %d, комментариев %d, подписей возвращено %d\n",
+		st.Users, st.Notes, st.Comments, st.Signed)
+	fmt.Printf("  пропущено заметок: нет на площадке %d, тред уже непуст %d\n",
+		st.SkipAbsent, st.SkipFilled)
+	fmt.Printf("  рёбра ответов: обращение %d, нет %d; снято обращений %d\n",
+		st.EdgeAddr, st.EdgeNone, st.Trimmed)
+	if err != nil {
+		return err
+	}
+	if opt.DryRun {
+		return nil
+	}
+	fmt.Print("обновление статистики планировщика… ")
+	if err := platimport.Analyze(ctx, p.Pool()); err != nil {
+		return err
+	}
+	fmt.Println("готово")
+	return nil
+}
+
 func platformImportArchive(ctx context.Context, cfg *config.Config, opt platimport.Options) error {
 	p, err := platform.Open(ctx, cfg.Platform.DSN)
 	if err != nil {

@@ -165,3 +165,57 @@ func TestOutboundCommentCarriesReplyEdge(t *testing.T) {
 		t.Errorf("тело реплики: %q", got[1].Body)
 	}
 }
+
+// Восстановленное (полоса с 2e11) в каналы не уходит НИКОГДА.
+//
+// Курсор обхода живёт в памяти и на старте стоит в начале нативной полосы, то
+// есть без верхней границы первый же такт после рестарта понёс бы в канал
+// одиннадцать тысяч реплик августа 2010 года. Граница стоит в SQL, а не в
+// вызывающем: «исходящее» — это написанное ЗДЕСЬ, и полоса отвечает на это
+// точнее любого условия по дате.
+func TestOutboundSkipsRestoredBand(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Рио")
+	mine := mustNote(t, p, author, "своя")
+
+	// Строки третьей полосы кладём в обход ядра: писать в неё умеет только
+	// администраторский добор (пакет platimport), и это правильно.
+	//
+	// По одному запросу на строку: pgx ходит расширенным протоколом, а тот
+	// принимает ровно одну команду на разбор — «cannot insert multiple commands
+	// into a prepared statement».
+	for _, ins := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users (id, nick, kind) VALUES ($1, 'Позитив', 0)`,
+			[]any{RestoredIDBase + 31}},
+		{`INSERT INTO notes (id, author_id, body, published_at, published_exact)
+		       VALUES ($1, $2, 'заметка 2010 года', '2010-08-05 04:00:00+00', true)`,
+			[]any{RestoredIDBase + 150871, RestoredIDBase + 31}},
+		{`INSERT INTO comments (id, note_id, author_id, body, path, depth, published_at)
+		       VALUES ($1, $2, $3, 'реплика 2010 года', $4, 0, '2010-08-05 04:58:00+00')`,
+			[]any{RestoredIDBase + 150871000, RestoredIDBase + 150871, RestoredIDBase + 31,
+				RootPath(RestoredIDBase + 150871000)}},
+	} {
+		if _, err := p.pool.Exec(ctx, ins.sql, ins.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	notes, err := p.OutboundNotes(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 || notes[0].ID != mine {
+		t.Fatalf("отдано %d заметок: %+v", len(notes), notes)
+	}
+	comments, err := p.OutboundComments(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 0 {
+		t.Fatalf("восстановленные реплики просочились в канал: %+v", comments)
+	}
+}

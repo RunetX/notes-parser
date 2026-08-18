@@ -126,3 +126,44 @@ func testPNG(t *testing.T, w, h int) []byte {
 	}
 	return buf.Bytes()
 }
+
+// Полосы идентификаторов не должны пересекаться, и вопрос «чьё это» обязан
+// иметь ровно один ответ на каждый ключ. Проверка дешёвая, а цена ошибки —
+// одиннадцать тысяч реплик 2010 года, ушедших в каналы как свежие.
+func TestIDBandsDoNotOverlap(t *testing.T) {
+	cases := []struct {
+		id                          int64
+		ngs, native, restored, band bool
+	}{
+		{312811, true, false, false, true},
+		{NativeIDBase - 1, true, false, false, true},
+		{NativeIDBase, false, true, false, true},
+		{RestoredIDBase - 1, false, true, false, true},
+		{RestoredIDBase, false, false, true, true},
+		{IDBandLimit - 1, false, false, true, true},
+		{IDBandLimit, false, false, false, false},
+		{0, false, false, false, false},
+		{-1, false, false, false, false},
+	}
+	for _, c := range cases {
+		if got := IsNGS(c.id); got != c.ngs {
+			t.Errorf("IsNGS(%d) = %v", c.id, got)
+		}
+		if got := IsNative(c.id); got != c.native {
+			t.Errorf("IsNative(%d) = %v", c.id, got)
+		}
+		if got := IsRestored(c.id); got != c.restored {
+			t.Errorf("IsRestored(%d) = %v", c.id, got)
+		}
+		if n := btoi(IsNGS(c.id)) + btoi(IsNative(c.id)) + btoi(IsRestored(c.id)); n > 1 {
+			t.Errorf("ключ %d попал в %d полос сразу", c.id, n)
+		}
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
