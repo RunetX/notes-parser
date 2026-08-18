@@ -3,7 +3,7 @@
   <h1>Это вы?</h1>
 
   <div class="whoami">
-    {{template "avatar" (av .Avatar .Nick)}}
+    {{template "avatar" (av .Avatar .Gender false)}}
     <div>
       <span class="nick">{{.Nick}}</span>
       <span class="fine">анкета №{{.ProfileID}}</span>
