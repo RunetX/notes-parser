@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -46,38 +47,109 @@ func (c *Client) FetchGenderMobile(ctx context.Context, cookies []*http.Cookie, 
 	return parseGenderMobile(body, id)
 }
 
-// parseGenderMobile — извлечение пола из HTML мобильного профиля. Декодируется
-// ровно одно JSON-значение после маркера (json.Decoder сам останавливается на
-// конце объекта, хвост JS не мешает). id сверяется с профилем в JSON, чтобы не
-// принять чужие данные (например, layout.user — это залогиненный пользователь).
+// parseGenderMobile — пол из мобильной анкеты. «Анкеты нет» здесь не сбой, а
+// «пол не размечен»: обход пола идёт пачками, и снесённая анкета не повод его
+// рвать. Для входа та же ситуация значит другое, поэтому решает вызывающий.
 func parseGenderMobile(body []byte, id string) (string, error) {
+	p, err := parseMobileProfile(body, id)
+	if errors.Is(err, ErrProfileMissing) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return p.Gender, nil
+}
+
+// ErrProfileMissing — анкеты по этому номеру сайт не отдал: снесена, скрыта
+// целиком или номера не существует. Отдельная ошибка, потому что при входе на
+// площадку это не сбой, а нормальный ответ человеку («такой анкеты нет»).
+var ErrProfileMissing = errors.New("анкета не найдена")
+
+// Profile — публичные поля анкеты, прочитанные АНОНИМНО с мобильного vhost.
+//
+// Анонимность здесь — не аккуратность, а свойство, на котором стоит вход в свою
+// площадку: чтение под чужой сессией двигало бы `last_activity` человека и
+// светило бы его в «гостях» анкеты, то есть сообщало бы сайту, кто именно
+// собрался переезжать. Наш анонимный просмотр не оставляет следа вовсе
+// (проверено контрольными чтениями, см. память last-activity-detects-section-ban).
+type Profile struct {
+	ID        int64
+	Nick      string
+	AvatarURL string // на hsmedia.ru; наружу такие ссылки не отдаём
+	AboutMe   string // поле «о себе» — сюда человек вставляет код входа
+	Gender    string // GenderMale / GenderFemale / "" — не размечен
+	Active    bool   // is_active: анкета не заблокирована владельцем
+	Blocked   bool   // block: заблокирована (владельцем или администрацией)
+	// Hidden — включена «Приватность». Сайт под ней показывает посторонним
+	// другое поле активности; прячет ли он заодно «о себе» — не проверено, и
+	// именно поэтому пустое about_me у такой анкеты объясняется человеку особо.
+	Hidden bool
+}
+
+// FetchProfile читает анкету мобильной версии. Клиент должен быть создан с
+// базой MobileBaseURL и мобильным User-Agent: с десктопным сайт уводит
+// редиректом, а десктопный vhost банит серию запросов почти сразу.
+func (c *Client) FetchProfile(ctx context.Context, id string) (Profile, error) {
+	body, err := c.get(ctx, "/profile/"+id+"/")
+	if err != nil {
+		return Profile{}, err
+	}
+	return parseMobileProfile(body, id)
+}
+
+// parseMobileProfile — разбор HTML мобильной анкеты. Декодируется ровно одно
+// JSON-значение после маркера (json.Decoder сам останавливается на конце
+// объекта, хвост JS не мешает). id сверяется с профилем в JSON, чтобы не
+// принять чужие данные: рядом лежит layout.user — это ЗАЛОГИНЕННЫЙ
+// пользователь, и при анонимном чтении он пуст, а под сессией был бы наш.
+func parseMobileProfile(body []byte, id string) (Profile, error) {
 	i := bytes.Index(body, []byte(mobileLayoutMarker))
 	if i < 0 {
-		return "", nil // страница без layout — удалённая анкета или заглушка
+		// Страница без layout — удалённая анкета или заглушка. Для пола это
+		// «не размечен», для входа — «нет такой анкеты»; различает вызывающий.
+		return Profile{}, ErrProfileMissing
 	}
 	var layout struct {
 		HeaderContent struct {
 			Profile struct {
-				ID  int64 `json:"id"`
-				Sex *int  `json:"sex"` // указатель: 0 — женщина, отличаем от отсутствия
+				ID       int64           `json:"id"`
+				Nick     string          `json:"nick"`
+				Avatar   string          `json:"avatar"`
+				AboutMe  string          `json:"about_me"`
+				Sex      *int            `json:"sex"` // указатель: 0 — женщина, отличаем от отсутствия
+				IsActive *bool           `json:"is_active"`
+				Block    json.RawMessage `json:"block"` // null у живой; вид значения сайт меняет
+				HideMe   bool            `json:"hide_me"`
 			} `json:"profile"`
 		} `json:"header_content"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(body[i+len(mobileLayoutMarker):]))
 	if err := dec.Decode(&layout); err != nil {
-		return "", fmt.Errorf("профиль %s: разбор dataFromBlade.layout: %w", id, err)
+		return Profile{}, fmt.Errorf("профиль %s: разбор dataFromBlade.layout: %w", id, err)
 	}
 	p := layout.HeaderContent.Profile
-	if strconv.FormatInt(p.ID, 10) != id || p.Sex == nil {
-		return "", nil
+	if strconv.FormatInt(p.ID, 10) != id {
+		return Profile{}, ErrProfileMissing
 	}
-	switch *p.Sex {
-	case 1:
-		return GenderMale, nil
-	case 0:
-		return GenderFemale, nil
+	out := Profile{
+		ID:        p.ID,
+		Nick:      p.Nick,
+		AvatarURL: p.Avatar,
+		AboutMe:   p.AboutMe,
+		Active:    p.IsActive == nil || *p.IsActive,
+		Blocked:   len(p.Block) > 0 && !bytes.Equal(p.Block, []byte("null")),
+		Hidden:    p.HideMe,
 	}
-	return "", nil
+	if p.Sex != nil {
+		switch *p.Sex {
+		case 1:
+			out.Gender = GenderMale
+		case 0:
+			out.Gender = GenderFemale
+		}
+	}
+	return out, nil
 }
 
 // profileIDRe — id анкеты в ссылке на автора. Сегодня сайт пишет

@@ -55,6 +55,7 @@ var funcs = template.FuncMap{
 	"asset":       assetURL,
 	"av":          newAvatar,
 	"body":        bodyHTML,
+	"doc":         docHTML,
 	"commentBody": commentBodyHTML,
 	"when":        whenHTML,
 	"plural":      plural,
@@ -105,9 +106,10 @@ type page struct {
 	// текущий адрес, и он проходит localPath на приёме: подставить сюда чужой
 	// хост нельзя.
 	Back string
-	// SignedIn — что показать в правом верхнем углу: «Вход» или «Выход».
-	// Больше этот признак пока ничего не решает — до Ш4 вход не различает людей.
+	// SignedIn и Nick — что показать в правом верхнем углу шапки: «Вход» или
+	// свой ник с выходом, как на НГС.
 	SignedIn bool
+	Nick     string
 }
 
 func (s *Server) newPage(r *http.Request, title string) page {
@@ -116,12 +118,15 @@ func (s *Server) newPage(r *http.Request, title string) page {
 	} else {
 		title = title + " — " + SiteName
 	}
-	return page{
-		Title:    title,
-		Theme:    s.theme(r),
-		Back:     localPath(r.URL.RequestURI()),
-		SignedIn: s.signedIn(r),
+	p := page{
+		Title: title,
+		Theme: s.theme(r),
+		Back:  localPath(r.URL.RequestURI()),
 	}
+	if u, ok := s.me(r); ok {
+		p.SignedIn, p.Nick = true, u.Nick
+	}
+	return p
 }
 
 // render собирает страницу В БУФЕР и только потом отдаёт. Иначе ошибка шаблона

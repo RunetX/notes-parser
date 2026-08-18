@@ -35,6 +35,38 @@ const linkTextLimit = 60
 // bodyHTML — текст заметки или комментария как разметка.
 func bodyHTML(text string) template.HTML { return renderBody("", text) }
 
+// docHTML — текст согласия как разметка. Отдельно от bodyHTML, потому что
+// документ — это документ: у него есть подзаголовки и перечни, и читать его
+// сплошной простынёй человек не станет, а прочесть он обязан.
+//
+// Хранится документ всё равно ПЛОСКИМ текстом: именно эти байты подписаны и
+// именно их хеш лежит в consent_docs. Разметка тут — способ показа, и подмена
+// «##» на <h2> ничего в подписанном тексте не меняет.
+func docHTML(text string) template.HTML {
+	var b strings.Builder
+	for i, para := range paragraphs(text) {
+		if i == 0 {
+			// Первая строка файла и есть заголовок документа — тот же, что
+			// лежит в ConsentDoc.Title. Рисуем его здесь, чтобы страница не
+			// печатала название дважды.
+			b.WriteString("<h1>")
+			b.WriteString(html.EscapeString(strings.TrimSpace(para)))
+			b.WriteString("</h1>")
+			continue
+		}
+		if head, ok := strings.CutPrefix(para, "## "); ok {
+			b.WriteString("<h2>")
+			b.WriteString(html.EscapeString(strings.TrimSpace(head)))
+			b.WriteString("</h2>")
+			continue
+		}
+		b.WriteString("<p>")
+		writeLines(&b, para)
+		b.WriteString("</p>")
+	}
+	return template.HTML(b.String())
+}
+
 // renderBody собирает абзацы, вставляя обращение внутрь ПЕРВОГО из них.
 //
 // Обращение «Ник, » — ребро, а не часть тела (в базе его нет), но выглядеть оно

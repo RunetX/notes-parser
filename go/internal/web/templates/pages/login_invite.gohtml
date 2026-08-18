@@ -1,0 +1,24 @@
+{{define "content"}}
+<section class="enterbox">
+  <h1>Вход по приглашению</h1>
+  <p class="lead">Приглашение выдаёт администратор — когда анкету на НГС снесли,
+  когда сайт недоступен или когда доказывать владение уже нечем.</p>
+
+  {{if .Problem}}<p class="bad">{{.Problem}}</p>{{end}}
+
+  <form method="post" action="/login/invite" class="keyform">
+    <label for="code">Код приглашения</label>
+    <input id="code" name="code" autocomplete="off" required autofocus placeholder="T3H-XXXX-XXXX">
+    <label for="nick">Ник</label>
+    <input id="nick" name="nick" autocomplete="off" maxlength="60"
+           placeholder="как вас звать здесь">
+    <button type="submit">Войти</button>
+  </form>
+
+  <p class="fine">Если администратор уже связал приглашение с вашим прежним
+  следом на площадке, ник берётся оттуда, а поле выше можно оставить пустым —
+  и все ваши старые реплики сразу станут вашими.</p>
+
+  <p class="alt"><a href="/login">Войти по анкете НГС</a></p>
+</section>
+{{end}}

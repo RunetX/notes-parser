@@ -2,8 +2,6 @@ package web
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -81,18 +79,25 @@ func quietLog() *slog.Logger {
 
 func newTestServer(t *testing.T, st Store, cfg Config) http.Handler {
 	t.Helper()
+	return newFullServer(t, st, newFakeAuth(), nil, cfg)
+}
+
+// newFullServer — сервер со всеми зависимостями. site == nil означает «вход по
+// анкете недоступен»: это рабочее состояние площадки после смерти НГС.
+func newFullServer(t *testing.T, st Store, auth Auth, site Site, cfg Config) http.Handler {
+	t.Helper()
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1"
 	}
 	cfg.Log = quietLog()
-	srv := New(cfg, st)
+	srv := New(cfg, st, auth, site)
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv.routes()
 }
 
 func openServer(t *testing.T, st Store) http.Handler {
 	t.Helper()
-	return newTestServer(t, st, Config{PreviewKey: testKey})
+	return newTestServer(t, st, Config{})
 }
 
 // guest — обычный посетитель: не вошёл и входить не собирался. Чтение открыто
@@ -102,13 +107,29 @@ func guest(t *testing.T, method, target string) *http.Request {
 	return httptest.NewRequest(method, target, nil)
 }
 
-// signedReq — запрос человека, вошедшего по общему ключу.
-func signedReq(t *testing.T, method, target string) *http.Request {
+// post — форма, отправленная с нашей же страницы.
+func post(t *testing.T, target string, form url.Values) *http.Request {
 	t.Helper()
-	r := httptest.NewRequest(method, target, nil)
-	sum := sha256.Sum256([]byte(testKey))
-	r.AddCookie(&http.Cookie{Name: authCookie, Value: hex.EncodeToString(sum[:])})
+	r := httptest.NewRequest("POST", target, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	return r
+}
+
+// as — тот же запрос, но от вошедшего.
+func as(r *http.Request, token string) *http.Request {
+	r.AddCookie(&http.Cookie{Name: sessCookie, Value: token})
+	return r
+}
+
+// cookieOf достаёт куку из ответа.
+func cookieOf(w *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 func do(h http.Handler, r *http.Request) *httptest.ResponseRecorder {
@@ -142,104 +163,97 @@ func sampleNote() platform.NoteView {
 
 // ---------------------------------------------------------------- вход
 
-// Чтение открыто всем — это решение владельца от 18.08.2026, и оно отменило
-// прежнее правило «пустой ключ закрывает всё». Незаданный ключ теперь означает
-// ровно одно: войти пока некуда, а читать можно.
-func TestReadingIsOpenWithoutKey(t *testing.T) {
+// Чтение открыто всем — решение владельца от 18.08.2026. Ни одна страница не
+// требует входа; вход нужен, чтобы писать и чтобы прежние реплики стали своими.
+func TestReadingIsOpenToEveryone(t *testing.T) {
 	st := &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}, note: sampleNote()}
 	h := newTestServer(t, st, Config{})
-	for _, target := range []string{"/", "/n/312811", "/login", "/healthz", "/robots.txt"} {
-		if got := do(h, httptest.NewRequest("GET", target, nil)).Code; got != http.StatusOK {
+	for _, target := range []string{"/", "/n/312811", "/login", "/login/invite", "/healthz", "/robots.txt"} {
+		if got := do(h, guest(t, "GET", target)).Code; got != http.StatusOK {
 			t.Errorf("%s: код %d, ожидался 200", target, got)
 		}
 	}
 }
 
-// Без ключа страница входа честно говорит, что войти некуда, и не показывает
-// поле, к которому не подходит ни одно значение.
-func TestLoginWithoutKeyOffersNoForm(t *testing.T) {
+// Нет клиента НГС — форма ввода анкеты не показывается вовсе: показать её и
+// получить отказ хуже, чем сразу сказать про приглашения.
+func TestLoginWithoutSiteOffersInviteOnly(t *testing.T) {
 	h := newTestServer(t, &fakeStore{}, Config{})
-	body := do(h, httptest.NewRequest("GET", "/login", nil)).Body.String()
-	if strings.Contains(body, `action="/login"`) {
-		t.Error("форма входа показана, хотя ключ не задан")
+	body := do(h, guest(t, "GET", "/login")).Body.String()
+	if strings.Contains(body, `name="profile"`) {
+		t.Error("форма входа по анкете показана, хотя НГС недоступен")
+	}
+	if !strings.Contains(body, "/login/invite") {
+		t.Error("не предложен вход по приглашению")
 	}
 }
 
-// Кнопка «Вход» стоит в правом верхнем углу шапки — там же, где на НГС, — и
-// ведёт на страницу входа, запомнив, откуда человек пришёл.
-func TestHeaderOffersEnterAndRemembersPlace(t *testing.T) {
-	h := openServer(t, &fakeStore{note: sampleNote()})
-	body := do(h, guest(t, "GET", "/n/312811?view=linear")).Body.String()
-	if !strings.Contains(body, `class="acct"`) || !strings.Contains(body, ">Вход<") {
-		t.Error("в шапке нет кнопки «Вход»")
+// Полный путь основного входа: номер анкеты → код → код в «о себе» → согласия.
+func TestLoginByProfileCode(t *testing.T) {
+	auth := newFakeAuth()
+	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
+	h := newFullServer(t, &fakeStore{}, auth, site, Config{})
+
+	w := do(h, post(t, "/login", url.Values{"profile": {"https://love.ngs.ru/profile/1493279/"}}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("шаг «это вы?»: код %d", w.Code)
 	}
-	if !strings.Contains(body, `href="/login?to=%2fn%2f312811%3fview%3dlinear"`) {
-		t.Errorf("кнопка входа не помнит страницу, с которой нажали:\n%s", body)
+	code := auth.codes[testProfileID]
+	if code == "" || !strings.Contains(w.Body.String(), code) {
+		t.Fatal("код не показан на странице")
+	}
+	if !strings.Contains(w.Body.String(), testNick) {
+		t.Error("на экране подтверждения нет ника анкеты")
+	}
+	jar := cookieOf(w, codeCookie)
+	if jar == nil || !jar.HttpOnly {
+		t.Fatal("кука проверки не поставлена или не HttpOnly")
+	}
+
+	// Кода в анкете ещё нет — вход не проходит.
+	r := post(t, "/login/check", nil)
+	r.AddCookie(jar)
+	if got := do(h, r).Code; got != http.StatusUnauthorized {
+		t.Fatalf("проверка без кода в анкете: код %d, ожидался 401", got)
+	}
+
+	// Человек вставил код в «о себе».
+	site.prof.AboutMe = "слеп, глуп, туп\n" + code
+	r = post(t, "/login/check", nil)
+	r.AddCookie(jar)
+	w = do(h, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/consent" {
+		t.Fatalf("успешная проверка: код %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	sess := cookieOf(w, sessCookie)
+	if sess == nil || sess.Value == "" || !sess.HttpOnly {
+		t.Fatal("сессия не выдана")
 	}
 }
 
-// У вошедшего на том же месте «Выход», и это форма с POST: выход меняет
-// состояние, а GET-ссылку браузер нажимает сам в префетче.
-func TestHeaderOffersExitWhenSignedIn(t *testing.T) {
-	h := openServer(t, &fakeStore{})
-	body := do(h, signedReq(t, "GET", "/")).Body.String()
-	if !strings.Contains(body, `action="/logout"`) || !strings.Contains(body, ">Выход<") {
-		t.Error("вошедшему не предложен выход")
-	}
-	if strings.Contains(body, ">Вход<") {
-		t.Error("вошедшему всё ещё предлагают войти")
-	}
-}
+// Код в чужом «о себе» видит кто угодно, поэтому одной анкеты мало: проверку
+// засчитывают только вместе с кукой того, кто эту проверку начал.
+func TestVerificationNeedsBothHalves(t *testing.T) {
+	auth := newFakeAuth()
+	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
+	h := newFullServer(t, &fakeStore{}, auth, site, Config{})
 
-func TestLoginAcceptsKeyAndSetsCookie(t *testing.T) {
-	h := openServer(t, &fakeStore{})
-	form := url.Values{"key": {testKey}, "to": {"/n/312811"}}
-	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := do(h, r)
+	do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
+	site.prof.AboutMe = auth.codes[testProfileID] // код в анкете есть
 
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/n/312811" {
-		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
-	}
-	var got *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == authCookie {
-			got = c
-		}
-	}
-	if got == nil {
-		t.Fatal("кука входа не поставлена")
-	}
-	if !got.HttpOnly {
-		t.Error("кука входа должна быть HttpOnly")
-	}
-	// В куке лежит хеш ключа, а не сам ключ: утечка куки не должна отдавать
-	// строку, которую владелец диктует голосом и, скорее всего, где-то повторит.
-	if strings.Contains(got.Value, testKey) {
-		t.Error("в куке лежит сам ключ")
-	}
-}
-
-func TestLoginRejectsWrongKey(t *testing.T) {
-	h := openServer(t, &fakeStore{})
-	form := url.Values{"key": {"не тот"}, "to": {"/"}}
-	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Sec-Fetch-Site", "same-origin")
-	w := do(h, r)
+	// ...а куки нет: это посторонний, подсмотревший код.
+	w := do(h, post(t, "/login/check", nil))
 	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("код %d, ожидался 401", w.Code)
+		t.Fatalf("проверка без куки: код %d, ожидался 401", w.Code)
 	}
-	if len(w.Result().Cookies()) != 0 {
-		t.Error("при неверном ключе кука не ставится")
+	if cookieOf(w, sessCookie) != nil {
+		t.Fatal("постороннему выдали сессию по чужому коду из анкеты")
 	}
 }
 
 func TestLoginRejectsCrossSitePost(t *testing.T) {
-	h := openServer(t, &fakeStore{})
-	form := url.Values{"key": {testKey}}
-	r := httptest.NewRequest("POST", "/login", strings.NewReader(form.Encode()))
+	h := newFullServer(t, &fakeStore{}, newFakeAuth(), &fakeSite{}, Config{})
+	r := httptest.NewRequest("POST", "/login", strings.NewReader("profile=1493279"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
 	if got := do(h, r).Code; got != http.StatusForbidden {
@@ -247,26 +261,189 @@ func TestLoginRejectsCrossSitePost(t *testing.T) {
 	}
 }
 
-func TestLogoutClearsCookie(t *testing.T) {
-	h := openServer(t, &fakeStore{})
-	form := url.Values{"back": {"/n/312811"}}
-	r := httptest.NewRequest("POST", "/logout", strings.NewReader(form.Encode()))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Sec-Fetch-Site", "same-origin")
-	sum := sha256.Sum256([]byte(testKey))
-	r.AddCookie(&http.Cookie{Name: authCookie, Value: hex.EncodeToString(sum[:])})
-	w := do(h, r)
+func TestLoginTellsWhenProfileIsMissing(t *testing.T) {
+	h := newFullServer(t, &fakeStore{}, newFakeAuth(), &fakeSite{missing: true}, Config{})
+	w := do(h, post(t, "/login", url.Values{"profile": {"999999"}}))
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "нет") {
+		t.Fatalf("несуществующая анкета: код %d", w.Code)
+	}
+}
+
+// Приглашение — третий путь и единственный, переживающий смерть НГС.
+func TestInviteLetsIn(t *testing.T) {
+	auth := newFakeAuth()
+	h := newFullServer(t, &fakeStore{}, auth, nil, Config{})
+	w := do(h, post(t, "/login/invite", url.Values{"code": {testInvite}, "nick": {"Новенький"}}))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/consent" {
+		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	if cookieOf(w, sessCookie) == nil {
+		t.Fatal("сессия по приглашению не выдана")
+	}
+	// Второй раз тот же код не работает.
+	if got := do(h, post(t, "/login/invite", url.Values{"code": {testInvite}})).Code; got != http.StatusUnauthorized {
+		t.Errorf("повторное использование приглашения: код %d, ожидался 401", got)
+	}
+}
+
+// ---------------------------------------------------------------- согласия
+
+func signedInServer(t *testing.T) (http.Handler, *fakeAuth, string) {
+	t.Helper()
+	auth := newFakeAuth()
+	auth.users[testProfileID] = platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindMember}
+	token, _, err := auth.CreateSession(context.Background(), testProfileID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newFullServer(t, &fakeStore{}, auth, nil, Config{}), auth, token
+}
+
+// Два согласия спрашиваются ПО ОДНОМУ: экран с двумя галочками — ровно то, что
+// запрещает ч. 1 ст. 10.1, и стеречь это должен тест, а не память.
+func TestConsentAsksOneDocumentAtATime(t *testing.T) {
+	h, auth, token := signedInServer(t)
+
+	w := do(h, as(guest(t, "GET", "/consent"), token))
+	body := w.Body.String()
+	if !strings.Contains(body, "Шаг 1 из 2") {
+		t.Fatalf("первый экран согласия не показан:\n%s", body)
+	}
+	if strings.Contains(body, "Согласие на распространение") {
+		t.Error("оба документа на одном экране — это и запрещено")
+	}
+
+	w = do(h, as(post(t, "/consent", url.Values{
+		"kind": {platform.ConsentProcessing}, "version": {"1"},
+	}), token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("после первого согласия: код %d", w.Code)
+	}
+	if !strings.Contains(do(h, as(guest(t, "GET", "/consent"), token)).Body.String(), "Шаг 2 из 2") {
+		t.Fatal("второй экран согласия не показан")
+	}
+
+	w = do(h, as(post(t, "/consent", url.Values{
+		"kind": {platform.ConsentDistribution}, "version": {"1"},
+	}), token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("после второго согласия: код %d", w.Code)
+	}
+	if got := do(h, as(guest(t, "GET", "/consent"), token)).Header().Get("Location"); got != "/me" {
+		t.Errorf("после обоих согласий ведёт на %q, ожидалось /me", got)
+	}
+	if len(auth.consents[testProfileID]) != 2 {
+		t.Errorf("записано согласий: %d, ожидалось 2", len(auth.consents[testProfileID]))
+	}
+}
+
+// Подделанное поле формы не должно записать согласие на документ, которого
+// человек не видел: что именно подписано, решает сервер.
+func TestConsentIgnoresFormClaim(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	do(h, as(post(t, "/consent", url.Values{
+		"kind": {platform.ConsentDistribution}, "version": {"1"},
+	}), token))
+	if _, ok := auth.consents[testProfileID][platform.ConsentDistribution]; ok {
+		t.Error("записано согласие на документ, который не показывался")
+	}
+}
+
+// Отказ откатывает вход целиком, а не оставляет участника без согласий.
+func TestConsentRefusalRollsBackLogin(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	w := do(h, as(post(t, "/consent/refuse", nil), token))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
+		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	if len(auth.aborted) != 1 || auth.aborted[0] != testProfileID {
+		t.Error("вход не откачен")
+	}
+	if c := cookieOf(w, sessCookie); c == nil || c.MaxAge >= 0 {
+		t.Error("кука сессии не снята")
+	}
+}
+
+// Незавершённый вход ведёт на согласия, а не показывает половину «Моей страницы».
+func TestMeRedirectsToConsentWhenIncomplete(t *testing.T) {
+	h, _, token := signedInServer(t)
+	if got := do(h, as(guest(t, "GET", "/me"), token)).Header().Get("Location"); got != "/consent" {
+		t.Errorf("ведёт на %q, ожидалось /consent", got)
+	}
+}
+
+// Отзыв согласия на распространение доходит до ядра: обещание «исчезает
+// немедленно» обязано быть исполнимым, а не написанным в документе.
+func TestMeRevokesDistribution(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	ctx := context.Background()
+	grantBoth(t, auth, ctx)
+
+	w := do(h, as(post(t, "/me/consent", url.Values{
+		"kind": {platform.ConsentDistribution}, "action": {"revoke"},
+	}), token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d", w.Code)
+	}
+	if len(auth.revoked[testProfileID]) != 1 {
+		t.Fatal("отзыв не дошёл до ядра")
+	}
+}
+
+// В шапке у вошедшего — свой ник и выход, у гостя — «Вход».
+func TestHeaderShowsWhoYouAre(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	grantBoth(t, auth, context.Background())
+
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	if !strings.Contains(body, `class="who"`) || !strings.Contains(body, testNick) {
+		t.Error("в шапке нет ника вошедшего")
+	}
+	if !strings.Contains(body, `action="/logout"`) {
+		t.Error("вошедшему не предложен выход")
+	}
+	if strings.Contains(body, ">Вход<") {
+		t.Error("вошедшему всё ещё предлагают войти")
+	}
+}
+
+func grantBoth(t *testing.T, auth *fakeAuth, ctx context.Context) {
+	t.Helper()
+	for _, k := range []string{platform.ConsentProcessing, platform.ConsentDistribution} {
+		if err := auth.GrantConsent(ctx, testProfileID, k, 1, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestLogoutClearsSession(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	w := do(h, as(post(t, "/logout", url.Values{"back": {"/n/312811"}}), token))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/n/312811" {
 		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
 	}
-	var cleared bool
-	for _, c := range w.Result().Cookies() {
-		if c.Name == authCookie && c.MaxAge < 0 {
-			cleared = true
-		}
+	if len(auth.tokens) != 0 {
+		t.Error("сессия не погашена в ядре")
 	}
-	if !cleared {
-		t.Error("кука входа не снята")
+	if c := cookieOf(w, sessCookie); c == nil || c.MaxAge >= 0 {
+		t.Error("кука сессии не снята")
+	}
+}
+
+func TestParseProfileID(t *testing.T) {
+	cases := map[string]int64{
+		"1493279":                              1493279,
+		" 1493279 ":                            1493279,
+		"https://love.ngs.ru/profile/1493279/": 1493279,
+		"m.love.ngs.ru/profile/175869/":        175869,
+		"мой профиль":                          0,
+		"0":                                    0,
+		"999999999999":                         0, // нативная полоса — это не анкета НГС
+	}
+	for in, want := range cases {
+		if got := parseProfileID(in); got != want {
+			t.Errorf("parseProfileID(%q) = %d, ожидалось %d", in, got, want)
+		}
 	}
 }
 
@@ -490,7 +667,7 @@ func TestMediaServesFilesAndHidesListing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ab", "abcd.jpg"), []byte("не-картинка-но-байты"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h := newTestServer(t, &fakeStore{}, Config{PreviewKey: testKey, MediaDir: dir})
+	h := newTestServer(t, &fakeStore{}, Config{MediaDir: dir})
 
 	if got := do(h, httptest.NewRequest("GET", "/media/ab/abcd.jpg", nil)).Code; got != http.StatusOK {
 		t.Errorf("файл не отдался: код %d", got)

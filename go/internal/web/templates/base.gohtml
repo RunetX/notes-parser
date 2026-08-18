@@ -25,12 +25,13 @@
          кнопка приглашает, а не преграждает. */}}
     <div class="acct">
       {{if .SignedIn}}
+      <a class="who" href="/me">{{.Nick}}</a>
       <form method="post" action="/logout">
         <input type="hidden" name="back" value="{{.Back}}">
         <button class="enter" type="submit">Выход</button>
       </form>
       {{else}}
-      <a class="enter" href="/login?to={{.Back}}">Вход</a>
+      <a class="enter" href="/login">Вход</a>
       {{end}}
     </div>
   </div>

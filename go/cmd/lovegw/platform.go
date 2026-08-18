@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -32,6 +33,8 @@ var platformSubcommands = map[string]bool{
 	"reconcile":  true,
 	"media":      true,
 	"reply-scan": true,
+	"invite":     true,
+	"role":       true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
@@ -40,10 +43,14 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	dbPath := fs.String("db", "", "путь к боевой lovegw.db (по умолчанию из конфига)")
 	limit := fs.Int("limit", 500, "media: сколько файлов забрать за проход; reply-scan: сколько заметок обойти")
 	note := fs.Int64("note", 0, "reply-scan: обойти только эту заметку")
+	bind := fs.Int64("bind", 0, "invite: привязать приглашение к участнику (его прежний след станет своим)")
+	label := fs.String("note-text", "", "invite: пометка для себя, кому выдано")
+	days := fs.Int("days", 30, "invite: сколько дней действует")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
+	tail := fs.Args()
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
@@ -63,8 +70,20 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformMedia(ctx, cfg, *limit)
 	case "reply-scan":
 		return platformReplyScan(ctx, cfg, *limit, *note)
+	case "invite":
+		return platformInvite(ctx, cfg, *bind, *label, *days)
+	case "role":
+		if len(tail) != 2 {
+			return fmt.Errorf("platform role <id участника> <user|moderator|admin>")
+		}
+		id, err := strconv.ParseInt(tail[0], 10, 64)
+		if err != nil {
+			return fmt.Errorf("id участника %q: %w", tail[0], err)
+		}
+		return platformRole(ctx, cfg, id, tail[1])
 	default:
-		return fmt.Errorf("platform: укажите подкоманду (migrate, doctor, reconcile, media, reply-scan)")
+		return fmt.Errorf("platform: укажите подкоманду " +
+			"(migrate, doctor, reconcile, media, reply-scan, invite, role)")
 	}
 }
 
@@ -152,19 +171,100 @@ func platformMigrate(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	if before == wanted {
-		fmt.Printf("схема уже на версии %d, делать нечего\n", wanted)
-		return nil
+	if before != wanted {
+		fmt.Printf("накатываю схему: v%d → v%d\n", before, wanted)
+		if err := p.Migrate(ctx); err != nil {
+			return err
+		}
+		after, _, err := p.Version(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("готово, схема на версии %d\n", after)
+	} else {
+		fmt.Printf("схема уже на версии %d\n", wanted)
 	}
-	fmt.Printf("накатываю схему: v%d → v%d\n", before, wanted)
-	if err := p.Migrate(ctx); err != nil {
+
+	// Тексты согласий публикуются здесь же: это такая же смена содержимого базы
+	// в известный момент, и делает её тот же человек. Правка выпущенной
+	// редакции без смены номера версии — ОТКАЗ: молча переписанный текст
+	// превращает все прежние согласия в бумажку без содержания.
+	if err := p.EnsureConsentDocs(ctx, operatorOf(cfg)); err != nil {
 		return err
 	}
-	after, _, err := p.Version(ctx)
+	docs, err := platform.CurrentConsentDocs(operatorOf(cfg))
 	if err != nil {
 		return err
 	}
-	fmt.Printf("готово, схема на версии %d\n", after)
+	for _, d := range docs {
+		fmt.Printf("согласие %s: редакция v%d\n", d.Kind, d.Version)
+	}
+	return nil
+}
+
+// platformInvite выдаёт приглашение — третий путь входа и единственный,
+// переживающий смерть НГС.
+//
+// Он же путь для ПЕРВОГО администратора: пока на площадке нет ни одного
+// участника, выдать приглашение из веб-морды некому.
+func platformInvite(ctx context.Context, cfg *config.Config, bind int64, note string, days int) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	// Выдающий — сам приглашённый, если приглашение к кому-то привязано, иначе
+	// первый администратор. Колонка issued_by обязательная: приглашение без
+	// автора не проследить, а история выдач — часть модерации.
+	issuer := bind
+	if issuer == 0 {
+		if issuer, err = p.AnyAdmin(ctx); err != nil {
+			return fmt.Errorf("%w: у непривязанного приглашения нужен администратор — "+
+				"назначьте его командой `platform role <id> admin`", err)
+		}
+	}
+	code, err := p.CreateInvite(ctx, issuer, bind, note, time.Duration(days)*24*time.Hour)
+	if err != nil {
+		return err
+	}
+	if bind != 0 {
+		fmt.Printf("приглашение для участника %d (действует %d дн.): %s\n", bind, days, code)
+	} else {
+		fmt.Printf("приглашение без привязки (действует %d дн.): %s\n", days, code)
+	}
+	fmt.Println("код показывается один раз — в базе лежит только его хеш")
+	return nil
+}
+
+// platformRole меняет права участника. Руками, потому что первого
+// администратора назначить неоткуда, а раздача прав из веб-морды — это Ш7.
+func platformRole(ctx context.Context, cfg *config.Config, id int64, role string) error {
+	var r platform.Role
+	switch role {
+	case "user", "участник":
+		r = platform.RoleUser
+	case "moderator", "модератор":
+		r = platform.RoleModerator
+	case "admin", "админ":
+		r = platform.RoleAdmin
+	default:
+		return fmt.Errorf("роль %q: ожидалось user, moderator или admin", role)
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	if err := p.SetRole(ctx, id, r); err != nil {
+		return err
+	}
+	u, err := p.UserByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s (%d): роль %s\n", u.Nick, u.ID, role)
 	return nil
 }
 

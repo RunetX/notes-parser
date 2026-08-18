@@ -1,0 +1,25 @@
+{{define "content"}}
+<section class="enterbox doc">
+  <p class="step">Шаг {{.Step}} из {{.Of}}</p>
+
+  {{/* Текст показывается ЦЕЛИКОМ и без сворачивания: согласие, спрятанное под
+       «подробнее», согласием не является. Заголовок — первая строка самого
+       документа, поэтому отдельного h1 тут нет. */}}
+  <div class="doctext">{{doc .Doc.Body}}</div>
+
+  <form method="post" action="/consent" class="agree">
+    <input type="hidden" name="kind" value="{{.Doc.Kind}}">
+    <input type="hidden" name="version" value="{{.Doc.Version}}">
+    <button type="submit">Согласен</button>
+  </form>
+
+  {{/* Отказ откатывает вход целиком — это честная вторая кнопка, а не тупик. */}}
+  <form method="post" action="/consent/refuse" class="refuse">
+    <button type="submit" class="linkish">Не согласен — отменить вход</button>
+  </form>
+
+  <p class="fine">Согласий два, и спрашиваются они по отдельности: закон прямо
+  запрещает собирать согласие на распространение одним документом с общим и
+  считать согласием заранее проставленную галочку.</p>
+</section>
+{{end}}

@@ -1,0 +1,54 @@
+{{define "content"}}
+<h1 class="ttl">Моя страница</h1>
+
+<div class="whoami">
+  {{template "avatar" (av .Member.AvatarURL .Member.Nick)}}
+  <div>
+    <span class="nick {{.Member.Gender.Class}}">{{.Member.Nick}}</span>
+    <span class="fine">
+      {{if lt .Member.ID 100000000000}}анкета НГС №{{.Member.ID}}{{else}}участник №{{.Member.ID}}{{end}}
+      {{if .Admin}} · администратор{{end}}
+    </span>
+  </div>
+</div>
+
+{{if .Hidden}}
+<p class="warn">Все ваши публикации сейчас скрыты со страниц площадки: вы отозвали
+согласие на распространение. Тексты не удалены — вернёте согласие, и они появятся снова.</p>
+{{end}}
+
+<h2 class="sub">Согласия</h2>
+<ul class="consents">
+{{range .Docs}}
+  {{$rec := index $.Have .Kind}}
+  <li class="consent">
+    <div class="cname">{{.Title}}</div>
+    {{if and $rec.GrantedAt.IsZero true}}{{end}}
+    {{if $rec.Live}}
+    <div class="fine">Дано {{when $rec.GrantedAt true}}{{if lt $rec.Version .Version}} · есть новая редакция{{end}}</div>
+    <form method="post" action="/me/consent">
+      <input type="hidden" name="kind" value="{{.Kind}}">
+      <input type="hidden" name="action" value="revoke">
+      <button type="submit" class="danger">Отозвать</button>
+    </form>
+    {{else}}
+    <div class="fine">Отозвано{{if $rec.RevokedAt}} {{when $rec.RevokedAt true}}{{end}}</div>
+    <form method="post" action="/me/consent">
+      <input type="hidden" name="kind" value="{{.Kind}}">
+      <input type="hidden" name="action" value="grant">
+      <button type="submit">Дать снова</button>
+    </form>
+    {{end}}
+  </li>
+{{end}}
+</ul>
+
+<p class="fine">Отзыв согласия на распространение прячет все ваши публикации
+немедленно, без очереди к модератору. Отзыв общего согласия делает то же и
+вдобавок закрывает вход: обрабатывать становится нечего.</p>
+
+<h2 class="sub">Что площадка о вас знает</h2>
+<p class="fine">Номер анкеты, ник, аватар, пол и тексты ваших публикаций. Ни имени,
+ни возраста, ни города, ни «о себе» с НГС здесь нет. IP-адреса не хранятся нигде,
+включая логи. Выгрузка своих данных и обезличивание — пока по письму администратору.</p>
+{{end}}

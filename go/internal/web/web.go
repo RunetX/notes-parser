@@ -40,10 +40,11 @@ type Config struct {
 	// MediaDir — каталог CAS. В бою файлы отдаёт Caddy, минуя Go; наш обработчик
 	// нужен разработке и на случай запроса мимо прокси.
 	MediaDir string
-	// PreviewKey — общий ключ входа до настоящего (Ш4). Чтение он не
-	// закрывает: пустой ключ означает «войти пока некуда», см. login.go.
-	PreviewKey string
-	Log        *slog.Logger
+	// Operator — реквизиты того, кто обрабатывает данные. Подставляются в
+	// тексты согласий ДО публикации: доказательством служит финальный текст, а
+	// не шаблон, поэтому смена реквизитов — это новая версия документа.
+	Operator platform.Operator
+	Log      *slog.Logger
 }
 
 // Store — то, что морда спрашивает у ядра.
@@ -63,13 +64,58 @@ type Store interface {
 	Flat(ctx context.Context, v platform.Viewer, noteID int64, offset, limit int) ([]platform.CommentView, error)
 }
 
+// Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:
+// Store читает публичные страницы и обязан оставаться списком «что морда умеет
+// делать с чужими данными», а здесь — операции над данными ОДНОГО человека, и
+// смешивать их в один список значило бы потерять это различие.
+type Auth interface {
+	StartProfileChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
+	VerifyProfileChallenge(ctx context.Context, profileID int64, code, aboutMe string) error
+	CompleteNGSLogin(ctx context.Context, prof platform.MirroredAuthor, gender platform.Gender) (int64, error)
+	AbortLogin(ctx context.Context, userID int64) error
+	RedeemInvite(ctx context.Context, code, nick string) (int64, error)
+
+	CreateSession(ctx context.Context, userID int64, ua string) (string, time.Time, error)
+	SessionUser(ctx context.Context, token string) (platform.User, error)
+	RevokeSession(ctx context.Context, token string) error
+
+	MemberCard(ctx context.Context, id int64) (platform.Author, error)
+	MissingConsent(ctx context.Context, userID int64, op platform.Operator) (platform.ConsentDoc, error)
+	UserConsents(ctx context.Context, userID int64) (platform.Consents, error)
+	GrantConsent(ctx context.Context, userID int64, kind string, version int, ua string) error
+	RevokeConsent(ctx context.Context, userID int64, kind string) error
+}
+
+// SiteProfile — анкета НГС, какой она нужна входу. Свой тип, а не love.Profile:
+// пакет web о существовании НГС знать не обязан, а перевод стоит десяти строк в
+// сборке команды (там же, где живёт клиент сайта).
+type SiteProfile struct {
+	Nick      string
+	AvatarURL string // на hsmedia.ru — наружу не отдаём, только для сверки
+	AboutMe   string
+	Gender    platform.Gender
+	Blocked   bool
+	Hidden    bool // включена «Приватность»
+}
+
+// ErrNoProfile — анкеты с таким номером сайт не отдал.
+var ErrNoProfile = errors.New("анкета не найдена")
+
+// Site — чтение анкеты НГС для входа по коду. nil означает, что этот путь
+// недоступен (нет RU-IP, сайт закрылся): тогда остаются приглашения, и страница
+// входа говорит об этом прямо, а не показывает форму, которая не сработает.
+type Site interface {
+	Profile(ctx context.Context, id int64) (SiteProfile, error)
+}
+
 // Server — HTTP-морда площадки.
 type Server struct {
 	cfg   Config
 	st    Store
+	auth  Auth
+	site  Site // nil — вход по анкете НГС недоступен
 	log   *slog.Logger
 	http  *http.Server
-	gate  []byte       // sha256 ключа входа; пусто — войти пока нельзя
 	media *mediaServer // nil, если каталог не задан
 	// secure — куки помечаются Secure и получают префикс __Host-. Выводится из
 	// BaseURL: по http браузер такие куки просто отбросит, и разработка встала
@@ -77,7 +123,7 @@ type Server struct {
 	secure bool
 }
 
-func New(cfg Config, st Store) *Server {
+func New(cfg Config, st Store, auth Auth, site Site) *Server {
 	log := cfg.Log
 	if log == nil {
 		log = slog.Default()
@@ -85,12 +131,13 @@ func New(cfg Config, st Store) *Server {
 	s := &Server{
 		cfg:    cfg,
 		st:     st,
+		auth:   auth,
+		site:   site,
 		log:    log,
-		gate:   authDigest(cfg.PreviewKey),
 		secure: strings.HasPrefix(cfg.BaseURL, "https://"),
 	}
-	if len(s.gate) == 0 {
-		log.Warn("platform.preview_key не задан — читать площадку можно, войти нельзя")
+	if site == nil {
+		log.Warn("клиент НГС не задан — вход по коду в анкете недоступен, остаются приглашения")
 	}
 	if cfg.MediaDir != "" {
 		m, err := newMediaServer(cfg.MediaDir)
@@ -120,7 +167,15 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
 	mux.HandleFunc("GET /assets/{name}", s.handleAsset)
 	mux.HandleFunc("GET /login", s.handleLogin)
-	mux.HandleFunc("POST /login", s.handleLoginSubmit)
+	mux.HandleFunc("POST /login", s.handleLoginStart)
+	mux.HandleFunc("POST /login/check", s.handleLoginCheck)
+	mux.HandleFunc("GET /login/invite", s.handleInvite)
+	mux.HandleFunc("POST /login/invite", s.handleInviteSubmit)
+	mux.HandleFunc("GET /consent", s.handleConsent)
+	mux.HandleFunc("POST /consent", s.handleConsentGrant)
+	mux.HandleFunc("POST /consent/refuse", s.handleConsentRefuse)
+	mux.HandleFunc("GET /me", s.handleMe)
+	mux.HandleFunc("POST /me/consent", s.handleMeConsent)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("POST /theme", s.handleTheme)
 	if s.media != nil {
@@ -130,7 +185,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /n/{id}", s.handleNote)
 	mux.HandleFunc("/", s.handleNotFound)
 
-	return s.withSecurityHeaders(s.withLog(mux))
+	return s.withSecurityHeaders(s.withLog(s.withViewer(mux)))
 }
 
 // withSecurityHeaders ставит заголовки, которые дешевле завести сразу, чем
@@ -210,9 +265,15 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	s.fail(w, r, http.StatusNotFound, "Такой страницы нет.")
 }
 
-// viewer — кто смотрит. До Ш4 это всегда «никто»: общий ключ людей не
-// различает, и своей строки в users у вошедшего нет. Здесь появится сессия.
-func (s *Server) viewer(_ *http.Request) platform.Viewer { return platform.Viewer{} }
+// viewer — кто смотрит, для запросов к ядру: по нему считается «моё» и видны ли
+// инструменты модерации. Гость — нулевое значение.
+func (s *Server) viewer(r *http.Request) platform.Viewer {
+	u, ok := s.me(r)
+	if !ok {
+		return platform.Viewer{}
+	}
+	return platform.Viewer{UserID: u.ID, Role: u.Role}
+}
 
 // sameOrigin — первая линия защиты от CSRF: запрос пришёл с нашей же страницы.
 // Заголовок Sec-Fetch-Site шлют все живые браузеры и подделать его со стороны
@@ -231,6 +292,21 @@ func sameOrigin(r *http.Request) bool {
 	}
 	u, err := url.Parse(o)
 	return err == nil && u.Host == r.Host
+}
+
+// postForm — общий вход для всех форм: происхождение запроса и разбор тела.
+// false означает «ответ уже отправлен». Одним местом, потому что забытая
+// проверка происхождения — это дыра, а не мелкий недосмотр.
+func (s *Server) postForm(w http.ResponseWriter, r *http.Request) bool {
+	if !sameOrigin(r) {
+		s.fail(w, r, http.StatusForbidden, "Запрос пришёл не с нашей страницы.")
+		return false
+	}
+	if err := r.ParseForm(); err != nil {
+		s.fail(w, r, http.StatusBadRequest, "Форма не разобралась.")
+		return false
+	}
+	return true
 }
 
 // localPath оставляет от адреса возврата только безопасную часть: свой путь и

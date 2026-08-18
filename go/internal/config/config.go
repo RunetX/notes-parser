@@ -186,11 +186,14 @@ type Platform struct {
 	// Caddy напрямую, мимо Go: на одном ядре самый жирный по трафику путь не
 	// должен проходить через приложение.
 	MediaDir string `json:"media_dir"`
-	// PreviewKey — общий ключ ВХОДА до настоящего (Ш4). Чтение он не закрывает:
-	// 18.08.2026 площадку открыли всем, и пустой ключ означает лишь «войти пока
-	// некуда». От поисковиков страницы по-прежнему закрыты — noindex и robots.
-	// Env: LOVEGW_PLATFORM_PREVIEW_KEY (боевое место — env, это секрет).
-	PreviewKey string `json:"preview_key,omitempty"`
+	// Operator и Contact — реквизиты оператора персональных данных. Попадают в
+	// ТЕКСТ согласий до его публикации: доказательством служит финальный
+	// документ, а не шаблон, поэтому смена реквизитов требует новой версии
+	// текста, и `platform migrate` на попытку подменить выпущенную редакцию
+	// честно откажется. Пустые значения дают безличное «Владелец площадки» —
+	// на пилоте это правда, но до открытия посторонним (Ш9) их надо заполнить.
+	Operator string `json:"operator,omitempty"`
+	Contact  string `json:"contact,omitempty"`
 }
 
 type Config struct {
@@ -463,7 +466,8 @@ func (c *Config) applyPlatformEnv() error {
 	envString(&c.Platform.Listen, "LOVEGW_PLATFORM_LISTEN")
 	envString(&c.Platform.BaseURL, "LOVEGW_PLATFORM_BASE_URL")
 	envString(&c.Platform.MediaDir, "LOVEGW_PLATFORM_MEDIA_DIR")
-	envString(&c.Platform.PreviewKey, "LOVEGW_PLATFORM_PREVIEW_KEY")
+	envString(&c.Platform.Operator, "LOVEGW_PLATFORM_OPERATOR")
+	envString(&c.Platform.Contact, "LOVEGW_PLATFORM_CONTACT")
 	return nil
 }
 
