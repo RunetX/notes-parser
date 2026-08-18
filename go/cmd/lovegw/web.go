@@ -43,7 +43,10 @@ func cmdWeb(ctx context.Context, args []string) error {
 		log.Warn(w)
 	}
 
-	pf, err := platform.Open(ctx, cfg.Platform.DSN)
+	// Пул под роль морды: она единственная, куда стучится посторонний, поэтому
+	// и соединений у неё меньше, и запрос на стороне Postgres обязан умирать по
+	// сроку (см. platform.WebOpts).
+	pf, err := platform.OpenWith(ctx, cfg.Platform.DSN, platform.WebOpts())
 	if err != nil {
 		return err
 	}

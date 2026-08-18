@@ -11,17 +11,13 @@ package platform
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	// maxConns — потолок соединений пула. Сервер на старте — одно ядро, и
-	// Postgres там настроен на max_connections = 20 при shared_buffers 512 МБ:
-	// восемь рабочих соединений веб-морде хватает с запасом (страница треда
-	// стоит четыре запроса), а лишние только отнимали бы память у кэша страниц.
-	maxConns = 8
 	// minConns — держим пару горячими: на одном ядре установка соединения с
 	// разбором TLS заметна на фоне запроса, живущего две миллисекунды.
 	minConns = 2
@@ -31,24 +27,74 @@ const (
 	connectTimeout  = 10 * time.Second
 )
 
+// Opts — под какую роль открывается пул. Роли различаются не из аккуратности:
+// хост один и ядро одно, поэтому доля Postgres, которую вправе занять
+// ПОСТОРОННИЙ, задаётся ровно здесь. Веб-морда — единственное, до чего он
+// дотягивается; демон и разовые команды приходят с той же машины.
+type Opts struct {
+	// MaxConns — потолок соединений, он же потолок ОДНОВРЕМЕННЫХ запросов от
+	// этого процесса. Сумма по всем ролям обязана оставаться ниже
+	// max_connections (20 в postgresql.conf, минус три служебных).
+	MaxConns int32
+	// StatementTimeout — потолок одного запроса на стороне СЕРВЕРА. Контекста
+	// для этого мало, и это не перестраховка: на отмену pgx выставляет
+	// соединению сетевой срок и рвёт его с КЛИЕНТСКОЙ стороны
+	// (DeadlineContextWatcherHandler), а backend продолжает считать запрос,
+	// пока не упрётся в чтение сокета — client_connection_check_interval по
+	// умолчанию выключен. Отменённый снаружи тяжёлый SELECT без этого потолка
+	// продолжает жечь единственное ядро, то есть делает ровно то, чем душат.
+	// Ноль — без потолка: так открываются миграции, импорт архива и сверка.
+	StatementTimeout time.Duration
+}
+
+// WebOpts — пул веб-морды. Четыре соединения при странице в четыре запроса —
+// это до четырёх одновременных страниц, вчетверо больше нынешнего пика; потолок
+// в пять секунд при ленте 86 мс и треде 96 мс оставляет полсотни крат запаса.
+// Оба числа выбраны так, чтобы наплыв снаружи упирался в них РАНЬШЕ, чем в
+// процессорное время, которого ждёт зеркало.
+func WebOpts() Opts { return Opts{MaxConns: 4, StatementTimeout: 5 * time.Second} }
+
+// DaemonOpts — пул демона: приём зеркала, сверка, исходящий обход. Потолка на
+// запрос нет намеренно — сверка гоняет агрегат по 10,7 млн комментариев, и
+// срок, подобранный под страницу, убивал бы её каждые пять минут. Демон
+// защищён иначе: бюджетом на КАЖДЫЙ вызов у себя (platsink, platout, bridge),
+// потому что там известно, чего ждать.
+func DaemonOpts() Opts { return Opts{MaxConns: 6} }
+
+// ToolOpts — пул разовых команд: миграции, импорт архива, ручная сверка,
+// doctor. Они идут в известный момент и под присмотром администратора.
+func ToolOpts() Opts { return Opts{MaxConns: 6} }
+
 // Platform — хранилище площадки. Пул потокобезопасен, экземпляр один на процесс.
 type Platform struct {
 	pool *pgxpool.Pool
 }
 
-// Open открывает пул и проверяет соединение. Миграции НЕ накатываются: это
-// отдельное решение вызывающего (`lovegw platform migrate`), потому что схему
-// меняет администратор в известный момент, а не любой стартующий контейнер.
+// Open открывает пул разовой команды. Миграции НЕ накатываются: это отдельное
+// решение вызывающего (`lovegw platform migrate`), потому что схему меняет
+// администратор в известный момент, а не любой стартующий контейнер.
 func Open(ctx context.Context, dsn string) (*Platform, error) {
+	return OpenWith(ctx, dsn, ToolOpts())
+}
+
+// OpenWith открывает пул под названную роль (см. Opts).
+func OpenWith(ctx context.Context, dsn string, o Opts) (*Platform, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("разбор DSN Postgres: %w", err)
 	}
-	cfg.MaxConns = maxConns
+	cfg.MaxConns = o.MaxConns
 	cfg.MinConns = minConns
 	cfg.MaxConnLifetime = maxConnLifetime
 	cfg.MaxConnIdleTime = maxConnIdleTime
 	cfg.ConnConfig.ConnectTimeout = connectTimeout
+	if o.StatementTimeout > 0 {
+		// Параметром соединения, а не `SET` после подключения: так он стоит на
+		// КАЖДОМ соединении пула с первого же запроса, включая те, что пул
+		// заведёт под нагрузкой, — то есть ровно тогда, когда потолок и нужен.
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] =
+			strconv.FormatInt(o.StatementTimeout.Milliseconds(), 10)
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

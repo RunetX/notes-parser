@@ -18,6 +18,7 @@ package platsink
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -33,6 +34,14 @@ import (
 // Interval — период сверки. Пять минут — это потолок отставания площадки от
 // зеркала при неработающем живом приёмнике.
 const Interval = 5 * time.Minute
+
+// passBudget — потолок ОДНОГО прохода сверки в демоне. Двадцать минут — это не
+// оценка работы (обычный проход укладывается в секунды, а первый, он же
+// бэкфилл, идёт часами и продолжится следующим тактом), а признак того, что
+// база занята намертво: без потолка горутина сверки висит в одном запросе до
+// перезапуска демона, и площадка перестаёт догонять вовсе. Руками
+// (`platform reconcile`) потолка нет — там есть кому нажать Ctrl-C.
+const passBudget = 20 * time.Minute
 
 // notesChunk — сколько заметок запрашивать у SQLite за раз. Предел там на число
 // параметров запроса (999), а не на память.
@@ -73,10 +82,17 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	t := time.NewTicker(Interval)
 	defer t.Stop()
 	for {
-		st, err := r.Once(ctx)
+		st, err := r.pass(ctx)
 		switch {
 		case ctx.Err() != nil:
 			return ctx.Err()
+		case errors.Is(err, context.DeadlineExceeded):
+			// Не поломка: проход идёмпотентен и возобновляем, поэтому недоделку
+			// доберёт следующий такт. Срок нужен на случай, когда база занята
+			// намертво: без него горутина сверки висит в одном запросе до
+			// перезапуска демона, и площадка не догоняет уже никогда.
+			r.log.Warn("сверка площадки не уложилась в срок, продолжим следующим тактом",
+				"budget", passBudget, "notes", st.Notes, "comments", st.Comments)
 		case err != nil:
 			r.log.Warn("сверка площадки не удалась", "err", err)
 		case !st.Empty():
@@ -89,6 +105,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// pass — проход под потолком времени (см. passBudget). Отдельно от Once, чтобы
+// у разовой команды остался проход без срока.
+func (r *Reconciler) pass(ctx context.Context) (Stats, error) {
+	ctx, cancel := context.WithTimeout(ctx, passBudget)
+	defer cancel()
+	return r.Once(ctx)
 }
 
 // Once — один проход сверки.

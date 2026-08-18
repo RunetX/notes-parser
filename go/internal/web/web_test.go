@@ -27,6 +27,7 @@ const testKey = "секретный-ключ-стройки"
 type fakeStore struct {
 	notes      []platform.NoteView
 	total      int
+	countCalls int // сколько раз спросили длину ленты (она кэшируется)
 	feedOffset int // что пришло в последний вызов
 
 	note    platform.NoteView
@@ -44,7 +45,10 @@ type fakeStore struct {
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 
-func (f *fakeStore) CountNotes(context.Context) (int, error) { return f.total, nil }
+func (f *fakeStore) CountNotes(context.Context) (int, error) {
+	f.countCalls++
+	return f.total, nil
+}
 
 func (f *fakeStore) Feed(_ context.Context, _ platform.Viewer, offset, _ int) ([]platform.NoteView, error) {
 	f.feedOffset = offset

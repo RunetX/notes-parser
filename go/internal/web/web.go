@@ -23,9 +23,18 @@ import (
 
 const (
 	readHeaderTimeout = 10 * time.Second
-	writeTimeout      = 30 * time.Second
-	idleTimeout       = 90 * time.Second
-	shutdownGrace     = 10 * time.Second
+	// readTimeout — потолок на ВЕСЬ запрос вместе с телом. Без него медленно
+	// отдаваемое тело держит горутину и слот семафора сколько угодно: это
+	// slowloris, и стоит он атакующему одного открытого сокета.
+	readTimeout = 20 * time.Second
+	// writeTimeout — с запасом над бюджетом входа (guard.loginBudget): вход
+	// ходит на НГС, и обрывать его ответом «пусто» было бы хуже ожидания.
+	writeTimeout  = 45 * time.Second
+	idleTimeout   = 90 * time.Second
+	shutdownGrace = 10 * time.Second
+	// maxHeaderBytes — заголовков у нас на пару килобайт (кука сессии да
+	// Accept-*); дефолтный мегабайт на запрос — это память ни за что.
+	maxHeaderBytes = 16 << 10
 )
 
 // SiteName — как площадка зовётся на своих страницах. Имя рабочее: настоящее
@@ -144,6 +153,11 @@ type Server struct {
 	log   *slog.Logger
 	http  *http.Server
 	media *mediaServer // nil, если каталог не задан
+	// guard — потолки наплыва (guard.go). Общий на сервер: корзины клиентов и
+	// семафор одновременности имеют смысл только как одно состояние.
+	guard *guard
+	// notes — длина ленты, посчитанная недавно (feed.go).
+	notes feedCount
 	// secure — куки помечаются Secure и получают префикс __Host-. Выводится из
 	// BaseURL: по http браузер такие куки просто отбросит, и разработка встала
 	// бы на ровном месте.
@@ -162,6 +176,7 @@ func New(cfg Config, st Store, auth Auth, wr Writer, site Site) *Server {
 		wr:     wr,
 		site:   site,
 		log:    log,
+		guard:  newGuard(log),
 		secure: strings.HasPrefix(cfg.BaseURL, "https://"),
 	}
 	if site == nil {
@@ -181,8 +196,10 @@ func New(cfg Config, st Store, auth Auth, wr Writer, site Site) *Server {
 		Addr:              cfg.Listen,
 		Handler:           s.routes(),
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 	return s
 }
@@ -221,7 +238,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /n/{id}", s.handleNote)
 	mux.HandleFunc("/", s.handleNotFound)
 
-	return s.withSecurityHeaders(s.withLog(s.withViewer(mux)))
+	// Порядок слоёв: заголовки безопасности достаются и отказам, лог видит их
+	// статус, а потолки стоят ДО withViewer — тот читает сессию из базы.
+	return s.withSecurityHeaders(s.withLog(s.withGuard(s.withViewer(mux))))
 }
 
 // withSecurityHeaders ставит заголовки, которые дешевле завести сразу, чем

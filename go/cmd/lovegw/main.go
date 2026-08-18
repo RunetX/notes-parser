@@ -682,7 +682,7 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	if cfg.Platform.MediaDir == "" {
 		return fmt.Errorf("площадка включена, но platform.media_dir пуст (задайте LOVEGW_PLATFORM_MEDIA_DIR)")
 	}
-	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	p, err := platform.OpenWith(ctx, cfg.Platform.DSN, platform.DaemonOpts())
 	if err != nil {
 		return fmt.Errorf("площадка: %w", err)
 	}

@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"lovegw/internal/love"
 	"lovegw/internal/platform"
@@ -34,6 +35,20 @@ import (
 // Name — имя приёмника в message_targets. Колонка messenger там свободный TEXT
 // без CHECK, поэтому новый приёмник встраивается без миграции SQLite.
 const Name = "platform"
+
+// opBudget — потолок одного обращения к площадке из потока зеркала.
+//
+// Он здесь не ради Postgres, а ради КАНАЛОВ. Приёмники зеркало обходит подряд,
+// одной горутиной на заметку, и вызов без срока держит эту горутину столько,
+// сколько занята база: наплыв на веб-морду (единственное, до чего дотягивается
+// посторонний) превращался бы в молчание в Telegram и MAX — при том что тем
+// двоим база не нужна вовсе. Пять секунд при приёме в один INSERT по первичному
+// ключу — это «база занята», а не «база думает».
+//
+// Отказ по сроку безопасен и предусмотрен устройством: заметка остаётся
+// неотправленной, следующий цикл повторит, а не повторившееся догонит сверка.
+// Ждать здесь дольше нечего — писать всё равно некуда.
+const opBudget = 5 * time.Second
 
 // Sink принимает поток зеркала в Postgres площадки.
 type Sink struct {
@@ -57,6 +72,8 @@ func (s *Sink) Name() string { return Name }
 // PostNote принимает заметку. Возвращает её id: для message_targets это
 // «сообщение приёмника», и у площадки им честно является сама заметка.
 func (s *Sink) PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, opBudget)
+	defer cancel()
 	in, err := noteFrom(n)
 	if err != nil {
 		return "", err
@@ -87,6 +104,8 @@ func (s *Sink) StartThread(_ context.Context, n store.Note, _ string) (string, e
 // разошёлся, и комментарий встаёт корнем ветки.
 func (s *Sink) PostComment(ctx context.Context, n store.Note, _, replyToID string,
 	c store.Comment, avatar []byte) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, opBudget)
+	defer cancel()
 	noteID, err := siteID(n.ID)
 	if err != nil {
 		return "", err
@@ -106,6 +125,8 @@ func (s *Sink) PostComment(ctx context.Context, n store.Note, _, replyToID strin
 // PostNoteImage кладёт иллюстрацию в хранилище и привязывает её к заметке.
 // threadID у площадки — id заметки (см. StartThread).
 func (s *Sink) PostNoteImage(ctx context.Context, threadID, imageURL string, image []byte) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, opBudget)
+	defer cancel()
 	noteID, err := siteID(threadID)
 	if err != nil {
 		return "", err

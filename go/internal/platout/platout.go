@@ -50,6 +50,16 @@ import (
 // в реплику невпопад. Стоит такт двух индексных запросов к Postgres.
 const Interval = 15 * time.Second
 
+// readBudget — потолок ЧТЕНИЯ площадки за такт. Ограничивает он только запрос к
+// Postgres, но не отправку: та идёт через лимитеры мессенджеров и законно
+// длится минуты (Telegram в группе — сообщение раз в несколько секунд), поэтому
+// общий срок на такт рвал бы пачку посередине.
+//
+// Нужен он ровно затем же, зачем бюджет у приёмника: занятая база не должна
+// останавливать канал. Не прочитали — такт пустой, через 15 секунд следующий,
+// курсор на месте.
+const readBudget = 10 * time.Second
+
 // batch — сколько строк забирать за такт. Ограничивает и объём запроса к
 // Postgres, и размер пакетной проверки в SQLite.
 const batch = 200
@@ -166,9 +176,22 @@ func (s *Service) Once(ctx context.Context) (Stats, error) {
 	return st, err
 }
 
+// outboundNotes и outboundComments — чтения площадки под сроком (см. readBudget).
+func (s *Service) outboundNotes(ctx context.Context) ([]platform.OutNote, error) {
+	ctx, cancel := context.WithTimeout(ctx, readBudget)
+	defer cancel()
+	return s.src.OutboundNotes(ctx, s.noteAt, batch)
+}
+
+func (s *Service) outboundComments(ctx context.Context) ([]platform.OutComment, error) {
+	ctx, cancel := context.WithTimeout(ctx, readBudget)
+	defer cancel()
+	return s.src.OutboundComments(ctx, s.commentAt, batch)
+}
+
 // sendNotes отправляет нативные заметки в каналы всех приёмников.
 func (s *Service) sendNotes(ctx context.Context) (int, error) {
-	notes, err := s.src.OutboundNotes(ctx, s.noteAt, batch)
+	notes, err := s.outboundNotes(ctx)
 	if err != nil || len(notes) == 0 {
 		return 0, err
 	}
@@ -222,7 +245,7 @@ func (s *Service) postNote(ctx context.Context, sink mirror.Sink, n platform.Out
 
 // sendComments отправляет нативные комментарии в треды их заметок.
 func (s *Service) sendComments(ctx context.Context) (int, error) {
-	cs, err := s.src.OutboundComments(ctx, s.commentAt, batch)
+	cs, err := s.outboundComments(ctx)
 	if err != nil || len(cs) == 0 {
 		return 0, err
 	}

@@ -40,6 +40,13 @@ import (
 	"lovegw/internal/store"
 )
 
+// platformBudget — сколько ждём площадку с ответом человека. Пятнадцать секунд:
+// на том конце горутина обработчика апдейта мессенджера, а на этом — INSERT по
+// первичному ключу. Ждать дольше нечем помочь: человек уже отправил сообщение и
+// смотрит в чат, а вызов без срока держал бы обработчик столько, сколько занята
+// база, — то есть наплыв на веб-морду останавливал бы мост.
+const platformBudget = 15 * time.Second
+
 // Platform — то, что мосту нужно от собственной площадки. Интерфейс, а не
 // *platform.Platform, ради тестов: поднимать Postgres, чтобы проверить выбор
 // адресата, было бы несоразмерно.
@@ -177,9 +184,11 @@ func (c *Core) toPlatform(ctx context.Context, replyMsgID string, userID int64,
 		return
 	}
 
-	id, err := c.plat.CreateComment(ctx, platform.NewComment{
+	pctx, cancel := context.WithTimeout(ctx, platformBudget)
+	id, err := c.plat.CreateComment(pctx, platform.NewComment{
 		NoteID: noteID, AuthorID: author, Body: t.body, ReplyToID: t.replyToID,
 	})
+	cancel()
 	if err != nil {
 		c.refusedByPlatform(ctx, userID, lead, err)
 		return
@@ -226,6 +235,16 @@ func (c *Core) refusedByPlatform(ctx context.Context, userID int64, lead string,
 	if errors.Is(err, platform.ErrNotMember) {
 		c.log.Info("ответ на площадку не ушёл: человек ещё не участник", "user", userID)
 		c.notify(ctx, userID, lead+c.joinInvite())
+		return
+	}
+	// Срок — отдельным текстом: «context deadline exceeded» человеку ничего не
+	// говорит, а сказать надо ровно то, чего мы сами не знаем. Отменённый
+	// контекст обрывает ОЖИДАНИЕ, но не отменяет уже начатую транзакцию, так что
+	// реплика могла и сохраниться: «повторите» без оговорки завело бы дубли.
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.log.Warn("площадка не ответила вовремя", "user", userID, "budget", platformBudget)
+		c.notify(ctx, userID, lead+"Площадка не ответила вовремя. "+
+			"Загляните на страницу заметки: если ответа там нет — повторите.")
 		return
 	}
 	c.log.Warn("ответ на площадку не ушёл", "user", userID, "err", err)
