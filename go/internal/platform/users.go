@@ -22,10 +22,23 @@ type querier interface {
 const userColumns = `id, nick, avatar_sha, ngs_avatar_url, kind, role,
 	hide_all, anonymized_at, banned_until, ban_reason, created_at, last_seen_at`
 
+// userDest — куда ложатся колонки userColumns, ровно в их порядке. Список живёт
+// ОДНИМ значением, а не повторяется у каждого запроса, и оплачено это входом:
+// у SessionUser была вторая, дописанная от руки копия, добавленная в Ш7
+// ban_reason в неё не попала — и pgx честно ответил «13 полей против 12» на
+// КАЖДЫЙ запрос вошедшего. Площадка при этом не сломалась заметно, а тихо
+// назначила гостями всех сразу (18.08.2026).
+//
+// Соответствие списков стережёт TestКолонкиПользователяСходятсяСоСканом: он
+// сравнивает длины, а не память.
+func userDest(u *User) []any {
+	return []any{&u.ID, &u.Nick, &u.AvatarSHA, &u.NGSAvatarURL, &u.Kind, &u.Role,
+		&u.HideAll, &u.AnonymizedAt, &u.BannedUntil, &u.BanReason, &u.CreatedAt, &u.LastSeenAt}
+}
+
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Nick, &u.AvatarSHA, &u.NGSAvatarURL, &u.Kind, &u.Role,
-		&u.HideAll, &u.AnonymizedAt, &u.BannedUntil, &u.BanReason, &u.CreatedAt, &u.LastSeenAt)
+	err := row.Scan(userDest(&u)...)
 	return u, err
 }
 
