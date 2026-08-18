@@ -93,20 +93,10 @@ func operatorOf(cfg *config.Config) platform.Operator {
 // Читаем АНОНИМНО — без jar сессий: визит под чужой кукой двигал бы
 // last_activity человека и светил бы его в чужих «гостях».
 func loginSite(ctx context.Context, cfg *config.Config, log *slog.Logger) (web.Site, error) {
-	base, err := love.MobileBaseURL(cfg.Site.BaseURL)
+	c, err := mobileProfileClient(cfg, log)
 	if err != nil {
 		return nil, err
 	}
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		return nil, err
-	}
-	// Свой jar — только под куки DDoS-Guard, которые он выдаёт сам; сессий
-	// пользователей здесь нет и быть не может.
-	hc := &http.Client{Timeout: loginProfileTimeout, Jar: jar}
-	c := love.NewWithClient(base, replyScanMobileUA,
-		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, hc, log)
-	c.StrictPacing()
 	p := loginProfiles{c: c}
 
 	// Отправка кода в личку — вторая, необязательная половина. Идёт она через
@@ -124,6 +114,31 @@ func loginSite(ctx context.Context, cfg *config.Config, log *slog.Logger) (web.S
 	}
 	log.Info("код входа уходит личным сообщением", "аккаунт", sender.title)
 	return loginProfilesWithTalks{loginProfiles: p, send: sender}, nil
+}
+
+// mobileProfileClient — анонимное чтение анкеты. Мобильный vhost и мобильный
+// UA: с десктопным сайт уводит редиректом, а десктопный vhost банит серию почти
+// сразу. Без сессий: визит под чужой кукой двигал бы last_activity человека и
+// светил бы его в чужих «гостях».
+//
+// Общий у входа на площадку и у команды `platform avatar`: задача у них одна —
+// прочитать чужую анкету, ничего в ней не потревожив.
+func mobileProfileClient(cfg *config.Config, log *slog.Logger) (*love.Client, error) {
+	base, err := love.MobileBaseURL(cfg.Site.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// Свой jar — только под куки DDoS-Guard, которые он выдаёт сам; сессий
+	// пользователей здесь нет и быть не может.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	hc := &http.Client{Timeout: loginProfileTimeout, Jar: jar}
+	c := love.NewWithClient(base, replyScanMobileUA,
+		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, hc, log)
+	c.StrictPacing()
+	return c, nil
 }
 
 // loginSender — служебный аккаунт для отправки кода. Пустой результат без
@@ -214,11 +229,21 @@ func (p loginProfiles) Profile(ctx context.Context, id int64) (web.SiteProfile, 
 	return web.SiteProfile{
 		Nick:       prof.Nick,
 		PassportID: prof.PassportID,
-		AvatarURL:  prof.AvatarURL,
+		AvatarURL:  realAvatar(prof.AvatarURL),
 		AboutMe:    prof.AboutMe,
 		Gender:     platformGender(prof.Gender),
 		Blocked:    prof.Blocked,
 	}, nil
+}
+
+// realAvatar — фото или ничего. Силуэт по умолчанию площадка не хранит («аватар
+// есть у всех» — это фон, а не аватар), и в ngs_avatar_url ему тоже не место:
+// разовый добор медиа однажды принёс бы по такой ссылке всем одну картинку.
+func realAvatar(url string) string {
+	if !love.IsRealAvatar(url) {
+		return ""
+	}
+	return url
 }
 
 // platformGender — перевод значений сайта в наши. Живёт здесь, а не в ядре:

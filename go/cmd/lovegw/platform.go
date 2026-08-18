@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -33,6 +36,7 @@ var platformSubcommands = map[string]bool{
 	"doctor":          true,
 	"reconcile":       true,
 	"media":           true,
+	"avatar":          true,
 	"reply-scan":      true,
 	"import-restored": true,
 	"invite":          true,
@@ -76,6 +80,12 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformReconcile(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
 	case "media":
 		return platformMedia(ctx, cfg, *limit)
+	case "avatar":
+		ids, err := parseUserIDs(tail)
+		if err != nil {
+			return err
+		}
+		return platformAvatar(ctx, cfg, ids)
 	case "reply-scan":
 		return platformReplyScan(ctx, cfg, *limit, *note)
 	case "invite":
@@ -106,7 +116,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformRole(ctx, cfg, id, tail[1])
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
-			"(migrate, doctor, reconcile, media, reply-scan, invite, role, " +
+			"(migrate, doctor, reconcile, media, avatar, reply-scan, invite, role, " +
 			"import-archive, import-restored)")
 	}
 }
@@ -140,6 +150,127 @@ func platformMedia(ctx context.Context, cfg *config.Config, limit int) error {
 	fmt.Printf("медиа за %s: аватаров %d, иллюстраций %d, не вышло %d\n",
 		time.Since(start).Truncate(time.Second), stats.Avatars, stats.Images, stats.Failed)
 	return err
+}
+
+// platformAvatar переносит фото из анкеты НГС людям, названным по номеру.
+//
+// Зачем руками: аватар на площадку приносит ЗЕРКАЛО, вместе с комментарием, — а
+// комментариев на НГС нет с 17.08.2026, значит фото здесь больше не обновится
+// само никогда. Сменившая фото в анкете остаётся у нас с прошлым, и починить это
+// сегодня можно только отсюда. Своей кнопки у человека пока нет (Ш5д в бэклоге),
+// а у тени её и не будет: за неё никто не входил, но фото под её репликами — её.
+//
+// Загрузку своего файла площадка по-прежнему не принимает: здесь ровно перенос
+// того, что человек и так показывает на НГС.
+func platformAvatar(ctx context.Context, cfg *config.Config, ids []int64) error {
+	if cfg.Platform.MediaDir == "" {
+		return fmt.Errorf("platform.media_dir не задан (или env LOVEGW_PLATFORM_MEDIA_DIR)")
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	media, err := platform.NewMediaStore(p, cfg.Platform.MediaDir)
+	if err != nil {
+		return err
+	}
+	log := newLogger(cfg.LogLevel)
+	site, err := mobileProfileClient(cfg, log)
+	if err != nil {
+		return err
+	}
+
+	var bad int
+	for _, id := range ids {
+		if err := platformAvatarOne(ctx, p, media, site, id); err != nil {
+			// Один отказ не отменяет остальных: команда идёт по списку людей, а
+			// не по одной операции.
+			bad++
+			fmt.Printf("%d: %v\n", id, err)
+		}
+	}
+	if bad > 0 {
+		return fmt.Errorf("фото не перенесено у %d из %d", bad, len(ids))
+	}
+	return nil
+}
+
+// platformAvatarOne — один человек: прочитать анкету, забрать файл, привязать.
+//
+// Строка на площадке спрашивается ПЕРВОЙ: если такого номера у нас нет, ходить
+// на чужой сайт незачем — и ошибка выйдет про нас, а не про НГС.
+func platformAvatarOne(ctx context.Context, p *platform.Platform, media *platform.MediaStore,
+	site *love.Client, id int64) error {
+	u, err := p.UserByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	prof, err := site.FetchProfile(ctx, strconv.FormatInt(id, 10))
+	if errors.Is(err, love.ErrProfileMissing) {
+		return fmt.Errorf("анкеты нет на НГС: снесена или скрыта целиком")
+	}
+	if err != nil {
+		return err
+	}
+	if !love.IsRealAvatar(prof.AvatarURL) {
+		// Силуэт по умолчанию — не фото. Своё при этом НЕ снимаем: файлов
+		// площадка не принимает, вернуть его будет неоткуда, а «обновил и
+		// остался без фото» — потеря по чужой руке.
+		fmt.Printf("%d %q: в анкете нет фото — оставляю как было\n", id, u.Nick)
+		return nil
+	}
+	data, err := site.FetchMedia(ctx, prof.AvatarURL)
+	if err != nil {
+		return err
+	}
+	// Хранилище само откажется принять не-картинку: геоблок DDoS-Guard отдаёт на
+	// запрос файла HTML с кодом 200, и такой «аватар» осел бы у нас молча.
+	m, err := media.Put(ctx, data, prof.AvatarURL)
+	if err != nil {
+		return err
+	}
+	if err := p.SetNGSAvatar(ctx, id, m.SHA256, prof.AvatarURL); err != nil {
+		return err
+	}
+	if bytes.Equal(m.SHA256, u.AvatarSHA) {
+		fmt.Printf("%d %q (в анкете %q): фото то же, что было — %s\n",
+			id, u.Nick, prof.Nick, shortSHA(m.SHA256))
+		return nil
+	}
+	// Прежний sha печатается НЕ для красоты: файл из хранилища никуда не делся
+	// (имя файла есть его содержимое), поэтому строка лога — единственное, по
+	// чему правку можно откатить, если человек попросит вернуть прошлое фото.
+	fmt.Printf("%d %q (в анкете %q): фото %s → %s — %s %d×%d, %d КБ\n",
+		id, u.Nick, prof.Nick, shortSHA(u.AvatarSHA), shortSHA(m.SHA256),
+		m.MIME, m.Width, m.Height, len(data)/1024)
+	return nil
+}
+
+// shortSHA — как называть файл хранилища в отчёте человеку: восьми знаков хватает,
+// чтобы найти его на диске и в media.
+func shortSHA(sha []byte) string {
+	if len(sha) == 0 {
+		return "нет"
+	}
+	return hex.EncodeToString(sha)[:8]
+}
+
+// parseUserIDs разбирает список номеров анкет из хвоста командной строки.
+func parseUserIDs(args []string) ([]int64, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("укажите номера анкет: platform avatar <id> [<id>…]")
+	}
+	ids := make([]int64, 0, len(args))
+	for _, a := range args {
+		id, err := strconv.ParseInt(a, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("номер анкеты %q: %w", a, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 // platformReconcile — разовый проход сверки lovegw.db → Postgres. Он же бэкфилл:

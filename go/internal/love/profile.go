@@ -108,7 +108,16 @@ func (c *Client) FetchProfile(ctx context.Context, id string) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	return parseMobileProfile(body, id)
+	prof, err := parseMobileProfile(body, id)
+	if err != nil {
+		return Profile{}, err
+	}
+	// Ссылку на фото приводим к абсолютной здесь, а не в разборе: у настоящего
+	// фото она и так абсолютная (CDN hsmedia.ru), а силуэт сайт отдаёт путём от
+	// корня — и по такому пути нельзя ни сходить за файлом, ни отличить фото от
+	// силуэта (IsRealAvatar спрашивает схему).
+	prof.AvatarURL = absolutize(c.baseURL, prof.AvatarURL)
+	return prof, nil
 }
 
 // parseMobileProfile — разбор HTML мобильной анкеты. Декодируется ровно одно

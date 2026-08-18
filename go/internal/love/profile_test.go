@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -67,5 +68,57 @@ func TestFetchProfileTreats404AsMissing(t *testing.T) {
 	_, err := testClient(t, srv).FetchProfile(context.Background(), "6")
 	if !errors.Is(err, ErrProfileMissing) {
 		t.Fatalf("404 отдан как %v, ожидался ErrProfileMissing", err)
+	}
+}
+
+// Ссылка на фото должна выйти из FetchProfile абсолютной: у настоящего фото она
+// такой и приходит (CDN hsmedia.ru), а силуэт сайт отдаёт путём от корня — и по
+// нему нельзя ни сходить за файлом, ни отличить фото от силуэта (IsRealAvatar
+// спрашивает схему, поэтому «/static/...» без хоста он молча считает не-фото
+// вместе с настоящими относительными ссылками).
+func TestFetchProfileAvatarIsAbsolute(t *testing.T) {
+	cases := []struct {
+		name, avatar string
+		want         func(base string) string
+		real         bool
+	}{
+		{
+			name:   "фото с CDN остаётся как есть",
+			avatar: "https://n1s1.hsmedia.ru/cache/love/avatars/abc_100_100_c.jpg",
+			want:   func(string) string { return "https://n1s1.hsmedia.ru/cache/love/avatars/abc_100_100_c.jpg" },
+			real:   true,
+		},
+		{
+			name:   "силуэт приклеивается к базе и остаётся силуэтом",
+			avatar: "/static/i/new/profile/female300px.png",
+			want:   func(base string) string { return base + "/static/i/new/profile/female300px.png" },
+			real:   false,
+		},
+		{
+			name:   "пусто остаётся пустым",
+			avatar: "",
+			want:   func(string) string { return "" },
+			real:   false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(mobileProfileHTML(`{"id":515996,"nick":"Я","sex":0,"avatar":` +
+					strconv.Quote(c.avatar) + `}`))
+			}))
+			t.Cleanup(srv.Close)
+
+			prof, err := testClient(t, srv).FetchProfile(context.Background(), "515996")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := c.want(srv.URL); prof.AvatarURL != want {
+				t.Errorf("AvatarURL = %q, ожидалось %q", prof.AvatarURL, want)
+			}
+			if got := IsRealAvatar(prof.AvatarURL); got != c.real {
+				t.Errorf("IsRealAvatar(%q) = %v, ожидалось %v", prof.AvatarURL, got, c.real)
+			}
+		})
 	}
 }

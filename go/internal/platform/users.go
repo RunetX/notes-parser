@@ -136,6 +136,35 @@ func (p *Platform) SetAvatar(ctx context.Context, id int64, sha []byte) error {
 	return wrapf(err, "аватар пользователя %d", id)
 }
 
+// SetNGSAvatar ставит фото, за которым сходили в анкету НГС НАРОЧНО: и байты
+// (sha), и ссылку, откуда они взяты, — одной строкой.
+//
+// Отдельно от SetAvatar, потому что случай обратный. Зеркало приносит аватар
+// вместе с комментарием, и ссылку менять ему не с чего; здесь же поводом была
+// смена фото в анкете, и оставшаяся старая ссылка означала бы, что повторная
+// закачка (MissingAvatars) целится в прежний файл.
+//
+// Обезличенного не трогаем вовсе: возврат его фото отменял бы исполненное
+// требование субъекта — то же правило, что у ника в ensureShadow.
+func (p *Platform) SetNGSAvatar(ctx context.Context, id int64, sha []byte, url string) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE users SET avatar_sha = $2, ngs_avatar_url = $3
+		 WHERE id = $1 AND anonymized_at IS NULL`, id, sha, url)
+	if err != nil {
+		return wrapf(err, "фото пользователя %d", id)
+	}
+	if tag.RowsAffected() == 0 {
+		u, err := p.UserByID(ctx, id) // ErrNotFound уходит наверх как есть
+		if err != nil {
+			return err
+		}
+		if u.AnonymizedAt != nil {
+			return ErrAnonymized
+		}
+	}
+	return nil
+}
+
 // Touch отмечает, что человек заходил. Пишется огрублённо — раз в час: строка
 // пользователя иначе переписывается на каждый запрос страницы, а это мусор в
 // WAL и распухание таблицы ради минуты точности, которая никому не нужна.

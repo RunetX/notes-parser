@@ -73,6 +73,46 @@ docker compose exec caddy caddy validate --adapter caddyfile --config /etc/caddy
   него молча отваливается распознавание голосовых. Проверка: строка
   `asr/ffmpeg` в выводе `doctor`.
 
+### Разовая команда новым бинарником — без выкатки
+
+Иногда нужна ОДНА администраторская команда, которой в боевом образе ещё нет
+(18.08.2026 это был `platform avatar` — перенести человеку фото из анкеты НГС по
+его просьбе). Пересобирать `lovegw:latest` ради неё нельзя: рабочее дерево может
+содержать недовыкаченное — например, схему выше той, что накатана в базе, — и
+`docker compose up -d` уронил бы морду на проверке версии.
+
+Способ: привезти бинарник ОТДЕЛЬНЫМ файлом и запустить разовый контейнер, взяв у
+боевого образа только корневую ФС (там сертификаты и tzdata). Ни `lovegw:latest`,
+ни `/root/platform/lovegw`, ни работающие сервисы при этом не трогаются.
+
+```sh
+# рабочая машина, из каталога go/
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/lovegw-linux ./cmd/lovegw
+gzip -9 -c /tmp/lovegw-linux | ssh <хост> \
+  "gunzip -c > /root/platform/lovegw.avatar && chmod +x /root/platform/lovegw.avatar"
+
+# хост: секреты берём из secrets.env, но в контейнер отдаём одну переменную
+cd /root/platform && set -a && . ./secrets.env && set +a && \
+docker run --rm --network platform_default --user 65532:65532 \
+  -e LOVEGW_PLATFORM_DSN \
+  -v /root/platform/data:/data \
+  -v /root/platform/config.json:/config.json:ro \
+  -v /root/platform/lovegw.avatar:/lovegw.oneoff:ro \
+  --entrypoint /lovegw.oneoff lovegw:latest platform avatar -config /config.json <id>
+
+rm -f /root/platform/lovegw.avatar   # убрать за собой
+```
+
+Три места, где легко ошибиться:
+
+- **`--user 65532:65532`** обязателен, если команда пишет файлы: `data/media` —
+  bind-mount, и оставленный root-овый файл выбивается из хранилища, которое
+  наполняет demon под `nonroot`.
+- **Монтировать бинарник ПОД ДРУГИМ именем** (`/lovegw.oneoff`), а не поверх
+  `/lovegw` образа: так видно, что запущен именно временный, а образ цел.
+- **`--network platform_default`**: портов у Postgres наружу нет, DSN указывает на
+  имя сервиса — вне сети compose команда не достучится до базы.
+
 ## Схема
 
 Миграции накатываются **отдельной командой**, а не стартом контейнера: схему
