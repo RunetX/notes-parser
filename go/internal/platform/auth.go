@@ -635,8 +635,9 @@ func (p *Platform) SessionUser(ctx context.Context, token string) (User, error) 
 		  FROM web_sessions s JOIN users u ON u.id = s.user_id
 		 WHERE s.token_sha = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`, sum[:])
 	var u User
-	err := row.Scan(&u.ID, &u.Nick, &u.AvatarSHA, &u.NGSAvatarURL, &u.Kind, &u.Role,
-		&u.HideAll, &u.AnonymizedAt, &u.BannedUntil, &u.CreatedAt, &u.LastSeenAt, &lastSeen)
+	// Получатели — общие с UserByID (userDest), своей копии тут быть не должно:
+	// именно она и разошлась со списком колонок в Ш7.
+	err := row.Scan(append(userDest(&u), &lastSeen)...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
