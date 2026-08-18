@@ -62,6 +62,17 @@ var funcs = template.FuncMap{
 	"depth":       depthClass,
 	"themes":      themeList,
 	"site":        func() string { return SiteName },
+	"replyURL":    replyURL,
+	"threadURL":   func(base string) template.URL { return template.URL(base + "#reply") },
+}
+
+// replyURL — адрес «ответить вот этому». Собирается в Go и возвращается
+// template.URL намеренно: подставленная в href строка с «?» и «&» проходит через
+// экранирование URL-контекста и приезжает на страницу как %3f и %26, то есть
+// ссылка молча перестаёт работать. Обе половины здесь наши, чужого в адрес
+// попасть неоткуда.
+func replyURL(base string, commentID int64) template.URL {
+	return template.URL(base + "&reply=" + strconv.FormatInt(commentID, 10) + "#reply")
 }
 
 // avatarArg — то, что нужно шаблону аватара. Шаблон принимает одно значение,
@@ -110,6 +121,9 @@ type page struct {
 	// свой ник с выходом, как на НГС.
 	SignedIn bool
 	Nick     string
+	// CSRF — скрытое поле для форм, которые что-то меняют. Пусто у гостя: ему
+	// такие формы и не показываются.
+	CSRF string
 }
 
 func (s *Server) newPage(r *http.Request, title string) page {
@@ -124,7 +138,7 @@ func (s *Server) newPage(r *http.Request, title string) page {
 		Back:  localPath(r.URL.RequestURI()),
 	}
 	if u, ok := s.me(r); ok {
-		p.SignedIn, p.Nick = true, u.Nick
+		p.SignedIn, p.Nick, p.CSRF = true, u.Nick, csrfToken(s.session(r))
 	}
 	return p
 }

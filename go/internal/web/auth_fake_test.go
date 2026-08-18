@@ -20,7 +20,9 @@ const (
 )
 
 type fakeAuth struct {
-	codes    map[int64]string            // выданный код по анкете
+	codes    map[int64]string            // выданный код по анкете (канал «о себе»)
+	talks    map[int64]string            // выданный код по анкете (канал лички)
+	sends    int                         // сколько раз просили новый код в личку
 	users    map[int64]platform.User     // кого знает площадка
 	tokens   map[string]int64            // живые сессии
 	consents map[int64]platform.Consents // что подписано
@@ -33,6 +35,7 @@ type fakeAuth struct {
 func newFakeAuth() *fakeAuth {
 	return &fakeAuth{
 		codes:    map[int64]string{},
+		talks:    map[int64]string{},
 		users:    map[int64]platform.User{},
 		tokens:   map[string]int64{},
 		consents: map[int64]platform.Consents{},
@@ -57,6 +60,29 @@ func (f *fakeAuth) VerifyProfileChallenge(_ context.Context, id int64, code, abo
 	}
 	if !strings.Contains(aboutMe, want) {
 		return platform.ErrCodeNotFound
+	}
+	return nil
+}
+
+// Канал лички: код выдаётся вызывающему, чтобы тот его ОТПРАВИЛ, и обратно
+// приходит введённым — второй половины (куки) здесь нет и не нужно.
+func (f *fakeAuth) StartTalksChallenge(_ context.Context, id int64) (platform.Challenge, error) {
+	if f.fail != nil {
+		return platform.Challenge{}, f.fail
+	}
+	f.sends++
+	code := "T3H-TALK-" + strconv.FormatInt(id%10000, 10)
+	f.talks[id] = code
+	return platform.Challenge{Code: code, ExpiresAt: time.Now().Add(platform.ChallengeTTL)}, nil
+}
+
+func (f *fakeAuth) VerifyTalksCode(_ context.Context, id int64, code string) error {
+	want, ok := f.talks[id]
+	if !ok {
+		return platform.ErrNoChallenge
+	}
+	if strings.ToUpper(strings.TrimSpace(code)) != want {
+		return platform.ErrCodeMismatch
 	}
 	return nil
 }
@@ -163,10 +189,17 @@ func (f *fakeAuth) RevokeConsent(_ context.Context, userID int64, kind string) e
 }
 
 // fakeSite — анкета НГС без похода на НГС.
+//
+// Способность слать личные сообщения включается полем sent: nil означает
+// «служебного аккаунта нет», и тогда вход обязан уйти на запасной канал. Это же
+// различие есть в бою, поэтому подделка повторяет его, а не притворяется, что
+// канал всегда жив.
 type fakeSite struct {
 	prof    SiteProfile
 	missing bool
 	err     error
+	sent    *[]string // куда складывать отправленные коды; nil — слать нечем
+	sendErr error
 }
 
 func (s *fakeSite) Profile(context.Context, int64) (SiteProfile, error) {
@@ -177,4 +210,16 @@ func (s *fakeSite) Profile(context.Context, int64) (SiteProfile, error) {
 		return SiteProfile{}, s.err
 	}
 	return s.prof, nil
+}
+
+// talksSite — тот же fakeSite, но умеющий отправлять: SiteMessenger определяется
+// type-assertion'ом, поэтому способность приходится вешать на отдельный тип.
+type talksSite struct{ *fakeSite }
+
+func (s talksSite) SendCode(_ context.Context, passportID int64, code string) error {
+	if s.sendErr != nil {
+		return s.sendErr
+	}
+	*s.sent = append(*s.sent, strconv.FormatInt(passportID, 10)+":"+code)
+	return nil
 }

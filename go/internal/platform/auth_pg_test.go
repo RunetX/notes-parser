@@ -356,3 +356,75 @@ func TestPublishedConsentIsImmutable(t *testing.T) {
 		t.Fatalf("подмена выпущенной редакции прошла молча: %v", err)
 	}
 }
+
+// Канал лички: код проверяется ВВОДОМ, второй половины нет и не нужно —
+// сообщение лежит в ящике, читать который может только владелец анкеты.
+func TestTalksCodeVerifiesByInput(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	const profile = 1493279
+
+	ch, err := p.StartTalksChallenge(ctx, profile)
+	if err != nil {
+		t.Fatalf("выдача кода: %v", err)
+	}
+	if err := p.VerifyTalksCode(ctx, profile, "T3H-ZZZZ-ZZZZ"); !errors.Is(err, ErrCodeMismatch) {
+		t.Fatalf("чужой код: %v, ожидался ErrCodeMismatch", err)
+	}
+	// Регистр и пробелы неважны: код диктуют и переписывают руками.
+	if err := p.VerifyTalksCode(ctx, profile, "  "+strings.ToLower(ch.Code)+" "); err != nil {
+		t.Fatalf("свой код: %v", err)
+	}
+	// Второй раз тот же код не работает: он уже отмечен проверенным.
+	if err := p.VerifyTalksCode(ctx, profile, ch.Code); !errors.Is(err, ErrNoChallenge) {
+		t.Errorf("повтор проверенного кода: %v, ожидался ErrNoChallenge", err)
+	}
+}
+
+// Вход начинает кто угодно, а сообщение приходит НАСТОЯЩЕМУ владельцу анкеты, то
+// есть служебный аккаунт можно сделать рассыльщиком чужими руками. Потолок
+// отправок — единственное, что этому мешает.
+func TestTalksChallengeLimitsSends(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	const profile = 1038894
+
+	first, err := p.StartTalksChallenge(ctx, profile)
+	if err != nil {
+		t.Fatalf("первая отправка: %v", err)
+	}
+	if _, err := p.StartTalksChallenge(ctx, profile); !errors.Is(err, ErrCodeJustSent) {
+		t.Fatalf("вторая отправка сразу: %v, ожидался ErrCodeJustSent", err)
+	}
+	// Спустя паузу код меняется, а срок остаётся прежним — иначе его можно было
+	// бы продлевать вечно.
+	for i := 2; i <= 3; i++ {
+		agePendingChallenge(t, p, profile)
+		next, err := p.StartTalksChallenge(ctx, profile)
+		if err != nil {
+			t.Fatalf("отправка %d: %v", i, err)
+		}
+		if next.Code == first.Code {
+			t.Fatal("повторная отправка выдала прежний код, а plaintext мы не храним")
+		}
+		if next.ExpiresAt.After(first.ExpiresAt.Add(time.Second)) {
+			t.Errorf("срок кода продлился: было %v, стало %v", first.ExpiresAt, next.ExpiresAt)
+		}
+	}
+	agePendingChallenge(t, p, profile)
+	if _, err := p.StartTalksChallenge(ctx, profile); !errors.Is(err, ErrTooManyAttempts) {
+		t.Errorf("четвёртая отправка: %v, ожидался ErrTooManyAttempts", err)
+	}
+}
+
+// agePendingChallenge состаривает живой челлендж, чтобы не ждать паузы между
+// отправками настоящие минуты.
+func agePendingChallenge(t *testing.T, p *Platform, profile int64) {
+	t.Helper()
+	if _, err := p.pool.Exec(context.Background(), `
+		UPDATE auth_challenges SET created_at = created_at - $3::interval
+		 WHERE kind = $1 AND subject = $2 AND verified_at IS NULL`,
+		ChallengeTalks, subjectOf(profile), (TalksResendAfter + time.Minute).String()); err != nil {
+		t.Fatalf("сдвиг времени челленджа: %v", err)
+	}
+}

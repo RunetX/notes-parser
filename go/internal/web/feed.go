@@ -14,6 +14,10 @@ type feedPage struct {
 	page
 	Notes []platform.NoteView
 	Pager pager
+	// CanWrite — показывать ли «Написать заметку». Гостю не показываем: читать
+	// можно всем, писать — только вошедшим, и кнопка, ведущая к отказу, хуже её
+	// отсутствия.
+	CanWrite bool
 }
 
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
@@ -39,10 +43,12 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		s.oops(w, r, "лента", err)
 		return
 	}
+	me, signedIn := s.me(r)
 	s.render(w, r, http.StatusOK, "feed.gohtml", feedPage{
-		page:  s.newPage(r, ""),
-		Notes: notes,
-		Pager: newPager(num, pages, feedURL),
+		page:     s.newPage(r, ""),
+		Notes:    notes,
+		Pager:    newPager(num, pages, feedURL),
+		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil,
 	})
 }
 

@@ -70,7 +70,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // Отзыв общего согласия делает то же и вдобавок перестаёт считать человека
 // участником — обрабатывать становится нечего.
 func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
-	if !s.postForm(w, r) {
+	if !s.postWrite(w, r) {
 		return
 	}
 	u, ok := s.me(r)

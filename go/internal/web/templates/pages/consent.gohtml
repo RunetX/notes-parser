@@ -8,6 +8,7 @@
   <div class="doctext">{{doc .Doc.Body}}</div>
 
   <form method="post" action="/consent" class="agree">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="kind" value="{{.Doc.Kind}}">
     <input type="hidden" name="version" value="{{.Doc.Version}}">
     <button type="submit">Согласен</button>
@@ -15,6 +16,7 @@
 
   {{/* Отказ откатывает вход целиком — это честная вторая кнопка, а не тупик. */}}
   <form method="post" action="/consent/refuse" class="refuse">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
     <button type="submit" class="linkish">Не согласен — отменить вход</button>
   </form>
 

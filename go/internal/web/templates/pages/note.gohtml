@@ -20,7 +20,13 @@
       {{end}}{{end}}
     </div>
     {{end}}
-    <div class="nfoot">{{when $n.PublishedAt $n.PublishedExact}}</div>
+    <div class="nfoot">
+      {{when $n.PublishedAt $n.PublishedExact}}
+      {{/* Ссылка на правку живёт ровно столько, сколько окно: десять минут,
+           одна правка и до первого ответа. Условие считает Editable — то же
+           самое, что проверит ядро, чтобы кнопка не отвечала отказом. */}}
+      {{if .Editable}}<a class="editlink" href="/n/{{$n.ID}}/edit">Поправить</a>{{end}}
+    </div>
   </div>
 </div>
 
@@ -41,11 +47,18 @@
         <div class="cdate">{{when .PublishedAt true}}</div>
       </div>
       <div class="text">{{commentBody .}}</div>
-      {{with index $.Replies .ID}}<p class="replies"><span class="rcount">Ответы <b>{{.}}</b></span></p>{{end}}
+      {{if or $.CanWrite (index $.Replies .ID)}}
+      <p class="cact">
+        {{if $.CanWrite}}<a class="rep" href="{{replyURL $.ReplyBase .ID}}">Ответить</a>{{end}}
+        {{with index $.Replies .ID}}<span class="rcount">Ответы <b>{{.}}</b></span>{{end}}
+      </p>
+      {{end}}
     </div>
   </li>
 {{end}}
 </ul>
 
 {{template "pager" .Pager}}
+
+{{template "reply" .}}
 {{end}}

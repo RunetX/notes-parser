@@ -79,18 +79,18 @@ func quietLog() *slog.Logger {
 
 func newTestServer(t *testing.T, st Store, cfg Config) http.Handler {
 	t.Helper()
-	return newFullServer(t, st, newFakeAuth(), nil, cfg)
+	return newFullServer(t, st, newFakeAuth(), nil, nil, cfg)
 }
 
 // newFullServer — сервер со всеми зависимостями. site == nil означает «вход по
 // анкете недоступен»: это рабочее состояние площадки после смерти НГС.
-func newFullServer(t *testing.T, st Store, auth Auth, site Site, cfg Config) http.Handler {
+func newFullServer(t *testing.T, st Store, auth Auth, wr Writer, site Site, cfg Config) http.Handler {
 	t.Helper()
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1"
 	}
 	cfg.Log = quietLog()
-	srv := New(cfg, st, auth, site)
+	srv := New(cfg, st, auth, wr, site)
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv.routes()
 }
@@ -120,6 +120,18 @@ func post(t *testing.T, target string, form url.Values) *http.Request {
 func as(r *http.Request, token string) *http.Request {
 	r.AddCookie(&http.Cookie{Name: sessCookie, Value: token})
 	return r
+}
+
+// postAs — форма от вошедшего: и кука сессии, и скрытое поле CSRF. Обе половины
+// сразу, потому что в браузере они тоже приходят вместе — а отдельно проверять
+// вторую есть отдельный тест.
+func postAs(t *testing.T, target string, form url.Values, token string) *http.Request {
+	t.Helper()
+	if form == nil {
+		form = url.Values{}
+	}
+	form.Set(csrfField, csrfToken(token))
+	return as(post(t, target, form), token)
 }
 
 // cookieOf достаёт куку из ответа.
@@ -192,7 +204,7 @@ func TestLoginWithoutSiteOffersInviteOnly(t *testing.T) {
 func TestLoginByProfileCode(t *testing.T) {
 	auth := newFakeAuth()
 	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
-	h := newFullServer(t, &fakeStore{}, auth, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
 
 	w := do(h, post(t, "/login", url.Values{"profile": {"https://love.ngs.ru/profile/1493279/"}}))
 	if w.Code != http.StatusOK {
@@ -236,7 +248,7 @@ func TestLoginByProfileCode(t *testing.T) {
 func TestVerificationNeedsBothHalves(t *testing.T) {
 	auth := newFakeAuth()
 	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
-	h := newFullServer(t, &fakeStore{}, auth, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
 
 	do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
 	site.prof.AboutMe = auth.codes[testProfileID] // код в анкете есть
@@ -252,7 +264,7 @@ func TestVerificationNeedsBothHalves(t *testing.T) {
 }
 
 func TestLoginRejectsCrossSitePost(t *testing.T) {
-	h := newFullServer(t, &fakeStore{}, newFakeAuth(), &fakeSite{}, Config{})
+	h := newFullServer(t, &fakeStore{}, newFakeAuth(), nil, &fakeSite{}, Config{})
 	r := httptest.NewRequest("POST", "/login", strings.NewReader("profile=1493279"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -262,7 +274,7 @@ func TestLoginRejectsCrossSitePost(t *testing.T) {
 }
 
 func TestLoginTellsWhenProfileIsMissing(t *testing.T) {
-	h := newFullServer(t, &fakeStore{}, newFakeAuth(), &fakeSite{missing: true}, Config{})
+	h := newFullServer(t, &fakeStore{}, newFakeAuth(), nil, &fakeSite{missing: true}, Config{})
 	w := do(h, post(t, "/login", url.Values{"profile": {"999999"}}))
 	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "нет") {
 		t.Fatalf("несуществующая анкета: код %d", w.Code)
@@ -272,7 +284,7 @@ func TestLoginTellsWhenProfileIsMissing(t *testing.T) {
 // Приглашение — третий путь и единственный, переживающий смерть НГС.
 func TestInviteLetsIn(t *testing.T) {
 	auth := newFakeAuth()
-	h := newFullServer(t, &fakeStore{}, auth, nil, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, Config{})
 	w := do(h, post(t, "/login/invite", url.Values{"code": {testInvite}, "nick": {"Новенький"}}))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/consent" {
 		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
@@ -286,6 +298,113 @@ func TestInviteLetsIn(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------- вход в личку
+
+// Основной канал: код уходит личным сообщением на НГС, человек переписывает его
+// в форму. Код при этом НЕ показывается на экране — в этом вся разница с
+// запасным путём.
+func TestLoginByTalksCode(t *testing.T) {
+	auth := newFakeAuth()
+	var sent []string
+	site := talksSite{&fakeSite{prof: SiteProfile{Nick: testNick, PassportID: 280703879}, sent: &sent}}
+	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+
+	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("шаг «это вы?»: код %d", w.Code)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("сообщений отправлено %d, ожидалось 1", len(sent))
+	}
+	code := auth.talks[testProfileID]
+	if code == "" || !strings.Contains(sent[0], code) {
+		t.Fatalf("в сообщение попал не тот код: %q", sent[0])
+	}
+	if !strings.Contains(sent[0], "280703879:") {
+		t.Errorf("сообщение ушло не на паспорт анкеты: %q", sent[0])
+	}
+	body := w.Body.String()
+	if strings.Contains(body, code) {
+		t.Fatal("код показан на экране — так вход под чужой анкетой стоит одного нажатия")
+	}
+	if !strings.Contains(body, `name="code"`) {
+		t.Fatal("нет поля для ввода кода")
+	}
+
+	jar := cookieOf(w, codeCookie)
+	if jar == nil {
+		t.Fatal("кука проверки не поставлена")
+	}
+	if strings.Contains(jar.Value, code) {
+		t.Fatal("код положили в куку — у канала лички его знает только получатель")
+	}
+
+	// Не тот код — не пускаем.
+	r := post(t, "/login/check", url.Values{"code": {"T3H-ZZZZ-ZZZZ"}})
+	r.AddCookie(jar)
+	if got := do(h, r).Code; got != http.StatusUnauthorized {
+		t.Fatalf("чужой код: код %d, ожидался 401", got)
+	}
+
+	// Тот самый — пускаем.
+	r = post(t, "/login/check", url.Values{"code": {strings.ToLower(code)}})
+	r.AddCookie(jar)
+	w = do(h, r)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/consent" {
+		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
+	}
+	if cookieOf(w, sessCookie) == nil {
+		t.Fatal("сессия не выдана")
+	}
+}
+
+// Служебный аккаунт мёртв или сообщение не ушло — вход обязан уйти на запасной
+// путь, а не встать. Человек в этом не виноват и починить это не может.
+func TestFailedTalksSendFallsBackToProfileField(t *testing.T) {
+	auth := newFakeAuth()
+	var sent []string
+	site := talksSite{&fakeSite{
+		prof:    SiteProfile{Nick: testNick, PassportID: 280703879},
+		sent:    &sent,
+		sendErr: errors.New("НГС не принял сообщение"),
+	}}
+	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+
+	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("код %d", w.Code)
+	}
+	code := auth.codes[testProfileID]
+	if code == "" || !strings.Contains(w.Body.String(), code) {
+		t.Fatal("запасной путь не показал код для поля «о себе»")
+	}
+	if jar := cookieOf(w, codeCookie); jar == nil || !strings.Contains(jar.Value, code) {
+		t.Fatal("у запасного пути код обязан быть в куке: проверка там двусторонняя")
+	}
+}
+
+// Код, показанный на экране, нельзя принимать введённым обратно: иначе войти под
+// чужой анкетой можно в одно нажатие — запросил код на чужой номер, увидел его у
+// себя, переписал в поле. Каналы разведены именно поэтому, и тест стережёт это.
+func TestShownCodeIsNotAcceptedBackAsInput(t *testing.T) {
+	auth := newFakeAuth()
+	site := &fakeSite{prof: SiteProfile{Nick: testNick}} // слать нечем — запасной путь
+	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+
+	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
+	code := auth.codes[testProfileID]
+	jar := cookieOf(w, codeCookie)
+	if code == "" || jar == nil {
+		t.Fatal("запасной путь не начался")
+	}
+	// В анкете кода нет, зато он введён в форму — это не должно помочь.
+	r := post(t, "/login/check", url.Values{"code": {code}})
+	r.AddCookie(jar)
+	if got := do(h, r).Code; got != http.StatusUnauthorized {
+		t.Fatalf("показанный код приняли вводом: код %d, ожидался 401", got)
+	}
+}
+
 // ---------------------------------------------------------------- согласия
 
 func signedInServer(t *testing.T) (http.Handler, *fakeAuth, string) {
@@ -296,7 +415,7 @@ func signedInServer(t *testing.T) (http.Handler, *fakeAuth, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newFullServer(t, &fakeStore{}, auth, nil, Config{}), auth, token
+	return newFullServer(t, &fakeStore{}, auth, nil, nil, Config{}), auth, token
 }
 
 // Два согласия спрашиваются ПО ОДНОМУ: экран с двумя галочками — ровно то, что
@@ -313,9 +432,9 @@ func TestConsentAsksOneDocumentAtATime(t *testing.T) {
 		t.Error("оба документа на одном экране — это и запрещено")
 	}
 
-	w = do(h, as(post(t, "/consent", url.Values{
+	w = do(h, postAs(t, "/consent", url.Values{
 		"kind": {platform.ConsentProcessing}, "version": {"1"},
-	}), token))
+	}, token))
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("после первого согласия: код %d", w.Code)
 	}
@@ -323,9 +442,9 @@ func TestConsentAsksOneDocumentAtATime(t *testing.T) {
 		t.Fatal("второй экран согласия не показан")
 	}
 
-	w = do(h, as(post(t, "/consent", url.Values{
+	w = do(h, postAs(t, "/consent", url.Values{
 		"kind": {platform.ConsentDistribution}, "version": {"1"},
-	}), token))
+	}, token))
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("после второго согласия: код %d", w.Code)
 	}
@@ -341,9 +460,9 @@ func TestConsentAsksOneDocumentAtATime(t *testing.T) {
 // человек не видел: что именно подписано, решает сервер.
 func TestConsentIgnoresFormClaim(t *testing.T) {
 	h, auth, token := signedInServer(t)
-	do(h, as(post(t, "/consent", url.Values{
+	do(h, postAs(t, "/consent", url.Values{
 		"kind": {platform.ConsentDistribution}, "version": {"1"},
-	}), token))
+	}, token))
 	if _, ok := auth.consents[testProfileID][platform.ConsentDistribution]; ok {
 		t.Error("записано согласие на документ, который не показывался")
 	}
@@ -352,7 +471,7 @@ func TestConsentIgnoresFormClaim(t *testing.T) {
 // Отказ откатывает вход целиком, а не оставляет участника без согласий.
 func TestConsentRefusalRollsBackLogin(t *testing.T) {
 	h, auth, token := signedInServer(t)
-	w := do(h, as(post(t, "/consent/refuse", nil), token))
+	w := do(h, postAs(t, "/consent/refuse", nil, token))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" {
 		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
 	}
@@ -379,9 +498,9 @@ func TestMeRevokesDistribution(t *testing.T) {
 	ctx := context.Background()
 	grantBoth(t, auth, ctx)
 
-	w := do(h, as(post(t, "/me/consent", url.Values{
+	w := do(h, postAs(t, "/me/consent", url.Values{
 		"kind": {platform.ConsentDistribution}, "action": {"revoke"},
-	}), token))
+	}, token))
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("код %d", w.Code)
 	}
@@ -418,7 +537,7 @@ func grantBoth(t *testing.T, auth *fakeAuth, ctx context.Context) {
 
 func TestLogoutClearsSession(t *testing.T) {
 	h, auth, token := signedInServer(t)
-	w := do(h, as(post(t, "/logout", url.Values{"back": {"/n/312811"}}), token))
+	w := do(h, postAs(t, "/logout", url.Values{"back": {"/n/312811"}}, token))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/n/312811" {
 		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
 	}

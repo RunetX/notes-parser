@@ -12,6 +12,20 @@
   </div>
 </div>
 
+{{/* Смена ника — не публикация, поэтому под правило «участник только пишет» она
+     не попадает. Площадка на переименование рассчитана: ник хранится ТЕКУЩИЙ и
+     дорисовывается везде, включая обращения к вам в чужих ответах, — а текст
+     согласия обещает эту возможность прямо. */}}
+<form method="post" action="/me/nick" class="nickform">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label for="nick">Ник</label>
+  <input id="nick" name="nick" value="{{.Member.Nick}}" maxlength="40" required>
+  <button type="submit">Сменить</button>
+</form>
+<p class="fine">Ник меняется везде и задним числом — и в старых заметках, и в
+обращениях к вам в чужих ответах. Выбранный здесь ник больше не переписывается
+из анкеты НГС при входе.</p>
+
 {{if .Hidden}}
 <p class="warn">Все ваши публикации сейчас скрыты со страниц площадки: вы отозвали
 согласие на распространение. Тексты не удалены — вернёте согласие, и они появятся снова.</p>
@@ -27,6 +41,7 @@
     {{if $rec.Live}}
     <div class="fine">Дано {{when $rec.GrantedAt true}}{{if lt $rec.Version .Version}} · есть новая редакция{{end}}</div>
     <form method="post" action="/me/consent">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <input type="hidden" name="kind" value="{{.Kind}}">
       <input type="hidden" name="action" value="revoke">
       <button type="submit" class="danger">Отозвать</button>
@@ -34,6 +49,7 @@
     {{else}}
     <div class="fine">Отозвано{{if $rec.RevokedAt}} {{when $rec.RevokedAt true}}{{end}}</div>
     <form method="post" action="/me/consent">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
       <input type="hidden" name="kind" value="{{.Kind}}">
       <input type="hidden" name="action" value="grant">
       <button type="submit">Дать снова</button>

@@ -386,36 +386,60 @@ func TestShadowNickRules(t *testing.T) {
 	}
 }
 
-func TestCreateCommentRespectsClosedAndHidden(t *testing.T) {
+// Чужая отметка НГС «не актуальна» разговор у нас не запирает. Замер 18.08.2026:
+// она стоит у 177 заметок зеркала из 285, и в них 45 695 комментариев из 61 177,
+// — гейт по ней открыл бы площадку в режиме чтения ровно там, где идёт разговор.
+func TestNGSClosedMarkDoesNotLockOurThread(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
-	author, err := p.CreateNativeUser(ctx, "Рио")
-	if err != nil {
-		t.Fatalf("пользователь: %v", err)
-	}
+	author := mustUser(t, p, "Рио")
 	noteID, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "текст"})
 	if err != nil {
 		t.Fatalf("заметка: %v", err)
 	}
-	if _, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "первый"}); err != nil {
-		t.Fatalf("комментарий: %v", err)
-	}
 	if _, err := p.SetCommentsClosed(ctx, noteID, true); err != nil {
-		t.Fatalf("закрытие: %v", err)
+		t.Fatalf("отметка «не актуальна»: %v", err)
 	}
-	if _, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "второй"}); !errors.Is(err, ErrCommentsClosed) {
+	if _, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "первый"}); err != nil {
+		t.Fatalf("чужая отметка запретила писать у нас: %v", err)
+	}
+}
+
+func TestOurLockClosesThread(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Рио")
+	noteID, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "текст"})
+	if err != nil {
+		t.Fatalf("заметка: %v", err)
+	}
+	if err := p.SetThreadLocked(ctx, noteID, true); err != nil {
+		t.Fatalf("замок: %v", err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "второй"}); !errors.Is(err, ErrThreadLocked) {
 		t.Fatalf("в закрытую заметку приняли комментарий: %v", err)
 	}
 
 	// Скрытая заметка для пишущего просто отсутствует: показывать работу
 	// модерации посторонним незачем.
-	if _, err := p.pool.Exec(ctx, `UPDATE notes SET status = $2, comments_closed = false WHERE id = $1`,
+	if _, err := p.pool.Exec(ctx, `UPDATE notes SET status = $2, locked = false WHERE id = $1`,
 		noteID, StatusHiddenMod); err != nil {
 		t.Fatalf("скрытие: %v", err)
 	}
 	if _, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "третий"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("в скрытую заметку приняли комментарий: %v", err)
 	}
+}
+
+// mustUser заводит участника, которому можно писать: тень писать не вправе, а
+// CreateNativeUser сразу делает участника.
+func mustUser(t *testing.T, p *Platform, nick string) int64 {
+	t.Helper()
+	id, err := p.CreateNativeUser(context.Background(), nick)
+	if err != nil {
+		t.Fatalf("пользователь %q: %v", nick, err)
+	}
+	return id
 }
 
 func TestMediaPutIsIdempotent(t *testing.T) {

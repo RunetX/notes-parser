@@ -1,0 +1,36 @@
+{{define "content"}}
+<section class="compose">
+  <h1 class="ttl">{{if .Editing}}Правка заметки{{else}}Новая заметка{{end}}</h1>
+
+  {{if .Problem}}<p class="bad">{{.Problem}}</p>{{end}}
+
+  {{if .Editing}}
+  {{/* Условия правки называются на самом экране, а не только в отказе: человек
+       должен узнать о них до того, как потратит десять минут. */}}
+  <p class="fine">Поправить можно один раз и только пока под заметкой нет ответов.
+  Дальше текст остаётся как есть — под ним уже отвечают вам.</p>
+  {{end}}
+
+  <form method="post" action="{{if .Editing}}/n/{{.Note.ID}}/edit{{else}}/new{{end}}" class="wform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <textarea name="body" rows="12" required autofocus
+      placeholder="О чём заметка?">{{.Body}}</textarea>
+
+    {{if not .Editing}}
+    {{/* Авторство выбирается ДО публикации и потом не меняется: анонимность,
+         которую можно снять задним числом, анонимностью не является. */}}
+    <label class="chk">
+      <input type="checkbox" name="anonymous" value="1"{{if .Anonymous}} checked{{end}}>
+      Опубликовать анонимно
+    </label>
+    {{else if .Anonymous}}
+    <p class="fine">Заметка анонимная — правка авторства не меняет.</p>
+    {{end}}
+
+    <div class="wact">
+      <button type="submit">{{if .Editing}}Сохранить{{else}}Опубликовать{{end}}</button>
+      <a class="alt" href="{{if .Editing}}/n/{{.Note.ID}}{{else}}/{{end}}">Отмена</a>
+    </div>
+  </form>
+</section>
+{{end}}

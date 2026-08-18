@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"unicode/utf8"
 
@@ -22,10 +23,7 @@ var ErrEmptyBody = errors.New("пустой текст")
 // ErrTooLong — текст длиннее допустимого.
 var ErrTooLong = fmt.Errorf("текст длиннее %d знаков", MaxBodyRunes)
 
-// ErrCommentsClosed — комментарии к заметке закрыты.
-var ErrCommentsClosed = errors.New("комментарии к заметке закрыты")
-
-const noteColumns = `id, author_id, anonymous, body, status, comments_closed,
+const noteColumns = `id, author_id, anonymous, body, status, comments_closed, locked,
 	comment_count, published_at, published_exact, last_comment_at, edited_at, created_at`
 
 func scanNote(row pgx.Row) (Note, error) {
@@ -33,7 +31,7 @@ func scanNote(row pgx.Row) (Note, error) {
 		n      Note
 		author *int64
 	)
-	err := row.Scan(&n.ID, &author, &n.Anonymous, &n.Body, &n.Status, &n.CommentsClosed,
+	err := row.Scan(&n.ID, &author, &n.Anonymous, &n.Body, &n.Status, &n.CommentsClosed, &n.Locked,
 		&n.CommentCount, &n.PublishedAt, &n.PublishedExact, &n.LastCommentAt, &n.EditedAt, &n.CreatedAt)
 	n.AuthorID = idOf(author)
 	return n, err
@@ -47,13 +45,14 @@ func scanNote(row pgx.Row) (Note, error) {
 // наружу не уходит никогда — иначе смерть НГС забирает с собой наши страницы, а
 // до тех пор сообщает ему каждого нашего читателя.
 const noteViewColumns = `
-	n.id, n.anonymous, n.body, n.status, n.comments_closed, n.comment_count,
+	n.id, n.anonymous, n.body, n.status, n.comments_closed, n.locked, n.comment_count,
 	n.published_at, n.published_exact, n.last_comment_at, n.edited_at,
 	CASE WHEN n.anonymous THEN NULL ELSE n.author_id     END,
 	CASE WHEN n.anonymous THEN NULL ELSE u.nick          END,
 	CASE WHEN n.anonymous THEN NULL ELSE u.avatar_sha    END,
 	CASE WHEN n.anonymous THEN NULL ELSE m.mime          END,
-	CASE WHEN n.anonymous THEN 0    ELSE coalesce(u.gender, 0) END,
+	CASE WHEN n.anonymous THEN 0     ELSE coalesce(u.gender, 0) END,
+	CASE WHEN n.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
 	coalesce(n.author_id = $1, false)`
 
 const noteViewFrom = `
@@ -69,11 +68,15 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 		sha    []byte
 		mime   *string
 		gender Gender
+		shadow bool
 	)
-	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.CommentCount,
+	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.Locked, &v.CommentCount,
 		&v.PublishedAt, &v.PublishedExact, &v.LastCommentAt, &v.EditedAt,
-		&author, &nick, &sha, &mime, &gender, &v.Own)
-	v.Author = Author{ID: idOf(author), Nick: strOf(nick), AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender}
+		&author, &nick, &sha, &mime, &gender, &shadow, &v.Own)
+	v.Author = Author{
+		ID: idOf(author), Nick: strOf(nick),
+		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
+	}
 	return v, err
 }
 
@@ -235,6 +238,10 @@ func (p *Platform) SetCommentsClosed(ctx context.Context, id int64, closed bool)
 // частоты — считать по человеку. Скрытие живёт в границе показа (см. types.go),
 // и это осознанный размен: компрометация базы деанонимизирует автора, зато
 // анонимность не отменяет ни прав субъекта, ни модерации.
+// Проверки, частота и постановка в очередь модерации идут ОДНОЙ транзакцией с
+// вставкой: между «можно ли ему писать» и самой записью иначе успевает пройти
+// бан или отзыв согласия, а «опубликовано, но в очередь не попало» — состояние,
+// которого не должно быть вовсе.
 func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	body, err := cleanBody(in.Body)
 	if err != nil {
@@ -243,12 +250,29 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	if in.AuthorID == 0 {
 		return 0, errors.New("нативная заметка без автора")
 	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("публикация заметки: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	if err := writeGuard(ctx, tx, in.AuthorID); err != nil {
+		return 0, err
+	}
+	if err := enforceRate(ctx, tx, notesRecentQuery, in.AuthorID, time.Now(), noteRates); err != nil {
+		return 0, err
+	}
 	var id int64
-	err = p.pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO notes (id, author_id, anonymous, body, published_at, published_exact)
 		VALUES (nextval('notes_native_seq'), $1, $2, $3, now(), true)
-		RETURNING id`, in.AuthorID, in.Anonymous, body).Scan(&id)
-	if err != nil {
+		RETURNING id`, in.AuthorID, in.Anonymous, body).Scan(&id); err != nil {
+		return 0, fmt.Errorf("публикация заметки: %w", err)
+	}
+	if err := enqueueCheck(ctx, tx, SubjectNote, id, in.AuthorID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("публикация заметки: %w", err)
 	}
 	return id, nil

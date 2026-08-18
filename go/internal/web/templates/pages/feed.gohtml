@@ -1,5 +1,8 @@
 {{define "content"}}
-<h1 class="ttl">Общая лента</h1>
+<div class="feedhead">
+  <h1 class="ttl">Общая лента</h1>
+  {{if .CanWrite}}<a class="newnote" href="/new">Написать заметку</a>{{end}}
+</div>
 
 {{template "pager" .Pager}}
 

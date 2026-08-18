@@ -64,7 +64,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 	// поднялся (нет RU-IP, сайт закрылся) — морда живёт дальше, а вход
 	// показывает приглашения вместо формы: это её штатное состояние после
 	// смерти НГС, а не авария.
-	site, err := loginSite(cfg, log)
+	site, err := loginSite(ctx, cfg, log)
 	if err != nil {
 		log.Warn("вход по анкете НГС недоступен", "err", err)
 		site = nil
@@ -76,7 +76,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 		MediaDir: cfg.Platform.MediaDir,
 		Operator: operatorOf(cfg),
 		Log:      log,
-	}, pf, pf, site)
+	}, pf, pf, pf, site)
 	return srv.Run(ctx)
 }
 
@@ -89,7 +89,7 @@ func operatorOf(cfg *config.Config) platform.Operator {
 // десктопным сайт уводит редиректом, а десктопный vhost банит серию почти сразу.
 // Читаем АНОНИМНО — без jar сессий: визит под чужой кукой двигал бы
 // last_activity человека и светил бы его в чужих «гостях».
-func loginSite(cfg *config.Config, log *slog.Logger) (web.Site, error) {
+func loginSite(ctx context.Context, cfg *config.Config, log *slog.Logger) (web.Site, error) {
 	base, err := love.MobileBaseURL(cfg.Site.BaseURL)
 	if err != nil {
 		return nil, err
@@ -104,7 +104,94 @@ func loginSite(cfg *config.Config, log *slog.Logger) (web.Site, error) {
 	c := love.NewWithClient(base, replyScanMobileUA,
 		time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, hc, log)
 	c.StrictPacing()
-	return loginProfiles{c: c}, nil
+	p := loginProfiles{c: c}
+
+	// Отправка кода в личку — вторая, необязательная половина. Идёт она через
+	// ДЕСКТОПНЫЙ vhost и под живой сессией служебного аккаунта: JSON-RPC
+	// /ajax/ живёт там, а мобильный vhost нужен ровно для анонимного чтения
+	// анкеты. Не нашлось аккаунта — возвращаем чтение без отправки, и вход
+	// уходит на запасной путь.
+	sender, why, err := loginSender(ctx, cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	if sender == nil {
+		log.Warn("код входа в личку слать нечем — остаётся поле «о себе»", "причина", why)
+		return p, nil
+	}
+	log.Info("код входа уходит личным сообщением", "аккаунт", sender.title)
+	return loginProfilesWithTalks{loginProfiles: p, send: sender}, nil
+}
+
+// loginSender — служебный аккаунт для отправки кода. Пустой результат без
+// ошибки означает «канал недоступен»: это штатное состояние (аккаунта не
+// заводили, сессия истекла), а не авария, и морда переживает его сама.
+func loginSender(ctx context.Context, cfg *config.Config, log *slog.Logger) (*talksSender, string, error) {
+	db, err := openAccounts(ctx, cfg, "")
+	if err != nil {
+		// Базы аккаунтов может не быть вовсе — на площадке это норма.
+		return nil, err.Error(), nil
+	}
+	defer db.Close()
+
+	names := []string{cfg.Platform.SiteAccount}
+	if cfg.Platform.SiteAccount == "" {
+		list, err := db.List(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		names = names[:0]
+		for _, a := range list {
+			names = append(names, a.Name)
+		}
+	}
+	for _, name := range names {
+		cookies, title, why, err := accountCookies(ctx, db, name)
+		if err != nil {
+			return nil, "", err
+		}
+		if why != "" {
+			log.Debug("служебный аккаунт не годится", "имя", name, "причина", why)
+			continue
+		}
+		c := love.New(cfg.Site.BaseURL, cfg.Site.UserAgent,
+			time.Duration(cfg.Site.RequestIntervalMS)*time.Millisecond, log)
+		return &talksSender{c: c, cookies: cookies, title: title}, "", nil
+	}
+	return nil, "живых служебных аккаунтов нет", nil
+}
+
+// talksSender — отправка кода личным сообщением от служебного аккаунта.
+type talksSender struct {
+	c       *love.Client
+	cookies []*http.Cookie
+	title   string
+}
+
+// codeMessage — текст письма. Коротко и по делу: человек его ждёт, а лишние
+// слова в незнакомом сообщении читаются как спам. Ссылку не даём намеренно —
+// сообщение со ссылкой и просьбой что-то ввести выглядит ровно как то, от чего
+// людей учат защищаться; человек уже стоит на нашей странице.
+func codeMessage(code string) string {
+	return "Код для входа на площадку «Заметки» (t3h.ru): " + code +
+		". Он живёт час и нужен один раз. Если вы его не запрашивали — просто не вводите его нигде."
+}
+
+func (t *talksSender) SendCode(ctx context.Context, passportID int64, code string) error {
+	_, err := t.c.TalksSend(ctx, t.cookies, strconv.FormatInt(passportID, 10), codeMessage(code))
+	return err
+}
+
+// loginProfilesWithTalks — чтение анкеты ПЛЮС отправка кода. Отдельный тип,
+// потому что способность необязательная и опознаётся type-assertion'ом
+// (web.SiteMessenger): нет служебного аккаунта — нет и этого типа.
+type loginProfilesWithTalks struct {
+	loginProfiles
+	send *talksSender
+}
+
+func (p loginProfilesWithTalks) SendCode(ctx context.Context, passportID int64, code string) error {
+	return p.send.SendCode(ctx, passportID, code)
 }
 
 // loginProfileTimeout — анкета отдаётся быстро; человек ждёт этот запрос,
@@ -122,11 +209,12 @@ func (p loginProfiles) Profile(ctx context.Context, id int64) (web.SiteProfile, 
 		return web.SiteProfile{}, err
 	}
 	return web.SiteProfile{
-		Nick:      prof.Nick,
-		AvatarURL: prof.AvatarURL,
-		AboutMe:   prof.AboutMe,
-		Gender:    platformGender(prof.Gender),
-		Blocked:   prof.Blocked,
+		Nick:       prof.Nick,
+		PassportID: prof.PassportID,
+		AvatarURL:  prof.AvatarURL,
+		AboutMe:    prof.AboutMe,
+		Gender:     platformGender(prof.Gender),
+		Blocked:    prof.Blocked,
 	}, nil
 }
 

@@ -22,7 +22,8 @@ const commentViewColumns = `
 	CASE WHEN c.anonymous THEN NULL ELSE u.avatar_sha     END,
 	CASE WHEN c.anonymous THEN NULL ELSE m.mime           END,
 	CASE WHEN c.anonymous THEN NULL ELSE c.author_display END,
-	CASE WHEN c.anonymous THEN 0    ELSE coalesce(u.gender, 0) END,
+	CASE WHEN c.anonymous THEN 0     ELSE coalesce(u.gender, 0) END,
+	CASE WHEN c.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
 	coalesce(c.author_id = $1, false),
 	rc.id, rc.anonymous,
 	CASE WHEN rc.anonymous THEN NULL
@@ -45,19 +46,23 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 		mime      *string
 		display   *string
 		gender    Gender
+		shadow    bool
 		replyID   *int64
 		replyAnon *bool
 		replyNick *string
 	)
 	err := row.Scan(&c.ID, &c.NoteID, &c.Anonymous, &c.Body, &c.Path, &depth, &c.Status,
 		&c.PublishedAt, &c.EditedAt,
-		&author, &nick, &sha, &mime, &display, &gender, &c.Own,
+		&author, &nick, &sha, &mime, &display, &gender, &shadow, &c.Own,
 		&replyID, &replyAnon, &replyNick)
 	if err != nil {
 		return CommentView{}, err
 	}
 	c.Depth = int(depth)
-	c.Author = Author{ID: idOf(author), Nick: strOf(nick), AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender}
+	c.Author = Author{
+		ID: idOf(author), Nick: strOf(nick),
+		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
+	}
 	c.Display = strOf(display)
 	// Адресат рисуется, только если строка адресата ещё существует: снесённого
 	// модерацией родителя подписать нечем, и ветка просто теряет обращение.
@@ -263,6 +268,15 @@ func (p *Platform) IngestComment(ctx context.Context, in MirroredComment) (bool,
 }
 
 // CreateComment публикует нативный комментарий и возвращает его id.
+//
+// Заметка при этом может быть любой — и нашей, и зеркальной: своё и пришедшее с
+// НГС живут в ОДНОМ треде, и это не компромисс, а смысл всей затеи. Своих
+// заметок у площадки на старте ноль, а 285 зеркальных с их 61 177 репликами —
+// весь материал, под которым сегодня можно разговаривать.
+//
+// Писать запрещает только НАШ замок (locked). Чужая отметка НГС «не актуальна»
+// (comments_closed) остаётся надписью: она стоит у 62 % заметок зеркала, а
+// ставит её сайт через минуты после публикации, пока реплики ещё идут.
 func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, error) {
 	body, err := cleanBody(in.Body)
 	if err != nil {
@@ -277,12 +291,20 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 
+	if err := writeGuard(ctx, tx, in.AuthorID); err != nil {
+		return 0, err
+	}
+	now := time.Now()
+	if err := enforceRate(ctx, tx, commentsRecentQuery, in.AuthorID, now, commentRates); err != nil {
+		return 0, err
+	}
+
 	var (
-		closed bool
+		locked bool
 		status Status
 	)
-	err = tx.QueryRow(ctx, `SELECT comments_closed, status FROM notes WHERE id = $1`, in.NoteID).
-		Scan(&closed, &status)
+	err = tx.QueryRow(ctx, `SELECT locked, status FROM notes WHERE id = $1`, in.NoteID).
+		Scan(&locked, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("заметка %d: %w", in.NoteID, ErrNotFound)
 	}
@@ -294,8 +316,8 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 		// есть, но спрятана, — значит показывать работу модерации посторонним.
 		return 0, fmt.Errorf("заметка %d: %w", in.NoteID, ErrNotFound)
 	}
-	if closed {
-		return 0, ErrCommentsClosed
+	if locked {
+		return 0, ErrThreadLocked
 	}
 
 	var id int64
@@ -306,7 +328,6 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	if err != nil {
 		return 0, fmt.Errorf("публикация комментария: %w", err)
 	}
-	now := time.Now()
 	source := ReplyNone
 	if in.ReplyToID != 0 {
 		source = ReplyNative // отвечали у нас: адресат известен точно, а не угадан
@@ -320,6 +341,9 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 		return 0, fmt.Errorf("публикация комментария: %w", err)
 	}
 	if err := bumpNote(ctx, tx, in.NoteID, now); err != nil {
+		return 0, err
+	}
+	if err := enqueueCheck(ctx, tx, SubjectComment, id, in.AuthorID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

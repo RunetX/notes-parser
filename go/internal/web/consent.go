@@ -53,7 +53,7 @@ func (s *Server) handleConsent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConsentGrant(w http.ResponseWriter, r *http.Request) {
-	if !s.postForm(w, r) {
+	if !s.postWrite(w, r) {
 		return
 	}
 	u, ok := s.me(r)
@@ -88,7 +88,7 @@ func (s *Server) handleConsentGrant(w http.ResponseWriter, r *http.Request) {
 
 // handleConsentRefuse откатывает незавершённый вход целиком.
 func (s *Server) handleConsentRefuse(w http.ResponseWriter, r *http.Request) {
-	if !s.postForm(w, r) {
+	if !s.postWrite(w, r) {
 		return
 	}
 	u, ok := s.me(r)

@@ -69,6 +69,8 @@ type Store interface {
 // делать с чужими данными», а здесь — операции над данными ОДНОГО человека, и
 // смешивать их в один список значило бы потерять это различие.
 type Auth interface {
+	StartTalksChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
+	VerifyTalksCode(ctx context.Context, profileID int64, code string) error
 	StartProfileChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
 	VerifyProfileChallenge(ctx context.Context, profileID int64, code, aboutMe string) error
 	CompleteNGSLogin(ctx context.Context, prof platform.MirroredAuthor, gender platform.Gender) (int64, error)
@@ -90,11 +92,14 @@ type Auth interface {
 // пакет web о существовании НГС знать не обязан, а перевод стоит десяти строк в
 // сборке команды (там же, где живёт клиент сайта).
 type SiteProfile struct {
-	Nick      string
-	AvatarURL string // на hsmedia.ru — наружу не отдаём, только для сверки
-	AboutMe   string
-	Gender    platform.Gender
-	Blocked   bool
+	Nick string
+	// PassportID — сквозной номер аккаунта НГС. Личные сообщения адресуются им,
+	// а не номером анкеты, поэтому без него канал «код в личку» недоступен.
+	PassportID int64
+	AvatarURL  string // на hsmedia.ru — наружу не отдаём, только для сверки
+	AboutMe    string
+	Gender     platform.Gender
+	Blocked    bool
 }
 
 // ErrNoProfile — анкеты с таким номером сайт не отдал.
@@ -107,12 +112,35 @@ type Site interface {
 	Profile(ctx context.Context, id int64) (SiteProfile, error)
 }
 
+// SiteMessenger — необязательная способность клиента НГС: отправить код личным
+// сообщением от служебного аккаунта. Type-assertion, а не отдельный параметр
+// конструктора, — тот же приём, что у dmbot.SiteProfile: способности нет,
+// значит нет и канала, и страница входа сразу предлагает запасной путь вместо
+// формы, которая не сработает.
+//
+// Отдельным интерфейсом, а не методом Site, потому что это ЗАПИСЬ: чтение
+// анкеты анонимно и безобидно, а отправка сообщения идёт под живой сессией
+// служебного аккаунта и видна получателю.
+type SiteMessenger interface {
+	SendCode(ctx context.Context, passportID int64, code string) error
+}
+
+// messenger — доступен ли канал «код в личку».
+func (s *Server) messenger() (SiteMessenger, bool) {
+	if s.site == nil {
+		return nil, false
+	}
+	m, ok := s.site.(SiteMessenger)
+	return m, ok
+}
+
 // Server — HTTP-морда площадки.
 type Server struct {
 	cfg   Config
 	st    Store
 	auth  Auth
-	site  Site // nil — вход по анкете НГС недоступен
+	wr    Writer // nil — площадка только на чтение
+	site  Site   // nil — вход по анкете НГС недоступен
 	log   *slog.Logger
 	http  *http.Server
 	media *mediaServer // nil, если каталог не задан
@@ -122,7 +150,7 @@ type Server struct {
 	secure bool
 }
 
-func New(cfg Config, st Store, auth Auth, site Site) *Server {
+func New(cfg Config, st Store, auth Auth, wr Writer, site Site) *Server {
 	log := cfg.Log
 	if log == nil {
 		log = slog.Default()
@@ -131,6 +159,7 @@ func New(cfg Config, st Store, auth Auth, site Site) *Server {
 		cfg:    cfg,
 		st:     st,
 		auth:   auth,
+		wr:     wr,
 		site:   site,
 		log:    log,
 		secure: strings.HasPrefix(cfg.BaseURL, "https://"),
@@ -175,8 +204,16 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /consent/refuse", s.handleConsentRefuse)
 	mux.HandleFunc("GET /me", s.handleMe)
 	mux.HandleFunc("POST /me/consent", s.handleMeConsent)
+	mux.HandleFunc("POST /me/nick", s.handleNick)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("POST /theme", s.handleTheme)
+	// Запись. Правки и удаления ЧУЖОГО среди этих путей нет, и это не упущение:
+	// участник только пишет, остальное — у модератора (Ш7).
+	mux.HandleFunc("GET /new", s.handleNewNote)
+	mux.HandleFunc("POST /new", s.handleCreateNote)
+	mux.HandleFunc("GET /n/{id}/edit", s.handleEditNote)
+	mux.HandleFunc("POST /n/{id}/edit", s.handleUpdateNote)
+	mux.HandleFunc("POST /n/{id}/reply", s.handleCreateComment)
 	if s.media != nil {
 		mux.Handle("GET /media/", http.StripPrefix("/media/", s.media))
 	}
@@ -276,8 +313,8 @@ func (s *Server) viewer(r *http.Request) platform.Viewer {
 
 // sameOrigin — первая линия защиты от CSRF: запрос пришёл с нашей же страницы.
 // Заголовок Sec-Fetch-Site шлют все живые браузеры и подделать его со стороны
-// нельзя. Вторая линия (скрытое поле формы) появится вместе с записью (Ш5) —
-// именно поле, а не заголовок, потому что формы обязаны работать без JS.
+// нельзя. Вторая линия — скрытое поле формы (csrf.go), и стоит она у всего, что
+// пишет от имени вошедшего.
 func sameOrigin(r *http.Request) bool {
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "same-origin", "none":

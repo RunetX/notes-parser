@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"lovegw/internal/platform"
 )
@@ -16,6 +17,15 @@ const linearPageSize = 30
 // сайте живой, им пользуются, и заново выбирать вид на каждой заметке — это
 // раздражение на ровном месте.
 const viewCookie = "thread"
+
+// compose — состояние формы ответа на странице заметки. Живёт отдельно от
+// notePage, потому что приходит с двух сторон: из адреса (нажали «Ответить») и
+// из отказа при публикации (тогда в ней ещё и набранный текст).
+type compose struct {
+	Body    string
+	ReplyTo int64
+	Problem string
+}
 
 type notePage struct {
 	page
@@ -30,7 +40,19 @@ type notePage struct {
 	Replies map[int64]int
 	TreeURL string
 	FlatURL string
-	Pager   pager
+	// ReplyBase — адрес этой же страницы, к которому дописывается выбор
+	// адресата. Считается один раз здесь, потому что в нём и вид треда, и номер
+	// страницы: «Ответить» не должно уводить человека из линейного вида в дерево.
+	ReplyBase string
+	Pager     pager
+	// CanWrite — форма ответа показывается вошедшему участнику. Гостю вместо неё
+	// приглашение войти: «читать можно всем» не значит «писать могут все».
+	CanWrite bool
+	// Editable — своя заметка ещё в окне правки.
+	Editable bool
+	Compose  compose
+	// ReplyTo — адресат готовящегося ответа, если он выбран и ещё жив.
+	ReplyTo *platform.CommentView
 }
 
 func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +61,14 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
 		return
 	}
+	replyTo, _ := strconv.ParseInt(r.URL.Query().Get("reply"), 10, 64)
+	s.showNote(w, r, id, http.StatusOK, compose{ReplyTo: replyTo})
+}
+
+// showNote рисует страницу заметки. Отдельно от обработчика, потому что тем же
+// путём страница возвращается после неудачной публикации ответа — вместе с
+// набранным текстом и причиной отказа.
+func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, status int, form compose) {
 	ctx, v := r.Context(), s.viewer(r)
 
 	note, err := s.st.NoteViewByID(ctx, v, id)
@@ -65,13 +95,17 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	linear := s.threadLinear(w, r)
+	me, signedIn := s.me(r)
 	p := notePage{
-		page:    s.newPage(r, noteTitle(note.Body)),
-		Note:    note,
-		Images:  images,
-		Linear:  linear,
-		TreeURL: noteURL(id, false, 1),
-		FlatURL: noteURL(id, true, 1),
+		page:     s.newPage(r, noteTitle(note.Body)),
+		Note:     note,
+		Images:   images,
+		Linear:   linear,
+		TreeURL:  noteURL(id, false, 1),
+		FlatURL:  noteURL(id, true, 1),
+		CanWrite: signedIn && me.Kind == platform.KindMember && !note.Locked && s.wr != nil,
+		Editable: note.Editable(time.Now()),
+		Compose:  form,
 	}
 
 	if linear {
@@ -92,6 +126,7 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 		}
 		p.Comments = comments
 		p.Pager = newPager(num, pages, func(n int) string { return noteURL(id, true, n) })
+		p.ReplyBase = noteURL(id, true, num)
 	} else {
 		// Дерево отдаётся ЦЕЛИКОМ. Постранички у него нет и не должно быть:
 		// ветка, обрезанная на середине, перестаёт быть веткой, а «дальше»
@@ -103,8 +138,26 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 		}
 		p.Comments = comments
 		p.Replies = replyCounts(comments)
+		p.ReplyBase = noteURL(id, false, 1)
 	}
-	s.render(w, r, http.StatusOK, "note.gohtml", p)
+	// Адресат берётся из уже загруженного треда, а не отдельным запросом: он там
+	// есть по определению, а лишний поход в базу на каждое «Ответить» — это цена
+	// без выгоды. Не нашёлся (снесён, на другой странице линейного вида) — форма
+	// просто становится ответом в корень.
+	p.ReplyTo = findComment(p.Comments, form.ReplyTo)
+	s.render(w, r, status, "note.gohtml", p)
+}
+
+func findComment(cs []platform.CommentView, id int64) *platform.CommentView {
+	if id == 0 {
+		return nil
+	}
+	for i := range cs {
+		if cs[i].ID == id {
+			return &cs[i]
+		}
+	}
+	return nil
 }
 
 // replyCounts считает размер ветки под каждым комментарием. Дерево приходит

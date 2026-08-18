@@ -109,12 +109,15 @@ func (u User) Banned(at time.Time) bool {
 // Note — строка notes. AuthorID у анонимной заметки НАСТОЯЩИЙ (0 только у
 // зеркальных анонимов НГС, которых деанонимизировать нечем).
 type Note struct {
-	ID             int64
-	AuthorID       int64
-	Anonymous      bool
-	Body           string
-	Status         Status
+	ID        int64
+	AuthorID  int64
+	Anonymous bool
+	Body      string
+	Status    Status
+	// CommentsClosed — ЧУЖАЯ отметка НГС «не актуальна». Метаданные: писать она
+	// не запрещает (см. 0005_write.sql), запрещает Locked — наш замок.
 	CommentsClosed bool
+	Locked         bool
 	CommentCount   int
 	PublishedAt    time.Time
 	PublishedExact bool
@@ -175,6 +178,15 @@ type Author struct {
 	Nick      string
 	AvatarURL string
 	Gender    Gender
+	// Shadow — человека мы видели только через зеркало, сам он сюда не входил.
+	//
+	// Это единственное различие между «своим» и «пришедшим с НГС», которое
+	// показывается человеку, и показывается оно на АВТОРЕ, а не на реплике: у
+	// пишущего вопрос не «откуда этот текст», а «дойдёт ли мой ответ». Значок
+	// «с НГС» на каждой из 61 177 зеркальных реплик сделал бы из площадки
+	// выставку чужого; а эта метка вдобавок ТАЕТ САМА по мере входа людей, потому
+	// что вход не переносит ни строки — он меняет kind у уже существующего ряда.
+	Shadow bool
 }
 
 // Known — за строкой есть анкета (а не безанкетный комментатор и не аноним).
@@ -187,7 +199,8 @@ type NoteView struct {
 	Author         Author // нулевой у анонимной
 	Body           string
 	Status         Status
-	CommentsClosed bool
+	CommentsClosed bool // чужая отметка НГС «не актуальна» — надпись, не запрет
+	Locked         bool // наш замок: писать нельзя
 	CommentCount   int
 	PublishedAt    time.Time
 	// PublishedExact = false означает, что в PublishedAt лежит момент, когда
@@ -212,6 +225,15 @@ func (n NoteView) Name() string {
 	default:
 		return "Без имени"
 	}
+}
+
+// Editable — можно ли ещё поправить эту заметку. Правило целиком читается
+// здесь, потому что понимать его одинаково обязаны двое: страница (показать
+// ссылку) и ядро (пропустить правку, EditNote). Разъехавшись, они дали бы
+// худшее из возможного — кнопку, которая отвечает отказом.
+func (n NoteView) Editable(now time.Time) bool {
+	return n.Own && IsNative(n.ID) && n.Status == StatusVisible &&
+		n.CommentCount == 0 && n.EditedAt == nil && now.Sub(n.PublishedAt) < EditWindow
 }
 
 // ReplyRef — адресат ответа для дорисовки префикса «Ник, …». Ник берётся

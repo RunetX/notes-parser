@@ -1,17 +1,22 @@
 package web
 
-// Вход.
-//
-// Основной путь — код в поле «о себе» анкеты НГС (устройство и обоснование
-// двусторонней проверки — в шапке platform/auth.go). Здесь только его экраны:
+// Вход. Экраны; устройство и обоснование — в шапке platform/auth.go.
 //
 //	/login            номер анкеты
-//	POST /login       читаем анкету, показываем «это вы?» и код
-//	POST /login/check читаем анкету снова и сверяем код
+//	POST /login       читаем анкету, заводим код и ДОСТАВЛЯЕМ его
+//	POST /login/check сверяем: введённый код (личка) или содержимое «о себе»
 //	/consent          два согласия по одному на экран
 //	/me               свой угол
 //
-// Второй путь — приглашение (`/login/invite`): анкету могли снести, а сайт может
+// Каналов доставки два, и выбирает их сервер, а не человек: если жив служебный
+// аккаунт НГС, код уходит В ЛИЧКУ, и тогда его надо переписать в форму. Если
+// аккаунта нет или сообщение не ушло — запасной путь: код показывается на
+// экране, человек вставляет его в поле «о себе», и проверка становится
+// двусторонней (кода в публичной анкете мало, нужна ещё кука того, кто проверку
+// начал). Запасным этот путь стал 18.08.2026: правка «о себе» уходит на
+// модерацию НГС, а одобряют её не сразу и не наверняка.
+//
+// Третий путь — приглашение (`/login/invite`): анкету могли снести, а сайт может
 // исчезнуть целиком, и тогда доказать владение нечем. Инвайт переживает и то,
 // и другое.
 //
@@ -36,10 +41,19 @@ const (
 	// https: он запрещает браузеру принять такую куку без Secure, с чужого пути
 	// и с Domain, то есть закрывает подсадку куки соседним поддоменом.
 	sessCookie = "sess"
-	// codeCookie — код текущей проверки анкеты. Это вторая половина
-	// доказательства: анкета говорит «код тут», кука — «проверку начал я».
-	// Обе нужны, потому что код в чужом «о себе» видит кто угодно.
+	// codeCookie — какая проверка сейчас идёт: «<канал>:<анкета>[:<код>]».
+	//
+	// У канала личики код в куку НЕ кладётся: его знает только тот, кто прочёл
+	// сообщение, в этом всё доказательство. У канала «о себе» код здесь и есть
+	// вторая половина: анкета говорит «код тут», кука — «проверку начал я», и
+	// обе нужны, потому что код в чужой публичной анкете видит кто угодно.
 	codeCookie = "code"
+)
+
+// Каналы доставки кода в куке проверки.
+const (
+	chanTalks   = "t" // код ушёл в личку на НГС
+	chanProfile = "p" // код показан на экране, ждём его в поле «о себе»
 )
 
 // profileIDRe вытаскивает номер анкеты и из голого числа, и из ссылки вида
@@ -150,17 +164,22 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int,
 	})
 }
 
-// codePage — экран «это вы?»: ник анкеты, код и что с ним делать.
+// codePage — экран «это вы?»: ник анкеты и что делать дальше. Каким будет
+// «дальше», решает канал: ByTalks — переписать код из личного сообщения,
+// иначе — вставить показанный код в поле «о себе».
 type codePage struct {
 	page
 	ProfileID int64
 	Nick      string
 	Avatar    string // наш путь /media/…, если этого человека знает зеркало
-	Code      string
-	Problem   string
+	ByTalks   bool
+	// Code заполняется ТОЛЬКО у запасного канала. Показанный код, принимаемый
+	// введённым обратно, — это вход под чужой анкетой в одно нажатие.
+	Code    string
+	Problem string
 }
 
-// handleLoginStart читает анкету и выдаёт код.
+// handleLoginStart читает анкету, заводит код и доставляет его.
 func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	if !s.postForm(w, r) {
 		return
@@ -186,19 +205,66 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 			"НГС сейчас не отвечает. Попробуйте позже — или войдите по приглашению.")
 		return
 	}
+	if s.startByTalks(w, r, id, prof) {
+		return
+	}
+	s.startByProfileField(w, r, id, prof)
+}
+
+// startByTalks — основной канал: код уходит личным сообщением на НГС. false
+// означает «канал не сработал, идём запасным».
+//
+// Отказ доставки НЕ показывается человеку ошибкой: он не виноват и починить её
+// не может, а запасной путь работает. В лог отказ уходит обязательно —
+// молча умерший служебный аккаунт иначе обнаружится через неделю.
+func (s *Server) startByTalks(w http.ResponseWriter, r *http.Request, id int64, prof SiteProfile) bool {
+	m, ok := s.messenger()
+	if !ok || prof.PassportID == 0 {
+		return false
+	}
+	ch, err := s.auth.StartTalksChallenge(r.Context(), id)
+	switch {
+	case err == nil:
+	case errors.Is(err, platform.ErrCodeJustSent):
+		// Повторную отправку не делаем — сообщение уже ушло. Кука ставится
+		// заново: человек мог вернуться из другого окна.
+		s.setCookie(w, codeCookie, chanTalks+":"+strconv.FormatInt(id, 10), time.Until(ch.ExpiresAt))
+		s.renderCode(w, r, http.StatusOK, id, prof, true, "",
+			"Код уже отправлен — посмотрите личные сообщения на НГС.")
+		return true
+	case errors.Is(err, platform.ErrTooManyAttempts):
+		s.renderCode(w, r, http.StatusTooManyRequests, id, prof, true, "",
+			"Код отправляли уже трижды. Подождите, пока он истечёт, или войдите по приглашению.")
+		return true
+	default:
+		s.log.Error("выдача кода для личного сообщения", "profile", id, "err", err)
+		return false
+	}
+	if err := m.SendCode(r.Context(), prof.PassportID, ch.Code); err != nil {
+		s.log.Error("отправка кода в личку НГС", "profile", id, "err", err)
+		return false
+	}
+	s.setCookie(w, codeCookie, chanTalks+":"+strconv.FormatInt(id, 10), time.Until(ch.ExpiresAt))
+	s.renderCode(w, r, http.StatusOK, id, prof, true, "", "")
+	return true
+}
+
+// startByProfileField — запасной канал: код показывается на экране и его надо
+// вставить в поле «о себе». Проверка станет двусторонней, поэтому код кладётся
+// и в куку.
+func (s *Server) startByProfileField(w http.ResponseWriter, r *http.Request, id int64, prof SiteProfile) {
 	ch, err := s.auth.StartProfileChallenge(r.Context(), id)
 	if err != nil {
 		s.oops(w, r, "выдача кода входа", err)
 		return
 	}
-	// Кука с кодом — вторая половина доказательства, и живёт она ровно столько
-	// же, сколько сам код.
-	s.setCookie(w, codeCookie, strconv.FormatInt(id, 10)+":"+ch.Code, time.Until(ch.ExpiresAt))
-	s.renderCode(w, r, http.StatusOK, id, prof, ch.Code, "")
+	s.setCookie(w, codeCookie,
+		chanProfile+":"+strconv.FormatInt(id, 10)+":"+ch.Code, time.Until(ch.ExpiresAt))
+	s.renderCode(w, r, http.StatusOK, id, prof, false, ch.Code, "")
 }
 
 func (s *Server) renderCode(w http.ResponseWriter, r *http.Request, status int,
-	id int64, prof SiteProfile, code, problem string,
+	id int64, prof SiteProfile, byTalks bool, code, problem string,
 ) {
 	// Аватар берём СВОЙ, из зеркала: CSP запрещает картинки с чужих хостов, и
 	// это тот случай, когда запрет полезен — иначе страница входа сообщала бы
@@ -212,12 +278,13 @@ func (s *Server) renderCode(w http.ResponseWriter, r *http.Request, status int,
 		ProfileID: id,
 		Nick:      prof.Nick,
 		Avatar:    avatar,
+		ByTalks:   byTalks,
 		Code:      code,
 		Problem:   problem,
 	})
 }
 
-// handleLoginCheck перечитывает анкету и сверяет код.
+// handleLoginCheck сверяет код тем способом, каким его доставили.
 func (s *Server) handleLoginCheck(w http.ResponseWriter, r *http.Request) {
 	if !s.postForm(w, r) {
 		return
@@ -226,44 +293,70 @@ func (s *Server) handleLoginCheck(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusServiceUnavailable, "Вход по анкете сейчас недоступен.")
 		return
 	}
-	id, code := s.pendingCode(r)
+	channel, id, code := s.pendingCode(r)
 	if id == 0 {
 		s.renderLogin(w, r, http.StatusUnauthorized,
-			"Код устарел или проверка начиналась в другом браузере. Начните заново.")
+			"Проверка устарела или начиналась в другом браузере. Начните заново.")
 		return
 	}
 	prof, err := s.site.Profile(r.Context(), id)
 	if err != nil {
 		s.log.Error("чтение анкеты НГС", "profile", id, "err", err)
-		s.renderCode(w, r, http.StatusBadGateway, id, SiteProfile{}, code,
-			"НГС сейчас не отвечает. Код ещё жив — попробуйте нажать «Проверить» через минуту.")
+		s.renderCode(w, r, http.StatusBadGateway, id, SiteProfile{}, channel == chanTalks, code,
+			"НГС сейчас не отвечает. Код ещё жив — попробуйте через минуту.")
 		return
 	}
-	switch err := s.auth.VerifyProfileChallenge(r.Context(), id, code, prof.AboutMe); {
+	if !s.checkCode(w, r, channel, id, code, prof) {
+		return
+	}
+	s.finishNGSLogin(w, r, id, prof)
+}
+
+// checkCode — сверка. false означает «ответ уже отправлен».
+func (s *Server) checkCode(w http.ResponseWriter, r *http.Request,
+	channel string, id int64, code string, prof SiteProfile,
+) bool {
+	byTalks := channel == chanTalks
+	var err error
+	if byTalks {
+		err = s.auth.VerifyTalksCode(r.Context(), id, r.FormValue("code"))
+	} else {
+		err = s.auth.VerifyProfileChallenge(r.Context(), id, code, prof.AboutMe)
+	}
+	switch {
 	case err == nil:
+		return true
+	case errors.Is(err, platform.ErrCodeMismatch):
+		s.renderCode(w, r, http.StatusUnauthorized, id, prof, byTalks, code,
+			"Код не совпал. Проверьте, что переписали его целиком, вместе с «T3H-».")
 	case errors.Is(err, platform.ErrCodeNotFound):
 		// «Приватность» тут ни при чём: она прячет активность, а не «о себе»
-		// (замер 18.08.2026, см. love.Profile.Hidden), — значит причина одна.
-		s.renderCode(w, r, http.StatusUnauthorized, id, prof, code,
-			"В поле «о себе» кода нет. Сохранили анкету на НГС?")
-		return
+		// (замер 18.08.2026, см. love.Profile.Hidden). А вот модерация — при чём:
+		// правку анкеты НГС сначала одобряет человек.
+		s.renderCode(w, r, http.StatusUnauthorized, id, prof, byTalks, code,
+			"В поле «о себе» кода пока нет. Правку анкеты НГС проверяет модератор — "+
+				"возможно, она ещё не одобрена.")
 	case errors.Is(err, platform.ErrNoChallenge):
 		s.renderLogin(w, r, http.StatusUnauthorized,
 			"Код устарел или был заменён новым. Начните заново.")
-		return
 	case errors.Is(err, platform.ErrTooManyAttempts):
-		s.renderCode(w, r, http.StatusTooManyRequests, id, prof, code,
+		s.renderCode(w, r, http.StatusTooManyRequests, id, prof, byTalks, code,
 			"Слишком много проверок подряд. Возьмите новый код через час.")
-		return
 	default:
 		s.oops(w, r, "проверка кода входа", err)
-		return
 	}
+	return false
+}
 
+// finishNGSLogin заводит участника и выдаёт сессию.
+func (s *Server) finishNGSLogin(w http.ResponseWriter, r *http.Request, id int64, prof SiteProfile) {
 	userID, err := s.auth.CompleteNGSLogin(r.Context(),
 		platform.MirroredAuthor{ID: id, Nick: prof.Nick, AvatarURL: prof.AvatarURL}, prof.Gender)
 	if errors.Is(err, platform.ErrAnonymized) {
-		s.renderCode(w, r, http.StatusForbidden, id, prof, code,
+		// Тупик, а не повод пробовать снова: код сверен, вход невозможен по
+		// исполненному требованию субъекта. Поэтому отдельная страница, а не
+		// экран проверки с кнопкой «ещё раз».
+		s.fail(w, r, http.StatusForbidden,
 			"Данные этой анкеты обезличены по требованию её владельца. "+
 				"Автоматически вернуть их нельзя — напишите администратору.")
 		return
@@ -279,21 +372,32 @@ func (s *Server) handleLoginCheck(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/consent", http.StatusSeeOther)
 }
 
-// pendingCode разбирает куку проверки: «<номер анкеты>:<код>».
-func (s *Server) pendingCode(r *http.Request) (int64, string) {
+// pendingCode разбирает куку проверки: «<канал>:<анкета>[:<код>]».
+//
+// Код в куке есть только у запасного канала — у лички его знает лишь тот, кто
+// прочёл сообщение, и в этом всё доказательство.
+func (s *Server) pendingCode(r *http.Request) (channel string, id int64, code string) {
 	c, err := r.Cookie(s.cookieName(codeCookie))
 	if err != nil {
-		return 0, ""
+		return "", 0, ""
 	}
-	idStr, code, ok := strings.Cut(c.Value, ":")
+	channel, rest, ok := strings.Cut(c.Value, ":")
 	if !ok {
-		return 0, ""
+		return "", 0, ""
 	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil || !platform.IsNGS(id) || code == "" {
-		return 0, ""
+	idStr, code, hasCode := strings.Cut(rest, ":")
+	id, err = strconv.ParseInt(idStr, 10, 64)
+	if err != nil || !platform.IsNGS(id) {
+		return "", 0, ""
 	}
-	return id, code
+	switch {
+	case channel == chanTalks && !hasCode:
+		return chanTalks, id, ""
+	case channel == chanProfile && code != "":
+		return chanProfile, id, code
+	default:
+		return "", 0, ""
+	}
 }
 
 // ---------------------------------------------------------------- приглашение

@@ -74,13 +74,17 @@ var ErrProfileMissing = errors.New("анкета не найдена")
 // собрался переезжать. Наш анонимный просмотр не оставляет следа вовсе
 // (проверено контрольными чтениями, см. память last-activity-detects-section-ban).
 type Profile struct {
-	ID        int64
-	Nick      string
-	AvatarURL string // на hsmedia.ru; наружу такие ссылки не отдаём
-	AboutMe   string // поле «о себе» — сюда человек вставляет код входа
-	Gender    string // GenderMale / GenderFemale / "" — не размечен
-	Active    bool   // is_active: анкета не заблокирована владельцем
-	Blocked   bool   // block: заблокирована (владельцем или администрацией)
+	ID   int64
+	Nick string
+	// PassportID — сквозной номер аккаунта НГС. Личные сообщения адресуются
+	// ИМЕННО им (`sendMessage(passportId, …)`), а не номером анкеты, поэтому без
+	// него код в личку не отправить. Читается анонимно, как и всё остальное.
+	PassportID int64
+	AvatarURL  string // на hsmedia.ru; наружу такие ссылки не отдаём
+	AboutMe    string // поле «о себе» — сюда человек вставляет код входа
+	Gender     string // GenderMale / GenderFemale / "" — не размечен
+	Active     bool   // is_active: анкета не заблокирована владельцем
+	Blocked    bool   // block: заблокирована (владельцем или администрацией)
 	// Hidden — включена «Приватность». На «о себе» она НЕ распространяется:
 	// замер 18.08.2026 по 24 анкетам нашёл анкету с hide_me = true и непустым
 	// about_me, читаемым анонимно (1281493). Прячет «Приватность» только
@@ -115,14 +119,15 @@ func parseMobileProfile(body []byte, id string) (Profile, error) {
 	var layout struct {
 		HeaderContent struct {
 			Profile struct {
-				ID       int64           `json:"id"`
-				Nick     string          `json:"nick"`
-				Avatar   string          `json:"avatar"`
-				AboutMe  string          `json:"about_me"`
-				Sex      *int            `json:"sex"` // указатель: 0 — женщина, отличаем от отсутствия
-				IsActive *bool           `json:"is_active"`
-				Block    json.RawMessage `json:"block"` // null у живой; вид значения сайт меняет
-				HideMe   bool            `json:"hide_me"`
+				ID         int64           `json:"id"`
+				PassportID int64           `json:"passport_id"`
+				Nick       string          `json:"nick"`
+				Avatar     string          `json:"avatar"`
+				AboutMe    string          `json:"about_me"`
+				Sex        *int            `json:"sex"` // указатель: 0 — женщина, отличаем от отсутствия
+				IsActive   *bool           `json:"is_active"`
+				Block      json.RawMessage `json:"block"` // null у живой; вид значения сайт меняет
+				HideMe     bool            `json:"hide_me"`
 			} `json:"profile"`
 		} `json:"header_content"`
 	}
@@ -135,13 +140,14 @@ func parseMobileProfile(body []byte, id string) (Profile, error) {
 		return Profile{}, ErrProfileMissing
 	}
 	out := Profile{
-		ID:        p.ID,
-		Nick:      p.Nick,
-		AvatarURL: p.Avatar,
-		AboutMe:   p.AboutMe,
-		Active:    p.IsActive == nil || *p.IsActive,
-		Blocked:   len(p.Block) > 0 && !bytes.Equal(p.Block, []byte("null")),
-		Hidden:    p.HideMe,
+		ID:         p.ID,
+		PassportID: p.PassportID,
+		Nick:       p.Nick,
+		AvatarURL:  p.Avatar,
+		AboutMe:    p.AboutMe,
+		Active:     p.IsActive == nil || *p.IsActive,
+		Blocked:    len(p.Block) > 0 && !bytes.Equal(p.Block, []byte("null")),
+		Hidden:     p.HideMe,
 	}
 	if p.Sex != nil {
 		switch *p.Sex {
