@@ -423,7 +423,18 @@ a:hover { text-decoration: underline; }
   font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
   background: var(--btn); color: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
 }
-.tbtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Подсвечена та тема, которая сейчас на экране. Пока человек не выбирал,
+   её держит система, а сервер prefers-color-scheme не видит — поэтому в
+   этом единственном случае нажатую кнопку называет CSS, а не разметка.
+   Без этого переключатель до первого нажатия показывал бы обе кнопки
+   погашенными — врал бы ровно тем, кто его видит впервые. */
+.tbtn.on,
+:root:not([data-theme]) .tbtn.t-classic { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .tbtn.t-classic { background: var(--btn); border-color: var(--rule); color: var(--ink); }
+  :root:not([data-theme]) .tbtn.t-dark { background: var(--accent); border-color: var(--accent); color: #fff; }
+}
 .fine { color: var(--meta); font-size: 11px; margin: 10px 0 0; }
 
 .sr-only {

@@ -720,7 +720,7 @@ func TestThemeSetsCookieAndReturns(t *testing.T) {
 func TestThemeRefusesForeignReturn(t *testing.T) {
 	h := openServer(t, &fakeStore{})
 	for _, back := range []string{"//evil.example", `/\evil.example`, "https://evil.example/x"} {
-		form := url.Values{"theme": {"light"}, "back": {back}}
+		form := url.Values{"theme": {"classic"}, "back": {back}}
 		r := httptest.NewRequest("POST", "/theme", strings.NewReader(form.Encode()))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		r.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -742,6 +742,38 @@ func TestThemeCookieRendersAttribute(t *testing.T) {
 	r2.AddCookie(&http.Cookie{Name: themeCookie, Value: `<script>alert(1)</script>`})
 	if strings.Contains(do(h, r2).Body.String(), "<script>alert") {
 		t.Error("значение куки попало в разметку")
+	}
+}
+
+// Тем ровно две, и «как в системе» среди них нет. Это не выбор, а его
+// отсутствие: кнопка, после нажатия которой ничего не выбрано, объясняется
+// дольше, чем стоит. Светлая при этом одна — прежние «Классика» и «Светлая»
+// показывали одну и ту же палитру.
+func TestThemeListIsTwoDistinctThemes(t *testing.T) {
+	if len(themes) != 2 {
+		t.Fatalf("тем %d: %+v", len(themes), themes)
+	}
+	seen := map[string]bool{}
+	for _, th := range themes {
+		if th.ID == "" {
+			t.Errorf("в наборе тема без идентификатора: %+v", th)
+		}
+		if seen[th.Name] {
+			t.Errorf("две темы с именем %q", th.Name)
+		}
+		seen[th.Name] = true
+	}
+}
+
+// Выбор, сделанный до сокращения набора, не пропадает: кука light — та же
+// светлая палитра. Уронить её в «решает браузер» значило бы у человека с тёмной
+// системой самовольно погасить страницу.
+func TestLegacyLightCookieStaysLight(t *testing.T) {
+	h := openServer(t, &fakeStore{})
+	r := guest(t, "GET", "/")
+	r.AddCookie(&http.Cookie{Name: themeCookie, Value: "light"})
+	if !strings.Contains(do(h, r).Body.String(), `data-theme="classic"`) {
+		t.Error("прежняя светлая тема потерялась")
 	}
 }
 

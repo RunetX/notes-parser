@@ -69,9 +69,8 @@
     <form class="themes" method="post" action="/theme">
       <span class="lbl">Оформление</span>
       <input type="hidden" name="back" value="{{.Back}}">
-      {{$cur := .Theme}}{{range themes}}<button type="submit" name="theme" value="{{.ID}}" class="tbtn{{if eq .ID $cur}} on{{end}}"{{if eq .ID $cur}} aria-current="true"{{end}}>{{.Name}}</button>{{end}}
+      {{$cur := .Theme}}{{range themes}}<button type="submit" name="theme" value="{{.ID}}" class="tbtn t-{{.ID}}{{if eq .ID $cur}} on{{end}}"{{if eq .ID $cur}} aria-current="true"{{end}}>{{.Name}}</button>{{end}}
     </form>
-    <p class="fine">Зеркало раздела «Заметки» love.ngs.ru. Страница закрыта от поисковиков.</p>
   </div>
 </footer>
 </body>
