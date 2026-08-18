@@ -257,13 +257,27 @@ func (p *Platform) GrantConsent(ctx context.Context, userID int64, kind string, 
 	}
 	// Согласие на распространение снимает рубильник «скрыть всё моё»: иначе
 	// человек, отозвавший и вернувший согласие, остался бы невидимым молча.
+	//
+	// Сначала спрашиваем, был ли он поднят, и только потом идём по публикациям:
+	// у входящего ВПЕРВЫЕ прятать нечего, а обход стоит перебора всех его
+	// реплик. Разница не косметическая — 18.08.2026 трое участников не смогли
+	// пройти экран согласий вовсе: у одного 138 тыс. реплик, и запрос не
+	// укладывался в срок веб-морды (5 с). FOR UPDATE держит строку до конца
+	// транзакции: между «был ли поднят» и «опускаем» не должен влезть отзыв.
 	if kind == ConsentDistribution {
-		if _, err := tx.Exec(ctx,
-			`UPDATE users SET hide_all = false WHERE id = $1`, userID); err != nil {
+		var hidden bool
+		if err := tx.QueryRow(ctx,
+			`SELECT hide_all FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&hidden); err != nil {
 			return fmt.Errorf("согласие %s: %w", kind, err)
 		}
-		if err := setOwnVisibility(ctx, tx, userID, StatusVisible); err != nil {
-			return fmt.Errorf("согласие %s: %w", kind, err)
+		if hidden {
+			if _, err := tx.Exec(ctx,
+				`UPDATE users SET hide_all = false WHERE id = $1`, userID); err != nil {
+				return fmt.Errorf("согласие %s: %w", kind, err)
+			}
+			if err := setOwnVisibility(ctx, tx, userID, StatusVisible); err != nil {
+				return fmt.Errorf("согласие %s: %w", kind, err)
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -335,25 +349,39 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 // сторону: возврат согласия не отменяет решения модератора, а его отзыв не
 // должен присваивать модераторскому скрытию чужую причину.
 func setOwnVisibility(ctx context.Context, q querier, userID int64, to Status) error {
-	from := StatusVisible
+	from, delta := StatusVisible, -1
 	if to == StatusVisible {
-		from = StatusHiddenOwner
+		from, delta = StatusHiddenOwner, 1
 	}
 	if _, err := q.Exec(ctx,
 		`UPDATE notes SET status = $2 WHERE author_id = $1 AND status = $3`, userID, to, from); err != nil {
 		return err
 	}
-	if _, err := q.Exec(ctx,
-		`UPDATE comments SET status = $2 WHERE author_id = $1 AND status = $3`, userID, to, from); err != nil {
-		return err
-	}
 	// Счётчик комментариев денормализован (лента не делает COUNT(*)), поэтому
-	// после скрытия его надо пересчитать — иначе под заметкой останется
+	// после скрытия его надо поправить — иначе под заметкой останется
 	// «Комментарии 42», а видно будет сорок.
+	//
+	// Правится он РАЗНИЦЕЙ, тем же способом, что и растёт (bumpNote), а не
+	// пересчётом: пересчёт брал count(*) в КАЖДОМ треде, где человек когда-либо
+	// отвечал, — у участника с 14 тыс. таких тредов это минуты на таблице в
+	// 10,7 млн строк, то есть отказ вместо согласия (18.08.2026). Разница
+	// считается по тем же строкам, которые только что сдвинулись, поэтому
+	// стоит ровно столько же, сколько сам сдвиг.
+	//
+	// Считаем по RETURNING, а не по самой таблице: снимок у всех частей запроса
+	// общий, и count(*) по comments здесь увидел бы статусы ДО сдвига.
+	// Разошедшийся счётчик чинится RecountComments — он для этого и есть.
 	_, err := q.Exec(ctx, `
+		WITH moved AS (
+		    UPDATE comments SET status = $2
+		     WHERE author_id = $1 AND status = $3
+		    RETURNING note_id
+		), touched AS (
+		    SELECT note_id, count(*) AS n FROM moved GROUP BY note_id
+		)
 		UPDATE notes n
-		   SET comment_count = (SELECT count(*) FROM comments c
-		                         WHERE c.note_id = n.id AND c.status = 0)
-		 WHERE n.id IN (SELECT note_id FROM comments WHERE author_id = $1)`, userID)
+		   SET comment_count = greatest(0, n.comment_count + $4::int * t.n)
+		  FROM touched t
+		 WHERE n.id = t.note_id`, userID, to, from, delta)
 	return err
 }

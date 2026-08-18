@@ -192,6 +192,57 @@ func TestRevokingDistributionHidesEverythingAtOnce(t *testing.T) {
 	if err != nil || len(back) != 1 {
 		t.Errorf("после возврата согласия в треде %d комментариев, err %v", len(back), err)
 	}
+	// И счётчик возвращается тем же числом, каким уходил: он правится разницей,
+	// а знак у разницы один на оба направления.
+	again, err := p.NoteViewByID(ctx, Viewer{}, 312812)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.CommentCount != 1 {
+		t.Errorf("после возврата согласия счётчик %d, ожидалась единица", again.CommentCount)
+	}
+}
+
+// Первое согласие на распространение публикаций НЕ трогает: у входящего впервые
+// ничего не спрятано, и обходить его реплики незачем. Стоил такой обход дорого —
+// 18.08.2026 трое не смогли пройти этот экран вовсе, тяжелее всех участнику со
+// 138 тыс. реплик в 14 тыс. тредов.
+//
+// Проверяется тем, что заведомо РАЗОШЕДШИЙСЯ счётчик остаётся разошедшимся:
+// чинит его RecountComments, а не чей-то вход.
+func TestFirstDistributionConsentTouchesNothing(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	if err := p.EnsureConsentDocs(ctx, Operator{}); err != nil {
+		t.Fatal(err)
+	}
+	ingestNote(t, p, 312812, 175869, "Гадёныш")
+	ingestComment(t, p, 63207290, 312812, 1493279, 0)
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE notes SET comment_count = 42 WHERE id = 312812`); err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := p.CompleteNGSLogin(ctx, MirroredAuthor{ID: 1493279, Nick: "Рио"}, GenderMale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.GrantConsent(ctx, id, ConsentDistribution, 1, "тест"); err != nil {
+		t.Fatal(err)
+	}
+
+	host, err := p.NoteViewByID(ctx, Viewer{}, 312812)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.CommentCount != 42 {
+		t.Errorf("счётчик стал %d: вход пересчитал чужие треды — ровно та работа, "+
+			"которая не укладывалась в срок веб-морды", host.CommentCount)
+	}
+	thread, err := p.Thread(ctx, Viewer{}, 312812)
+	if err != nil || len(thread) != 1 {
+		t.Errorf("в треде %d комментариев, err %v — вход не должен ни прятать, ни открывать", len(thread), err)
+	}
 }
 
 // Отказ на экране согласия откатывает вход целиком, а не оставляет в базе
