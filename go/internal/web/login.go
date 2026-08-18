@@ -157,7 +157,6 @@ type codePage struct {
 	Nick      string
 	Avatar    string // наш путь /media/…, если этого человека знает зеркало
 	Code      string
-	Hidden    bool // на анкете включена «Приватность»
 	Problem   string
 }
 
@@ -214,7 +213,6 @@ func (s *Server) renderCode(w http.ResponseWriter, r *http.Request, status int,
 		Nick:      prof.Nick,
 		Avatar:    avatar,
 		Code:      code,
-		Hidden:    prof.Hidden,
 		Problem:   problem,
 	})
 }
@@ -244,14 +242,10 @@ func (s *Server) handleLoginCheck(w http.ResponseWriter, r *http.Request) {
 	switch err := s.auth.VerifyProfileChallenge(r.Context(), id, code, prof.AboutMe); {
 	case err == nil:
 	case errors.Is(err, platform.ErrCodeNotFound):
-		problem := "В поле «о себе» кода нет. Сохранили анкету на НГС?"
-		if prof.Hidden {
-			// «Приватность» прячет от посторонних часть полей, и не проверено,
-			// попадает ли под неё «о себе». Пока не проверено — говорим прямо.
-			problem += " У вас включена «Приватность» — возможно, сайт прячет это поле от нас. " +
-				"Тогда снимите её на минуту или войдите по приглашению."
-		}
-		s.renderCode(w, r, http.StatusUnauthorized, id, prof, code, problem)
+		// «Приватность» тут ни при чём: она прячет активность, а не «о себе»
+		// (замер 18.08.2026, см. love.Profile.Hidden), — значит причина одна.
+		s.renderCode(w, r, http.StatusUnauthorized, id, prof, code,
+			"В поле «о себе» кода нет. Сохранили анкету на НГС?")
 		return
 	case errors.Is(err, platform.ErrNoChallenge):
 		s.renderLogin(w, r, http.StatusUnauthorized,

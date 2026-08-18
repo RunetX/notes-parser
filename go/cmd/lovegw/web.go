@@ -127,7 +127,6 @@ func (p loginProfiles) Profile(ctx context.Context, id int64) (web.SiteProfile, 
 		AboutMe:   prof.AboutMe,
 		Gender:    platformGender(prof.Gender),
 		Blocked:   prof.Blocked,
-		Hidden:    prof.Hidden,
 	}, nil
 }
 

@@ -95,7 +95,6 @@ type SiteProfile struct {
 	AboutMe   string
 	Gender    platform.Gender
 	Blocked   bool
-	Hidden    bool // включена «Приватность»
 }
 
 // ErrNoProfile — анкеты с таким номером сайт не отдал.
