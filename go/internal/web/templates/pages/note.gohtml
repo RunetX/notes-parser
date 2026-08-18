@@ -99,7 +99,7 @@
         <a class="anchor" href="#c{{.ID}}" title="Ссылка на этот комментарий">#</a>
         <div class="cdate">{{when .PublishedAt true}}</div>
       </div>
-      <div class="text">{{commentBody .}}</div>
+      <div class="text">{{commentBody $.Book .}}</div>
       {{template "reactions" (rx $ .ID)}}
       {{if or $.CanWrite (index $.Replies .ID)}}
       <p class="cact">

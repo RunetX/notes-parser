@@ -117,7 +117,7 @@ func TestLegacyAddressDrawnOnce(t *testing.T) {
 		Body:    "Для [b][i]Сибирский кот[/i][/b] а вот и нет",
 		ReplyTo: &platform.ReplyRef{CommentID: 5938221, Nick: "Кот"},
 	}
-	got := string(commentBodyHTML(c))
+	got := string(commentBodyHTML(nil, c))
 	if strings.Contains(got, "Сибирский кот") {
 		t.Errorf("обращение показано дважды: %s", got)
 	}
@@ -134,7 +134,7 @@ func TestLegacyAddressKeptWithoutEdge(t *testing.T) {
 		Body: "Для [b][i]Сибирский кот[/i][/b] а вот и нет",
 	}
 	want := "<p>Для <b><i>Сибирский кот</i></b> а вот и нет</p>"
-	if got := string(commentBodyHTML(c)); got != want {
+	if got := string(commentBodyHTML(nil, c)); got != want {
 		t.Errorf("получено %q, ожидалось %q", got, want)
 	}
 }

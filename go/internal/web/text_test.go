@@ -68,7 +68,7 @@ func TestCommentBodyDrawsAddressee(t *testing.T) {
 		ID: 2, Body: "и правда",
 		ReplyTo: &platform.ReplyRef{CommentID: 1, Nick: "Пух"},
 	}
-	got := string(commentBodyHTML(c))
+	got := string(commentBodyHTML(nil, c))
 	if !strings.HasPrefix(got, `<p><a class="to" href="#c1">Пух</a>, и правда`) {
 		t.Errorf("обращение не на месте: %s", got)
 	}
@@ -76,11 +76,11 @@ func TestCommentBodyDrawsAddressee(t *testing.T) {
 	// Аноним подписывается «Аноним», а адресат без имени (снесён модерацией
 	// или обезличен) обращения не получает вовсе — придумывать его нечем.
 	c.ReplyTo.Anonymous = true
-	if !strings.Contains(string(commentBodyHTML(c)), ">Аноним</a>, ") {
+	if !strings.Contains(string(commentBodyHTML(nil, c)), ">Аноним</a>, ") {
 		t.Error("анонимный адресат подписан не «Анонимом»")
 	}
 	c.ReplyTo = &platform.ReplyRef{CommentID: 1}
-	if got := string(commentBodyHTML(c)); got != "<p>и правда</p>" {
+	if got := string(commentBodyHTML(nil, c)); got != "<p>и правда</p>" {
 		t.Errorf("безымянному адресату дорисовали обращение: %s", got)
 	}
 }

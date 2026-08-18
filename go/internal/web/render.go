@@ -109,7 +109,7 @@ func newAvatar(url string, g platform.Gender, anonymous bool) avatarArg {
 // обезличивание по 152-ФЗ меняют подпись ВЕЗДЕ, включая чужие ответы. Значит и
 // нарисовать его должен показ — из текущего ника адресата, который приехал
 // самосоединением в SELECT.
-func commentBodyHTML(c platform.CommentView) template.HTML {
+func commentBodyHTML(b *addressBook, c platform.CommentView) template.HTML {
 	e := eraOf(c.ID, c.PublishedAt)
 	name := replyName(c.ReplyTo)
 	if name == "" {
@@ -127,6 +127,14 @@ func commentBodyHTML(c platform.CommentView) template.HTML {
 		if cut, ok := platform.TrimLegacyAddress(body); ok {
 			body = cut
 		}
+	}
+	// Автор назвал адресата сам — второго обращения не рисуем, а выделяем жирным
+	// написанное им (address.go). «Сам назвал» решает не форма строки, а
+	// свидетельство треда: одна и та же фраза перед запятой ни ником, ни
+	// обращением от этого не становится.
+	if token, rest, ok := leadingAddress(body); ok && b.isAddress(c, token) {
+		own := template.HTML(`<b class="to">` + template.HTMLEscapeString(token) + `</b>, `)
+		return renderBody(own, rest, e)
 	}
 	prefix := template.HTML(`<a class="to" href="#c` +
 		strconv.FormatInt(c.ReplyTo.CommentID, 10) + `">` +
