@@ -197,6 +197,24 @@ messages, and all user-facing bot strings are in Russian.
   host, which makes a backup a plain `sqlite3 .backup`. With MAX enabled, the
   Минцифры PEMs must be in `go/internal/maxx/cacert/` **before** the build — the
   distroless image carries no Russian root CA.
+- Бэкапы (Ш8, с 18.08.2026) — `deploy/platform/backup.sh` кроном в 01:30 МСК:
+  `pg_dump -Fc --compress=zstd:3` (5,4 ГБ базы → 760 МБ за 2,5 мин), три базы
+  SQLite онлайновым backup API через `python3` (`sqlite3(1)` на хосте нет, а
+  `cp` на живой базе даёт копию с разорванной транзакцией) и `tar` хранилища
+  медиа; хранится 7 дампов, 14 снимков SQLite, 2 копии медиа. Восстановление
+  отрепетировано: `deploy/platform/rehearse.sh` поднял всю базу в отдельную
+  `platform_restore` за **423 с**, наполнение сошлось число в число. **Копия
+  пока одна и лежит на том же хосте** — offsite (обязательно в РФ, ч. 5 ст. 18
+  152-ФЗ) требует решения владельца, куда возить и кто держит ключ. Конфиги и
+  `secrets.env` в автоматический бэкап НЕ входят намеренно: там
+  `LOVEGW_SECRET_KEY`, и копия ключа рядом с копией базы обнуляет шифрование
+  сессий, которое защищает ровно копии.
+- `go run ./cmd/lovegw alert [текст…]` — сообщение владельцу в ЛС из внешнего
+  скрипта (без аргументов текст читается со stdin). Заведено для бэкапа: он
+  живёт в кроне на хосте, и его отказ иначе виден только тому, кто пойдёт читать
+  лог. Шлёт во все включённые мессенджеры с заданным `admin_user_id`, порядок
+  ботов тот же, что у алертов демона (переписка → команды → постер); успех — это
+  «дошло хоть куда-то», но про недошедшее говорится в stderr.
 - The site is behind DDoS-Guard geoblocking — non-RU IPs get 403, so crawl/run
   (and the deployed daemon) must run from a Russian IP. Telegram Bot API, blocked
   from inside Russia, is routed through a SOCKS5 proxy (`telegram_proxy`); the

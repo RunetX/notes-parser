@@ -127,6 +127,8 @@ func main() {
 		err = cmdPlatform(ctx, os.Args[2:])
 	case "web":
 		err = cmdWeb(ctx, os.Args[2:])
+	case "alert":
+		err = cmdAlert(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -203,7 +205,8 @@ func usage() {
   lovegw pulpit [-config config.json] [-db lovegw.db] status                                     # включён ли амвон, что писал последним
   lovegw secrets keygen                                                                          # новый ключ шифрования сессий
   lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
-  lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ`)
+  lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ
+  lovegw alert  [-config config.json] [текст …]                                                  # сообщение владельцу в ЛС (без текста — со stdin)`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
