@@ -68,8 +68,19 @@
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 
+/* Подвал прижат к низу окна. На короткой странице — а самая частая короткая
+   это заметка без комментариев — он иначе повисает посередине, и под ним
+   остаётся полэкрана пустоты, будто страница не догрузилась.
+   Тянется при этом СОДЕРЖИМОЕ (.main), а не распорка: карточка с текстом
+   доходит до подвала, и низ страницы выглядит законченным, а не оборванным.
+   dvh — ради телефонов, где адресная строка ест часть vh; vh оставлен ниже
+   первым, он и есть запасной вариант для браузеров без dvh. */
 body {
   margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
   background: var(--page);
   color: var(--ink);
   font: 14px/1.45 Arial, "Helvetica Neue", Helvetica, sans-serif;
@@ -137,7 +148,7 @@ a:hover { text-decoration: underline; }
   color: var(--nav-ink); text-decoration: none; background: rgba(255, 255, 255, .3);
 }
 
-.main { background: var(--card); padding: 16px 20px 28px; margin: 10px auto; max-width: 910px; }
+.main { flex: 1 0 auto; background: var(--card); padding: 16px 20px 28px; margin: 10px auto; max-width: 910px; }
 .ttl { font-size: 30px; font-weight: 400; margin: 0 0 16px; color: var(--ink); }
 
 /* ---------------------------------------------------------------- лента */
@@ -405,7 +416,7 @@ a:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------- подвал */
 
-.foot { border-top: 1px solid var(--rule); background: var(--card); padding: 12px 0 24px; }
+.foot { flex: 0 0 auto; border-top: 1px solid var(--rule); background: var(--card); padding: 12px 0 24px; }
 .themes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .themes .lbl { color: var(--meta); font-size: 12px; margin-right: 4px; }
 .tbtn {

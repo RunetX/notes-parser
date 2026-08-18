@@ -395,3 +395,21 @@ func TestHeaderWrapsOnNarrowScreen(t *testing.T) {
 		t.Error("шапка не переносится: на узком экране кнопки наедут на название")
 	}
 }
+
+// [Э] Подвал прижат к низу окна. Самая частая короткая страница — заметка без
+// комментариев; до 18.08.2026 подвал на ней повисал посередине, а под ним
+// оставалось полэкрана пустоты, будто страница не догрузилась (экран
+// владельца). Тянется при этом СОДЕРЖИМОЕ, а не пустая распорка: карточка с
+// текстом доходит до подвала, и низ выглядит законченным.
+func TestFooterSticksToTheBottom(t *testing.T) {
+	css := cssText(t)
+	body := cssRule(t, css, "body {")
+	for _, want := range []string{"min-height: 100vh", "flex-direction: column"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("в правиле body нет %q — подвал повиснет на короткой странице", want)
+		}
+	}
+	if !strings.Contains(cssRule(t, css, ".main {"), "flex: 1 0 auto") {
+		t.Error("содержимое не растягивается до подвала")
+	}
+}
