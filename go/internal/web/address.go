@@ -42,10 +42,31 @@ import (
 // — это уже фраза с запятой, а не имя.
 const maxAddressRunes = 40
 
-// addressRepeats — сколько раз токен должен обратиться к одному человеку в
-// пределах заметки, чтобы считаться его ником. Два: одиночное совпадение — это
-// с тем же успехом начало фразы, а трёх в коротком треде может не набраться.
+// addressRepeats — сколькими РАЗНЫМИ людьми токен должен быть обращён к одному
+// и тому же человеку, чтобы считаться его ником. Двумя: одиночное совпадение —
+// это с тем же успехом начало фразы, а повтор от одного и того же автора ловит
+// его привычку («да, ...» дважды подряд), а не имя.
 const addressRepeats = 2
+
+// openers — слова, которые повторяются в разговоре сами по себе и потому
+// проходят проверку повтором: «да», «ну», «ахаха». Список — вето поверх
+// свидетельства, и он короткий намеренно: каждый лишний пункт это чей-то ник,
+// который перестанет узнаваться. Ник адресата сильнее вето: если человека и
+// правда зовут «Да», обращение к нему останется обращением.
+var openers = map[string]bool{
+	"а": true, "ага": true, "ай": true, "ах": true, "ахаха": true, "блин": true,
+	"боже": true, "вот": true, "да": true, "давай": true, "жаль": true,
+	"замечательно": true, "здорово": true, "и": true, "извини": true, "извините": true,
+	"итак": true, "кажется": true, "как": true, "конечно": true, "короче": true,
+	"кстати": true, "ладно": true, "может": true, "наверное": true, "нет": true,
+	"ну": true, "ой": true, "ох": true, "по-моему": true, "погоди": true,
+	"понятно": true, "прикольно": true, "привет": true, "просто": true,
+	"пусть": true, "серьёзно": true, "слушай": true, "слушайте": true,
+	"согласен": true, "согласна": true, "спасибо": true, "так": true, "то есть": true,
+	"увы": true, "ужас": true, "ура": true, "уф": true, "фу": true, "ха": true,
+	"хаха": true, "хех": true, "хм": true, "что": true, "эх": true, "я": true,
+	"ясно": true,
+}
 
 // leadingAddress разбирает начало тела: «Ник, текст» → («Ник», «текст», true).
 //
@@ -94,8 +115,11 @@ type addrKey struct {
 // Нулевое значение рабочее и отвечает «нет» на всё: страница без книги
 // показывает обращения как раньше, а не падает.
 type addressBook struct {
-	nicks   map[string]bool // ники участников заметки, в нижнем регистре
-	repeats map[addrKey]int // сколько раз токеном обращались к человеку
+	nicks map[string]bool // ники участников заметки, в нижнем регистре
+	// authors — КТО обращался этим токеном к этому человеку. Считаем людей, а не
+	// реплики: два «да, ...» подряд от одного автора — это его привычка, а не
+	// чьё-то имя.
+	authors map[addrKey]map[int64]bool
 }
 
 // newAddressBook собирает свидетельство по репликам страницы.
@@ -105,7 +129,7 @@ type addressBook struct {
 func newAddressBook(note platform.NoteView, comments []platform.CommentView) *addressBook {
 	b := &addressBook{
 		nicks:   make(map[string]bool, len(comments)+1),
-		repeats: make(map[addrKey]int),
+		authors: make(map[addrKey]map[int64]bool),
 	}
 	if !note.Anonymous && note.Author.Nick != "" {
 		b.nicks[strings.ToLower(note.Author.Nick)] = true
@@ -118,7 +142,13 @@ func newAddressBook(note platform.NoteView, comments []platform.CommentView) *ad
 			continue
 		}
 		if token, _, ok := leadingAddress(c.Body); ok {
-			b.repeats[addrKey{strings.ToLower(c.ReplyTo.Nick), strings.ToLower(token)}]++
+			k := addrKey{strings.ToLower(c.ReplyTo.Nick), strings.ToLower(token)}
+			if b.authors[k] == nil {
+				b.authors[k] = make(map[int64]bool, 2)
+			}
+			// У безанкетного комментатора зеркала id нет вовсе — все такие
+			// считаются одним человеком: планка от этого только выше.
+			b.authors[k][c.Author.ID] = true
 		}
 	}
 	return b
@@ -131,13 +161,17 @@ func (b *addressBook) isAddress(c platform.CommentView, token string) bool {
 	}
 	low := strings.ToLower(token)
 	// Ник адресата прямо сейчас — случай, который приём почему-то не срезал.
+	// Он сильнее любого вето: человека и правда может звать «Да».
 	if c.ReplyTo.Nick != "" && strings.EqualFold(c.ReplyTo.Nick, token) {
 		return true
+	}
+	if openers[low] {
+		return false
 	}
 	// Ник кого-то из участников заметки: это заведомо ник, а не фраза.
 	if b.nicks[low] {
 		return true
 	}
-	// Свидетельство треда: этим словом обращались к тому же человеку не раз.
-	return b.repeats[addrKey{strings.ToLower(c.ReplyTo.Nick), low}] >= addressRepeats
+	// Свидетельство треда: этим словом к тому же человеку обращались РАЗНЫЕ люди.
+	return len(b.authors[addrKey{strings.ToLower(c.ReplyTo.Nick), low}]) >= addressRepeats
 }

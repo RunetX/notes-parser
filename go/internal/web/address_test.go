@@ -37,7 +37,9 @@ func thread(bodies ...string) (platform.NoteView, []platform.CommentView) {
 	}}
 	for i, b := range bodies {
 		out = append(out, platform.CommentView{
-			ID:          int64(100 + i),
+			ID: int64(100 + i),
+			// Авторы РАЗНЫЕ: ник узнаётся по тому, что им зовут разные люди, а
+			// повтор от одного и того же — это его привычка говорить «да, ...».
 			Author:      platform.Author{ID: int64(500 + i), Nick: "Betty Boop"},
 			Body:        b,
 			ReplyTo:     &platform.ReplyRef{CommentID: 1, Nick: newNick},
@@ -180,6 +182,34 @@ func TestEvidenceWorksWithoutTargetOnPage(t *testing.T) {
 	got := string(commentBodyHTML(newAddressBook(note, cs), cs[0]))
 	if !strings.Contains(got, `<b class="to">`+oldNick+`</b>, `) {
 		t.Errorf("свидетельство не найдено без реплики адресата: %s", got)
+	}
+}
+
+// Зачин, повторённый разными людьми, ником не становится: «да, ...» и «ну, ...»
+// в разговоре повторяются сами по себе. Список — вето поверх свидетельства.
+func TestOpenersNeverBecomeNicks(t *testing.T) {
+	note, cs := thread("да, согласна", "да, и не говори", "ну, бывает", "ну, что тут скажешь")
+
+	for i := 1; i <= 4; i++ {
+		got := render(t, note, cs, i)
+		if strings.Contains(got, `<b class="to">`) {
+			t.Errorf("реплика %d: зачин принят за ник: %s", i, got)
+		}
+		if !strings.Contains(got, `<a class="to"`) {
+			t.Errorf("реплика %d: пропал настоящий адресат: %s", i, got)
+		}
+	}
+}
+
+// Повтор ОДНИМ автором свидетельством не считается — иначе привычка одного
+// человека начинать с «блин,» превратилась бы в чужой ник.
+func TestRepeatByOneAuthorIsNotEvidence(t *testing.T) {
+	note, cs := thread("Мурзик, привет", "Мурзик, ну как ты")
+	cs[1].Author = platform.Author{ID: 777, Nick: "Betty Boop"}
+	cs[2].Author = platform.Author{ID: 777, Nick: "Betty Boop"}
+
+	if got := render(t, note, cs, 1); strings.Contains(got, `<b class="to">`) {
+		t.Errorf("повтор одним автором принят за свидетельство: %s", got)
 	}
 }
 
