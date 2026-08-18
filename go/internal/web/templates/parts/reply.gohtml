@@ -1,0 +1,46 @@
+{{/* Форма ответа. Одна на страницу и внизу треда — как на НГС, где «Ответить»
+     у комментария не раскрывает поле на месте, а уводит к общей форме с
+     подставленным адресатом.
+
+     Без JS это единственный способ, который работает: страница перезагружается
+     с ?reply=<id>, форма получает адресата, и ничего не теряется. */}}
+{{define "reply"}}
+{{- $n := .Note -}}
+<section class="replybox" id="reply">
+{{if .Note.Locked}}
+  <p class="fine">Обсуждение закрыто модератором.</p>
+{{else if .CanWrite}}
+  {{if .Compose.Problem}}<p class="bad">{{.Compose.Problem}}</p>{{end}}
+
+  {{if .ReplyTo}}
+  <p class="repto">Ответ: <a href="#c{{.ReplyTo.ID}}">{{.ReplyTo.Name}}</a>
+    · <a class="alt" href="{{threadURL .ReplyBase}}">в общий тред</a></p>
+  {{/* Единственное место, где «своё» и «пришедшее с НГС» различаются на экране,
+       и различие показано на АВТОРЕ, а не на реплике. Вопрос у отвечающего не
+       «откуда этот текст», а «дойдёт ли мой ответ», и честный ответ — вот он.
+       Метка тает сама: человек войдёт, и тень станет участником. */}}
+  {{if .ReplyTo.Author.Shadow}}
+  <p class="fine">{{.ReplyTo.Name}} ещё не переехал сюда с НГС: ответ увидят здесь,
+  на самом НГС он не появится.</p>
+  {{end}}
+  {{else}}
+  <p class="repto">Ответ на заметку</p>
+  {{end}}
+
+  <form method="post" action="/n/{{$n.ID}}/reply" class="wform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="reply_to" value="{{.Compose.ReplyTo}}">
+    <textarea name="body" rows="5" required placeholder="Ваш ответ">{{.Compose.Body}}</textarea>
+    {{/* Галочки «анонимно» тут нет и не будет: анонимной бывает заметка, а
+         реплика подписана всегда — так на НГС, и разница не косметическая.
+         Заметку анонимно ПУБЛИКУЮТ, а в тред анонимно ОТВЕЧАЮТ людям, которые
+         ответить тем же не могут. */}}
+    <div class="wact">
+      <button type="submit">Ответить</button>
+    </div>
+  </form>
+{{else if not .SignedIn}}
+  <p class="fine">Читать можно всем. Чтобы ответить — <a href="/login">войдите</a>.</p>
+{{end}}
+</section>
+{{end}}

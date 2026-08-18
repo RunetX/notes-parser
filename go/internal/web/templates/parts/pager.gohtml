@@ -1,0 +1,16 @@
+{{/* Постраничка номерами — как на НГС. Рисуется и сверху, и снизу списка:
+     наверху она говорит, где ты, внизу — куда идти дальше, и дочитавшему до
+     конца не приходится возвращаться к началу страницы. */}}
+{{define "pager"}}
+{{- if .Show -}}
+<div class="pages">
+  {{if .Prev}}<a class="pg arr" href="{{.Prev}}">&laquo; Пред.</a>{{else}}<span class="pg arr off">&laquo; Пред.</span>{{end}}
+  {{- range .Pages}}
+  {{- if .Gap}}<span class="pg gap">…</span>
+  {{- else if .Current}}<span class="pg cur" aria-current="page">{{.Num}}</span>
+  {{- else}}<a class="pg" href="{{.URL}}">{{.Num}}</a>{{end}}
+  {{- end}}
+  {{if .Next}}<a class="pg arr" href="{{.Next}}">След. &raquo;</a>{{else}}<span class="pg arr off">След. &raquo;</span>{{end}}
+</div>
+{{- end}}
+{{end}}

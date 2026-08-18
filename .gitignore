@@ -191,3 +191,9 @@ accounts.db-journal
 accounts.db-wal
 accounts.db-shm
 *.key
+
+# Каталог шаблонов веб-морды попал под python-овское «parts/» из шапки этого
+# файла (наследство buildout, оставшееся от снесённого прототипа). Три файла —
+# avatar/pager/reply — молча не попадали в репозиторий, и чистый клон не
+# собирался вовсе: html/template падает на «pattern matches no files».
+!go/internal/web/templates/parts/
