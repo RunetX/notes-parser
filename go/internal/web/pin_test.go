@@ -164,9 +164,15 @@ func TestAddCommentLinkForSignedInOnly(t *testing.T) {
 	}
 }
 
-// Замок снимает ссылку и у вошедшего, а чужая отметка «не актуальна» — нет:
-// писать она не запрещает, и это правило площадки, а не оплошность.
-func TestAddCommentLinkFollowsTheLockNotTheMark(t *testing.T) {
+// Под НЕАКТУАЛЬНОЙ заметкой ссылки нет при любой причине — и у замка
+// модератора, и у чужой отметки НГС. Строкой выше уже сказано «ознакомиться с
+// обсуждением», то есть разговор окончен; звать в него следующей же ссылкой
+// значит спорить с самим собой.
+//
+// Право писать при этом прежнее: отметка НГС его не отнимает (Ш5, она стоит у
+// 62 % зеркальных заметок, и 75 % всех комментариев пришло ПОСЛЕ неё) — форма
+// на странице такой заметки работает, и это проверяется здесь же.
+func TestAddCommentLinkGoneWhenDiscussionIsOver(t *testing.T) {
 	locked, marked := sampleNote(), sampleNote()
 	locked.ID, locked.Locked = 312901, true
 	marked.ID, marked.CommentsClosed = 312902, true
@@ -176,10 +182,17 @@ func TestAddCommentLinkFollowsTheLockNotTheMark(t *testing.T) {
 	h := newFullServer(t, st, auth, &fakeWriter{}, nil, nil, Config{})
 
 	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
-	if strings.Contains(body, `href="/n/312901#reply"`) {
-		t.Error("под закрытым обсуждением предложено добавить комментарий")
+	for _, id := range []string{"312901", "312902"} {
+		if strings.Contains(body, `href="/n/`+id+`#reply"`) {
+			t.Errorf("под неактуальной заметкой %s предложено добавить комментарий", id)
+		}
 	}
-	if !strings.Contains(body, `href="/n/312902#reply"`) {
-		t.Error("отметка НГС «не актуальна» отняла ссылку, хотя писать она не запрещает")
+
+	// Но форма ответа у отмеченной НГС заметки остаётся: ссылку сняло РЕШЕНИЕ О
+	// ПОКАЗЕ, а не запрет писать, и путать это нельзя.
+	st.note = marked
+	page := do(h, as(guest(t, "GET", "/n/312902"), token)).Body.String()
+	if !strings.Contains(page, `action="/n/312902/reply"`) {
+		t.Error("отметка НГС отняла и форму ответа, хотя писать она не запрещает")
 	}
 }
