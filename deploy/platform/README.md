@@ -36,6 +36,31 @@ gzip -9 -c /tmp/lovegw-linux | ssh <хост> "gunzip -c > /root/platform/lovegw
 десятью секундами и минутой. Дальше `docker compose up -d` — пересоздаются все
 сервисы на новом образе.
 
+**Бинарником выкатка не исчерпывается.** Git-клона на хосте нет, поэтому
+`docker-compose.yml`, `Caddyfile` и `postgresql.conf` живут там отдельными
+копиями: правка в репозитории до хоста сама не доедет. Сверять и возить — так
+(сначала diff, потому что хостовая копия могла уйти вперёд):
+
+```sh
+# из каталога deploy/platform/ рабочей машины
+for f in docker-compose.yml Caddyfile postgresql.conf; do
+  cat "$f" | ssh <хост> "diff -u /root/platform/$f -"
+done
+# и, если расхождения — ровно ваши:
+cat Caddyfile | ssh <хост> "cp /root/platform/Caddyfile{,.bak} && cat > /root/platform/Caddyfile"
+```
+
+**Caddyfile проверять ДО пересоздания контейнера** — сломанный конфиг уронит
+прокси, а вместе с ним и площадку целиком:
+
+```sh
+docker compose exec caddy caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+```
+
+Меняли `postgresql.conf` — помните, что `docker compose up -d` пересоздаёт
+`postgres` только если менялась и его секция compose; иначе настройки
+подхватываются `select pg_reload_conf()` (для параметров с контекстом sighup).
+
 Два условия сборки незаметны, пока не сломаются, и оба проверяются на хосте, а
 не в голове:
 

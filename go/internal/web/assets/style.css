@@ -148,7 +148,17 @@ a:hover { text-decoration: underline; }
   color: var(--nav-ink); text-decoration: none; background: rgba(255, 255, 255, .3);
 }
 
-.main { flex: 1 0 auto; background: var(--card); padding: 16px 20px 28px; margin: 10px auto; max-width: 910px; }
+/* Ширина карточки постоянная и от содержимого не зависит — как на НГС.
+   width:100% здесь обязателен ВМЕСТЕ с `margin: … auto`: у flex-элемента с
+   автоматическими полями поперёк оси растяжение отменяется, и карточка
+   съёживается по содержимому. На ленте этого не видно (текст заметок и так
+   шире 910px), а страница новой заметки схлопнулась в колонку 266px вокруг
+   пустого поля ввода — по ширине textarea в 20 знаков (экран владельца,
+   18.08.2026). */
+.main {
+  flex: 1 0 auto; width: 100%; max-width: 910px; margin: 10px auto;
+  background: var(--card); padding: 16px 20px 28px;
+}
 .ttl { font-size: 30px; font-weight: 400; margin: 0 0 16px; color: var(--ink); }
 
 /* ---------------------------------------------------------------- лента */
