@@ -44,6 +44,7 @@ type Moderator interface {
 	RestoreSubject(ctx context.Context, actor platform.Viewer, s platform.Subject, reason string) error
 	Decide(ctx context.Context, actor platform.Viewer, s platform.Subject, d platform.Decision, reason string) error
 	SetThreadLocked(ctx context.Context, actor platform.Viewer, noteID int64, locked bool, reason string) error
+	SetNotePinned(ctx context.Context, actor platform.Viewer, noteID int64, pinned bool, reason string) error
 
 	BanUser(ctx context.Context, actor platform.Viewer, userID int64, until time.Time, reason string) error
 	UnbanUser(ctx context.Context, actor platform.Viewer, userID int64, reason string) error
@@ -144,7 +145,7 @@ func (s *Server) handleModAct(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := platform.Viewer{UserID: u.ID, Role: u.Role}
 	subj, ok := subjectOf(r)
-	if !ok && r.FormValue("do") != "lock" && r.FormValue("do") != "unlock" {
+	if !ok && !noteAction[r.FormValue("do")] {
 		s.fail(w, r, http.StatusBadRequest, "Непонятно, к чему относится действие.")
 		return
 	}
@@ -160,13 +161,23 @@ func (s *Server) handleModAct(w http.ResponseWriter, r *http.Request) {
 	case "drop":
 		err = s.mod.Decide(ctx, actor, subj, platform.DecisionHide, reason)
 	case "lock", "unlock":
-		noteID, _ := strconv.ParseInt(r.FormValue("note"), 10, 64)
-		err = s.mod.SetThreadLocked(ctx, actor, noteID, r.FormValue("do") == "lock", reason)
+		err = s.mod.SetThreadLocked(ctx, actor, noteFormID(r), r.FormValue("do") == "lock", reason)
+	case "pin", "unpin":
+		err = s.mod.SetNotePinned(ctx, actor, noteFormID(r), r.FormValue("do") == "pin", reason)
 	default:
 		s.fail(w, r, http.StatusBadRequest, "Неизвестное действие.")
 		return
 	}
 	s.afterModAction(w, r, err)
+}
+
+// noteAction — действия над ТРЕДОМ целиком: объект у них не «заметка или
+// комментарий» из subjectOf, а номер заметки в отдельном поле формы.
+var noteAction = map[string]bool{"lock": true, "unlock": true, "pin": true, "unpin": true}
+
+func noteFormID(r *http.Request) int64 {
+	id, _ := strconv.ParseInt(r.FormValue("note"), 10, 64)
+	return id
 }
 
 // afterModAction — общий ответ на действие. «Состояние уже такое» отказом не
@@ -179,6 +190,10 @@ func (s *Server) afterModAction(w http.ResponseWriter, r *http.Request, err erro
 		s.fail(w, r, http.StatusNotFound, "Этой записи больше нет.")
 	case errors.Is(err, platform.ErrNotModerator):
 		s.fail(w, r, http.StatusForbidden, "Нужны права модератора.")
+	case errors.Is(err, platform.ErrTooManyPinned):
+		// Потолок закреплённых — правило ленты, а не поломка: говорим прямо,
+		// сколько их бывает, чтобы модератор снял лишнее, а не гадал.
+		s.fail(w, r, http.StatusBadRequest, err.Error()+". Сначала открепите лишнее.")
 	default:
 		s.oops(w, r, "действие модератора", err)
 	}

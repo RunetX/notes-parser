@@ -29,10 +29,12 @@ import (
 const testKey = "секретный-ключ-стройки"
 
 type fakeStore struct {
-	notes      []platform.NoteView
-	total      int
-	countCalls int // сколько раз спросили длину ленты (она кэшируется)
-	feedOffset int // что пришло в последний вызов
+	notes       []platform.NoteView
+	pinned      []platform.NoteView
+	pinnedCalls int // спрашивают ли закреплённые на страницах, кроме первой
+	total       int
+	countCalls  int // сколько раз спросили длину ленты (она кэшируется)
+	feedOffset  int // что пришло в последний вызов
 
 	note    platform.NoteView
 	noteErr error
@@ -60,6 +62,11 @@ func (f *fakeStore) CountNotes(context.Context) (int, error) {
 func (f *fakeStore) Feed(_ context.Context, _ platform.Viewer, offset, _ int) ([]platform.NoteView, error) {
 	f.feedOffset = offset
 	return f.notes, nil
+}
+
+func (f *fakeStore) PinnedNotes(context.Context, platform.Viewer) ([]platform.NoteView, error) {
+	f.pinnedCalls++
+	return f.pinned, nil
 }
 
 func (f *fakeStore) NoteViewByID(_ context.Context, _ platform.Viewer, id int64) (platform.NoteView, error) {

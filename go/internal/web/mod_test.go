@@ -29,7 +29,11 @@ type fakeMod struct {
 	acts     []string // что позвали, по порядку
 	reported []platform.Subject
 	appealed []platform.Subject
-	fail     error
+	// pinnedFull — закреплённых уже столько, сколько лента выдерживает: ядро в
+	// этом случае отказывает, и морда обязана сказать об этом человеком, а не
+	// пятисоткой.
+	pinnedFull bool
+	fail       error
 }
 
 func newFakeMod() *fakeMod {
@@ -65,6 +69,16 @@ func (f *fakeMod) Decide(_ context.Context, _ platform.Viewer, s platform.Subjec
 	}
 	return f.note("keep " + s.String())
 }
+func (f *fakeMod) SetNotePinned(_ context.Context, _ platform.Viewer, id int64, pinned bool, _ string) error {
+	if pinned {
+		if f.pinnedFull {
+			return platform.ErrTooManyPinned
+		}
+		return f.note("pin")
+	}
+	return f.note("unpin")
+}
+
 func (f *fakeMod) SetThreadLocked(_ context.Context, _ platform.Viewer, id int64, locked bool, _ string) error {
 	if locked {
 		return f.note("lock")

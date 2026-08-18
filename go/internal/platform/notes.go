@@ -53,7 +53,8 @@ const noteViewColumns = `
 	CASE WHEN n.anonymous THEN NULL ELSE m.mime          END,
 	CASE WHEN n.anonymous THEN 0     ELSE coalesce(u.gender, 0) END,
 	CASE WHEN n.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
-	coalesce(n.author_id = $1, false)`
+	coalesce(n.author_id = $1, false),
+	n.pinned_at IS NOT NULL`
 
 const noteViewFrom = `
 	FROM notes n
@@ -72,7 +73,7 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 	)
 	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.Locked, &v.CommentCount,
 		&v.PublishedAt, &v.PublishedExact, &v.LastCommentAt, &v.EditedAt,
-		&author, &nick, &sha, &mime, &gender, &shadow, &v.Own)
+		&author, &nick, &sha, &mime, &gender, &shadow, &v.Own, &v.Pinned)
 	v.Author = Author{
 		ID: idOf(author), Nick: strOf(nick),
 		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
@@ -94,9 +95,20 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 // новой заметки ровно в момент листания, и стоит он одной задвоенной строки.
 const feedQuery = `
 	SELECT ` + noteViewColumns + noteViewFrom + `
-	 WHERE n.status = 0
+	 WHERE n.status = 0 AND n.pinned_at IS NULL
 	 ORDER BY n.published_at DESC, n.id DESC
 	 LIMIT $2 OFFSET $3`
+
+// pinnedQuery — закреплённые заметки, те самые, что лента показывает поверх
+// хронологии. Отдельным запросом, а не сортировкой внутри ленты, намеренно:
+// «ORDER BY pinned DESC, published_at DESC» отняло бы у ленты индекс
+// notes_feed и превратило бы КАЖДЫЙ её показ в сортировку 117 тысяч строк ради
+// одной-двух наверху. Здесь же свой частичный индекс и заведомо короткий ответ.
+const pinnedQuery = `
+	SELECT ` + noteViewColumns + noteViewFrom + `
+	 WHERE n.status = 0 AND n.pinned_at IS NOT NULL
+	 ORDER BY n.pinned_at DESC, n.id DESC
+	 LIMIT $2`
 
 // Feed — страница ленты от новых к старым.
 //
@@ -126,6 +138,40 @@ func (p *Platform) Feed(ctx context.Context, v Viewer, offset, limit int) ([]Not
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("лента: %w", err)
+	}
+	return out, nil
+}
+
+// MaxPinned — потолок закреплённых. Он не про базу, а про ленту: закрепление
+// имеет смысл ровно до тех пор, пока закреплённое можно окинуть взглядом, —
+// десять «важных» заметок наверху это просто вторая лента, которую никто не
+// читает.
+const MaxPinned = 5
+
+// PinnedNotes — закреплённые заметки, самое свежее закрепление первым.
+//
+// Лента их у себя НЕ показывает (feedQuery отсекает по pinned_at), поэтому
+// одна и та же заметка не выходит дважды. Цена размена записана честно: пока
+// заметка закреплена, её нет на своём хронологическом месте, и последняя
+// страница ленты короче на число закреплённых. Обратное — «показывать и там, и
+// там» — читается как ошибка показа, а не как решение.
+func (p *Platform) PinnedNotes(ctx context.Context, v Viewer) ([]NoteView, error) {
+	rows, err := p.pool.Query(ctx, pinnedQuery, v.UserID, MaxPinned)
+	if err != nil {
+		return nil, fmt.Errorf("закреплённые: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]NoteView, 0, MaxPinned)
+	for rows.Next() {
+		n, err := scanNoteView(rows)
+		if err != nil {
+			return nil, fmt.Errorf("закреплённые, разбор строки: %w", err)
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("закреплённые: %w", err)
 	}
 	return out, nil
 }

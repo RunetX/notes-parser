@@ -530,6 +530,7 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		index string
 	}{
 		{"лента", feedQuery, []any{int64(0), 20, 0}, "notes_feed"},
+		{"закреплённые", pinnedQuery, []any{int64(0), MaxPinned}, "notes_pinned"},
 		{"тред", threadQuery, []any{int64(0), int64(200001), 100}, "comments_tree"},
 		{"линейный вид", flatQuery, []any{int64(0), int64(200001), 30, 0}, "comments_flat"},
 	}

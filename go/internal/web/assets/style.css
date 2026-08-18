@@ -365,12 +365,23 @@ span.rxb { cursor: default; }
 .smgrid button.smi:hover { border-color: var(--accent); }
 .smgrid .smi .sm { height: 20px; width: auto; }
 
+/* Закреплённая заметка. Отличается меткой и полосой слева, а не цветом фона:
+   лента и так пёстрая от аватаров, а закреплённых бывает не больше пяти. */
+.pin {
+  margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--accent);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.note.pinned { border-left: 3px solid var(--accent); padding-left: 10px; }
+
 .nfoot { margin-top: 10px; color: var(--meta); font-size: 12px; }
 .date { color: var(--meta); }
 /* Время, снятое зеркалом, а не отданное сайтом: настоящего НГС не публикует.
    Пунктир — единственный видимый след, чтобы вид не расходился с правдой. */
 .date._approx { border-bottom: 1px dotted var(--meta); cursor: help; }
 .clink { margin-left: 18px; }
+/* «Добавить комментарий» стоит той же строкой, что и ссылка на обсуждение, и
+   тем же кеглем: это второй вход в тот же разговор, а не отдельное действие. */
+.addc { margin-left: 18px; }
 .cnt { font-size: 10px; color: var(--meta); }
 
 .shots { margin-top: 12px; }
@@ -654,9 +665,38 @@ span.rxb { cursor: default; }
 .lgwho { color: var(--meta); }
 .lgwhy { color: var(--meta); }
 
+/* ---------------------------------------------------------------- справка */
+
+/* Справка — единственная страница, которую пишет человек, а не запрос. Мера
+   здесь другая, чем в ленте: не «как на НГС», а «читается с экрана телефона».
+   Отсюда узкая колонка (44rem — примерно 70 знаков в строке) и крупный
+   межстрочный интервал. */
+.help { max-width: 44rem; }
+.help .lead { font-size: 16px; margin: 0 0 20px; }
+.help section { margin: 0 0 26px; }
+.help h2 { font-size: 20px; font-weight: 600; margin: 26px 0 10px; }
+.help p { margin: 10px 0; line-height: 1.55; }
+.help ul, .help ol { margin: 10px 0; padding-left: 22px; line-height: 1.55; }
+.help li { margin: 6px 0; }
+/* Оглавление — плитками, а не списком: на телефоне список из девяти пунктов
+   занимает экран целиком, и до первого раздела человек доходит прокруткой. */
+.toc { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0 0 24px; }
+.toc a {
+  font-size: 13px; padding: 4px 10px; border: 1px solid var(--rule);
+  border-radius: 3px; background: var(--btn);
+}
+.toc a:hover { text-decoration: none; border-color: var(--link); }
+/* Номер правила виден: на него ссылаются в решениях модератора. */
+.rules li { margin: 8px 0; }
+.help code {
+  font: 90%/1 "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  padding: 1px 4px; border-radius: 3px; background: var(--btn);
+}
+
 /* ---------------------------------------------------------------- подвал */
 
 .foot { flex: 0 0 auto; border-top: 1px solid var(--rule); background: var(--card); padding: 12px 0 24px; }
+.fnav { margin: 0 0 8px; font-size: 12px; }
 .themes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .themes .lbl { color: var(--meta); font-size: 12px; margin-right: 4px; }
 .tbtn {
@@ -697,6 +737,7 @@ span.rxb { cursor: default; }
   .cava { flex-basis: 56px; }
   .cava .ava { width: 56px; height: 56px; }
   .clink { margin-left: 0; display: block; margin-top: 4px; }
+  .addc { margin-left: 0; display: block; margin-top: 4px; }
   /* Шапка и подвал на телефоне выровнены по КОЛОНКЕ ТЕКСТА, а не по краю
      экрана: в ленте текст стоит на 20px от края (10px у .main плюс 10px у
      .wrap), а название площадки и значок участника упирались в самый край —

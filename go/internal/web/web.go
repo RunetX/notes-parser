@@ -67,6 +67,11 @@ type Store interface {
 	Ping(ctx context.Context) error
 	CountNotes(ctx context.Context) (int, error)
 	Feed(ctx context.Context, v platform.Viewer, offset, limit int) ([]platform.NoteView, error)
+	// PinnedNotes — закреплённые заметки, которые лента показывает поверх
+	// хронологии. Отдельным методом, а не флагом у Feed: своего порядка,
+	// своего потолка и своего индекса, а главное — они нужны только на первой
+	// странице, и спрашивать их на каждой было бы запросом ни за чем.
+	PinnedNotes(ctx context.Context, v platform.Viewer) ([]platform.NoteView, error)
 	NoteViewByID(ctx context.Context, v platform.Viewer, id int64) (platform.NoteView, error)
 	NoteImages(ctx context.Context, noteID int64) ([]platform.Media, error)
 	Thread(ctx context.Context, v platform.Viewer, noteID int64) ([]platform.CommentView, error)
@@ -220,6 +225,9 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
+	// Справка открыта всем, включая не вошедших: правила, которые видно только
+	// изнутри, — это не правила, а сюрприз.
+	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /assets/{name...}", s.handleAsset)
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.HandleFunc("POST /login", s.handleLoginStart)

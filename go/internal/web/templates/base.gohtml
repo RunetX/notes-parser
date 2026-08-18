@@ -70,6 +70,9 @@
 
 <footer class="foot">
   <div class="wrap">
+    {{/* Справка живёт в подвале, а не в шапке: за ней приходят раз в жизнь, а
+         место наверху стоит дороже — там лента и вход. */}}
+    <p class="fnav"><a href="/help">Справка и правила</a></p>
     <form class="themes" method="post" action="/theme">
       <span class="lbl">Оформление</span>
       <input type="hidden" name="back" value="{{.Back}}">

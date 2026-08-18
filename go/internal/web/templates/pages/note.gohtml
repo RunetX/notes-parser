@@ -64,12 +64,26 @@
         <button type="submit" name="do" value="{{if $n.Locked}}unlock{{else}}lock{{end}}" class="mbtn">
           {{if $n.Locked}}Открыть обсуждение{{else}}Закрыть обсуждение{{end}}</button>
       </form>
+      {{/* Закрепление — соседняя кнопка, потому что решение того же рода: оба
+           меняют не текст, а место заметки в общем разговоре. */}}
+      <form method="post" action="/mod/act" class="minline">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="back" value="{{.Back}}">
+        <input type="hidden" name="note" value="{{$n.ID}}">
+        <button type="submit" name="do" value="{{if $n.Pinned}}unpin{{else}}pin{{end}}" class="mbtn">
+          {{if $n.Pinned}}Открепить{{else}}Закрепить наверху{{end}}</button>
+      </form>
       {{end}}
     </div>
   </div>
 </div>
 
-<h2 class="cttl">Комментарии <span class="cnt">{{$n.CommentCount}}</span>{{if $n.CommentsClosed}} <span class="closed">Комментарии запрещены</span>{{end}}</h2>
+{{/* Замок и отметка НГС «не актуальна» — разные вещи, и на СТРАНИЦЕ их стоит
+     различать: здесь человек собирается писать, и ему важно, кто закрыл дверь.
+     В ленте они выглядят одинаково — там вопрос другой, «стоит ли заходить». */}}
+<h2 class="cttl">Комментарии <span class="cnt">{{$n.CommentCount}}</span>
+{{- if $n.Locked}} <span class="closed">Обсуждение закрыто модератором</span>
+{{- else if $n.CommentsClosed}} <span class="closed">Комментарии запрещены</span>{{end}}</h2>
 
 {{if not .Comments}}
 <p class="empty">Комментариев пока нет.</p>

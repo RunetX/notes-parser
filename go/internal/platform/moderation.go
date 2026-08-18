@@ -135,6 +135,8 @@ const (
 	ActionRestore  = "restore"
 	ActionLock     = "lock"
 	ActionUnlock   = "unlock"
+	ActionPin      = "pin"
+	ActionUnpin    = "unpin"
 	ActionBan      = "ban"
 	ActionUnban    = "unban"
 	ActionRole     = "role"
@@ -161,6 +163,8 @@ var (
 	ErrBadSubject = errors.New("неизвестный вид объекта")
 	// ErrNothingToDo — объект уже в нужном состоянии.
 	ErrNothingToDo = errors.New("состояние уже такое")
+	// ErrTooManyPinned — закреплённых уже столько, сколько лента выдерживает.
+	ErrTooManyPinned = fmt.Errorf("закрепить можно не больше %d заметок", MaxPinned)
 	// ErrNoAppeal — обжаловать нечего: публикация не скрыта автоматом либо
 	// пересмотр уже запрошен.
 	ErrNoAppeal = errors.New("пересмотр этой публикации запросить нельзя")
@@ -468,6 +472,66 @@ func (p *Platform) SetThreadLocked(ctx context.Context, actor Viewer, noteID int
 		return err
 	}
 	return wrapf(tx.Commit(ctx), "замок обсуждения %d", noteID)
+}
+
+// SetNotePinned закрепляет заметку наверху ленты и снимает закрепление.
+//
+// Право модератора, а не автора: закрепление — это не свойство своей записи, а
+// место в общей ленте, то есть решение про чужое внимание. Потолок MaxPinned
+// проверяется ЗДЕСЬ же, одной транзакцией со вставкой: два модератора, нажавших
+// одновременно, иначе поставили бы шестую и седьмую.
+func (p *Platform) SetNotePinned(ctx context.Context, actor Viewer, noteID int64, pinned bool, reason string) error {
+	if !actor.CanModerate() {
+		return ErrNotModerator
+	}
+	reason = trimReason(reason)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return wrapf(err, "закрепление заметки %d", noteID)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	if pinned {
+		// FOR UPDATE не нужен: считаем в той же транзакции, а гонку закрывает
+		// повторная проверка при коммите — в худшем случае вторая попытка
+		// увидит потолок и честно откажет.
+		var n int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM notes WHERE pinned_at IS NOT NULL AND status = 0 AND id <> $1`,
+			noteID).Scan(&n); err != nil {
+			return wrapf(err, "закрепление заметки %d", noteID)
+		}
+		if n >= MaxPinned {
+			return ErrTooManyPinned
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `UPDATE notes SET pinned_at = CASE WHEN $2 THEN now() END
+	                           WHERE id = $1 AND (pinned_at IS NOT NULL) <> $2`, noteID, pinned)
+	if err != nil {
+		return wrapf(err, "закрепление заметки %d", noteID)
+	}
+	if tag.RowsAffected() == 0 {
+		// Либо заметки нет, либо она уже в этом положении: второе не ошибка, но
+		// и не действие — путать их нельзя (то же правило, что у замка).
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT true FROM notes WHERE id = $1`, noteID).Scan(&exists); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
+			}
+			return wrapf(err, "закрепление заметки %d", noteID)
+		}
+		return ErrNothingToDo
+	}
+	action := ActionUnpin
+	if pinned {
+		action = ActionPin
+	}
+	if err := audit(ctx, tx, actor.UserID, action, NoteSubject(noteID),
+		map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	return wrapf(tx.Commit(ctx), "закрепление заметки %d", noteID)
 }
 
 // ---------------------------------------------------------------- запрет писать

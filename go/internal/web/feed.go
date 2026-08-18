@@ -48,6 +48,9 @@ func (s *Server) countNotes(ctx context.Context) (int, error) {
 
 type feedPage struct {
 	page
+	// Notes — первой страницей идут закреплённые, дальше хронология. Один
+	// список, а не два: для читателя это одна лента, а закреплённое он узнаёт
+	// по метке на самой заметке, а не по тому, что оно стоит в другом блоке.
 	Notes []platform.NoteView
 	Pager pager
 	// CanWrite — показывать ли «Написать заметку». Гостю не показываем: читать
@@ -78,6 +81,17 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.oops(w, r, "лента", err)
 		return
+	}
+	// Закреплённое — только на первой странице. На остальных оно было бы
+	// шапкой, которая едет за читателем: он листает ленту как раз затем, чтобы
+	// уйти от начала. Лишнего запроса на страницах 2…5933 при этом нет вовсе.
+	if num == 1 {
+		pinned, err := s.st.PinnedNotes(ctx, v)
+		if err != nil {
+			s.oops(w, r, "закреплённые", err)
+			return
+		}
+		notes = append(pinned, notes...)
 	}
 	me, signedIn := s.me(r)
 	s.render(w, r, http.StatusOK, "feed.gohtml", feedPage{
