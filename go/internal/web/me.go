@@ -8,18 +8,23 @@ package web
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"lovegw/internal/platform"
 )
 
+// myHiddenLimit — сколько своих скрытых публикаций показываем. Список тут не
+// архив, а повод нажать «на пересмотр»: длиннее двадцати он перестаёт читаться.
+const myHiddenLimit = 20
+
 type mePage struct {
 	page
-	Member platform.Author
-	Docs   []platform.ConsentDoc
-	Have   platform.Consents
-	Hidden bool // все публикации скрыты рубильником
-	Shadow bool // вход не завершён: согласий нет
-	Admin  bool
+	Member  platform.Author
+	Docs    []platform.ConsentDoc
+	Have    platform.Consents
+	HideAll bool // все публикации скрыты рубильником отзыва согласия
+	Shadow  bool // вход не завершён: согласий нет
+	Admin   bool
 	// Avatar — показывать ли кнопку «Обновить аватар». Её нет у вошедшего по
 	// приглашению (анкеты НГС у него нет вовсе) и нет, когда сайт недоступен:
 	// кнопка, которая заведомо ответит отказом, хуже её отсутствия.
@@ -28,6 +33,16 @@ type mePage struct {
 	// страницей ошибки: «в анкете нет фото» — это не поломка, и уводить с
 	// собственной страницы ради такой строки незачем.
 	Problem string
+	// Hidden — свои публикации, скрытые модерацией, с причиной и кнопкой
+	// «на пересмотр». Молча исчезнувшая реплика — худшее, что можно сделать с
+	// сообществом, которое только что переехало, поэтому список стоит здесь, а
+	// не «по запросу к администратору».
+	Hidden []platform.MyCheck
+	// Ban — запрет писать: до какого числа и за что. Забаненного мы НЕ выкидываем
+	// из учётной записи (чтение открыто всем), ровно затем, чтобы он эту строку
+	// прочитал.
+	Ban    *time.Time
+	Reason string
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -67,16 +82,34 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		s.oops(w, r, "карточка участника", err)
 		return
 	}
+	// Свои скрытые публикации спрашиваются по ОЧЕРЕДИ модерации, а не обходом
+	// комментариев по автору: у участника с 138 тыс. реплик такой обход стоит
+	// 53 с и в срок веб-запроса не влезает вовсе (замер 18.08.2026).
+	var hidden []platform.MyCheck
+	if s.mod != nil {
+		hidden, err = s.mod.MyHidden(r.Context(), u.ID, myHiddenLimit)
+		if err != nil {
+			s.oops(w, r, "мои скрытые публикации", err)
+			return
+		}
+	}
+	var ban *time.Time
+	if u.Banned(time.Now()) {
+		ban = u.BannedUntil
+	}
 	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
 		page:    s.newPage(r, "Моя страница"),
 		Member:  card,
 		Docs:    docs,
 		Have:    have,
-		Hidden:  u.HideAll,
+		HideAll: u.HideAll,
 		Shadow:  u.Kind == platform.KindShadow,
 		Admin:   u.Role >= platform.RoleAdmin,
 		Avatar:  s.site != nil && platform.IsNGS(u.ID),
 		Problem: problem,
+		Hidden:  hidden,
+		Ban:     ban,
+		Reason:  u.BanReason,
 	})
 }
 

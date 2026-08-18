@@ -64,6 +64,9 @@ var funcs = template.FuncMap{
 	"site":        func() string { return SiteName },
 	"replyURL":    replyURL,
 	"rx":          reactBoxOf,
+	"modn":        modNote,
+	"modc":        modComment,
+	"dec":         decisionArg,
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
 	"smilelist":   smileList,
@@ -142,6 +145,10 @@ type page struct {
 	// CSRF — скрытое поле для форм, которые что-то меняют. Пусто у гостя: ему
 	// такие формы и не показываются.
 	CSRF string
+	// Moderator — показать в меню участника пункт «Модерация». Поле общей части
+	// страницы, а не отдельной: очередь смотрят между делом, из любого места, и
+	// искать вход в неё по памяти адреса модератор не должен.
+	Moderator bool
 }
 
 func (s *Server) newPage(r *http.Request, title string) page {
@@ -157,6 +164,7 @@ func (s *Server) newPage(r *http.Request, title string) page {
 	}
 	if u, ok := s.me(r); ok {
 		p.SignedIn, p.Nick, p.CSRF = true, u.Nick, csrfToken(s.session(r))
+		p.Moderator = u.Role >= platform.RoleModerator && s.mod != nil
 	}
 	return p
 }

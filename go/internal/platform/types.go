@@ -113,8 +113,12 @@ type User struct {
 	HideAll      bool
 	AnonymizedAt *time.Time
 	BannedUntil  *time.Time
-	CreatedAt    time.Time
-	LastSeenAt   *time.Time
+	// BanReason — за что запрещены публикации. Показывается САМОМУ забаненному:
+	// «вам сейчас нельзя» без объяснения — это то же молча исчезнувшее
+	// сообщение, только про человека целиком.
+	BanReason  string
+	CreatedAt  time.Time
+	LastSeenAt *time.Time
 }
 
 // Banned — человек забанен на момент at.

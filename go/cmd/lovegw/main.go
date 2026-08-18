@@ -50,6 +50,7 @@ import (
 	"lovegw/internal/mirror"
 	"lovegw/internal/news"
 	"lovegw/internal/platform"
+	"lovegw/internal/platmod"
 	"lovegw/internal/platout"
 	"lovegw/internal/platsink"
 	"lovegw/internal/store"
@@ -206,7 +207,18 @@ func usage() {
   lovegw secrets keygen                                                                          # новый ключ шифрования сессий
   lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
   lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ
-  lovegw alert  [-config config.json] [текст …]                                                  # сообщение владельцу в ЛС (без текста — со stdin)`)
+  lovegw alert  [-config config.json] [текст …]                                                  # сообщение владельцу в ЛС (без текста — со stdin)
+  lovegw web    [-config config.json]                                                            # веб-морда площадки
+  lovegw platform [-config config.json] migrate|doctor                                           # схема площадки и её состояние
+  lovegw platform [-config config.json] [-db lovegw.db] reconcile                                # сверка зеркала с площадкой (она же бэкфилл)
+  lovegw platform [-config config.json] [-limit N] media | avatar <id> …                         # добор байтов медиа; фото из анкеты НГС
+  lovegw platform [-config config.json] [-limit N] [-note ID] reply-scan                         # настоящее дерево ответов и пол из мобильной версии
+  lovegw platform [-config config.json] [-bind <user_id>] [-days N] invite | role <id> <user|moderator|admin>
+  lovegw platform [-config config.json] [-limit N] moderation                                    # очередь модерации и последние решения
+  lovegw platform [-config config.json] [-days N] [-reason "…"] ban <id> | unban <id>            # запрет писать
+  lovegw platform [-config config.json] [-out файл] export <id>                                  # выгрузка данных человека (право субъекта)
+  lovegw platform [-config config.json] -yes anonymize <id>                                      # обезличивание по требованию субъекта, НЕОБРАТИМО
+  lovegw platform [-config config.json] -archive archive.db import-archive|import-restored`)
 }
 
 // cmdRun — основной демон: зеркалирование ленты и комментариев в Telegram.
@@ -271,7 +283,7 @@ type daemon struct {
 	asrSvc     *asr.Service
 	plat       *platform.Platform // площадка: пул Postgres, закрывается в run
 	dm         *dmbot.Bot         // Telegram: бот команд (РюмкинЪ)
-	tgTalks    *dmbot.Bot // Telegram: бот переписки (talks_token), иначе = dm
+	tgTalks    *dmbot.Bot         // Telegram: бот переписки (talks_token), иначе = dm
 	tg         *tgx.Mirror
 	mx         *maxx.Mirror // MAX: бот зеркала — канал, чат обсуждения и ЛС-команды
 	maxTalks   *maxx.Mirror // MAX: бот переписки (talks_token), иначе = mx
@@ -735,6 +747,8 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 		core.SetPlatform(p, cfg.Platform.BaseURL)
 	}
 
+	d.setupModeration(p)
+
 	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
 		"reconcile", platsink.Interval, "outbound", platout.Interval,
 		"outbound_sinks", len(msgSinks), "мост_в_площадку", len(d.cores))
@@ -869,6 +883,43 @@ func (d *daemon) setupPulpit() error {
 		d.maxDM.SetPulpit(svc, cfg.Messengers.Max.AdminUserID)
 	}
 	return nil
+}
+
+// setupModeration — автомат модерации площадки (Ш7, пакет platmod).
+//
+// Служба поднимается ВСЕГДА, когда включена площадка, и это не небрежность: у
+// неё две работы, и вторая обязательна независимо от классификатора — доводить
+// проходы по авторам, не уложившиеся в срок веб-запроса (отзыв согласия по
+// 152-ФЗ исполняется «немедленно», а у участника с 138 тыс. реплик такой обход
+// стоит 53 с). Классификатор же подключается, только если он настроен и жив:
+// нет ключа Claude — очередь просто копится и читается человеком, а это рабочее
+// состояние, а не авария.
+func (d *daemon) setupModeration(p *platform.Platform) {
+	cfg, log := d.cfg, d.log
+	m := cfg.Platform.Moderation
+	var gen platmod.JSONGenerator
+	if m.Enabled {
+		c, err := llmClientFor(cfg, m.Model, m.Effort, time.Duration(m.TimeoutS)*time.Second)
+		if err != nil {
+			// Не отказ демона: модерация — не зеркало, и ронять канал из-за
+			// незаданного ключа нельзя. Очередь при этом жива.
+			log.Warn("автомат модерации не подключён", "err", err)
+		} else {
+			gen = c
+		}
+	}
+	svc := platmod.New(platmod.Config{
+		Model:         m.Model,
+		Interval:      time.Duration(m.IntervalS) * time.Second,
+		Batch:         m.BatchSize,
+		MaxAttempts:   m.MaxAttempts,
+		Timeout:       time.Duration(m.TimeoutS) * time.Second,
+		DailyRequests: m.DailyRequests,
+		FloodWindow:   time.Duration(m.FloodWindowS) * time.Second,
+		FloodMax:      m.FloodMax,
+		AlertSend:     fanOutAlerts(d.alerters),
+	}, p, gen, log)
+	d.starts = append(d.starts, svc.Run)
 }
 
 // run — фаза start: сборка и все Set*-инжекции позади, поллеры поднимаются

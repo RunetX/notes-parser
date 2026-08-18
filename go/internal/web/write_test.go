@@ -101,7 +101,7 @@ func writeServer(t *testing.T, st *fakeStore) (http.Handler, *fakeWriter, string
 		t.Fatal(err)
 	}
 	wr := &fakeWriter{}
-	return newFullServer(t, st, auth, wr, nil, Config{}), wr, token
+	return newFullServer(t, st, auth, wr, nil, nil, Config{}), wr, token
 }
 
 func noteStore() *fakeStore {

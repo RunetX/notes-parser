@@ -709,15 +709,33 @@ func (p *Platform) AnyAdmin(ctx context.Context) (int64, error) {
 	return id, nil
 }
 
-// SetRole меняет права. Руками из CLI: первого администратора назначить иначе
-// неоткуда, а раздача прав через веб — это Ш7.
-func (p *Platform) SetRole(ctx context.Context, id int64, role Role) error {
-	tag, err := p.pool.Exec(ctx, `UPDATE users SET role = $2 WHERE id = $1`, id, role)
+// SetRole меняет права.
+//
+// Первого администратора назначить можно только из командной строки — там
+// actor нулевой, и журнал честно показывает действие без автора. Дальше роли
+// раздаёт админ со страницы участника, и запись в audit_log обязательна: право
+// скрывать чужие слова выдаётся человеком человеку, и «кто дал» — часть этого
+// права.
+func (p *Platform) SetRole(ctx context.Context, actor Viewer, id int64, role Role) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("права пользователя %d: %w", id, err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	tag, err := tx.Exec(ctx, `UPDATE users SET role = $2 WHERE id = $1`, id, role)
 	if err != nil {
 		return fmt.Errorf("права пользователя %d: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("пользователь %d: %w", id, ErrNotFound)
+	}
+	if err := audit(ctx, tx, actor.UserID, ActionRole, UserSubject(id),
+		map[string]any{"role": int(role)}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("права пользователя %d: %w", id, err)
 	}
 	return nil
 }

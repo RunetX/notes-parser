@@ -413,7 +413,8 @@ func TestOurLockClosesThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("заметка: %v", err)
 	}
-	if err := p.SetThreadLocked(ctx, noteID, true); err != nil {
+	mod := Viewer{UserID: mustUser(t, p, "модератор"), Role: RoleModerator}
+	if err := p.SetThreadLocked(ctx, mod, noteID, true, "хватит"); err != nil {
 		t.Fatalf("замок: %v", err)
 	}
 	if _, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "второй"}); !errors.Is(err, ErrThreadLocked) {
@@ -482,13 +483,12 @@ func TestMediaPutIsIdempotent(t *testing.T) {
 	}
 }
 
-// Планы запросов — часть договора, а не деталь: молчаливый переезд ленты или
-// треда на полный перебор не проваливает ни один тест на поведение, а на живой
-// базе это отказ. Проверяем ровно тот SQL, который выполняется.
-func TestQueryPlansUseIndexes(t *testing.T) {
-	p := testPlatform(t)
+// seedForPlans заливает заготовку, на которой планировщик ведёт себя как на
+// живой базе. Общая для планов чтения и планов модератора: заготовка — часть
+// проверки, и две её копии однажды разъедутся.
+func seedForPlans(t *testing.T, p *Platform) {
+	t.Helper()
 	ctx := context.Background()
-
 	// Заливка идёт массовой вставкой, а не приёмом по одному: план запроса не
 	// зависит от того, как строки появились, а тысячи приёмов через туннель —
 	// это минуты ожидания вместо секунды.
@@ -513,6 +513,15 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		ANALYZE notes, comments, users, media`); err != nil {
 		t.Fatalf("заливка: %v", err)
 	}
+
+}
+
+// Планы запросов — часть договора, а не деталь: молчаливый переезд ленты или
+// треда на полный перебор не проваливает ни один тест на поведение, а на живой
+// базе это отказ. Проверяем ровно тот SQL, который выполняется.
+func TestQueryPlansUseIndexes(t *testing.T) {
+	p := testPlatform(t)
+	seedForPlans(t, p)
 
 	cases := []struct {
 		name  string

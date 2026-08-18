@@ -36,7 +36,7 @@ func avatarServer(t *testing.T, site Site, userID int64) (http.Handler, *fakeWri
 		}
 	}
 	wr := &fakeWriter{}
-	return newFullServer(t, &fakeStore{}, auth, wr, site, Config{}), wr, token
+	return newFullServer(t, &fakeStore{}, auth, wr, nil, site, Config{}), wr, token
 }
 
 // Нажатие доносит до ядра И ссылку, и байты: ссылка нужна, чтобы в следующий раз

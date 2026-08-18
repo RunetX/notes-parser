@@ -20,12 +20,12 @@ type querier interface {
 }
 
 const userColumns = `id, nick, avatar_sha, ngs_avatar_url, kind, role,
-	hide_all, anonymized_at, banned_until, created_at, last_seen_at`
+	hide_all, anonymized_at, banned_until, ban_reason, created_at, last_seen_at`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Nick, &u.AvatarSHA, &u.NGSAvatarURL, &u.Kind, &u.Role,
-		&u.HideAll, &u.AnonymizedAt, &u.BannedUntil, &u.CreatedAt, &u.LastSeenAt)
+		&u.HideAll, &u.AnonymizedAt, &u.BannedUntil, &u.BanReason, &u.CreatedAt, &u.LastSeenAt)
 	return u, err
 }
 

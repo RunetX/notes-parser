@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1 class="ttl">Журнал модерации</h1>
+<p class="fine">Журнал только дописывается. Решения автомата здесь наравне с
+решениями людей — без них нельзя понять, что он сделал, пока никто не смотрел.
+<a class="mlink" href="/mod">К очереди</a></p>
+
+{{if not .Entries}}
+<p class="empty">Записей пока нет.</p>
+{{end}}
+
+<ul class="modlog">
+{{range .Entries}}
+  <li class="lgi">
+    <span class="fine">{{when .At true}}</span>
+    <b class="lgact">{{.Action}}</b>
+    {{/* Пустой ник — не пропуск: так выглядит действие БЕЗ человека, то есть
+         автомат или команда администратора из консоли. Приписать его первому
+         попавшемуся админу было бы враньём именно там, где врать нельзя. */}}
+    <span class="lgwho">{{if .Nick}}{{.Nick}}{{else if .Actor}}№{{.Actor}}{{else}}автомат{{end}}</span>
+    {{if eq .Subject.Kind "user"}}
+      <a class="mlink" href="/mod/u/{{.Subject.ID}}">участник {{.Subject.ID}}</a>
+    {{else if eq .Subject.Kind "note"}}
+      <a class="mlink" href="/n/{{.Subject.ID}}">заметка {{.Subject.ID}}</a>
+    {{else}}
+      <span class="lgsub">{{.Subject.Kind}} {{.Subject.ID}}</span>
+    {{end}}
+    {{with index .Details "reason"}}<span class="lgwhy">{{.}}</span>{{end}}
+    {{with index .Details "category"}}<span class="mtag">{{.}}</span>{{end}}
+    {{with index .Details "until"}}<span class="fine">до {{.}}</span>{{end}}
+  </li>
+{{end}}
+</ul>
+{{end}}

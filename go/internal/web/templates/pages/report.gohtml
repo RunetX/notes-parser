@@ -1,0 +1,31 @@
+{{define "content"}}
+<h1 class="ttl">Жалоба</h1>
+
+{{if .Problem}}<p class="bad">{{.Problem}}</p>{{end}}
+
+{{/* Страница объясняет, что произойдёт дальше, и это не вежливость: без
+     объяснения «пожаловаться» читается как «удалить», а на деле это просьба к
+     живому человеку посмотреть. Чужая история — 10,7 млн реплик за тринадцать
+     лет — проверяется ТОЛЬКО так: классификатор по архиву не гоняется. */}}
+<p>Жалоба попадёт в очередь к модератору площадки. Автор не узнает, кто
+пожаловался. Публикация остаётся на месте, пока человек её не посмотрит.</p>
+
+<form method="post" action="/report" class="wform">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="kind" value="{{.Subject.Kind}}">
+  <input type="hidden" name="id" value="{{.Subject.ID}}">
+  <input type="hidden" name="note" value="{{.NoteID}}">
+  <label for="reason">Что не так</label>
+  <textarea id="reason" name="reason" rows="4" maxlength="500"
+            placeholder="Коротко: реклама, чужой телефон, угроза…"></textarea>
+  <div class="wact">
+    <button type="submit">Отправить</button>
+    <a class="alt" href="/n/{{.NoteID}}">Отмена</a>
+  </div>
+</form>
+
+<p class="fine">Ссора, грубость и обидное мнение — не повод: раздел так живёт с
+2004 года, и модерация в это не вмешивается. Модератор смотрит рекламу, чужие
+персональные данные, угрозы, вовлечение в наркотики и суицид, экстремизм и
+порнографию.</p>
+{{end}}

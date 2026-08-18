@@ -44,6 +44,10 @@
       </summary>
       <div class="acctmenu">
         <a href="/me">Мой профиль</a>
+        {{/* Вход в очередь — здесь же: её смотрят между делом, из любого места,
+             и помнить адрес наизусть модератор не должен. У остальных пункта
+             нет вовсе — существование закрытой двери само по себе сведения. */}}
+        {{if .Moderator}}<a href="/mod">Модерация</a>{{end}}
         <form method="post" action="/logout">
           <input type="hidden" name="back" value="{{.Back}}">
           <button type="submit">Выход</button>

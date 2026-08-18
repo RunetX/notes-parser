@@ -51,6 +51,20 @@
              самое, что проверит ядро, чтобы кнопка не отвечала отказом. */}}
         {{if .Editable}}<a class="editlink" href="/n/{{$n.ID}}/edit">Поправить</a>{{end}}
       </div>
+      {{template "modbar" (modn $)}}
+      {{if .CanModerate}}
+      {{/* Замок треда — наш, а не перенос отметки НГС «не актуальна»: та стоит у
+           62 % зеркальных заметок и появляется через минуты после публикации,
+           то есть запирать ею разговор значило бы открыть площадку в режиме
+           чтения ровно там, где он идёт. */}}
+      <form method="post" action="/mod/act" class="minline">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <input type="hidden" name="back" value="{{.Back}}">
+        <input type="hidden" name="note" value="{{$n.ID}}">
+        <button type="submit" name="do" value="{{if $n.Locked}}unlock{{else}}lock{{end}}" class="mbtn">
+          {{if $n.Locked}}Открыть обсуждение{{else}}Закрыть обсуждение{{end}}</button>
+      </form>
+      {{end}}
     </div>
   </div>
 </div>
@@ -63,7 +77,7 @@
 
 <ul class="thread{{if .Linear}} linear{{end}}">
 {{range .Comments}}
-  <li class="c {{depth .Depth}}" id="c{{.ID}}" data-depth="{{.Depth}}">
+  <li class="c {{depth .Depth}}{{if ne .Status 0}} chid{{end}}" id="c{{.ID}}" data-depth="{{.Depth}}">
     <div class="cava">{{template "avatar" (av .Author.AvatarURL .Name)}}</div>
     <div class="cbody">
       <div class="chead">
@@ -79,6 +93,7 @@
         {{with index $.Replies .ID}}<span class="rcount">Ответы <b>{{.}}</b></span>{{end}}
       </p>
       {{end}}
+      {{template "modbar" (modc $ .)}}
     </div>
   </li>
 {{end}}

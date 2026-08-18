@@ -92,18 +92,19 @@ func quietLog() *slog.Logger {
 
 func newTestServer(t *testing.T, st Store, cfg Config) http.Handler {
 	t.Helper()
-	return newFullServer(t, st, newFakeAuth(), nil, nil, cfg)
+	return newFullServer(t, st, newFakeAuth(), nil, nil, nil, cfg)
 }
 
-// newFullServer — сервер со всеми зависимостями. site == nil означает «вход по
-// анкете недоступен»: это рабочее состояние площадки после смерти НГС.
-func newFullServer(t *testing.T, st Store, auth Auth, wr Writer, site Site, cfg Config) http.Handler {
+// newFullServer — сервер со всеми зависимостями. nil у site означает «вход по
+// анкете недоступен» (рабочее состояние площадки после смерти НГС), nil у mod —
+// «модерации нет»: страницы /mod не существует, кнопок под репликами тоже.
+func newFullServer(t *testing.T, st Store, auth Auth, wr Writer, mod Moderator, site Site, cfg Config) http.Handler {
 	t.Helper()
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1"
 	}
 	cfg.Log = quietLog()
-	srv := New(cfg, st, auth, wr, site)
+	srv := New(cfg, st, auth, wr, mod, site)
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv.routes()
 }
@@ -217,7 +218,7 @@ func TestLoginWithoutSiteOffersInviteOnly(t *testing.T) {
 func TestLoginByProfileCode(t *testing.T) {
 	auth := newFakeAuth()
 	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
-	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
 
 	w := do(h, post(t, "/login", url.Values{"profile": {"https://love.ngs.ru/profile/1493279/"}}))
 	if w.Code != http.StatusOK {
@@ -261,7 +262,7 @@ func TestLoginByProfileCode(t *testing.T) {
 func TestVerificationNeedsBothHalves(t *testing.T) {
 	auth := newFakeAuth()
 	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
-	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
 
 	do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
 	site.prof.AboutMe = auth.codes[testProfileID] // код в анкете есть
@@ -277,7 +278,7 @@ func TestVerificationNeedsBothHalves(t *testing.T) {
 }
 
 func TestLoginRejectsCrossSitePost(t *testing.T) {
-	h := newFullServer(t, &fakeStore{}, newFakeAuth(), nil, &fakeSite{}, Config{})
+	h := newFullServer(t, &fakeStore{}, newFakeAuth(), nil, nil, &fakeSite{}, Config{})
 	r := httptest.NewRequest("POST", "/login", strings.NewReader("profile=1493279"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "cross-site")
@@ -287,7 +288,7 @@ func TestLoginRejectsCrossSitePost(t *testing.T) {
 }
 
 func TestLoginTellsWhenProfileIsMissing(t *testing.T) {
-	h := newFullServer(t, &fakeStore{}, newFakeAuth(), nil, &fakeSite{missing: true}, Config{})
+	h := newFullServer(t, &fakeStore{}, newFakeAuth(), nil, nil, &fakeSite{missing: true}, Config{})
 	w := do(h, post(t, "/login", url.Values{"profile": {"999999"}}))
 	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "нет") {
 		t.Fatalf("несуществующая анкета: код %d", w.Code)
@@ -297,7 +298,7 @@ func TestLoginTellsWhenProfileIsMissing(t *testing.T) {
 // Приглашение — третий путь и единственный, переживающий смерть НГС.
 func TestInviteLetsIn(t *testing.T) {
 	auth := newFakeAuth()
-	h := newFullServer(t, &fakeStore{}, auth, nil, nil, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{})
 	w := do(h, post(t, "/login/invite", url.Values{"code": {testInvite}, "nick": {"Новенький"}}))
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/consent" {
 		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
@@ -320,7 +321,7 @@ func TestLoginByTalksCode(t *testing.T) {
 	auth := newFakeAuth()
 	var sent []string
 	site := talksSite{&fakeSite{prof: SiteProfile{Nick: testNick, PassportID: 280703879}, sent: &sent}}
-	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
 
 	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
 	if w.Code != http.StatusOK {
@@ -381,7 +382,7 @@ func TestFailedTalksSendFallsBackToProfileField(t *testing.T) {
 		sent:    &sent,
 		sendErr: errors.New("НГС не принял сообщение"),
 	}}
-	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
 
 	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
 	if w.Code != http.StatusOK {
@@ -402,7 +403,7 @@ func TestFailedTalksSendFallsBackToProfileField(t *testing.T) {
 func TestShownCodeIsNotAcceptedBackAsInput(t *testing.T) {
 	auth := newFakeAuth()
 	site := &fakeSite{prof: SiteProfile{Nick: testNick}} // слать нечем — запасной путь
-	h := newFullServer(t, &fakeStore{}, auth, nil, site, Config{})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
 
 	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
 	code := auth.codes[testProfileID]
@@ -428,7 +429,7 @@ func signedInServer(t *testing.T) (http.Handler, *fakeAuth, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newFullServer(t, &fakeStore{}, auth, nil, nil, Config{}), auth, token
+	return newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{}), auth, token
 }
 
 // Два согласия спрашиваются ПО ОДНОМУ: экран с двумя галочками — ровно то, что

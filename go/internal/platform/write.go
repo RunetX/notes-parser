@@ -129,14 +129,23 @@ func enforceRate(ctx context.Context, q querier, query string, authorID int64, n
 // enqueueCheck ставит публикацию в очередь проверки. Той же транзакцией, что и
 // сама публикация: «опубликовано, но в очередь не попало» — состояние, которого
 // не должно быть вовсе.
-func enqueueCheck(ctx context.Context, q querier, kind string, id, authorID int64) error {
+//
+// noteID хранится рядом, хотя у комментария он выводится из самой строки: по
+// нему очередь строит ссылку на место в треде, а лезть за ней в comments на
+// каждую строку показа незачем — заметка у комментария не меняется никогда.
+//
+// Повторная постановка (правка заметки в окне) СБРАСЫВАЕТ и решение человека:
+// текст стал другим, и прежний вердикт относился не к нему. Обжалование при
+// этом тоже снимается — обжаловать нечего, публикация снова видима.
+func enqueueCheck(ctx context.Context, q querier, kind string, id, noteID, authorID int64) error {
 	_, err := q.Exec(ctx, `
-		INSERT INTO moderation_queue (subject_kind, subject_id, author_id)
-		VALUES ($1, $2, $3)
+		INSERT INTO moderation_queue (subject_kind, subject_id, note_id, author_id)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (subject_kind, subject_id) DO UPDATE
-		   SET queued_at = now(), checked_at = NULL, verdict = NULL,
-		       category = '', reason = '', quote = ''`,
-		kind, id, nullID(authorID))
+		   SET queued_at = now(), checked_at = NULL, verdict = NULL, attempts = 0,
+		       category = '', reason = '', quote = '', model = '', prompt_sha = NULL,
+		       appealed_at = NULL, decided_at = NULL, decided_by = NULL, decision = NULL`,
+		kind, id, nullID(noteID), nullID(authorID))
 	return wrapf(err, "очередь проверки %s %d", kind, id)
 }
 
@@ -200,7 +209,7 @@ func (p *Platform) EditNote(ctx context.Context, userID, noteID int64, body stri
 		return fmt.Errorf("правка заметки %d: %w", noteID, err)
 	}
 	// Текст стал другим — прежняя проверка к нему больше не относится.
-	if err := enqueueCheck(ctx, tx, SubjectNote, noteID, userID); err != nil {
+	if err := enqueueCheck(ctx, tx, SubjectNote, noteID, noteID, userID); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -249,17 +258,4 @@ func cleanNick(s string) (string, error) {
 		}
 	}
 	return s, nil
-}
-
-// SetThreadLocked закрывает и открывает обсуждение. Наше решение, а не перенос
-// отметки НГС: та живёт в comments_closed и остаётся надписью.
-func (p *Platform) SetThreadLocked(ctx context.Context, noteID int64, locked bool) error {
-	tag, err := p.pool.Exec(ctx, `UPDATE notes SET locked = $2 WHERE id = $1`, noteID, locked)
-	if err != nil {
-		return fmt.Errorf("замок обсуждения %d: %w", noteID, err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
-	}
-	return nil
 }

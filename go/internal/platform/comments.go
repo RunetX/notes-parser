@@ -95,6 +95,26 @@ const flatQuery = `
 	 ORDER BY c.id DESC
 	 LIMIT $3 OFFSET $4`
 
+// Те же два вида, но глазами МОДЕРАТОРА: к видимому добавляется скрытое
+// модерацией (статус 2). Отдельными константами, а не параметром `OR $n`, по
+// двум причинам сразу. Первая техническая: условие с OR планировщик не сводит к
+// индексу, и лента с частичным индексом notes_feed уехала бы на полный перебор
+// — то есть горячий путь чтения платил бы за редкую роль. Вторая по существу:
+// скрытое АВТОРОМ (отзыв согласия, статус 1) и обезличенное (3) модератору не
+// показываются вовсе — это исполнение права субъекта, а не спрятанный текст,
+// который он вправе пересмотреть.
+const threadModQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.status IN (0, 2)
+	 ORDER BY c.path COLLATE "C"
+	 LIMIT $3`
+
+const flatModQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.status IN (0, 2)
+	 ORDER BY c.id DESC
+	 LIMIT $3 OFFSET $4`
+
 // MaxThreadRows — потолок строк древовидного вида. Не постраничка, а
 // предохранитель: дерево показывается ЦЕЛИКОМ, как на НГС, — ветка, обрезанная
 // на середине, перестаёт быть деревом, и «дальше» в ней означало бы «продолжите
@@ -106,7 +126,11 @@ const MaxThreadRows = 5000
 // (note_id, path). Сортировки в памяти нет — порядок даёт сам индекс, потому что
 // путь устроен так, что побайтовое сравнение и есть обход дерева.
 func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64) ([]CommentView, error) {
-	rows, err := p.pool.Query(ctx, threadQuery, v.UserID, noteID, MaxThreadRows)
+	q := threadQuery
+	if v.CanModerate() {
+		q = threadModQuery
+	}
+	rows, err := p.pool.Query(ctx, q, v.UserID, noteID, MaxThreadRows)
 	if err != nil {
 		return nil, fmt.Errorf("тред заметки %d: %w", noteID, err)
 	}
@@ -129,7 +153,11 @@ func (p *Platform) Flat(ctx context.Context, v Viewer, noteID int64, offset, lim
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := p.pool.Query(ctx, flatQuery, v.UserID, noteID, limit, offset)
+	q := flatQuery
+	if v.CanModerate() {
+		q = flatModQuery
+	}
+	rows, err := p.pool.Query(ctx, q, v.UserID, noteID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("комментарии заметки %d: %w", noteID, err)
 	}
@@ -346,7 +374,7 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	if err := bumpNote(ctx, tx, in.NoteID, now); err != nil {
 		return 0, err
 	}
-	if err := enqueueCheck(ctx, tx, SubjectComment, id, in.AuthorID); err != nil {
+	if err := enqueueCheck(ctx, tx, SubjectComment, id, in.NoteID, in.AuthorID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

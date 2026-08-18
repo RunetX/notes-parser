@@ -269,7 +269,7 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 		RETURNING id`, in.AuthorID, in.Anonymous, body).Scan(&id); err != nil {
 		return 0, fmt.Errorf("публикация заметки: %w", err)
 	}
-	if err := enqueueCheck(ctx, tx, SubjectNote, id, in.AuthorID); err != nil {
+	if err := enqueueCheck(ctx, tx, SubjectNote, id, id, in.AuthorID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

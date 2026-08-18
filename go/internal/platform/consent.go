@@ -264,6 +264,7 @@ func (p *Platform) GrantConsent(ctx context.Context, userID int64, kind string, 
 	// пройти экран согласий вовсе: у одного 138 тыс. реплик, и запрос не
 	// укладывался в срок веб-морды (5 с). FOR UPDATE держит строку до конца
 	// транзакции: между «был ли поднят» и «опускаем» не должен влезть отзыв.
+	unhide := false
 	if kind == ConsentDistribution {
 		var hidden bool
 		if err := tx.QueryRow(ctx,
@@ -271,17 +272,19 @@ func (p *Platform) GrantConsent(ctx context.Context, userID int64, kind string, 
 			return fmt.Errorf("согласие %s: %w", kind, err)
 		}
 		if hidden {
-			if _, err := tx.Exec(ctx,
-				`UPDATE users SET hide_all = false WHERE id = $1`, userID); err != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE users SET hide_all = false, visibility_dirty = true
+				 WHERE id = $1`, userID); err != nil {
 				return fmt.Errorf("согласие %s: %w", kind, err)
 			}
-			if err := setOwnVisibility(ctx, tx, userID, StatusVisible); err != nil {
-				return fmt.Errorf("согласие %s: %w", kind, err)
-			}
+			unhide = true
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("согласие %s: %w", kind, err)
+	}
+	if unhide {
+		p.settleOwnVisibility(ctx, userID, StatusVisible)
 	}
 	return nil
 }
@@ -314,11 +317,11 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 		 WHERE user_id = $1 AND kind = ANY($2) AND revoked_at IS NULL`, userID, kinds); err != nil {
 		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE users SET hide_all = true WHERE id = $1`, userID); err != nil {
-		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
-	}
-	if err := setOwnVisibility(ctx, tx, userID, StatusHiddenOwner); err != nil {
+	// Рубильник и флаг «проход не доведён» поднимаются ОДНОЙ транзакцией с
+	// самим отзывом: дальше, что бы ни случилось с процессом, база знает, что
+	// публикации ещё не приведены в соответствие, и служба доведёт это сама.
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET hide_all = true, visibility_dirty = true WHERE id = $1`, userID); err != nil {
 		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 	}
 	if kind == ConsentProcessing {
@@ -335,53 +338,26 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 	}
+	p.settleOwnVisibility(ctx, userID, StatusHiddenOwner)
 	return nil
 }
 
-// setOwnVisibility прячет или возвращает ВСЕ публикации человека.
+// settleOwnVisibility доводит публикации человека до состояния рубильника,
+// сколько успеет в бюджет формы, а хвост оставляет фоновой службе.
 //
-// Рубильник исполняется записью статусов, а не проверкой на чтении, и это
-// решение зафиксировано в комментарии к feedQuery: иначе отзыв согласия стоил
-// бы соединения с users на каждой странице ленты — и однажды его бы оттуда
-// убрали «для скорости», тихо сломав исполнение закона.
+// Отдельным шагом ПОСЛЕ транзакции согласия, а не внутри неё, и это не мелочь:
+// проход по автору с 138 тыс. реплик стоит десятки секунд (см. visibility.go), и
+// одна транзакция на всё это время держала бы под замком строки заметок ровно в
+// тех тредах, где сейчас разговаривают. Само согласие при этом уже записано —
+// оно и есть юридический факт, а статусы это его исполнение.
 //
-// Скрытое МОДЕРАЦИЕЙ (StatusHiddenMod) не трогается ни в ту, ни в другую
-// сторону: возврат согласия не отменяет решения модератора, а его отзыв не
-// должен присваивать модераторскому скрытию чужую причину.
-func setOwnVisibility(ctx context.Context, q querier, userID int64, to Status) error {
-	from, delta := StatusVisible, -1
-	if to == StatusVisible {
-		from, delta = StatusHiddenOwner, 1
+// Ошибка прохода наверх не идёт: рубильник поднят, флаг стоит, и служба доведёт
+// дело сама. Сказать человеку «сломалось» после того, как согласие записано, —
+// значит соврать ему о том, что произошло.
+func (p *Platform) settleOwnVisibility(ctx context.Context, userID int64, to Status) {
+	done, err := setOwnVisibility(ctx, p.pool, userID, to, webVisibilityBudget)
+	if err != nil || !done {
+		return
 	}
-	if _, err := q.Exec(ctx,
-		`UPDATE notes SET status = $2 WHERE author_id = $1 AND status = $3`, userID, to, from); err != nil {
-		return err
-	}
-	// Счётчик комментариев денормализован (лента не делает COUNT(*)), поэтому
-	// после скрытия его надо поправить — иначе под заметкой останется
-	// «Комментарии 42», а видно будет сорок.
-	//
-	// Правится он РАЗНИЦЕЙ, тем же способом, что и растёт (bumpNote), а не
-	// пересчётом: пересчёт брал count(*) в КАЖДОМ треде, где человек когда-либо
-	// отвечал, — у участника с 14 тыс. таких тредов это минуты на таблице в
-	// 10,7 млн строк, то есть отказ вместо согласия (18.08.2026). Разница
-	// считается по тем же строкам, которые только что сдвинулись, поэтому
-	// стоит ровно столько же, сколько сам сдвиг.
-	//
-	// Считаем по RETURNING, а не по самой таблице: снимок у всех частей запроса
-	// общий, и count(*) по comments здесь увидел бы статусы ДО сдвига.
-	// Разошедшийся счётчик чинится RecountComments — он для этого и есть.
-	_, err := q.Exec(ctx, `
-		WITH moved AS (
-		    UPDATE comments SET status = $2
-		     WHERE author_id = $1 AND status = $3
-		    RETURNING note_id
-		), touched AS (
-		    SELECT note_id, count(*) AS n FROM moved GROUP BY note_id
-		)
-		UPDATE notes n
-		   SET comment_count = greatest(0, n.comment_count + $4::int * t.n)
-		  FROM touched t
-		 WHERE n.id = t.note_id`, userID, to, from, delta)
-	return err
+	_ = markVisibilityDirty(ctx, p.pool, userID, false) //nolint:errcheck // флаг снимет служба
 }

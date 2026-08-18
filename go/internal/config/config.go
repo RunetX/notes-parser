@@ -199,6 +199,47 @@ type Platform struct {
 	// одного — канал просто недоступен, и вход уходит на запасной путь (код в
 	// поле «о себе»); это штатное состояние, а не авария.
 	SiteAccount string `json:"site_account,omitempty"`
+	// Moderation — автомат модерации (Ш7, пакет platmod).
+	Moderation Moderation `json:"moderation"`
+}
+
+// Moderation — автомат модерации площадки: он снимает ОБЪЁМ, решения о людях
+// остаются человеку (подробности — в шапке internal/platmod).
+//
+// Выключен по умолчанию, и это не осторожность ради осторожности: включённый
+// автомат тратит деньги на каждую публикацию, а очередь модератора работает и
+// без него — просто наполняется жалобами, а не мнениями машины.
+//
+// Инструменты модератора (скрыть, вернуть, запретить писать, журнал) от этой
+// секции НЕ зависят вовсе: они часть ядра и морды.
+type Moderation struct {
+	Enabled bool `json:"enabled"`
+	// Model — чем проверять. По умолчанию Haiku 4.5 (`claude-haiku-4-5`, $1/$5
+	// за млн токенов), а не общая модель из секции llm: это ТРИАЖ по закрытому
+	// списку, и решение владельца записано в бэклоге прямо — «триаж дешёвой
+	// моделью, дорогая только на сомнительной полосе».
+	//
+	// Отдельно от llm.model ещё и потому, что дайджест с амвоном живут на
+	// claude-opus-5: одно поле на всех означало бы либо дорогой триаж, либо
+	// дешёвый дайджест.
+	Model string `json:"model"`
+	// Effort — сколько модели думать. Пусто по умолчанию, и менять это, не
+	// сменив модель, НЕЛЬЗЯ: Haiku 4.5 параметра effort не принимает вовсе и
+	// отвечает на него ошибкой запроса.
+	Effort string `json:"effort"`
+	// IntervalS — как часто заглядываем в очередь; BatchSize — сколько
+	// публикаций в одном запросе к модели (пачкой, потому что правила занимают
+	// около тысячи токенов, а реплика сотню); DailyRequests — потолок ЗАПРОСОВ
+	// в сутки, прямая единица счёта денег.
+	IntervalS     int `json:"interval_s"`
+	BatchSize     int `json:"batch_size"`
+	DailyRequests int `json:"daily_requests"`
+	TimeoutS      int `json:"timeout_s"`
+	MaxAttempts   int `json:"max_attempts"`
+	// FloodWindowS и FloodMax — шторм одинаковых сообщений. Считает его КОД, а
+	// не модель: ей показывают одну реплику, а нарушение состоит в повторе.
+	FloodWindowS int `json:"flood_window_s"`
+	FloodMax     int `json:"flood_max"`
 }
 
 type Config struct {
@@ -325,6 +366,20 @@ func Load(path string) (*Config, error) {
 		Platform: Platform{
 			Listen:   ":8080",
 			MediaDir: "data/media",
+			// Автомат модерации выключен по умолчанию: он тратит деньги на
+			// каждую публикацию, а очередь модератора живёт и без него.
+			// Модель — дешёвая: это триаж по закрытому списку, и effort ей не
+			// передаётся вовсе (Haiku 4.5 отвечает на него ошибкой).
+			Moderation: Moderation{
+				Model:         "claude-haiku-4-5",
+				IntervalS:     30,
+				BatchSize:     10,
+				DailyRequests: 500,
+				TimeoutS:      90,
+				MaxAttempts:   3,
+				FloodWindowS:  3600,
+				FloodMax:      3,
+			},
 		},
 	}
 
@@ -474,7 +529,14 @@ func (c *Config) applyPlatformEnv() error {
 	envString(&c.Platform.Operator, "LOVEGW_PLATFORM_OPERATOR")
 	envString(&c.Platform.Contact, "LOVEGW_PLATFORM_CONTACT")
 	envString(&c.Platform.SiteAccount, "LOVEGW_PLATFORM_SITE_ACCOUNT")
-	return nil
+	// Автомат модерации гасится с хоста тем же рычагом, что и амвон: остановить
+	// расходы должно быть можно, не пересобирая конфиг, который смонтирован в
+	// контейнер файлом.
+	if err := envBool(&c.Platform.Moderation.Enabled, "LOVEGW_MODERATION_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.Platform.Moderation.Model, "LOVEGW_MODERATION_MODEL")
+	return envInt(&c.Platform.Moderation.DailyRequests, "LOVEGW_MODERATION_DAILY_REQUESTS")
 }
 
 // envString переопределяет значение, если переменная задана и непуста.

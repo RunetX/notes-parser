@@ -523,6 +523,63 @@ span.rxb { cursor: default; }
 .oops .code { font-size: 40px; margin: 0; color: var(--meta); }
 .oops .msg { margin: 4px 0 18px; }
 
+/* ---------------------------------------------------------------- модерация */
+
+/* Полоска действий под публикацией. Мелкая и приглушённая намеренно: она стоит
+   под КАЖДОЙ репликой, и если её видно так же, как текст, страница перестаёт
+   быть разговором и становится пультом. */
+.modbar { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.minline { display: inline-flex; gap: 6px; align-items: center; margin: 6px 0 0; }
+.mbtn {
+  font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--btn); color: var(--ink);
+}
+.mbtn.danger { border-color: var(--female); color: var(--female); }
+.mlink { font-size: 12px; color: var(--meta); }
+.mtag {
+  font-size: 11px; color: var(--meta); border: 1px solid var(--rule);
+  border-radius: 3px; padding: 1px 6px;
+}
+.mtag.warnbadge { border-color: var(--accent); color: var(--accent); }
+
+/* Скрытая модерацией реплика видна ТОЛЬКО модератору (запрос отдаёт её лишь
+   ему), и в дереве она обязана отличаться с одного взгляда — иначе он вернёт
+   её, приняв за живую, или скроет дважды. */
+.chid { opacity: .55; }
+.chid .text { text-decoration-line: line-through; text-decoration-color: var(--rule); }
+
+.modsum { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; margin: 12px 0 18px; }
+.modq, .myhid { list-style: none; margin: 0; padding: 0; }
+.mitem { border-top: 1px solid var(--rule); padding: 12px 0; }
+.mitem.mhid { opacity: .8; }
+.mhead { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+.mwhy { margin: 6px 0 0; }
+.mquote {
+  margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--female);
+  color: var(--meta);
+}
+.mrep { margin: 4px 0 0; color: var(--meta); font-size: 13px; }
+/* Текст показывается ЦЕЛИКОМ и с сохранением переносов: решать по обрезанной
+   цитате — ровно та ошибка, ради которой кнопки продублированы на странице
+   заметки. */
+.mtext { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mdec { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0 0; }
+.mreason, .mdays, .mrole {
+  font: inherit; font-size: 13px; padding: 5px 8px; flex: 1 1 16rem;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--card); color: var(--ink);
+}
+.mdays { flex: 0 0 5rem; }
+.mrole { flex: 0 0 12rem; }
+
+.modlog { list-style: none; margin: 0; padding: 0; }
+.lgi {
+  border-top: 1px solid var(--rule); padding: 6px 0; font-size: 13px;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+}
+.lgact { font-weight: 600; }
+.lgwho { color: var(--meta); }
+.lgwhy { color: var(--meta); }
+
 /* ---------------------------------------------------------------- подвал */
 
 .foot { flex: 0 0 auto; border-top: 1px solid var(--rule); background: var(--card); padding: 12px 0 24px; }

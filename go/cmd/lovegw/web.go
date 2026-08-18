@@ -88,7 +88,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 		MediaDir: cfg.Platform.MediaDir,
 		Operator: operatorOf(cfg),
 		Log:      log,
-	}, pf, pf, webWriter{Platform: pf, media: media}, site)
+	}, pf, pf, webWriter{Platform: pf, media: media}, pf, site)
 	return srv.Run(ctx)
 }
 

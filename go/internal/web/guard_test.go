@@ -234,7 +234,7 @@ func TestОборванныйЗапросНеПишетОшибку(t *testing.T
 	srv := New(Config{
 		BaseURL: "http://127.0.0.1",
 		Log:     slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	}, &fakeStore{total: 1}, auth, nil, nil)
+	}, &fakeStore{total: 1}, auth, nil, nil, nil)
 	t.Cleanup(func() { _ = srv.Close() })
 
 	r := from(t, "GET", "/", "203.0.113.51")

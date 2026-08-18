@@ -113,7 +113,7 @@ func TestReactRefusalKeepsNotePage(t *testing.T) {
 
 // Гость нажать не может: путь записи у реакции ровно тот же, что у реплики.
 func TestReactRequiresMember(t *testing.T) {
-	h := newFullServer(t, reactStore(), newFakeAuth(), &fakeWriter{}, nil, Config{})
+	h := newFullServer(t, reactStore(), newFakeAuth(), &fakeWriter{}, nil, nil, Config{})
 	w := do(h, post(t, "/n/312811/react", url.Values{"code": {"agree"}}))
 	if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
 		t.Errorf("гостю ответили %d", w.Code)

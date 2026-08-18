@@ -42,6 +42,11 @@ var platformSubcommands = map[string]bool{
 	"invite":          true,
 	"role":            true,
 	"import-archive":  true,
+	"moderation":      true,
+	"anonymize":       true,
+	"export":          true,
+	"ban":             true,
+	"unban":           true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
@@ -58,6 +63,9 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	onlyNotes := fs.Int("notes", 0, "import-archive / import-restored: взять только столько заметок (0 — все)")
 	keepIdx := fs.Bool("keep-indexes", false, "import-archive: не снимать индексы comments")
 	dry := fs.Bool("dry-run", false, "import-archive / import-restored: посчитать, ничего не записывая")
+	out := fs.String("out", "", "export: файл выгрузки (пусто — stdout)")
+	reason := fs.String("reason", "", "ban / unban: причина, её увидит сам человек")
+	yes := fs.Bool("yes", false, "anonymize: подтвердить необратимую операцию")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -114,10 +122,30 @@ func cmdPlatform(ctx context.Context, args []string) error {
 			return fmt.Errorf("id участника %q: %w", tail[0], err)
 		}
 		return platformRole(ctx, cfg, id, tail[1])
+	case "moderation":
+		return platformModeration(ctx, cfg, *limit)
+	case "anonymize":
+		id, err := oneUserID(tail, "platform anonymize <id участника> -yes")
+		if err != nil {
+			return err
+		}
+		return platformAnonymize(ctx, cfg, id, *yes)
+	case "export":
+		id, err := oneUserID(tail, "platform export <id участника> [-out файл]")
+		if err != nil {
+			return err
+		}
+		return platformExport(ctx, cfg, id, *out)
+	case "ban", "unban":
+		id, err := oneUserID(tail, "platform "+sub+" <id участника> [-days N] [-reason «…»]")
+		if err != nil {
+			return err
+		}
+		return platformBan(ctx, cfg, id, sub == "ban", *days, *reason)
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
 			"(migrate, doctor, reconcile, media, avatar, reply-scan, invite, role, " +
-			"import-archive, import-restored)")
+			"moderation, ban, unban, anonymize, export, import-archive, import-restored)")
 	}
 }
 
@@ -423,7 +451,10 @@ func platformRole(ctx context.Context, cfg *config.Config, id int64, role string
 	}
 	defer p.Close()
 
-	if err := p.SetRole(ctx, id, r); err != nil {
+	// Актор нулевой намеренно: команду даёт администратор из консоли, и
+	// приписывать действие какому-нибудь живому админу было бы враньём в
+	// журнале — там честнее пустая строка «без автора».
+	if err := p.SetRole(ctx, platform.Viewer{}, id, r); err != nil {
 		return err
 	}
 	u, err := p.UserByID(ctx, id)

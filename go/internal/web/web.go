@@ -156,8 +156,9 @@ type Server struct {
 	cfg   Config
 	st    Store
 	auth  Auth
-	wr    Writer // nil — площадка только на чтение
-	site  Site   // nil — вход по анкете НГС недоступен
+	wr    Writer    // nil — площадка только на чтение
+	mod   Moderator // nil — модерации нет: ни /mod, ни кнопок под репликами
+	site  Site      // nil — вход по анкете НГС недоступен
 	log   *slog.Logger
 	http  *http.Server
 	media *mediaServer // nil, если каталог не задан
@@ -172,7 +173,7 @@ type Server struct {
 	secure bool
 }
 
-func New(cfg Config, st Store, auth Auth, wr Writer, site Site) *Server {
+func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *Server {
 	log := cfg.Log
 	if log == nil {
 		log = slog.Default()
@@ -182,6 +183,7 @@ func New(cfg Config, st Store, auth Auth, wr Writer, site Site) *Server {
 		st:     st,
 		auth:   auth,
 		wr:     wr,
+		mod:    mod,
 		site:   site,
 		log:    log,
 		guard:  newGuard(log),
@@ -241,6 +243,17 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /n/{id}/edit", s.handleUpdateNote)
 	mux.HandleFunc("POST /n/{id}/reply", s.handleCreateComment)
 	mux.HandleFunc("POST /n/{id}/react", s.handleReact)
+	// Модерация. Скрытие и возврат — единственные способности, которых нет у
+	// участника; правки чужого текста среди них по-прежнему нет, и это решение,
+	// а не недоделка: тихая правка под чужим ником хуже удаления.
+	mux.HandleFunc("GET /mod", s.handleMod)
+	mux.HandleFunc("GET /mod/log", s.handleModLog)
+	mux.HandleFunc("POST /mod/act", s.handleModAct)
+	mux.HandleFunc("GET /mod/u/{id}", s.handleModUser)
+	mux.HandleFunc("POST /mod/u/{id}", s.handleModUserAct)
+	mux.HandleFunc("GET /report", s.handleReport)
+	mux.HandleFunc("POST /report", s.handleReportSubmit)
+	mux.HandleFunc("POST /appeal", s.handleAppeal)
 	if s.media != nil {
 		mux.Handle("GET /media/", http.StripPrefix("/media/", s.media))
 	}

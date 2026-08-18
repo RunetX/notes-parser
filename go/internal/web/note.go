@@ -48,6 +48,10 @@ type notePage struct {
 	// CanWrite — форма ответа показывается вошедшему участнику. Гостю вместо неё
 	// приглашение войти: «читать можно всем» не значит «писать могут все».
 	CanWrite bool
+	// CanModerate — под каждой репликой видны кнопки «скрыть» / «вернуть», а в
+	// дереве — уже скрытое. Модератор работает там, где читает: решать по цитате
+	// в очереди, не видя разговора вокруг, — значит путать ссору с угрозой.
+	CanModerate bool
 	// Editable — своя заметка ещё в окне правки.
 	Editable bool
 	Compose  compose
@@ -93,7 +97,13 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 	// Скрытая заметка для читателя просто отсутствует. Говорить «она есть, но
 	// спрятана» — значит показывать работу модерации посторонним, и это же
 	// правило действует при публикации комментария в ядре.
-	if note.Status != platform.StatusVisible {
+	//
+	// Модератору скрытое МОДЕРАЦИЕЙ видно: иначе вернуть его можно было бы только
+	// из очереди, а после решения по очереди страница отвечала бы ему «нет такой
+	// заметки». Скрытое АВТОРОМ (отзыв согласия) и обезличенное не показываются
+	// никому — это исполнение права субъекта, а не спор о содержании.
+	canMod := v.CanModerate() && s.mod != nil
+	if note.Status != platform.StatusVisible && !(canMod && note.Status == platform.StatusHiddenMod) {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
 		return
 	}
@@ -114,15 +124,20 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		return
 	}
 	p := notePage{
-		page:     s.newPage(r, noteTitle(note.Body)),
-		Note:     note,
-		Images:   images,
-		Linear:   linear,
-		TreeURL:  noteURL(id, false, 1),
-		FlatURL:  noteURL(id, true, 1),
-		CanWrite: signedIn && me.Kind == platform.KindMember && !note.Locked && s.wr != nil,
-		Editable: note.Editable(time.Now()),
-		Compose:  form,
+		page:    s.newPage(r, noteTitle(note.Body)),
+		Note:    note,
+		Images:  images,
+		Linear:  linear,
+		TreeURL: noteURL(id, false, 1),
+		FlatURL: noteURL(id, true, 1),
+		// Под СКРЫТОЙ заметкой формы ответа нет ни у кого, включая модератора:
+		// ядро такой комментарий не примет (для пишущего скрытая заметка просто
+		// отсутствует), а форма, отвечающая отказом, хуже её отсутствия.
+		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil &&
+			!note.Locked && note.Status == platform.StatusVisible,
+		CanModerate: canMod,
+		Editable:    note.Editable(time.Now()),
+		Compose:     form,
 
 		Reactions: reactions,
 		ReactOpen: reactTarget(r),

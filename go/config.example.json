@@ -85,6 +85,28 @@
       "max": []
     }
   },
+  "platform": {
+    "enabled": false,
+    "dsn": "",
+    "listen": ":8080",
+    "base_url": "",
+    "media_dir": "data/media",
+    "operator": "",
+    "contact": "",
+    "site_account": "",
+    "moderation": {
+      "enabled": false,
+      "model": "claude-haiku-4-5",
+      "effort": "",
+      "interval_s": 30,
+      "batch_size": 10,
+      "daily_requests": 500,
+      "timeout_s": 90,
+      "max_attempts": 3,
+      "flood_window_s": 3600,
+      "flood_max": 3
+    }
+  },
   "notes_limit": 5,
   "signature": "@your_channel",
   "admin_tg_user_id": 0,

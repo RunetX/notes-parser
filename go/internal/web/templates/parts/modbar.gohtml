@@ -1,0 +1,45 @@
+{{/* Полоска действий под публикацией.
+
+     Стоит она ТАМ, ГДЕ ЧИТАЮТ, а не только в очереди, и это главное решение по
+     виду модерации: скрывать реплику, не видя разговора вокруг, — значит судить
+     по цитате, а именно разговор вокруг и отличает ссору от угрозы.
+
+     Формы, а не ссылки: действие меняет состояние, и делать его переходом по
+     адресу нельзя — такую ссылку однажды откроет предзагрузчик браузера.
+     Скрытый csrf стоит в каждой: то же правило, что у всех пишущих форм.
+
+     Аргумент — modAct (см. render.go): пара «объект + куда вернуться». */}}
+{{define "modbar"}}
+{{- $m := . -}}
+{{- if or $m.CanModerate $m.CanReport -}}
+<p class="modbar">
+  {{if $m.CanModerate}}
+    {{if $m.Hidden}}
+    <span class="mtag">скрыто модерацией</span>
+    <form method="post" action="/mod/act" class="minline">
+      <input type="hidden" name="csrf" value="{{$m.CSRF}}">
+      <input type="hidden" name="back" value="{{$m.Back}}">
+      <input type="hidden" name="kind" value="{{$m.Subject.Kind}}">
+      <input type="hidden" name="id" value="{{$m.Subject.ID}}">
+      <input type="hidden" name="do" value="restore">
+      <button type="submit" class="mbtn">Вернуть</button>
+    </form>
+    {{else}}
+    <form method="post" action="/mod/act" class="minline">
+      <input type="hidden" name="csrf" value="{{$m.CSRF}}">
+      <input type="hidden" name="back" value="{{$m.Back}}">
+      <input type="hidden" name="kind" value="{{$m.Subject.Kind}}">
+      <input type="hidden" name="id" value="{{$m.Subject.ID}}">
+      <input type="hidden" name="do" value="hide">
+      <button type="submit" class="mbtn">Скрыть</button>
+    </form>
+    {{end}}
+    {{if $m.AuthorID}}<a class="mlink" href="/mod/u/{{$m.AuthorID}}">Автор</a>{{end}}
+  {{else if $m.CanReport}}
+    {{/* Ссылка, а не форма: жалоба — это текст, и поле ввода под каждой из
+         девятисот реплик было бы ровно тем, чего мы избежали у реакций. */}}
+    <a class="mlink" href="/report?kind={{$m.Subject.Kind}}&amp;id={{$m.Subject.ID}}&amp;note={{$m.NoteID}}">Пожаловаться</a>
+  {{end}}
+</p>
+{{- end -}}
+{{end}}

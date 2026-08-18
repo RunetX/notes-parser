@@ -1,0 +1,90 @@
+{{define "content"}}
+<h1 class="ttl">Модерация</h1>
+
+{{/* Сводка стоит первой и одной строкой, потому что она отвечает на
+     единственный вопрос, который задают этой странице каждый день: «надо ли мне
+     сейчас что-то делать». Цель — единицы строк в сутки; если очередь растёт
+     быстрее, чем её читают, поднимать надо порог автомата, а не усердие. */}}
+<p class="modsum">
+  <span>Ждут решения: <b>{{.Stats.Review}}</b></span>
+  <span>Скрыто автоматом: <b>{{.Stats.AutoHidden}}</b></span>
+  <span>Просьб о пересмотре: <b>{{.Stats.Appeals}}</b></span>
+  <span>Жалоб: <b>{{.Stats.Reports}}</b></span>
+  <span class="fine">не проверено автоматом: {{.Stats.Unchecked}} · за сутки скрыто {{.Stats.HiddenDay}}</span>
+  <a class="mlink" href="/mod/log">Журнал</a>
+</p>
+
+<h2 class="sub">Ждут решения</h2>
+{{if not .Queue}}
+<p class="empty">Очередь пуста.</p>
+{{end}}
+<ul class="modq">
+{{range .Queue}}
+  <li class="mitem{{if .Hidden}} mhid{{end}}">
+    <div class="mhead">
+      <a class="mlink" href="/n/{{.NoteID}}{{if not (eq .Subject.Kind "note")}}#c{{.Subject.ID}}{{end}}">
+        {{if eq .Subject.Kind "note"}}заметка{{else}}комментарий{{end}} {{.Subject.ID}}</a>
+      {{if .AuthorID}}<a class="mlink" href="/mod/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
+      <span class="fine">{{when .QueuedAt true}}</span>
+      {{if .Appealed}}<span class="mtag warnbadge">просит пересмотра</span>{{end}}
+      {{if .Hidden}}<span class="mtag">сейчас скрыто</span>{{end}}
+    </div>
+    {{if .Category}}
+    <div class="mwhy">
+      <b>{{.CategoryTitle}}</b>{{if .Reason}} — {{.Reason}}{{end}}
+      {{if .ByMachine}}<span class="fine">автомат, {{.Model}}</span>{{else}}<span class="fine">человек</span>{{end}}
+    </div>
+    {{end}}
+    {{if .Quote}}<blockquote class="mquote">{{.Quote}}</blockquote>{{end}}
+    {{range .Reports}}
+    <div class="mrep">Жалоба{{if .Nick}} от {{.Nick}}{{end}}: {{if .Reason}}{{.Reason}}{{else}}без объяснения{{end}}</div>
+    {{end}}
+    <div class="mtext">{{.Body}}</div>
+    {{template "moddec" (dec $ .)}}
+  </li>
+{{end}}
+</ul>
+
+{{/* Второй список — не работа, а КОНТРОЛЬ над машиной: модератор обязан иметь
+     возможность пробежать её решения глазами, не дожидаясь, пока обиженный
+     автор нажмёт «на пересмотр». */}}
+<h2 class="sub">Скрыто автоматом</h2>
+{{if not .AutoHidden}}
+<p class="empty">Автомат пока ничего не скрывал.</p>
+{{end}}
+<ul class="modq">
+{{range .AutoHidden}}
+  <li class="mitem mhid">
+    <div class="mhead">
+      <a class="mlink" href="/n/{{.NoteID}}{{if not (eq .Subject.Kind "note")}}#c{{.Subject.ID}}{{end}}">
+        {{if eq .Subject.Kind "note"}}заметка{{else}}комментарий{{end}} {{.Subject.ID}}</a>
+      {{if .AuthorID}}<a class="mlink" href="/mod/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
+      <span class="fine">{{if .CheckedAt}}{{when .CheckedAt true}}{{end}}</span>
+      {{if .Appealed}}<span class="mtag warnbadge">просит пересмотра</span>{{end}}
+    </div>
+    <div class="mwhy">
+      <b>{{.CategoryTitle}}</b>{{if .Reason}} — {{.Reason}}{{end}}
+      <span class="fine">{{.Model}}</span>
+    </div>
+    {{if .Quote}}<blockquote class="mquote">{{.Quote}}</blockquote>{{end}}
+    <div class="mtext">{{.Body}}</div>
+    {{template "moddec" (dec $ .)}}
+  </li>
+{{end}}
+</ul>
+{{end}}
+
+{{/* Две кнопки решения. Без экрана подтверждения: скрытие обратимо, а лишнее
+     нажатие в пересчёте на сутки дороже ошибки. Поле причины одно на строку и
+     необязательно — обязательная причина превращается в «ыы» через неделю. */}}
+{{define "moddec"}}
+<form method="post" action="/mod/act" class="mdec">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <input type="hidden" name="kind" value="{{.Subject.Kind}}">
+  <input type="hidden" name="id" value="{{.Subject.ID}}">
+  <input class="mreason" name="reason" maxlength="500" placeholder="Причина (увидит автор)">
+  <button type="submit" name="do" value="keep" class="mbtn">Оставить</button>
+  <button type="submit" name="do" value="drop" class="mbtn danger">Скрыть</button>
+</form>
+{{end}}

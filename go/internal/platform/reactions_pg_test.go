@@ -116,7 +116,8 @@ func TestReactionRefusals(t *testing.T) {
 		t.Errorf("комментарий чужого треда: %v", err)
 	}
 
-	if err := p.SetThreadLocked(ctx, noteID, true); err != nil {
+	mod := Viewer{UserID: mustUser(t, p, "модератор"), Role: RoleModerator}
+	if err := p.SetThreadLocked(ctx, mod, noteID, true, ""); err != nil {
 		t.Fatalf("замок: %v", err)
 	}
 	if err := p.React(ctx, NewReaction{UserID: author, NoteID: noteID, Code: "agree"}); !errors.Is(err, ErrThreadLocked) {
