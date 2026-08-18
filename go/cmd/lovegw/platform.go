@@ -16,6 +16,7 @@ import (
 	"lovegw/internal/config"
 	"lovegw/internal/love"
 	"lovegw/internal/platform"
+	"lovegw/internal/platimport"
 	"lovegw/internal/platsink"
 	"lovegw/internal/store"
 )
@@ -28,13 +29,14 @@ import (
 // Иначе рестарт после выкатки тихо перекраивает боевую базу.
 
 var platformSubcommands = map[string]bool{
-	"migrate":    true,
-	"doctor":     true,
-	"reconcile":  true,
-	"media":      true,
-	"reply-scan": true,
-	"invite":     true,
-	"role":       true,
+	"migrate":        true,
+	"doctor":         true,
+	"reconcile":      true,
+	"media":          true,
+	"reply-scan":     true,
+	"invite":         true,
+	"role":           true,
+	"import-archive": true,
 }
 
 func cmdPlatform(ctx context.Context, args []string) error {
@@ -46,6 +48,11 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	bind := fs.Int64("bind", 0, "invite: привязать приглашение к участнику (его прежний след станет своим)")
 	label := fs.String("note-text", "", "invite: пометка для себя, кому выдано")
 	days := fs.Int("days", 30, "invite: сколько дней действует")
+	archivePath := fs.String("archive", "", "import-archive: путь к archive.db")
+	batch := fs.Int("batch", 0, "import-archive: комментариев в одной транзакции (0 — 50 000)")
+	onlyNotes := fs.Int("notes", 0, "import-archive: взять только столько заметок (0 — все)")
+	keepIdx := fs.Bool("keep-indexes", false, "import-archive: не снимать индексы comments")
+	dry := fs.Bool("dry-run", false, "import-archive: посчитать, ничего не записывая")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -72,6 +79,14 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformReplyScan(ctx, cfg, *limit, *note)
 	case "invite":
 		return platformInvite(ctx, cfg, *bind, *label, *days)
+	case "import-archive":
+		if *archivePath == "" {
+			return fmt.Errorf("platform import-archive -archive <путь к archive.db>")
+		}
+		return platformImportArchive(ctx, cfg, platimport.Options{
+			Archive: *archivePath, Batch: *batch, Notes: *onlyNotes, OnlyNote: *note,
+			KeepIndexes: *keepIdx, DryRun: *dry,
+		})
 	case "role":
 		if len(tail) != 2 {
 			return fmt.Errorf("platform role <id участника> <user|moderator|admin>")
@@ -83,7 +98,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformRole(ctx, cfg, id, tail[1])
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
-			"(migrate, doctor, reconcile, media, reply-scan, invite, role)")
+			"(migrate, doctor, reconcile, media, reply-scan, invite, role, import-archive)")
 	}
 }
 
@@ -431,3 +446,48 @@ const (
 	replyScanDesktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+// platformImportArchive раскатывает архив грабера (archive.db) в Postgres
+// площадки: 117 588 заметок и 10,8 млн комментариев с 2004 года против трёх
+// недель живого зеркала.
+//
+// Разовая администраторская операция, а не рабочий путь, поэтому и команда
+// отдельная. Гонять её ТОЛЬКО на хосте: это миллионы строк, и через ssh-туннель
+// решает RTT, а сам archive.db (4,7 ГБ) быстрее скачать на хост напрямую, чем
+// поднимать по 10 КБ/с с рабочей машины.
+//
+// При работающем демоне безопасна: приём идемпотентен, а уже зеркалённые
+// заметки раскатка не трогает вовсе. На время работы у comments сняты индексы —
+// страницы треда идут перебором, то есть площадка жива, но медленна.
+func platformImportArchive(ctx context.Context, cfg *config.Config, opt platimport.Options) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	log := newLogger(cfg.LogLevel)
+	start := time.Now()
+	st, err := platimport.Run(ctx, p, opt, log)
+	fmt.Printf("раскатка архива за %s:\n", time.Since(start).Truncate(time.Second))
+	fmt.Printf("  анкет %d, заметок %d, комментариев %d, иллюстраций %d\n",
+		st.Users, st.Notes, st.Comments, st.Images)
+	fmt.Printf("  пропущено: заметок уже в базе %d, комментариев без id сайта %d\n",
+		st.SkipNotes, st.SkipComments)
+	fmt.Printf("  рёбра ответов: дерево %d, обращение %d, ветка %d, нет %d; снято обращений %d\n",
+		st.EdgeTree, st.EdgeAddr, st.EdgeParent, st.EdgeNone, st.Trimmed)
+	if err != nil {
+		return err
+	}
+	if opt.DryRun {
+		return nil
+	}
+	// Статистика планировщика — не косметика: на 61 тыс. комментариев планы
+	// считались другие, а лента и тред обязаны идти по индексам.
+	fmt.Print("обновление статистики планировщика… ")
+	if err := platimport.Analyze(ctx, p.Pool()); err != nil {
+		return err
+	}
+	fmt.Println("готово")
+	return nil
+}

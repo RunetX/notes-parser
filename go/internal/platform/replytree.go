@@ -126,7 +126,7 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		// а не начало фразы.
 		if newParent != 0 && r.replyTo == 0 {
 			if target, ok := byID[newParent]; ok {
-				if cut, done := trimAddress(newBody, target.nick); done {
+				if cut, done := TrimAddress(newBody, target.nick); done {
 					newBody = cut
 					st.Trimmed++
 				}
@@ -161,12 +161,17 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 	return st, nil
 }
 
-// trimAddress срезает обращение «Ник, » с начала тела, если оно там есть.
+// TrimAddress срезает обращение «Ник, » с начала тела, если оно там есть.
 //
 // Ник сверяется с настоящим ником адресата: без этого «Кстати, я тоже» лишилось
 // бы первого слова. Сравнение без учёта регистра — люди пишут обращение как
 // придётся, а сайт подставляет его с заглавной.
-func trimAddress(body, nick string) (string, bool) {
+//
+// Экспортируется ради второго писателя — импорта архива: там ребро проставляется
+// не по одной заметке, а сразу по всем, и правило снятия обращения обязано быть
+// тем же самым. Разъехавшись, они дали бы на одной странице «Ник, Ник, …» рядом
+// с чистыми репликами.
+func TrimAddress(body, nick string) (string, bool) {
 	nick = strings.TrimSpace(nick)
 	if nick == "" || body == "" {
 		return body, false
