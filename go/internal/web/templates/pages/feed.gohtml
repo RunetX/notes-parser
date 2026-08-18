@@ -16,7 +16,7 @@
     {{/* Автор — колонка слева: квадратный аватар, ник под ним. Ровно как на
          НГС; это первое, по чему постоянный читатель узнаёт страницу. */}}
     <div class="author">
-      {{template "avatar" (av .Author.AvatarURL .Name)}}
+      {{template "avatar" (av .Author.AvatarURL .Author.Gender .Anonymous)}}
       <span class="nick {{.Author.Gender.Class}}{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
     </div>
     <div class="nbody">

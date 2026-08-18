@@ -97,7 +97,7 @@ func TestAuthorColumnIsSquareAvatarWithNickBelow(t *testing.T) {
 	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}})
 	body := do(h, guest(t, "GET", "/")).Body.String()
 
-	img := regexp.MustCompile(`<img class="ava"[^>]*>`).FindString(body)
+	img := regexp.MustCompile(`<img class="ava[^"]*"[^>]*>`).FindString(body)
 	if img == "" {
 		t.Fatal("в ленте нет аватара")
 	}
