@@ -30,14 +30,25 @@ func TestBodyKeepsParagraphsAndBreaks(t *testing.T) {
 	}
 }
 
-func TestBodyAutolinks(t *testing.T) {
+// Адреса в чужом тексте НЕ кликабельны (решение владельца 18.08.2026: инструмента
+// контроля нет, а в базе 10,7 млн чужих реплик за тринадцать лет). Текст адреса
+// при этом остаётся целым — человек волен скопировать его сам.
+func TestBodyDoesNotLinkAddresses(t *testing.T) {
 	got := plainNote("см. https://t3h.ru/n/312811, там всё")
-	if !strings.Contains(got, `<a href="https://t3h.ru/n/312811" rel="nofollow noopener ugc">`) {
-		t.Fatalf("ссылка не собралась: %s", got)
+	if strings.Contains(got, "<a ") {
+		t.Fatalf("адрес стал ссылкой: %s", got)
 	}
-	// Запятая принадлежит фразе, а не адресу.
-	if !strings.Contains(got, "</a>, там всё") {
-		t.Errorf("хвост фразы уехал в ссылку: %s", got)
+	if !strings.Contains(got, "см. https://t3h.ru/n/312811, там всё") {
+		t.Errorf("текст адреса потерян: %s", got)
+	}
+}
+
+// А в тексте согласия ссылки живые: это НАШ документ, и адрес оператора в нём
+// обязан работать.
+func TestDocKeepsLinks(t *testing.T) {
+	got := string(docHTML("Согласие\n\nОператор: https://t3h.ru/about"))
+	if !strings.Contains(got, `<a href="https://t3h.ru/about"`) {
+		t.Errorf("ссылка в документе не собралась: %s", got)
 	}
 }
 

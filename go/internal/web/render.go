@@ -66,6 +66,7 @@ var funcs = template.FuncMap{
 	"rx":          reactBoxOf,
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
+	"smilelist":   smileList,
 	"threadURL":   func(base string) template.URL { return template.URL(base + "#reply") },
 }
 
@@ -101,7 +102,7 @@ func newAvatar(url, name string) avatarArg {
 // нарисовать его должен показ — из текущего ника адресата, который приехал
 // самосоединением в SELECT.
 func commentBodyHTML(c platform.CommentView) template.HTML {
-	e := eraOf(c.PublishedAt)
+	e := eraOf(c.ID, c.PublishedAt)
 	name := replyName(c.ReplyTo)
 	if name == "" {
 		return renderBody("", c.Body, e)

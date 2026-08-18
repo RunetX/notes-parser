@@ -15,6 +15,7 @@
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <textarea name="body" rows="12" required autofocus
       placeholder="О чём заметка?">{{.Body}}</textarea>
+    {{template "smilepick"}}
 
     {{if not .Editing}}
     {{/* Авторство выбирается ДО публикации и потом не меняется: анонимность,

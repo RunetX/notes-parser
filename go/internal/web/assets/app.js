@@ -83,3 +83,43 @@
     }
   });
 })();
+
+// Выбиралка смайлов: панель под формой становится кликабельной.
+//
+// Сервер рисует её СПРАВОЧНИКОМ — картинка и код рядом, — потому что без
+// скрипта код всё равно набирается руками, как на НГС все эти годы. Здесь
+// справочник превращается в кнопки, вставляющие код на месте курсора: то же
+// правило, что у сворачивания веток — мёртвых кнопок на странице не бывает.
+(function () {
+  'use strict';
+
+  var boxes = document.querySelectorAll('details.smbox');
+  if (!boxes.length) return;
+
+  Array.prototype.forEach.call(boxes, function (box) {
+    var form = box.closest('form');
+    var area = form && form.querySelector('textarea');
+    if (!area) return;
+
+    Array.prototype.forEach.call(box.querySelectorAll('.smi'), function (item) {
+      var code = ':::' + item.getAttribute('data-code') + ':::';
+      var btn = document.createElement('button');
+      btn.type = 'button'; // не submit: панель стоит ВНУТРИ формы
+      btn.className = 'smi';
+      btn.title = code;
+      btn.appendChild(item.firstChild.cloneNode(true)); // картинка без кода
+      btn.addEventListener('click', function () {
+        var at = area.selectionStart, to = area.selectionEnd;
+        // Пробел перед кодом, если человек не оставил его сам: на сайте смайл
+        // отделён от слова, а слипшийся «спасибо:::flowers:::» читается хуже.
+        var before = area.value.slice(0, at);
+        var pad = before === '' || /\s$/.test(before) ? '' : ' ';
+        area.value = before + pad + code + ' ' + area.value.slice(to);
+        area.focus();
+        var pos = at + pad.length + code.length + 1;
+        area.setSelectionRange(pos, pos);
+      });
+      item.replaceWith(btn);
+    });
+  });
+})();

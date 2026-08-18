@@ -272,6 +272,27 @@ span.rxb { cursor: default; }
 }
 .rxpick { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 
+/* Выбиралка смайлов под формой. Закрыта по умолчанию: пришли писать, а не
+   разглядывать шестьдесят четыре картинки. Сетка на auto-fill, потому что
+   знаки разнокалиберные (от 12×25 до 100×20) и колонка по самому широкому
+   оставила бы половину панели пустой. */
+.smbox { margin: 6px 0 0; }
+.smbox summary { cursor: pointer; color: var(--link); font-size: 13px; }
+.smgrid {
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  margin-top: 8px; padding: 8px; border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--btn); max-height: 220px; overflow-y: auto;
+}
+/* Без скрипта это справочник: картинка и код рядом, код набирается руками.
+   Со скриптом код прячется, остаётся кнопка. */
+.smgrid .smi {
+  display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px;
+  border: 1px solid transparent; border-radius: 4px; font-size: 11px; color: var(--meta);
+}
+.smgrid button.smi { background: var(--card); border-color: var(--rule); cursor: pointer; }
+.smgrid button.smi:hover { border-color: var(--accent); }
+.smgrid .smi .sm { height: 20px; width: auto; }
+
 .nfoot { margin-top: 10px; color: var(--meta); font-size: 12px; }
 .date { color: var(--meta); }
 /* Время, снятое зеркалом, а не отданное сайтом: настоящего НГС не публикует.

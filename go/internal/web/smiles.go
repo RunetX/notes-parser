@@ -28,6 +28,7 @@ import (
 	"html/template"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -129,4 +130,35 @@ func writeSmileImg(b *strings.Builder, s smiley, alt string) {
 		b.WriteString(`" width="` + strconv.Itoa(s.w) + `" height="` + strconv.Itoa(s.h))
 	}
 	b.WriteString(`" loading="lazy">`)
+}
+
+// smileTop — порядок выбиралки: сперва то, чем пользуются, дальше по алфавиту.
+//
+// Числа те же, что у реакций (замер по боевому корпусу, 5 % от 10,77 млн
+// комментариев): человеку, открывшему панель, нужен popcorn, а не baby2, и
+// искать его глазами в алфавитном списке из шестидесяти четырёх картинок —
+// работа, которой можно не быть.
+var smileTop = []string{
+	"crazy2", "agree", "popcorn", "flowers", "shuffle", "boogi",
+	"sad2", "wow", "str", "live", "respect", "bottle",
+	"tease", "eek", "susel", "umn", "mad2", "pester", "lick", "sorrow",
+}
+
+// smileList — все коды набора для выбиралки под формой.
+func smileList() []string {
+	out := make([]string, 0, len(smiles))
+	seen := map[string]bool{}
+	for _, code := range smileTop {
+		if _, ok := smiles[code]; ok {
+			out, seen[code] = append(out, code), true
+		}
+	}
+	rest := make([]string, 0, len(smiles))
+	for code := range smiles {
+		if !seen[code] {
+			rest = append(rest, code)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
 }

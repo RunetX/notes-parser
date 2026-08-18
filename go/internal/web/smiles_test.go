@@ -84,11 +84,12 @@ func TestSmileyInsideMarkup(t *testing.T) {
 	}
 }
 
-// Написанное на площадке под правила сайта не попадает вовсе: своего синтаксиса
-// у нас нет, и «:::popcorn:::» здесь просто текст.
-func TestNativeTextHasNoSmileys(t *testing.T) {
+// Зеркальный текст ПОСЛЕ заката знаки сайта не разбирает: в 2020-м на НГС этот
+// код печатался буквально, значит и здесь он текст. Своё написанное — другое
+// дело (см. TestNativeTextRendersSmileysButNotMarkup): там кнопку предлагаем мы.
+func TestMirroredTextAfterSunsetKeepsCodes(t *testing.T) {
 	if got := plainNote("наши :::popcorn::: коды"); got != "<p>наши :::popcorn::: коды</p>" {
-		t.Errorf("нативный текст разобран как сайтовый: %s", got)
+		t.Errorf("зеркальный текст после заката разобран: %s", got)
 	}
 }
 
@@ -104,5 +105,39 @@ func TestSmileAssetsEmbedded(t *testing.T) {
 		if _, ok := assets[strings.TrimPrefix(s.url, "/assets/")]; !ok {
 			t.Errorf("%s: файла %s нет в статике", code, s.url)
 		}
+	}
+}
+
+// Написанное ЗДЕСЬ смайлы знает: площадка сама предлагает их выбиралкой, и код
+// в нативном тексте обязан стать картинкой — иначе человек нажимает кнопку, а
+// получает «:::popcorn:::». BB-коды при этом остаются мёртвыми и в своём тексте.
+func TestNativeTextRendersSmileysButNotMarkup(t *testing.T) {
+	n := platform.NoteView{ID: platform.NativeIDBase + 7, Body: "[b]наши[/b] :::popcorn:::", PublishedAt: now}
+	got := string(noteBodyHTML(n))
+	if !strings.Contains(got, `<img class="sm"`) {
+		t.Errorf("смайл в своём тексте не подставлен: %s", got)
+	}
+	if !strings.Contains(got, "[b]наши[/b]") {
+		t.Errorf("BB-код в своём тексте разобран: %s", got)
+	}
+}
+
+// Выбиралка отдаёт ВЕСЬ набор, и частые знаки стоят первыми: искать popcorn
+// глазами в алфавитном списке из шестидесяти четырёх картинок — работа, которой
+// можно не быть.
+func TestSmileListIsCompleteAndFrequentFirst(t *testing.T) {
+	list := smileList()
+	if len(list) != len(smiles) {
+		t.Errorf("в выбиралке %d знаков из %d", len(list), len(smiles))
+	}
+	if list[0] != "crazy2" || list[1] != "agree" {
+		t.Errorf("порядок начинается с %q, %q", list[0], list[1])
+	}
+	seen := map[string]bool{}
+	for _, code := range list {
+		if seen[code] {
+			t.Fatalf("код %s в списке дважды", code)
+		}
+		seen[code] = true
 	}
 }

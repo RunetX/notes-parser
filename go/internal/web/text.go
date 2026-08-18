@@ -36,24 +36,48 @@ const linkTailCut = `.,;:!?…»)]"'`
 // растягивает страницу по горизонтали на телефоне.
 const linkTextLimit = 60
 
+// linksClickable — делать ли адреса в ЧУЖОМ тексте ссылками.
+//
+// Выключено 18.08.2026 решением владельца, и причина не в паранойе: в базе
+// лежат 10,7 млн чужих реплик за тринадцать лет, а инструмента контроля пока
+// нет вовсе (он в Ш7). Живая ссылка из архива уводит человека туда, за что мы
+// не ручаемся, — и первым это заметит не модератор, а тот, кто уже перешёл.
+// Домены за эти годы к тому же меняли владельцев, так что «ссылка была
+// приличной в 2011-м» ничего не значит сегодня.
+//
+// Адрес при этом остаётся ТЕКСТОМ и виден целиком: человек волен скопировать
+// его сам, и это осознанное действие вместо случайного клика. Включать обратно
+// — вместе с модерацией, одним значением.
+const linksClickable = false
+
 // era — что из знаков сайта показывать в этом тексте. Решает ДАТА, а не полоса
 // идентификаторов: полоса отделяет «НГС» от «наше», а нужен другой рубеж —
 // «сайт это показывал» против «печатал буквально». Рубежей два, и они разные:
 // разметка умерла 02.06.2014 (bbSunset), смайлы дожили до сентября 2017
 // (smileySunset). Своё написанное сегодня не попадает ни под один.
-type era struct{ markup, smiles bool }
+type era struct{ markup, smiles, links bool }
 
-func eraOf(t time.Time) era {
+func eraOf(id int64, t time.Time) era {
+	// Своё написанное сегодня знаков сайта не знает — КРОМЕ смайлов: их площадка
+	// теперь предлагает сама (выбиралка под формой), и коды в нативном тексте
+	// обязаны рисоваться картинками, иначе человек нажимает кнопку, а получает
+	// «:::popcorn:::». BB-коды при этом остаются мёртвыми: своего синтаксиса
+	// разметки площадка по-прежнему не заводит.
+	native := platform.IsNative(id)
 	if t.IsZero() {
-		return era{}
+		return era{smiles: native, links: linksClickable}
 	}
-	return era{markup: t.Before(bbSunset), smiles: t.Before(smileySunset)}
+	return era{
+		markup: !native && t.Before(bbSunset),
+		smiles: native || t.Before(smileySunset),
+		links:  linksClickable,
+	}
 }
 
 // noteBodyHTML — тело заметки. Пара к commentBodyHTML: разметку ранних лет
 // (bbcode.go) разбираем только там, где её показывал сам сайт.
 func noteBodyHTML(n platform.NoteView) template.HTML {
-	return renderBody("", n.Body, eraOf(n.PublishedAt))
+	return renderBody("", n.Body, eraOf(n.ID, n.PublishedAt))
 }
 
 // docHTML — текст согласия как разметка. Отдельно от bodyHTML, потому что
@@ -65,8 +89,10 @@ func noteBodyHTML(n platform.NoteView) template.HTML {
 // «##» на <h2> ничего в подписанном тексте не меняет.
 func docHTML(text string) template.HTML {
 	var b strings.Builder
-	// Документ пишем мы сами, и разметки НГС в нём нет: состояние выключено.
-	var st bbState
+	// Документ пишем мы сами: разметки НГС в нём нет, а вот ссылки живые. Гашение
+	// адресов (linksClickable) касается ЧУЖОГО текста — согласие с неработающей
+	// ссылкой на оператора было бы издевательством над правом, которое оно даёт.
+	st := bbState{era: era{links: true}}
 	for i, para := range paragraphs(text) {
 		if i == 0 {
 			// Первая строка файла и есть заголовок документа — тот же, что
@@ -161,13 +187,17 @@ func writeLines(b *strings.Builder, para string, st *bbState) {
 // кусок отдельно — иначе «&amp;» из уже экранированного текста попал бы в href
 // как есть. Смайлы разбираются только в кусках ВНЕ ссылки: «:::» внутри адреса
 // это часть адреса.
-func writeText(b *strings.Builder, line string, smiles bool) {
+func writeText(b *strings.Builder, line string, smiles, links bool) {
 	write := func(s string) {
 		if smiles {
 			writeSmileys(b, s)
 			return
 		}
 		b.WriteString(html.EscapeString(s))
+	}
+	if !links {
+		write(line)
+		return
 	}
 	idx := 0
 	for _, loc := range linkRe.FindAllStringIndex(line, -1) {

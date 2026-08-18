@@ -101,14 +101,14 @@ func (s *bbState) flush(b *strings.Builder) {
 // путь слово в слово: свои тексты и документы разметки не знают.
 func (s *bbState) line(b *strings.Builder, line string) {
 	if !s.era.markup {
-		writeText(b, line, s.era.smiles)
+		writeText(b, line, s.era.smiles, s.era.links)
 		return
 	}
 	idx := 0
 	for _, m := range bbRe.FindAllStringSubmatchIndex(line, -1) {
 		if txt := line[idx:m[0]]; txt != "" {
 			s.flush(b)
-			writeText(b, txt, s.era.smiles)
+			writeText(b, txt, s.era.smiles, s.era.links)
 		}
 		idx = m[1]
 		name := strings.ToLower(line[m[4]:m[5]])
@@ -126,7 +126,7 @@ func (s *bbState) line(b *strings.Builder, line string) {
 	}
 	if txt := line[idx:]; txt != "" {
 		s.flush(b)
-		writeText(b, txt, s.era.smiles)
+		writeText(b, txt, s.era.smiles, s.era.links)
 	}
 }
 
