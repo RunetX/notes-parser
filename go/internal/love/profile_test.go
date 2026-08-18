@@ -1,6 +1,12 @@
 package love
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 // mobileProfileHTML — минимальный слепок страницы мобильного профиля: JSON
 // dataFromBlade.layout с залогиненным пользователем (layout.user, свой sex)
@@ -46,5 +52,20 @@ func TestMobileBaseURL(t *testing.T) {
 	got, err := MobileBaseURL("https://love.ngs.ru")
 	if err != nil || got != "https://m.love.ngs.ru" {
 		t.Errorf("MobileBaseURL = (%q, %v), ожидалось https://m.love.ngs.ru", got, err)
+	}
+}
+
+// 404 на анкете — это «такого номера нет», а не сбой сайта, и разница видна
+// человеку: на опечатке он должен услышать «проверьте номер», а не «НГС не
+// отвечает» и ждать у моря погоды (жалоба 18.08.2026 — вход по номеру «6»).
+func TestFetchProfileTreats404AsMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := testClient(t, srv).FetchProfile(context.Background(), "6")
+	if !errors.Is(err, ErrProfileMissing) {
+		t.Fatalf("404 отдан как %v, ожидался ErrProfileMissing", err)
 	}
 }

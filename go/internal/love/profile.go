@@ -98,6 +98,13 @@ type Profile struct {
 // редиректом, а десктопный vhost банит серию запросов почти сразу.
 func (c *Client) FetchProfile(ctx context.Context, id string) (Profile, error) {
 	body, err := c.get(ctx, "/profile/"+id+"/")
+	if errors.Is(err, ErrNotFound) {
+		// 404 на анкете — это «такого номера нет», а не сбой сайта. Разница не
+		// формальная: вызывающий показывает человеку либо «проверьте номер»,
+		// либо «НГС не отвечает», и второе на опечатке заставляет его ждать
+		// у моря погоды (жалоба 18.08.2026 — вход по номеру «6»).
+		return Profile{}, ErrProfileMissing
+	}
 	if err != nil {
 		return Profile{}, err
 	}

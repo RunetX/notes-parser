@@ -56,25 +56,41 @@ const (
 	chanProfile = "p" // код показан на экране, ждём его в поле «о себе»
 )
 
-// profileIDRe вытаскивает номер анкеты и из голого числа, и из ссылки вида
-// love.ngs.ru/profile/1493279/ — люди копируют адрес из браузера чаще, чем
-// переписывают цифры.
-var profileIDRe = regexp.MustCompile(`\d+`)
+// Номер анкеты из того, что человек вставил в поле. Люди копируют адрес из
+// браузера чаще, чем переписывают цифры, поэтому разбираются обе формы.
+var (
+	// profileLinkRe — номер внутри ссылки: /profile/1493279/ и старая форма
+	// /anketa1493279. Спрашивается ПЕРВЫМ, потому что у адреса бывает хвост
+	// (/photos/6/, ?page=2), и «последнее число» тогда не анкета.
+	profileLinkRe = regexp.MustCompile(`(?:/profile/|/anketa)(\d+)`)
+	// digitsRe — просто числа, если ссылки не оказалось.
+	digitsRe = regexp.MustCompile(`\d+`)
+)
 
 func parseProfileID(s string) int64 {
-	// Число берётся ЦЕЛИКОМ (\d+, а не \d{1,10}): иначе слишком длинное «число»
-	// разрезалось бы на куски, и последний из них прошёл бы проверку полосы.
-	m := profileIDRe.FindAllString(s, -1)
-	if len(m) == 0 {
+	if m := profileLinkRe.FindStringSubmatch(s); m != nil {
+		return validProfileID(m[1])
+	}
+	// Иначе берём САМОЕ ДЛИННОЕ число, а не последнее: номер анкеты пяти-
+	// семизначный, а рядом в строке попадаются короткие хвосты — номер
+	// страницы, год, возраст. 18.08.2026 такой хвост увёл человека на
+	// /profile/6/, и он получил «НГС не отвечает» вместо «проверьте номер».
+	best := ""
+	for _, d := range digitsRe.FindAllString(s, -1) {
+		if len(d) > len(best) {
+			best = d
+		}
+	}
+	return validProfileID(best)
+}
+
+// validProfileID — число, годное в номер анкеты. Длина сверяется ДО разбора:
+// иначе слишком длинное «число» просто не поместится в int64.
+func validProfileID(s string) int64 {
+	if s == "" || len(s) > 12 {
 		return 0
 	}
-	// Из ссылки берём ПОСЛЕДНЕЕ число: в «https://love.ngs.ru/profile/1493279/»
-	// первым иначе оказался бы кусок домена.
-	last := m[len(m)-1]
-	if len(last) > 12 {
-		return 0
-	}
-	id, err := strconv.ParseInt(last, 10, 64)
+	id, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || !platform.IsNGS(id) {
 		return 0
 	}
@@ -196,7 +212,9 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	prof, err := s.site.Profile(r.Context(), id)
 	if errors.Is(err, ErrNoProfile) {
-		s.renderLogin(w, r, http.StatusNotFound, "Анкеты с таким номером на НГС нет.")
+		s.renderLogin(w, r, http.StatusNotFound,
+			"Анкеты с номером "+strconv.FormatInt(id, 10)+" на НГС нет. "+
+				"Нужны цифры из адреса вашей страницы — например, love.ngs.ru/profile/1493279/.")
 		return
 	}
 	if err != nil {
