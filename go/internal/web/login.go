@@ -127,6 +127,13 @@ func (s *Server) withViewer(next http.Handler) http.Handler {
 				switch {
 				case err == nil:
 					r = r.WithContext(context.WithValue(r.Context(), userKey, u))
+				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+					// Человек ушёл со страницы, не дождавшись её, либо запрос
+					// выбрал свой срок. Это не поломка, а самый частый исход
+					// под наплывом: строка ERROR на каждый оборванный запрос
+					// превратила бы лог в ту же нагрузку, от которой стоят
+					// потолки (guard.go).
+					s.log.Debug("сессия не прочитана: запрос прерван", "err", err)
 				case !errors.Is(err, platform.ErrNotFound):
 					s.log.Error("чтение сессии", "err", err)
 				}

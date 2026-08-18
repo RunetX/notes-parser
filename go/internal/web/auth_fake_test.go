@@ -124,6 +124,9 @@ func (f *fakeAuth) CreateSession(_ context.Context, userID int64, _ string) (str
 }
 
 func (f *fakeAuth) SessionUser(_ context.Context, token string) (platform.User, error) {
+	if f.fail != nil {
+		return platform.User{}, f.fail
+	}
 	id, ok := f.tokens[token]
 	if !ok {
 		return platform.User{}, platform.ErrNotFound

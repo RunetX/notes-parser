@@ -4,7 +4,9 @@ package web
 // обязана сделать с потоком запросов, чтобы на том же ядре не встало зеркало.
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -219,5 +221,28 @@ func TestЦенаМаршрутаРастётСРаботой(t *testing.T) {
 		if got := costOf(r); got != c.want {
 			t.Errorf("%s %s стоит %v, ожидалось %v", c.method, c.path, got, c.want)
 		}
+	}
+}
+
+// Оборванный запрос ошибкой не пишется. Под наплывом человек уходит со страницы
+// раньше, чем она дорисуется, и строка ERROR на каждый такой запрос превратила
+// бы лог в ту же нагрузку, ради которой стоят потолки.
+func TestОборванныйЗапросНеПишетОшибку(t *testing.T) {
+	var buf bytes.Buffer
+	auth := newFakeAuth()
+	auth.fail = context.Canceled
+	srv := New(Config{
+		BaseURL: "http://127.0.0.1",
+		Log:     slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}, &fakeStore{total: 1}, auth, nil, nil)
+	t.Cleanup(func() { _ = srv.Close() })
+
+	r := from(t, "GET", "/", "203.0.113.51")
+	r.AddCookie(&http.Cookie{Name: sessCookie, Value: "оборванная"})
+	if code := hit(srv.routes(), r); code != http.StatusOK {
+		t.Fatalf("страница ответила %d", code)
+	}
+	if strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("прерванный запрос записан ошибкой: %s", buf.String())
 	}
 }
