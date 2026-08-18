@@ -351,6 +351,12 @@ span.rxb { cursor: default; }
   margin-left: calc(var(--d, 0) * var(--step));
   border-bottom: 1px solid var(--rule);
 }
+/* Свёрнутая ветка убирается атрибутом hidden, и правило для него нужно СВОЁ:
+   браузерное `[hidden] { display: none }` живёт в таблице агента, а любой
+   авторский display её перебивает — с `display: flex` выше сворачивание не
+   работало вовсе (жалоба 18.08.2026: «не работает „Свернуть все ответы“»).
+   Селектор с атрибутом весит больше `.c`, поэтому !important не нужен. */
+.c[hidden] { display: none; }
 .c:first-child { border-top: 1px solid var(--rule); }
 .c:target { background: #f3f6f9; }
 :root[data-theme="dark"] .c:target { background: #232a31; }
@@ -562,6 +568,12 @@ span.rxb { cursor: default; }
   .cava .ava { width: 56px; height: 56px; }
   .cava .ava.none { font-size: 20px; }
   .clink { margin-left: 0; display: block; margin-top: 4px; }
+  /* Шапка и подвал на телефоне выровнены по КОЛОНКЕ ТЕКСТА, а не по краю
+     экрана: в ленте текст стоит на 20px от края (10px у .main плюс 10px у
+     .wrap), а название площадки и значок участника упирались в самый край —
+     жалоба владельца 18.08.2026. Отступ прибавляется только шапке и подвалу,
+     поэтому у текста заметки не отнимается ни пикселя ширины. */
+  .top .wrap, .foot .wrap { padding: 0 20px; }
   /* Ник рядом со значком уступает место: меню и без него понятно, а ширина в
      шапке кончается раньше всего. */
   .acctbtn .who { display: none; }
