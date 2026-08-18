@@ -25,8 +25,17 @@ type fakeWriter struct {
 	edited   string
 	nick     string
 	reaction platform.NewReaction
+	avatar   fakeAvatar
 	nextID   int64
 	fail     error
+}
+
+// fakeAvatar — что дошло до ядра при обновлении фото: откуда взято и сами байты.
+// Пустой url означает «до ядра не дошло вовсе», и половина тестов аватара
+// проверяет именно это: фото не должно теряться там, где его не просили менять.
+type fakeAvatar struct {
+	url  string
+	data []byte
 }
 
 func (f *fakeWriter) CreateNote(_ context.Context, in platform.NewNote) (int64, error) {
@@ -64,6 +73,14 @@ func (f *fakeWriter) SetOwnNick(_ context.Context, _ int64, nick string) error {
 		return platform.ErrBadNick
 	}
 	f.nick = n
+	return nil
+}
+
+func (f *fakeWriter) SetOwnAvatar(_ context.Context, _ int64, url string, data []byte) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	f.avatar = fakeAvatar{url: url, data: data}
 	return nil
 }
 

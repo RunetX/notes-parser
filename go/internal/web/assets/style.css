@@ -461,6 +461,15 @@ span.rxb { cursor: default; }
 .whoami .nick { display: block; font-size: 18px; font-weight: 600; }
 .whoami .fine { display: block; }
 
+/* «Обновить аватар» стоит под ником, у самой карточки: она про то, что видно
+ * рядом, — а не в общем ряду кнопок страницы. Мельче кнопки смены ника, потому
+ * что нажимают её изредка. */
+.avaform { margin-top: 6px; }
+.avaform button {
+  font: inherit; font-size: 13px; padding: 4px 12px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--btn); color: var(--ink);
+}
+
 .warn {
   text-align: left; margin: 14px 0; padding: 10px 12px;
   border-left: 3px solid var(--accent); background: var(--btn);

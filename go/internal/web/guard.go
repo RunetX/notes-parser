@@ -51,7 +51,8 @@ const (
 	requestBudget = 8 * time.Second
 	// loginBudget — вход ходит на НГС: читает анкету (потолок 15 с) и шлёт код
 	// личным сообщением. Мерить его общей меркой значило бы обрывать людей на
-	// медленном ответе чужого сайта.
+	// медленном ответе чужого сайта. Той же меркой живёт обновление аватара —
+	// оно ходит туда же (см. goesToNGS).
 	loginBudget = 25 * time.Second
 
 	// maxFormBytes — потолок тела формы. Формы у нас текстовые, файлов площадка
@@ -276,7 +277,7 @@ func costOf(r *http.Request) float64 {
 	case p == "/healthz" || p == "/robots.txt" ||
 		strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/media/"):
 		return 0
-	case r.Method == http.MethodPost && strings.HasPrefix(p, "/login"):
+	case goesToNGS(r):
 		return costLogin
 	case r.Method == http.MethodPost:
 		return costWrite
@@ -287,9 +288,20 @@ func costOf(r *http.Request) float64 {
 	}
 }
 
+// goesToNGS — запрос, который тянет за собой ЧУЖОЙ сайт: вход (анкета плюс
+// личное сообщение с кодом) и обновление аватара (анкета плюс файл с CDN). Цена
+// и срок у них общие, потому что общее у них главное — ждём мы не себя, а НГС, и
+// каждый такой запрос занимает наш слот всё это время.
+func goesToNGS(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	return strings.HasPrefix(r.URL.Path, "/login") || r.URL.Path == "/me/avatar"
+}
+
 // budgetOf — сколько запросу отпущено.
 func budgetOf(r *http.Request) time.Duration {
-	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/login") {
+	if goesToNGS(r) {
 		return loginBudget
 	}
 	return requestBudget

@@ -63,14 +63,23 @@ func cmdWeb(ctx context.Context, args []string) error {
 		return fmt.Errorf("схема базы v%d, а бинарник рассчитан на v%d — выполните `lovegw platform migrate`", inDB, wanted)
 	}
 
-	// Клиент НГС нужен ровно для одного — прочитать «о себе» при входе. Не
-	// поднялся (нет RU-IP, сайт закрылся) — морда живёт дальше, а вход
-	// показывает приглашения вместо формы: это её штатное состояние после
-	// смерти НГС, а не авария.
+	// Клиент НГС нужен для двух вещей — прочитать анкету при входе и забрать из
+	// неё фото по кнопке «Обновить аватар». Не поднялся (нет RU-IP, сайт
+	// закрылся) — морда живёт дальше: вход показывает приглашения вместо формы,
+	// кнопки аватара просто нет. Это её штатное состояние после смерти НГС, а не
+	// авария.
 	site, err := loginSite(ctx, cfg, log)
 	if err != nil {
 		log.Warn("вход по анкете НГС недоступен", "err", err)
 		site = nil
+	}
+
+	// Писателю нужно хранилище медиа: фото из анкеты ложится файлом в CAS, а в
+	// строку человека уходит его sha. Каталог обязателен при platform.enabled,
+	// поэтому отказ здесь — отказ старта, а не тихая потеря кнопки.
+	media, err := platform.NewMediaStore(pf, cfg.Platform.MediaDir)
+	if err != nil {
+		return err
 	}
 
 	srv := web.New(web.Config{
@@ -79,8 +88,24 @@ func cmdWeb(ctx context.Context, args []string) error {
 		MediaDir: cfg.Platform.MediaDir,
 		Operator: operatorOf(cfg),
 		Log:      log,
-	}, pf, pf, pf, site)
+	}, pf, pf, webWriter{Platform: pf, media: media}, site)
 	return srv.Run(ctx)
+}
+
+// webWriter — запись площадки плюс хранилище медиа.
+//
+// Отдельный тип нужен ровно из-за аватара: это единственная запись морды,
+// которой мало базы — байты ложатся файлом, и класть их обязан тот же код, что
+// у зеркала и у команды `platform avatar` (putNGSAvatar), иначе три места будут
+// по-разному решать, что считать картинкой.
+type webWriter struct {
+	*platform.Platform
+	media *platform.MediaStore
+}
+
+func (w webWriter) SetOwnAvatar(ctx context.Context, userID int64, url string, data []byte) error {
+	_, err := putNGSAvatar(ctx, w.Platform, w.media, userID, url, data)
+	return err
 }
 
 // operatorOf — реквизиты оператора персональных данных для текстов согласий.
@@ -234,6 +259,12 @@ func (p loginProfiles) Profile(ctx context.Context, id int64) (web.SiteProfile, 
 		Gender:     platformGender(prof.Gender),
 		Blocked:    prof.Blocked,
 	}, nil
+}
+
+// Avatar — байты фото анкеты. Тот же клиент и тот же лимитер, что у чтения
+// анкеты: ходит он анонимно, а ссылка ведёт на CDN сайта.
+func (p loginProfiles) Avatar(ctx context.Context, url string) ([]byte, error) {
+	return p.c.FetchMedia(ctx, url)
 }
 
 // realAvatar — фото или ничего. Силуэт по умолчанию площадка не хранит («аватар

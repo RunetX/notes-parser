@@ -28,6 +28,10 @@ type Writer interface {
 	CreateComment(ctx context.Context, in platform.NewComment) (int64, error)
 	EditNote(ctx context.Context, userID, noteID int64, body string) error
 	SetOwnNick(ctx context.Context, userID int64, nick string) error
+	// SetOwnAvatar — поставить себе фото, забранное из анкеты НГС: url, откуда
+	// оно взято, и сами байты. Своего файла площадка не принимает вовсе, поэтому
+	// другого способа сменить здесь фото нет (Ш5д).
+	SetOwnAvatar(ctx context.Context, userID int64, url string, data []byte) error
 	// React — нажать, переключить или снять реакцию. Правкой чужого это не
 	// является: строка своя, а объект остаётся нетронутым.
 	React(ctx context.Context, in platform.NewReaction) error

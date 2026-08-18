@@ -6,6 +6,7 @@ package web
 // и без ручной проверки: отзыв согласия.
 
 import (
+	"errors"
 	"net/http"
 
 	"lovegw/internal/platform"
@@ -19,6 +20,14 @@ type mePage struct {
 	Hidden bool // все публикации скрыты рубильником
 	Shadow bool // вход не завершён: согласий нет
 	Admin  bool
+	// Avatar — показывать ли кнопку «Обновить аватар». Её нет у вошедшего по
+	// приглашению (анкеты НГС у него нет вовсе) и нет, когда сайт недоступен:
+	// кнопка, которая заведомо ответит отказом, хуже её отсутствия.
+	Avatar bool
+	// Problem — что не вышло в последнем действии. Отдельным полем, а не
+	// страницей ошибки: «в анкете нет фото» — это не поломка, и уводить с
+	// собственной страницы ради такой строки незачем.
+	Problem string
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -27,6 +36,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
+	s.showMe(w, r, u, "")
+}
+
+// showMe рисует «мою страницу» — при необходимости с сообщением о том, что
+// только что не получилось.
+func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User, problem string) {
 	missing, err := s.auth.MissingConsent(r.Context(), u.ID, s.cfg.Operator)
 	if err != nil {
 		s.oops(w, r, "согласия", err)
@@ -53,14 +68,82 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
-		page:   s.newPage(r, "Моя страница"),
-		Member: card,
-		Docs:   docs,
-		Have:   have,
-		Hidden: u.HideAll,
-		Shadow: u.Kind == platform.KindShadow,
-		Admin:  u.Role >= platform.RoleAdmin,
+		page:    s.newPage(r, "Моя страница"),
+		Member:  card,
+		Docs:    docs,
+		Have:    have,
+		Hidden:  u.HideAll,
+		Shadow:  u.Kind == platform.KindShadow,
+		Admin:   u.Role >= platform.RoleAdmin,
+		Avatar:  s.site != nil && platform.IsNGS(u.ID),
+		Problem: problem,
 	})
+}
+
+// handleAvatar — «Обновить аватар»: сходить в анкету НГС за фото ещё раз.
+//
+// Зачем кнопка. Аватар приносит на площадку ЗЕРКАЛО, вместе с комментарием, — а
+// комментариев на НГС нет с 17.08.2026, значит само оно здесь не обновится уже
+// никогда: сменивший фото в анкете остался бы с прошлогодним навсегда. Замер по
+// боевому зеркалу показал, насколько это живое: у одной участницы 56 разных
+// файлов за четыре недели, случалось по три за сутки, — то есть перенос по
+// просьбе через администратора был бы ежедневной просьбой.
+//
+// Своего файла площадка не принимает вовсе, и это не экономия: чужая картинка —
+// это премодерация, хранилище и другой разговор о согласии (Ш5д). Здесь ровно
+// перенос того, что человек и так показывает на НГС.
+//
+// Живёт в me.go, а не в write.go, потому что половина её ответов — это «моя
+// страница» с объяснением: отказ чужого сайта не повод уводить человека на
+// страницу ошибки.
+func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.writer(w, r)
+	if !ok {
+		return
+	}
+	if s.site == nil {
+		s.fail(w, r, http.StatusServiceUnavailable,
+			"Площадка сейчас не может сходить на НГС за фото.")
+		return
+	}
+	if !platform.IsNGS(u.ID) {
+		s.fail(w, r, http.StatusBadRequest,
+			"Ваш вход не связан с анкетой НГС — фото брать неоткуда.")
+		return
+	}
+	prof, err := s.site.Profile(r.Context(), u.ID)
+	switch {
+	case errors.Is(err, ErrNoProfile):
+		s.showMe(w, r, u, "НГС не отдал вашу анкету: она скрыта целиком или удалена. Фото осталось прежним.")
+		return
+	case err != nil:
+		// Отказ ЧУЖОГО сайта не наша поломка, и 500 на своей странице тут врал бы.
+		s.log.Warn("анкета НГС для обновления фото", "user", u.ID, "err", err)
+		s.showMe(w, r, u, "НГС сейчас не отвечает. Фото осталось прежним — попробуйте позже.")
+		return
+	}
+	if prof.AvatarURL == "" {
+		// Фото в анкете нет (силуэт по умолчанию клиент НГС сюда не пропускает).
+		// Своё при этом НЕ снимаем: файлов площадка не принимает, вернуть его
+		// было бы неоткуда, а «нажал обновить и остался без фото» — это потеря
+		// по нажатию кнопки.
+		s.showMe(w, r, u, "В анкете НГС сейчас нет фото — здесь всё осталось как было.")
+		return
+	}
+	data, err := s.site.Avatar(r.Context(), prof.AvatarURL)
+	if err != nil {
+		s.log.Warn("фото анкеты НГС", "user", u.ID, "err", err)
+		s.showMe(w, r, u, "Фото из анкеты сейчас не забралось. Попробуйте позже.")
+		return
+	}
+	if err := s.wr.SetOwnAvatar(r.Context(), u.ID, prof.AvatarURL, data); err != nil {
+		s.oops(w, r, "смена фото", err)
+		return
+	}
+	http.Redirect(w, r, "/me", http.StatusSeeOther)
 }
 
 // handleMeConsent — отзыв и возврат согласия.

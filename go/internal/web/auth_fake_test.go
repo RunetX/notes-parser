@@ -198,11 +198,12 @@ func (f *fakeAuth) RevokeConsent(_ context.Context, userID int64, kind string) e
 // различие есть в бою, поэтому подделка повторяет его, а не притворяется, что
 // канал всегда жив.
 type fakeSite struct {
-	prof    SiteProfile
-	missing bool
-	err     error
-	sent    *[]string // куда складывать отправленные коды; nil — слать нечем
-	sendErr error
+	prof      SiteProfile
+	missing   bool
+	err       error
+	sent      *[]string // куда складывать отправленные коды; nil — слать нечем
+	sendErr   error
+	avatarErr error // НГС не отдал файл по ссылке из анкеты
 }
 
 func (s *fakeSite) Profile(context.Context, int64) (SiteProfile, error) {
@@ -213,6 +214,15 @@ func (s *fakeSite) Profile(context.Context, int64) (SiteProfile, error) {
 		return SiteProfile{}, s.err
 	}
 	return s.prof, nil
+}
+
+// Avatar — байты «файла» с CDN. Что именно приехало, тесту неважно: картинку от
+// заглушки отличает хранилище (platform.MediaStore), а не морда.
+func (s *fakeSite) Avatar(_ context.Context, url string) ([]byte, error) {
+	if s.avatarErr != nil {
+		return nil, s.avatarErr
+	}
+	return []byte("байты " + url), nil
 }
 
 // talksSite — тот же fakeSite, но умеющий отправлять: SiteMessenger определяется

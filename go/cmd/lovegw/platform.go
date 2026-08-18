@@ -225,13 +225,8 @@ func platformAvatarOne(ctx context.Context, p *platform.Platform, media *platfor
 	if err != nil {
 		return err
 	}
-	// Хранилище само откажется принять не-картинку: геоблок DDoS-Guard отдаёт на
-	// запрос файла HTML с кодом 200, и такой «аватар» осел бы у нас молча.
-	m, err := media.Put(ctx, data, prof.AvatarURL)
+	m, err := putNGSAvatar(ctx, p, media, id, prof.AvatarURL, data)
 	if err != nil {
-		return err
-	}
-	if err := p.SetNGSAvatar(ctx, id, m.SHA256, prof.AvatarURL); err != nil {
 		return err
 	}
 	if bytes.Equal(m.SHA256, u.AvatarSHA) {
@@ -255,6 +250,22 @@ func shortSHA(sha []byte) string {
 		return "нет"
 	}
 	return hex.EncodeToString(sha)[:8]
+}
+
+// putNGSAvatar кладёт байты фото в хранилище и привязывает их к человеку.
+//
+// Общая дорога двух входов — кнопки «Обновить аватар» на «моей странице»
+// (webWriter.SetOwnAvatar) и этой команды. Правило у них одно, и разъехаться эти
+// два места не должны: хранилище само откажется принять не-картинку — геоблок
+// DDoS-Guard отдаёт на запрос файла HTML с кодом 200, и такой «аватар» осел бы у
+// нас молча, а на странице оказался битым.
+func putNGSAvatar(ctx context.Context, p *platform.Platform, media *platform.MediaStore,
+	userID int64, url string, data []byte) (platform.Media, error) {
+	m, err := media.Put(ctx, data, url)
+	if err != nil {
+		return platform.Media{}, err
+	}
+	return m, p.SetNGSAvatar(ctx, userID, m.SHA256, url)
 }
 
 // parseUserIDs разбирает список номеров анкет из хвоста командной строки.

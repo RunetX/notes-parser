@@ -123,6 +123,10 @@ var ErrNoProfile = errors.New("анкета не найдена")
 // входа говорит об этом прямо, а не показывает форму, которая не сработает.
 type Site interface {
 	Profile(ctx context.Context, id int64) (SiteProfile, error)
+	// Avatar — байты фото по ссылке из анкеты. Рядом с Profile, а не отдельной
+	// способностью: это то же самое анонимное чтение чужого сайта, и живут они
+	// или умирают вместе.
+	Avatar(ctx context.Context, url string) ([]byte, error)
 }
 
 // SiteMessenger — необязательная способность клиента НГС: отправить код личным
@@ -226,6 +230,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /me", s.handleMe)
 	mux.HandleFunc("POST /me/consent", s.handleMeConsent)
 	mux.HandleFunc("POST /me/nick", s.handleNick)
+	mux.HandleFunc("POST /me/avatar", s.handleAvatar)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	mux.HandleFunc("POST /theme", s.handleTheme)
 	// Запись. Правки и удаления ЧУЖОГО среди этих путей нет, и это не упущение:
