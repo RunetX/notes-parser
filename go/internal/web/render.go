@@ -128,6 +128,15 @@ func commentBodyHTML(c platform.CommentView) template.HTML {
 			body = cut
 		}
 	}
+	// Автор уже назвал адресата сам — второго обращения не рисуем (address.go).
+	// Выделяем жирным написанное им: на НГС префикс был жирным и ссылкой не был,
+	// так что это не потеря вида, а возврат к нему. Ссылки здесь нет намеренно —
+	// ник в тексте исторический, а ребро может указывать на другого человека:
+	// ссылка «Рантье», ведущая к реплике Паноптикума, врала бы.
+	if nick, rest, ok := leadingAddress(body); ok {
+		own := template.HTML(`<b class="to">` + template.HTMLEscapeString(nick) + `</b>, `)
+		return renderBody(own, rest, e)
+	}
 	prefix := template.HTML(`<a class="to" href="#c` +
 		strconv.FormatInt(c.ReplyTo.CommentID, 10) + `">` +
 		template.HTMLEscapeString(name) + `</a>, `)
