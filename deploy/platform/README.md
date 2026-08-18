@@ -61,7 +61,7 @@ docker compose exec caddy caddy validate --adapter caddyfile --config /etc/caddy
 `postgres` только если менялась и его секция compose; иначе настройки
 подхватываются `select pg_reload_conf()` (для параметров с контекстом sighup).
 
-Два условия сборки незаметны, пока не сломаются, и оба проверяются на хосте, а
+Три условия сборки незаметны, пока не сломаются, и все проверяются на хосте, а
 не в голове:
 
 - **PEM'ы Минцифры** должны лежать в `go/internal/maxx/cacert/` ДО сборки, иначе
@@ -72,6 +72,23 @@ docker compose exec caddy caddy validate --adapter caddyfile --config /etc/caddy
 - **ffmpeg** приезжает в образ отдельным слоем (`mwader/static-ffmpeg`) — без
   него молча отваливается распознавание голосовых. Проверка: строка
   `asr/ffmpeg` в выводе `doctor`.
+- **Переводы строк в текстах согласий.** Они вшиты `go:embed`, и их sha256
+  сверяется с опубликованной в базе редакцией, поэтому байты обязаны совпадать
+  на любой машине. На Windows с `core.autocrlf=true` свежий checkout (клон или
+  `git worktree add`) кладёт их с CRLF — и `platform migrate` честно отказывает:
+  «редакция изменена без смены номера версии». Закрыто `.gitattributes`
+  (`consents/*.txt text eol=lf`) в корне репозитория; на старом клоне, сделанном
+  до него, проверять так:
+
+  ```sh
+  git -c core.autocrlf=false show HEAD:go/internal/platform/consents/distribution.v1.txt | sha256sum
+  sha256sum go/internal/platform/consents/distribution.v1.txt   # должны совпасть
+  ```
+
+  Оплачено 18.08.2026 на выкатке Ш7: схема накатилась, согласия — нет, и
+  пришлось пересобирать бинарник. Порядок в `migrate` именно такой намеренно —
+  схема раньше документов, — так что откатывать в этом случае нечего: повторный
+  `migrate` правильным бинарником доделывает вторую половину.
 
 ### Разовая команда новым бинарником — без выкатки
 
