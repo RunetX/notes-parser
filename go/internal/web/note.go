@@ -53,6 +53,16 @@ type notePage struct {
 	Compose  compose
 	// ReplyTo — адресат готовящегося ответа, если он выбран и ещё жив.
 	ReplyTo *platform.CommentView
+	// Reactions — реакции заметки (ключ 0) и её комментариев: один запрос на
+	// страницу, а не по одному на реплику.
+	Reactions map[int64][]platform.Reaction
+	// ReactOpen — под каким объектом раскрыт выбор реакции (0 — под заметкой,
+	// −1 — ни под кем). Раскрыт всегда не больше одного: выбиралка под каждой из
+	// девятисот реплик это пять тысяч кнопок на странице.
+	ReactOpen int64
+	// PageNum — номер страницы линейного вида: с ним нажатие возвращает человека
+	// туда же, где он был.
+	PageNum int
 }
 
 func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +106,13 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 
 	linear := s.threadLinear(w, r)
 	me, signedIn := s.me(r)
+	// Реакции читаются одним запросом на всю страницу — и заметки, и треда. Свои
+	// узнаются по id читателя; у гостя он нулевой, и «моих» не бывает.
+	reactions, err := s.st.NoteReactions(ctx, me.ID, id)
+	if err != nil {
+		s.oops(w, r, "реакции заметки", err)
+		return
+	}
 	p := notePage{
 		page:     s.newPage(r, noteTitle(note.Body)),
 		Note:     note,
@@ -106,6 +123,10 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		CanWrite: signedIn && me.Kind == platform.KindMember && !note.Locked && s.wr != nil,
 		Editable: note.Editable(time.Now()),
 		Compose:  form,
+
+		Reactions: reactions,
+		ReactOpen: reactTarget(r),
+		PageNum:   1,
 	}
 
 	if linear {
@@ -127,6 +148,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		p.Comments = comments
 		p.Pager = newPager(num, pages, func(n int) string { return noteURL(id, true, n) })
 		p.ReplyBase = noteURL(id, true, num)
+		p.PageNum = num
 	} else {
 		// Дерево отдаётся ЦЕЛИКОМ. Постранички у него нет и не должно быть:
 		// ветка, обрезанная на середине, перестаёт быть веткой, а «дальше»

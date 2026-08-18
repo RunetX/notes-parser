@@ -6,16 +6,20 @@ package web
 // экранируем всё до единого знака, а разметку добавляем сами. Хранимого HTML не
 // существует, значит и вычищать нечего; санитайзер, которого нет, нельзя обойти.
 //
-// Из форматирования — только абзацы, переносы и автоссылки. BB-коды не
-// поддержаны сознательно: на самом НГС они мертвы (ноль на 61 177 живых
-// комментариев), а собственного синтаксиса площадка заводить не станет.
+// Из форматирования — абзацы, переносы, автоссылки и разметка ранних лет НГС
+// (bbcode.go). Последняя разбирается только там, где её показывал САМ САЙТ, то
+// есть до 02.06.2014: сегодня она на НГС мертва (ноль на 61 177 живых
+// комментариев), но в приехавшем архиве живая. Своего синтаксиса площадка
+// по-прежнему не заводит — написанное здесь показывается как есть.
 
 import (
 	"html"
 	"html/template"
 	"regexp"
 	"strings"
+	"time"
 
+	"lovegw/internal/platform"
 	"lovegw/internal/textutil"
 )
 
@@ -32,8 +36,25 @@ const linkTailCut = `.,;:!?…»)]"'`
 // растягивает страницу по горизонтали на телефоне.
 const linkTextLimit = 60
 
-// bodyHTML — текст заметки или комментария как разметка.
-func bodyHTML(text string) template.HTML { return renderBody("", text) }
+// era — что из знаков сайта показывать в этом тексте. Решает ДАТА, а не полоса
+// идентификаторов: полоса отделяет «НГС» от «наше», а нужен другой рубеж —
+// «сайт это показывал» против «печатал буквально». Рубежей два, и они разные:
+// разметка умерла 02.06.2014 (bbSunset), смайлы дожили до сентября 2017
+// (smileySunset). Своё написанное сегодня не попадает ни под один.
+type era struct{ markup, smiles bool }
+
+func eraOf(t time.Time) era {
+	if t.IsZero() {
+		return era{}
+	}
+	return era{markup: t.Before(bbSunset), smiles: t.Before(smileySunset)}
+}
+
+// noteBodyHTML — тело заметки. Пара к commentBodyHTML: разметку ранних лет
+// (bbcode.go) разбираем только там, где её показывал сам сайт.
+func noteBodyHTML(n platform.NoteView) template.HTML {
+	return renderBody("", n.Body, eraOf(n.PublishedAt))
+}
 
 // docHTML — текст согласия как разметка. Отдельно от bodyHTML, потому что
 // документ — это документ: у него есть подзаголовки и перечни, и читать его
@@ -44,6 +65,8 @@ func bodyHTML(text string) template.HTML { return renderBody("", text) }
 // «##» на <h2> ничего в подписанном тексте не меняет.
 func docHTML(text string) template.HTML {
 	var b strings.Builder
+	// Документ пишем мы сами, и разметки НГС в нём нет: состояние выключено.
+	var st bbState
 	for i, para := range paragraphs(text) {
 		if i == 0 {
 			// Первая строка файла и есть заголовок документа — тот же, что
@@ -61,7 +84,7 @@ func docHTML(text string) template.HTML {
 			continue
 		}
 		b.WriteString("<p>")
-		writeLines(&b, para)
+		writeLines(&b, para, &st)
 		b.WriteString("</p>")
 	}
 	return template.HTML(b.String())
@@ -72,7 +95,7 @@ func docHTML(text string) template.HTML {
 // Обращение «Ник, » — ребро, а не часть тела (в базе его нет), но выглядеть оно
 // должно ровно так, как выглядело на сайте: началом первой фразы, а не строкой
 // сверху. Отсюда и вставка внутрь абзаца.
-func renderBody(prefix template.HTML, text string) template.HTML {
+func renderBody(prefix template.HTML, text string, e era) template.HTML {
 	paras := paragraphs(text)
 	if len(paras) == 0 {
 		if prefix == "" {
@@ -82,12 +105,16 @@ func renderBody(prefix template.HTML, text string) template.HTML {
 	}
 	var b strings.Builder
 	b.Grow(len(text) + 32*len(paras))
+	st := bbState{era: e}
 	for i, p := range paras {
 		b.WriteString("<p>")
 		if i == 0 {
 			b.WriteString(string(prefix))
 		}
-		writeLines(&b, p)
+		writeLines(&b, p, &st)
+		// Разметка закрывается на границе абзаца и возвращается в следующем:
+		// <p> в HTML пересекать нельзя, а «[b]» через абзац в архиве бывает.
+		st.endParagraph(&b)
 		b.WriteString("</p>")
 	}
 	return template.HTML(b.String())
@@ -120,19 +147,28 @@ func paragraphs(text string) []string {
 	return out
 }
 
-func writeLines(b *strings.Builder, para string) {
+func writeLines(b *strings.Builder, para string, st *bbState) {
 	for i, line := range strings.Split(para, "\n") {
 		if i > 0 {
 			b.WriteString("<br>")
 		}
-		writeText(b, strings.TrimRight(line, " \t"))
+		st.line(b, strings.TrimRight(line, " \t"))
 	}
 }
 
-// writeText экранирует текст и превращает адреса в ссылки. Порядок важен:
-// ссылки ищутся в СЫРОЙ строке, а экранируется каждый кусок отдельно — иначе
-// «&amp;» из уже экранированного текста попал бы в href как есть.
-func writeText(b *strings.Builder, line string) {
+// writeText экранирует текст, превращает адреса в ссылки, а коды смайлов — в
+// картинки. Порядок важен: ссылки ищутся в СЫРОЙ строке, а экранируется каждый
+// кусок отдельно — иначе «&amp;» из уже экранированного текста попал бы в href
+// как есть. Смайлы разбираются только в кусках ВНЕ ссылки: «:::» внутри адреса
+// это часть адреса.
+func writeText(b *strings.Builder, line string, smiles bool) {
+	write := func(s string) {
+		if smiles {
+			writeSmileys(b, s)
+			return
+		}
+		b.WriteString(html.EscapeString(s))
+	}
 	idx := 0
 	for _, loc := range linkRe.FindAllStringIndex(line, -1) {
 		raw := line[loc[0]:loc[1]]
@@ -140,7 +176,7 @@ func writeText(b *strings.Builder, line string) {
 		if addr == "" || len(addr) < len("http://x") {
 			continue
 		}
-		b.WriteString(html.EscapeString(line[idx:loc[0]]))
+		write(line[idx:loc[0]])
 		b.WriteString(`<a href="`)
 		b.WriteString(html.EscapeString(addr))
 		// nofollow noopener ugc — стандартная разметка чужой ссылки, оставленной
@@ -150,5 +186,5 @@ func writeText(b *strings.Builder, line string) {
 		b.WriteString(`</a>`)
 		idx = loc[0] + len(addr)
 	}
-	b.WriteString(html.EscapeString(line[idx:]))
+	write(line[idx:])
 }

@@ -35,7 +35,7 @@
       <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
     </div>
     <div class="nbody">
-      <div class="text">{{body $n.Body}}</div>
+      <div class="text">{{body $n}}</div>
       {{if .Images}}
       <div class="shots">
         {{range .Images}}{{if .URL}}
@@ -43,6 +43,7 @@
         {{end}}{{end}}
       </div>
       {{end}}
+      {{template "reactions" (rx $ 0)}}
       <div class="nfoot">
         {{when $n.PublishedAt $n.PublishedExact}}
         {{/* Ссылка на правку живёт ровно столько, сколько окно: десять минут,
@@ -71,6 +72,7 @@
         <div class="cdate">{{when .PublishedAt true}}</div>
       </div>
       <div class="text">{{commentBody .}}</div>
+      {{template "reactions" (rx $ .ID)}}
       {{if or $.CanWrite (index $.Replies .ID)}}
       <p class="cact">
         {{if $.CanWrite}}<a class="rep" href="{{replyURL $.ReplyBase .ID}}">Ответить</a>{{end}}

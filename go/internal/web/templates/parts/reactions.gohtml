@@ -1,0 +1,32 @@
+{{/* Реакции под объектом: заметкой или комментарием.
+
+     Форма ОДНА на объект, а кнопки в ней — submit'ы с name="code": шесть
+     отдельных форм под каждой из девятисот реплик распухли бы в пять тысяч
+     форм на странице. По той же причине без нажатия виден только «+», а сам
+     выбор раскрывается по ссылке и ровно в одном месте — ?react=<id>.
+
+     Гость видит те же счётчики, но не формой: кнопка, отвечающая «сначала
+     войдите», — это обещание, которого страница не держит. */}}
+{{define "reactions"}}
+{{if .CanWrite}}
+<form class="rx" method="post" action="/n/{{.NoteID}}/react">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="comment" value="{{.Target}}">
+  <input type="hidden" name="page" value="{{.Page}}">
+  {{range .List}}
+  <button class="rxb{{if .Mine}} mine{{end}}" name="code" value="{{.Code}}"
+          aria-label="{{rxlabel .Code}}" title="{{rxlabel .Code}}{{if .Mine}} — убрать{{end}}">{{smile .Code}}<b>{{.Count}}</b></button>
+  {{end}}
+  {{if .Open}}
+  <span class="rxpick">{{range .Codes}}<button class="rxb" name="code" value="{{.}}"
+    aria-label="{{rxlabel .}}" title="{{rxlabel .}}">{{smile .}}</button>{{end}}</span>
+  {{else}}
+  <a class="rxadd" href="{{.PickURL}}" title="Поставить реакцию">+</a>
+  {{end}}
+</form>
+{{else if .List}}
+<div class="rx">
+  {{range .List}}<span class="rxb">{{smile .Code}}<b>{{.Count}}</b></span>{{end}}
+</div>
+{{end}}
+{{end}}

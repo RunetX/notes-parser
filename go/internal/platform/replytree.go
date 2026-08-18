@@ -17,6 +17,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -159,6 +160,28 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		return st, fmt.Errorf("дерево заметки %d: %w", noteID, err)
 	}
 	return st, nil
+}
+
+// legacyAddressRe — обращение, каким его рисовал сайт в первые месяцы архива:
+// «Для [b][i]Ник[/i][/b] текст» (комментарии начинаются 31.10.2013). Это
+// разметка САЙТА, а не человека, поэтому ник в проверке не участвует вовсе:
+// форма однозначна сама по себе, а в теле стоит ник НА ТУ ДАТУ — сверять его с
+// нынешним значило бы промахиваться на каждом переименовании.
+var legacyAddressRe = regexp.MustCompile(`^\s*Для \[b\]\[i\].{1,64}?\[/i\]\[/b\][ \t]*`)
+
+// TrimLegacyAddress срезает обращение образца 2013 года. Пара к TrimAddress:
+// мысль одна («адресат — ребро, а не текст»), эпохи сайта разные.
+func TrimLegacyAddress(body string) (string, bool) {
+	loc := legacyAddressRe.FindStringIndex(body)
+	if loc == nil {
+		return body, false
+	}
+	rest := body[loc[1]:]
+	if strings.TrimSpace(rest) == "" {
+		// «Для Ник» и больше ничего: пустая реплика хуже реплики с обращением.
+		return body, false
+	}
+	return rest, true
 }
 
 // TrimAddress срезает обращение «Ник, » с начала тела, если оно там есть.

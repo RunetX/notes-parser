@@ -54,7 +54,7 @@ func mustTZ() *time.Location {
 var funcs = template.FuncMap{
 	"asset":       assetURL,
 	"av":          newAvatar,
-	"body":        bodyHTML,
+	"body":        noteBodyHTML,
 	"doc":         docHTML,
 	"commentBody": commentBodyHTML,
 	"when":        whenHTML,
@@ -63,6 +63,9 @@ var funcs = template.FuncMap{
 	"themes":      themeList,
 	"site":        func() string { return SiteName },
 	"replyURL":    replyURL,
+	"rx":          reactBoxOf,
+	"smile":       smileImg,
+	"rxlabel":     reactionLabel,
 	"threadURL":   func(base string) template.URL { return template.URL(base + "#reply") },
 }
 
@@ -98,14 +101,28 @@ func newAvatar(url, name string) avatarArg {
 // нарисовать его должен показ — из текущего ника адресата, который приехал
 // самосоединением в SELECT.
 func commentBodyHTML(c platform.CommentView) template.HTML {
+	e := eraOf(c.PublishedAt)
 	name := replyName(c.ReplyTo)
 	if name == "" {
-		return bodyHTML(c.Body)
+		return renderBody("", c.Body, e)
+	}
+	body := c.Body
+	if e.markup {
+		// «Для [b][i]Ник[/i][/b] » — так обращение рисовал САМ сайт осенью
+		// 2013-го, до перехода на «Ник, ». Ребро у такой строки уже есть
+		// (его принёс архив), поэтому оставленный в теле префикс дал бы
+		// обращение дважды. Снимается он показом, а не разбором при
+		// раскатке: 10,7 млн строк уже лежат в базе, и переписывать их
+		// ради вида нечестно — ниже по тексту это те же байты, что отдал
+		// сайт.
+		if cut, ok := platform.TrimLegacyAddress(body); ok {
+			body = cut
+		}
 	}
 	prefix := template.HTML(`<a class="to" href="#c` +
 		strconv.FormatInt(c.ReplyTo.CommentID, 10) + `">` +
 		template.HTMLEscapeString(name) + `</a>, `)
-	return renderBody(prefix, c.Body)
+	return renderBody(prefix, body, e)
 }
 
 // page — общая часть каждой страницы. Встраивается в данные конкретной

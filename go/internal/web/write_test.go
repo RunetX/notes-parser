@@ -20,12 +20,13 @@ import (
 // fakeWriter — ядро записи без Postgres. Помнит последний вызов: почти каждый
 // тест ниже спрашивает именно «что дошло до ядра».
 type fakeWriter struct {
-	note    platform.NewNote
-	comment platform.NewComment
-	edited  string
-	nick    string
-	nextID  int64
-	fail    error
+	note     platform.NewNote
+	comment  platform.NewComment
+	edited   string
+	nick     string
+	reaction platform.NewReaction
+	nextID   int64
+	fail     error
 }
 
 func (f *fakeWriter) CreateNote(_ context.Context, in platform.NewNote) (int64, error) {
@@ -42,6 +43,11 @@ func (f *fakeWriter) CreateComment(_ context.Context, in platform.NewComment) (i
 		return 0, f.fail
 	}
 	return f.id(), nil
+}
+
+func (f *fakeWriter) React(_ context.Context, in platform.NewReaction) error {
+	f.reaction = in
+	return f.fail
 }
 
 func (f *fakeWriter) EditNote(_ context.Context, _, _ int64, body string) error {

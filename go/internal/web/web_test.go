@@ -36,6 +36,9 @@ type fakeStore struct {
 
 	thread []platform.CommentView
 
+	reactions   map[int64][]platform.Reaction
+	reactViewer int64
+
 	flat       []platform.CommentView
 	flatOffset int
 	flatUsed   bool
@@ -70,6 +73,12 @@ func (f *fakeStore) NoteImages(context.Context, int64) ([]platform.Media, error)
 
 func (f *fakeStore) Thread(context.Context, platform.Viewer, int64) ([]platform.CommentView, error) {
 	return f.thread, nil
+}
+
+// Реакции: ключ 0 — сама заметка, остальные — комментарии.
+func (f *fakeStore) NoteReactions(_ context.Context, viewerID, _ int64) (map[int64][]platform.Reaction, error) {
+	f.reactViewer = viewerID
+	return f.reactions, nil
 }
 
 func (f *fakeStore) Flat(_ context.Context, _ platform.Viewer, _ int64, offset, _ int) ([]platform.CommentView, error) {
@@ -819,6 +828,17 @@ func TestAssetsAreHashedAndCacheable(t *testing.T) {
 	// Статика доступна и не вошедшему: страница входа тоже должна быть одета.
 	if do(h, guest(t, "GET", u)).Code != http.StatusOK {
 		t.Error("статика требует входа")
+	}
+
+	// Смайлы лежат подкаталогом, и подкаталог виден в адресе: маршрут обязан
+	// принимать путь со слэшем, иначе картинки молча отдают 404.
+	sm := assetURL("smile/popcorn.gif")
+	if sm == "" || !strings.HasPrefix(sm, "/assets/smile/") {
+		t.Fatalf("адрес смайла %q", sm)
+	}
+	if w := do(h, httptest.NewRequest("GET", sm, nil)); w.Code != http.StatusOK ||
+		w.Header().Get("Content-Type") != "image/gif" {
+		t.Errorf("смайл: код %d, тип %q", w.Code, w.Header().Get("Content-Type"))
 	}
 }
 

@@ -22,7 +22,7 @@
     <div class="nbody">
       {{/* Текст заметки показывается ЦЕЛИКОМ, без «читать дальше»: на НГС
            лента так и устроена, её листают, а не раскрывают. */}}
-      <div class="text">{{body .Body}}</div>
+      <div class="text">{{body .}}</div>
       <div class="nfoot">
         {{when .PublishedAt .PublishedExact}}
         {{if .CommentsClosed}}

@@ -11,7 +11,7 @@ import (
 // плоскими, а разметку добавляем мы. Тест сторожит именно это свойство — не
 // «санитайзер работает», а «экранируется всё».
 func TestBodyEscapesEverything(t *testing.T) {
-	got := string(bodyHTML(`<script>alert("вжух")</script> & <b>жирный</b>`))
+	got := plainNote(`<script>alert("вжух")</script> & <b>жирный</b>`)
 	for _, bad := range []string{"<script", "<b>", `alert("`} {
 		if strings.Contains(got, bad) {
 			t.Errorf("в разметку прошло %q: %s", bad, got)
@@ -23,7 +23,7 @@ func TestBodyEscapesEverything(t *testing.T) {
 }
 
 func TestBodyKeepsParagraphsAndBreaks(t *testing.T) {
-	got := string(bodyHTML("Первая строка\nвторая строка\n\nНовый абзац"))
+	got := plainNote("Первая строка\nвторая строка\n\nНовый абзац")
 	want := "<p>Первая строка<br>вторая строка</p><p>Новый абзац</p>"
 	if got != want {
 		t.Errorf("получено %q, ожидалось %q", got, want)
@@ -31,7 +31,7 @@ func TestBodyKeepsParagraphsAndBreaks(t *testing.T) {
 }
 
 func TestBodyAutolinks(t *testing.T) {
-	got := string(bodyHTML("см. https://t3h.ru/n/312811, там всё"))
+	got := plainNote("см. https://t3h.ru/n/312811, там всё")
 	if !strings.Contains(got, `<a href="https://t3h.ru/n/312811" rel="nofollow noopener ugc">`) {
 		t.Fatalf("ссылка не собралась: %s", got)
 	}
@@ -44,7 +44,7 @@ func TestBodyAutolinks(t *testing.T) {
 // В href физически не может оказаться чужой схемы: распознаём только http и
 // https, а не вычищаем опасное из всего подряд.
 func TestBodyDoesNotLinkForeignSchemes(t *testing.T) {
-	got := string(bodyHTML(`javascript:alert(1) data:text/html;base64,x`))
+	got := plainNote(`javascript:alert(1) data:text/html;base64,x`)
 	if strings.Contains(got, "<a ") {
 		t.Errorf("собрана ссылка на чужую схему: %s", got)
 	}

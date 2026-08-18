@@ -28,6 +28,9 @@ type Writer interface {
 	CreateComment(ctx context.Context, in platform.NewComment) (int64, error)
 	EditNote(ctx context.Context, userID, noteID int64, body string) error
 	SetOwnNick(ctx context.Context, userID int64, nick string) error
+	// React — нажать, переключить или снять реакцию. Правкой чужого это не
+	// является: строка своя, а объект остаётся нетронутым.
+	React(ctx context.Context, in platform.NewReaction) error
 }
 
 // composePageName — один шаблон и на новую заметку, и на правку: поля те же, и
@@ -282,6 +285,8 @@ func writeProblem(err error) (int, string) {
 				"Верните его на своей странице, и можно будет писать снова."
 	case errors.Is(err, platform.ErrNotMember):
 		return http.StatusForbidden, "Писать может только участник площадки."
+	case errors.Is(err, platform.ErrBadReaction):
+		return http.StatusBadRequest, "Такой реакции нет."
 	case errors.Is(err, platform.ErrNotYours):
 		return http.StatusForbidden, "Это не ваша запись."
 	case errors.Is(err, platform.ErrEditWindowClosed):

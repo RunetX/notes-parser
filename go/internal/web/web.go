@@ -71,6 +71,10 @@ type Store interface {
 	NoteImages(ctx context.Context, noteID int64) ([]platform.Media, error)
 	Thread(ctx context.Context, v platform.Viewer, noteID int64) ([]platform.CommentView, error)
 	Flat(ctx context.Context, v platform.Viewer, noteID int64, offset, limit int) ([]platform.CommentView, error)
+	// NoteReactions — реакции заметки и всего треда разом. Отдельным методом, а не
+	// полем в CommentView: реакции меняются чаще самих реплик и читаются одним
+	// запросом на страницу, а не по одному на строку.
+	NoteReactions(ctx context.Context, viewerID, noteID int64) (map[int64][]platform.Reaction, error)
 }
 
 // Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:
@@ -210,7 +214,7 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
-	mux.HandleFunc("GET /assets/{name}", s.handleAsset)
+	mux.HandleFunc("GET /assets/{name...}", s.handleAsset)
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.HandleFunc("POST /login", s.handleLoginStart)
 	mux.HandleFunc("POST /login/check", s.handleLoginCheck)
@@ -231,6 +235,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /n/{id}/edit", s.handleEditNote)
 	mux.HandleFunc("POST /n/{id}/edit", s.handleUpdateNote)
 	mux.HandleFunc("POST /n/{id}/reply", s.handleCreateComment)
+	mux.HandleFunc("POST /n/{id}/react", s.handleReact)
 	if s.media != nil {
 		mux.Handle("GET /media/", http.StripPrefix("/media/", s.media))
 	}

@@ -6,6 +6,10 @@ package web
 // можно отдавать с immutable на год и никогда не думать о сбросе кэша: новая
 // сборка — новое имя. Тот же приём, что у хранилища медиа, только там имя есть
 // сам sha256 файла.
+//
+// Подкаталоги тоже статика: в assets/smile лежат 56 картинок смайлов НГС
+// (smiles.go). Они вшиты в бинарник, а не сложены в хранилище медиа, потому что
+// это не чьё-то вложение, а часть ВИДА страницы — как шрифт или иконка.
 
 import (
 	"crypto/sha256"
@@ -39,8 +43,13 @@ var (
 )
 
 func init() {
-	names, err := fs.Glob(assetFS, "assets/*")
-	if err != nil || len(names) == 0 {
+	var names []string
+	if err := fs.WalkDir(assetFS, "assets", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			names = append(names, p)
+		}
+		return err
+	}); err != nil || len(names) == 0 {
 		panic("web: статика не найдена")
 	}
 	for _, n := range names {
@@ -50,12 +59,15 @@ func init() {
 		}
 		sum := sha256.Sum256(data)
 		h := hex.EncodeToString(sum[:])[:8]
-		base := path.Base(n)
-		ext := path.Ext(base)
-		hashed := strings.TrimSuffix(base, ext) + "." + h + ext
+		// Имя внутри assets/ сохраняется целиком (smile/popcorn.gif): подкаталог
+		// виден в адресе, и одинаковые имена в разных папках не столкнутся.
+		name := strings.TrimPrefix(n, "assets/")
+		ext := path.Ext(name)
+		hashed := strings.TrimSuffix(name, ext) + "." + h + ext
 		assets[hashed] = asset{data: data, mime: assetMIME(ext), etag: `"` + h + `"`}
-		assetURLs[base] = "/assets/" + hashed
+		assetURLs[name] = "/assets/" + hashed
 	}
+	initSmiles()
 }
 
 // assetURL — путь файла для шаблона. Отсутствующее имя даёт пустую ссылку, а не
@@ -70,6 +82,8 @@ func assetMIME(ext string) string {
 		return "text/javascript; charset=utf-8"
 	case ".svg":
 		return "image/svg+xml"
+	case ".gif":
+		return "image/gif"
 	default:
 		return "application/octet-stream"
 	}

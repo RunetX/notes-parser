@@ -32,6 +32,12 @@
   --nav-ink: #fff;
   --accent: #82b541;
   --btn: #f4f6f7;
+  --bb-red: red;
+  --bb-green: green;
+  --bb-blue: blue;
+  --bb-purple: purple;
+  --bb-orange: orange;
+  --bb-pink: pink;
   --step: 14px;
 }
 
@@ -48,6 +54,12 @@
     --anon: #a8b1b9;
     --nav: #23527a;
     --btn: #242a30;
+    --bb-red: #ef6f70;
+    --bb-green: #7fbf5a;
+    --bb-blue: #6fadde;
+    --bb-purple: #b48ae6;
+    --bb-orange: #e39a45;
+    --bb-pink: #f0a0c0;
   }
 }
 
@@ -63,6 +75,12 @@
   --anon: #a8b1b9;
   --nav: #23527a;
   --btn: #242a30;
+  --bb-red: #ef6f70;
+  --bb-green: #7fbf5a;
+  --bb-blue: #6fadde;
+  --bb-purple: #b48ae6;
+  --bb-orange: #e39a45;
+  --bb-pink: #f0a0c0;
 }
 
 * { box-sizing: border-box; }
@@ -208,6 +226,51 @@ a:hover { text-decoration: underline; }
 .text { overflow-wrap: anywhere; }
 .text p { margin: 0 0 .8em; }
 .text p:last-child { margin-bottom: 0; }
+
+/* Разметка ранних лет НГС: [b], [i], [u], [s], [color=…] в текстах архива.
+   Цвет приезжает КЛАССОМ, а не атрибутом style — CSP без 'unsafe-inline'
+   его запрещает (та же причина, что у отступа ветки d1…d12).
+   В светлой теме стоит ровно то ключевое слово, которое назвал автор: сайт
+   был светлым, и «розовый» там был так же еле виден, как здесь, — чужой
+   выбор мы не поправляем. В тёмной те же цвета подняты по светлоте: на
+   #1d2126 blue и purple не читаются вовсе. */
+.bb-red { color: var(--bb-red); }
+.bb-green { color: var(--bb-green); }
+.bb-blue { color: var(--bb-blue); }
+.bb-purple { color: var(--bb-purple); }
+.bb-orange { color: var(--bb-orange); }
+.bb-pink { color: var(--bb-pink); }
+
+/* Смайлы НГС в тексте (:::popcorn:::). Размер у каждого свой (от 15×15 до
+   100×20) и приезжает атрибутами width/height из самого файла, поэтому стилю
+   остаётся немного: не дать картинке распереть узкий экран. Выравнивание
+   оставлено браузерное, по базовой линии, — таким его давал <img> без класса,
+   а проверить, как ровно смайл стоял на НГС, больше негде: сайт эти коды не
+   показывает с 2017 года. */
+.sm { max-width: 100%; height: auto; }
+
+/* ---------------------------------------------------------------- реакции */
+
+/* Кнопки-фишки под заметкой и под репликой. Смайлы в наборе разнокалиберные
+   (15×15 … 100×20), поэтому в фишке задана высота, а ширина считается: иначе
+   ряд фишек прыгал бы по высоте вслед за картинками. */
+.rx { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 6px 0 0; }
+.rxb {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px;
+  border: 1px solid var(--rule); border-radius: 11px; background: var(--btn);
+  color: var(--ink); font: inherit; font-size: 12px; line-height: 20px; cursor: pointer;
+}
+.rxb .sm { height: 18px; width: auto; }
+.rxb b { font-weight: 600; }
+/* Своя реакция подсвечена рамкой, а не заливкой: заливка спорит со смайлом. */
+.rxb.mine { border-color: var(--accent); }
+span.rxb { cursor: default; }
+.rxadd {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 22px; border: 1px solid var(--rule); border-radius: 11px;
+  background: var(--btn); color: var(--meta); text-decoration: none; font-size: 14px;
+}
+.rxpick { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 
 .nfoot { margin-top: 10px; color: var(--meta); font-size: 12px; }
 .date { color: var(--meta); }
