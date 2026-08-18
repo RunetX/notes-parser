@@ -170,6 +170,19 @@ func TestLeadingAddressBoundaries(t *testing.T) {
 	}
 }
 
+// Свидетельство находится и тогда, когда реплики адресата на странице нет:
+// её мог скрыть модератор или она осталась на другой странице линейного вида.
+// Ключ — нынешний ник адресата, а он у ребра есть всегда.
+func TestEvidenceWorksWithoutTargetOnPage(t *testing.T) {
+	note, cs := thread(oldNick+", привычное", oldNick+", ещё раз")
+	cs = cs[1:] // реплики адресата на странице нет
+
+	got := string(commentBodyHTML(newAddressBook(note, cs), cs[0]))
+	if !strings.Contains(got, `<b class="to">`+oldNick+`</b>, `) {
+		t.Errorf("свидетельство не найдено без реплики адресата: %s", got)
+	}
+}
+
 // Реплика без ребра не меняется вовсе: дорисовывать там нечего, и трогать текст
 // показ не вправе.
 func TestBodyWithoutEdgeIsUntouched(t *testing.T) {

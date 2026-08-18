@@ -79,10 +79,14 @@ func leadingAddress(body string) (nick, rest string, ok bool) {
 	return nick, rest, true
 }
 
-// addrKey — «этим словом обращались вот к этому человеку».
+// addrKey — «этим словом обращались вот к этому человеку». Человек назван
+// НЫНЕШНИМ ником адресата, а не его номером: ник есть у ребра всегда, а
+// реплики адресата на странице может и не быть — она скрыта модератором или
+// осталась на другой странице линейного вида. По номеру такие строки
+// свидетельства не находили, хотя рядом лежали два десятка таких же.
 type addrKey struct {
-	user  int64
-	token string
+	target string
+	token  string
 }
 
 // addressBook — что известно про обращения В ПРЕДЕЛАХ ОДНОЙ ЗАМЕТКИ.
@@ -91,7 +95,6 @@ type addrKey struct {
 // показывает обращения как раньше, а не падает.
 type addressBook struct {
 	nicks   map[string]bool // ники участников заметки, в нижнем регистре
-	authors map[int64]int64 // id реплики → id её автора
 	repeats map[addrKey]int // сколько раз токеном обращались к человеку
 }
 
@@ -102,32 +105,20 @@ type addressBook struct {
 func newAddressBook(note platform.NoteView, comments []platform.CommentView) *addressBook {
 	b := &addressBook{
 		nicks:   make(map[string]bool, len(comments)+1),
-		authors: make(map[int64]int64, len(comments)),
 		repeats: make(map[addrKey]int),
 	}
 	if !note.Anonymous && note.Author.Nick != "" {
 		b.nicks[strings.ToLower(note.Author.Nick)] = true
 	}
 	for _, c := range comments {
-		if c.Author.ID != 0 {
-			b.authors[c.ID] = c.Author.ID
-		}
 		if nick := c.Name(); nick != "" && !c.Anonymous {
 			b.nicks[strings.ToLower(nick)] = true
 		}
-	}
-	// Второй проход: считать повторы можно только когда известны все авторы —
-	// адресат реплики бывает НИЖЕ по странице (в линейном виде новые сверху).
-	for _, c := range comments {
-		if c.ReplyTo == nil {
+		if c.ReplyTo == nil || c.ReplyTo.Nick == "" {
 			continue
 		}
-		token, _, ok := leadingAddress(c.Body)
-		if !ok {
-			continue
-		}
-		if u, known := b.authors[c.ReplyTo.CommentID]; known {
-			b.repeats[addrKey{u, strings.ToLower(token)}]++
+		if token, _, ok := leadingAddress(c.Body); ok {
+			b.repeats[addrKey{strings.ToLower(c.ReplyTo.Nick), strings.ToLower(token)}]++
 		}
 	}
 	return b
@@ -148,8 +139,5 @@ func (b *addressBook) isAddress(c platform.CommentView, token string) bool {
 		return true
 	}
 	// Свидетельство треда: этим словом обращались к тому же человеку не раз.
-	if u, known := b.authors[c.ReplyTo.CommentID]; known {
-		return b.repeats[addrKey{u, low}] >= addressRepeats
-	}
-	return false
+	return b.repeats[addrKey{strings.ToLower(c.ReplyTo.Nick), low}] >= addressRepeats
 }
