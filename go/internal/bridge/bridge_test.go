@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"lovegw/internal/love"
+	"lovegw/internal/platform"
 	"lovegw/internal/store"
 )
 
@@ -186,7 +188,7 @@ func TestSiteErrorTellsTheAuthor(t *testing.T) {
 	h.core.notify = func(_ context.Context, _ int64, text string) { said = text }
 	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
 
-	if !strings.Contains(said, "не ушёл") {
+	if !strings.Contains(said, "не принял") {
 		t.Fatalf("автору должны сказать, что комментарий не ушёл: %q", said)
 	}
 	// Сессию при этом не гасим: 500 — это про сайт, а не про вход.
@@ -298,5 +300,254 @@ func TestCoreMaxReplies(t *testing.T) {
 	}
 	if p := site.posts[1]; p.noteID != "n1" || p.comAPIID != "42" || p.text != "Мария, и тебе привет" {
 		t.Errorf("ответ на комментарий: %+v", p)
+	}
+}
+
+// --- площадка запасным адресатом --------------------------------------------
+
+// fakePlatform — площадка для моста: принимает реплики и знает, к какой заметке
+// относится нативная.
+type fakePlatform struct {
+	mu       sync.Mutex
+	made     []platform.NewComment
+	nextID   int64
+	err      error
+	comments map[int64]platform.Comment
+}
+
+func (f *fakePlatform) CreateComment(_ context.Context, in platform.NewComment) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return 0, f.err
+	}
+	f.made = append(f.made, in)
+	if f.nextID == 0 {
+		f.nextID = platform.NativeIDBase
+	}
+	f.nextID++
+	return f.nextID, nil
+}
+
+func (f *fakePlatform) CommentRow(_ context.Context, id int64) (platform.Comment, error) {
+	if c, ok := f.comments[id]; ok {
+		return c, nil
+	}
+	return platform.Comment{}, errors.New("нет такой реплики")
+}
+
+// withPlatform поднимает мост с подключённой площадкой и сессией, у которой
+// заполнена анкета: без неё участника площадки не найти.
+func withPlatform(t *testing.T) (*store.Store, *fakeSite, *Handler, *fakePlatform, *[]string) {
+	t.Helper()
+	st, site, h, _ := setup(t)
+	var said []string
+	h.core.notify = func(_ context.Context, _ int64, text string) { said = append(said, text) }
+	seedUserSession(t, st, userID)
+	if err := st.SetSessionIdentity(context.Background(), store.MessengerTelegram, userID,
+		"1443311", "9000001", "Dr. David Livesey"); err != nil {
+		t.Fatal(err)
+	}
+	p := &fakePlatform{comments: map[int64]platform.Comment{}}
+	h.core.SetPlatform(p, "https://t3h.ru/")
+	return st, site, h, p, &said
+}
+
+// Сайт отказал — ответ не пропадает, а уходит на площадку от имени того же
+// человека. До этой ветки чужие реплики терялись молча: 17.08.2026 НГС отвечал
+// 500 на любой комментарий.
+func TestSiteRefusalFallsBackToPlatform(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, p, said := withPlatform(t)
+	st.InsertNote(ctx, store.Note{ID: "313028", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
+	site.err = errors.New("статус 500")
+
+	h.Handle(ctx, replyUpdate(900, 5, "ответ из телеграма"))
+
+	if len(p.made) != 1 {
+		t.Fatalf("на площадку ушло %d реплик: %+v", len(p.made), p.made)
+	}
+	got := p.made[0]
+	if got.NoteID != 313028 || got.AuthorID != 1443311 || got.Body != "ответ из телеграма" {
+		t.Errorf("реплика площадки: %+v", got)
+	}
+	if len(*said) == 0 || !strings.Contains((*said)[0], "t3h.ru") {
+		t.Errorf("человеку не сказали, куда уехал ответ: %v", *said)
+	}
+}
+
+// Своя реплика уже стоит в треде — это сообщение самого человека. Отметка
+// message_targets гасит эхо: исходящий обход площадки копию сюда не принесёт.
+func TestPlatformReplyIsMarkedSentToItsOwnMessenger(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, p, _ := withPlatform(t)
+	st.InsertNote(ctx, store.Note{ID: "313028", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
+	site.err = errors.New("статус 500")
+
+	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
+
+	msg, _, found, err := st.Target(ctx, store.MessengerTelegram, store.TargetComment,
+		strconv.FormatInt(p.nextID, 10))
+	if err != nil || !found {
+		t.Fatalf("реплика не отмечена отправленной: found=%v err=%v", found, err)
+	}
+	if msg != "5" {
+		t.Errorf("отмечено сообщение %q, ждали 5 — сообщение самого человека", msg)
+	}
+}
+
+// Ответ на реплику, написанную на площадке, идёт СРАЗУ туда и сайта не
+// касается: такой реплики на НГС нет вовсе, отвечать там нечему.
+func TestReplyToNativeCommentSkipsSite(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, p, _ := withPlatform(t)
+	native := platform.NativeIDBase + 7
+	p.comments[native] = platform.Comment{ID: native, NoteID: 313028}
+	if err := st.SetTarget(ctx, store.MessengerTelegram, store.TargetComment,
+		strconv.FormatInt(native, 10), "77", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Handle(ctx, replyUpdate(77, 5, "и тебе привет"))
+
+	if len(site.posts) != 0 {
+		t.Errorf("на сайт ушло: %+v", site.posts)
+	}
+	if len(p.made) != 1 || p.made[0].ReplyToID != native || p.made[0].NoteID != 313028 {
+		t.Fatalf("реплика площадки: %+v", p.made)
+	}
+	// Обращение «Ник, » в тело НЕ подставляется: на площадке оно ребро, и
+	// дорисовывается на показе — иначе вышло бы «Ник, Ник, ».
+	if p.made[0].Body != "и тебе привет" {
+		t.Errorf("тело реплики: %q", p.made[0].Body)
+	}
+}
+
+// Ответ в тред заметки, написанной на площадке: сайта тоже не касается.
+func TestReplyToNativeNoteGoesToPlatform(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, p, _ := withPlatform(t)
+	native := strconv.FormatInt(platform.NativeIDBase, 10)
+	if err := st.SetTarget(ctx, store.MessengerTelegram, store.TargetNoteThread,
+		native, "", "900"); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Handle(ctx, replyUpdate(900, 5, "первый"))
+
+	if len(site.posts) != 0 {
+		t.Errorf("на сайт ушло: %+v", site.posts)
+	}
+	if len(p.made) != 1 || p.made[0].NoteID != platform.NativeIDBase || p.made[0].ReplyToID != 0 {
+		t.Fatalf("реплика площадки: %+v", p.made)
+	}
+}
+
+// Человек, который на площадку ещё не входил, получает приглашение, а не
+// «что-то пошло не так»: он пишет прямо сейчас, и это лучший момент позвать.
+func TestNonMemberIsInvited(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, p, said := withPlatform(t)
+	st.InsertNote(ctx, store.Note{ID: "313028", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
+	site.err = errors.New("статус 500")
+	p.err = platform.ErrNotMember
+
+	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
+
+	if len(*said) != 1 || !strings.Contains((*said)[0], "https://t3h.ru") {
+		t.Fatalf("приглашения на площадку нет: %v", *said)
+	}
+	if !strings.Contains((*said)[0], "войдите") {
+		t.Errorf("в приглашении не сказано, что делать: %q", (*said)[0])
+	}
+}
+
+// Протухшая сессия сайта на площадку НЕ переносится: человеку в любом случае
+// идти делать /login, и второе письмо про площадку только запутает.
+func TestExpiredSessionDoesNotFallBack(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, p, said := withPlatform(t)
+	st.InsertNote(ctx, store.Note{ID: "313028", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
+	site.err = love.ErrUnauthorized
+
+	h.Handle(ctx, replyUpdate(900, 5, "ответ"))
+
+	if len(p.made) != 0 {
+		t.Errorf("реплика уехала на площадку при протухшей сессии: %+v", p.made)
+	}
+	if len(*said) != 1 || !strings.Contains((*said)[0], "/login") {
+		t.Fatalf("подсказка про /login: %v", *said)
+	}
+}
+
+// Про переезд ответа говорят ОДИН раз: при мёртвом НГС иначе выходит письмо на
+// каждую реплику.
+func TestPlatformNoticeIsSentOnce(t *testing.T) {
+	ctx := context.Background()
+	st, site, h, _, said := withPlatform(t)
+	st.InsertNote(ctx, store.Note{ID: "313028", Text: "т", Status: store.StatusPosted,
+		TGMessageID: 10, FirstSeenAt: time.Now()})
+	st.CaptureNoteThread(ctx, store.MessengerTelegram, "10", "900")
+	site.err = errors.New("статус 500")
+
+	h.Handle(ctx, replyUpdate(900, 5, "раз"))
+	h.Handle(ctx, replyUpdate(900, 6, "два"))
+
+	if len(*said) != 1 {
+		t.Fatalf("сказано %d раз: %v", len(*said), *said)
+	}
+}
+
+// Ответ на реплику площадки от НЕучастника: приглашение говорит, что заметка
+// живёт здесь, а не «НГС не принял» — сайт тут вообще ни при чём.
+func TestNativeRefusalNamesTheRightReason(t *testing.T) {
+	ctx := context.Background()
+	st, _, h, p, said := withPlatform(t)
+	native := platform.NativeIDBase + 7
+	p.comments[native] = platform.Comment{ID: native, NoteID: 313028}
+	p.err = platform.ErrNotMember
+	if err := st.SetTarget(ctx, store.MessengerTelegram, store.TargetComment,
+		strconv.FormatInt(native, 10), "77", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Handle(ctx, replyUpdate(77, 5, "привет"))
+
+	if len(*said) != 1 {
+		t.Fatalf("сказано: %v", *said)
+	}
+	if strings.Contains((*said)[0], "НГС ваш ответ не принял") {
+		t.Errorf("названа не та причина: %q", (*said)[0])
+	}
+	if !strings.Contains((*said)[0], "на НГС её нет") || !strings.Contains((*said)[0], "https://t3h.ru") {
+		t.Errorf("приглашение: %q", (*said)[0])
+	}
+}
+
+// У своей заметки об успехе не объявляют: человек и так отвечает нашему.
+func TestNativeReplySaysNothingOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	st, _, h, p, said := withPlatform(t)
+	native := strconv.FormatInt(platform.NativeIDBase, 10)
+	if err := st.SetTarget(ctx, store.MessengerTelegram, store.TargetNoteThread,
+		native, "", "900"); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Handle(ctx, replyUpdate(900, 5, "первый"))
+
+	if len(p.made) != 1 {
+		t.Fatalf("реплика не ушла: %+v", p.made)
+	}
+	if len(*said) != 0 {
+		t.Errorf("лишнее сообщение человеку: %v", *said)
 	}
 }

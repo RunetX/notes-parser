@@ -46,6 +46,11 @@ func New(st *store.Store, site SitePoster, notify Notify,
 	}
 }
 
+// Core — ядро моста этого мессенджера. Нужно снаружи ровно затем, чтобы
+// подключить площадку (SetPlatform): она поднимается позже ботов и может не
+// подняться вовсе.
+func (h *Handler) Core() *Core { return h.core }
+
 // Handle — обработчик обновлений постер-бота.
 func (h *Handler) Handle(ctx context.Context, u *models.Update) {
 	msg := u.Message

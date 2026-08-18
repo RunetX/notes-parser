@@ -275,6 +275,10 @@ type daemon struct {
 	maxDM      *dmbot.Logic // ЛС-команды бота зеркала MAX
 	maxTalksDM *dmbot.Logic
 	onNewNote  func(context.Context, love.Note)
+	// cores — ядра моста всех мессенджеров. Собираются, чтобы подключить им
+	// площадку: она встаёт позже ботов, а ответ из треда должен доходить и
+	// туда — на НГС с 17.08.2026 он не доходит вовсе.
+	cores []*bridge.Core
 }
 
 // runDaemon собирает включённые мессенджеры (гейт messengers) и крутит все
@@ -365,6 +369,7 @@ func (d *daemon) setupTelegram(ctx context.Context) error {
 	dm := d.dm
 
 	handler := bridge.New(st, client, notify, tgCfg.ChannelID, tgCfg.DiscussionChatID, log)
+	d.cores = append(d.cores, handler.Core())
 	tg, err := tgx.NewMirror(tgx.Params{
 		Token:            tgCfg.Token,
 		ChannelID:        tgCfg.ChannelID,
@@ -514,6 +519,7 @@ func (d *daemon) setupMax() error {
 	// Бот зеркала ведёт и мост «ответ в чате → комментарий на сайте», и
 	// ЛС-команды; бот переписки — только диалоги talks.
 	maxCore := bridge.NewCore(st, client, mx.Send, store.MessengerMax, log)
+	d.cores = append(d.cores, maxCore)
 	d.maxDM = dmbot.NewLogic(st, client, mx, store.MessengerMax, log)
 	maxDM := d.maxDM
 	d.starts = append(d.starts, func(ctx context.Context) error {
@@ -719,8 +725,16 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	out := platout.New(p, d.st, media, msgSinks, cfg.Platform.BaseURL, log)
 	d.starts = append(d.starts, out.Run)
 
+	// И встречное: ответ, написанный в треде мессенджера, при отказе сайта
+	// уходит сюда же, а у своей заметки — только сюда. Подключается ПОСЛЕ
+	// ботов, потому что мост живёт вместе с ними, а площадка может не встать.
+	for _, core := range d.cores {
+		core.SetPlatform(p, cfg.Platform.BaseURL)
+	}
+
 	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
-		"reconcile", platsink.Interval, "outbound", platout.Interval, "outbound_sinks", len(msgSinks))
+		"reconcile", platsink.Interval, "outbound", platout.Interval,
+		"outbound_sinks", len(msgSinks), "мост_в_площадку", len(d.cores))
 	return nil
 }
 

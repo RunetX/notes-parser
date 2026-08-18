@@ -140,6 +140,11 @@ func (s *Store) CaptureNoteThread(ctx context.Context, messenger, postMessageID,
 }
 
 // NoteByThread находит заметку по корню её треда в мессенджере.
+//
+// ВНИМАНИЕ: джойн с notes значит «только заметки НГС». Заметки, написанной на
+// площадке, в зеркальной базе нет вовсе, и здесь она не найдётся — для «чей
+// это тред» есть RefByThread. Метод оставлен там, где нужна сама строка
+// зеркала (её поля), а не факт принадлежности.
 func (s *Store) NoteByThread(ctx context.Context, messenger, threadID string) (Note, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+prefixed(noteColumns, "n")+`
@@ -179,6 +184,38 @@ func (s *Store) CommentByTarget(ctx context.Context, messenger, messageID string
 		return Comment{}, fmt.Errorf("комментарий с id %s/%s: %w", messenger, messageID, ErrNotFound)
 	}
 	return scanComment(rows)
+}
+
+// RefByThread — чьим корнем треда является threadID. В отличие от NoteByThread
+// не заглядывает в таблицу notes, и в этом весь смысл: заметка, написанная НА
+// ПЛОЩАДКЕ, в зеркальной базе не существует вовсе — она есть только в
+// message_targets, куда её положил исходящий обход.
+func (s *Store) RefByThread(ctx context.Context, messenger, kind, threadID string) (refID string, found bool, err error) {
+	return s.refBy(ctx, "thread_id", messenger, kind, threadID)
+}
+
+// RefByMessage — чьим сообщением является messageID. То же самое для реплик:
+// нативная живёт только в message_targets.
+func (s *Store) RefByMessage(ctx context.Context, messenger, kind, messageID string) (refID string, found bool, err error) {
+	return s.refBy(ctx, "message_id", messenger, kind, messageID)
+}
+
+func (s *Store) refBy(ctx context.Context, col, messenger, kind, value string) (string, bool, error) {
+	if value == "" {
+		return "", false, nil
+	}
+	var ref string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT ref_id FROM message_targets
+		WHERE messenger = ? AND kind = ? AND `+col+` = ?`,
+		messenger, kind, value).Scan(&ref)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("сущность по %s %s/%s: %w", col, messenger, kind, err)
+	}
+	return ref, true, nil
 }
 
 // AddresseeMessage ищет сообщение того комментария, которому адресована
