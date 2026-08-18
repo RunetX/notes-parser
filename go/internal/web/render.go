@@ -82,20 +82,25 @@ func replyURL(base string, commentID int64) template.URL {
 	return template.URL(base + "&reply=" + strconv.FormatInt(commentID, 10) + "#reply")
 }
 
-// avatarArg — то, что нужно шаблону аватара. Шаблон принимает одно значение,
-// а нужны два (адрес и подпись), поэтому пара собирается функцией.
+// avatarArg — что показать на месте аватара: адрес картинки и признак того, что
+// это силуэт, а не лицо. Признак нужен показу: силуэт — это ОТСУТСТВИЕ фото, и
+// в тёмной теме светлый квадрат не должен светить ярче текста (style.css,
+// .ava.sil). Отличать их по адресу в CSS было бы можно, но связь «папка
+// /assets/profile/ означает силуэт» держалась бы только памятью.
 type avatarArg struct {
-	URL     string
-	Initial string
+	URL string
+	Sil bool
 }
 
-func newAvatar(url, name string) avatarArg {
-	a := avatarArg{URL: url, Initial: "?"}
-	for _, r := range name {
-		a.Initial = strings.ToUpper(string(r))
-		break
+// newAvatar — картинка аватара: своё фото, а нет его — силуэт по умолчанию
+// (silhouette.go). Выбор живёт в Go, а не в шаблоне: условие «фото, иначе пол,
+// но у анонима всегда аноним» на языке шаблонов читается вдвое хуже, а ошибиться
+// в нём стоит показанного лица.
+func newAvatar(url string, g platform.Gender, anonymous bool) avatarArg {
+	if url == "" || anonymous {
+		return avatarArg{URL: silhouette(g, anonymous), Sil: true}
 	}
-	return a
+	return avatarArg{URL: url}
 }
 
 // commentBodyHTML — тело комментария вместе с обращением.

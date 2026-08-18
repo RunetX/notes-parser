@@ -3,13 +3,17 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -759,23 +763,132 @@ func TestThemeCookieRendersAttribute(t *testing.T) {
 	}
 }
 
-// Тем ровно две, и «как в системе» среди них нет. Это не выбор, а его
-// отсутствие: кнопка, после нажатия которой ничего не выбрано, объясняется
-// дольше, чем стоит. Светлая при этом одна — прежние «Классика» и «Светлая»
-// показывали одну и ту же палитру.
-func TestThemeListIsTwoDistinctThemes(t *testing.T) {
-	if len(themes) != 2 {
-		t.Fatalf("тем %d: %+v", len(themes), themes)
-	}
-	seen := map[string]bool{}
+// «Как в системе» в наборе нет и не будет: это не выбор, а его отсутствие, и
+// кнопка, после нажатия которой ничего не выбрано, объясняется дольше, чем
+// стоит. Идентификатор при этом не просто ключ — он едет в куку и в класс
+// кнопки (.tbtn.t-<id>), поэтому только латиница и дефис.
+func TestThemeIDsAreSafeAndNamesUnique(t *testing.T) {
+	ids, names := map[string]bool{}, map[string]bool{}
 	for _, th := range themes {
 		if th.ID == "" {
 			t.Errorf("в наборе тема без идентификатора: %+v", th)
 		}
-		if seen[th.Name] {
+		if !regexp.MustCompile(`^[a-z][a-z-]*$`).MatchString(th.ID) {
+			t.Errorf("идентификатор %q не годится в класс и куку", th.ID)
+		}
+		if ids[th.ID] {
+			t.Errorf("два раза идентификатор %q", th.ID)
+		}
+		if names[th.Name] {
 			t.Errorf("две темы с именем %q", th.Name)
 		}
-		seen[th.Name] = true
+		ids[th.ID], names[th.Name] = true, true
+	}
+}
+
+var tokenRe = regexp.MustCompile(`--([a-z-]+)\s*:\s*([^;]+);`)
+
+func tokens(block string) map[string]string {
+	out := map[string]string{}
+	for _, m := range tokenRe.FindAllStringSubmatch(block, -1) {
+		out[m[1]] = strings.TrimSpace(m[2])
+	}
+	return out
+}
+
+// palette — действующие токены темы: базовый :root плюс её собственный блок.
+// Склейка обязательна, потому что блок темы объявляет только ОТЛИЧИЯ, а
+// «Светлая» и есть базовый :root — своего блока у неё нет вовсе.
+func palette(t *testing.T, css, id string) map[string]string {
+	t.Helper()
+	out := tokens(cssRule(t, css, ":root {"))
+	if head := themeBlock(id); strings.Contains(css, head) {
+		for k, v := range tokens(cssRule(t, css, head)) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func themeBlock(id string) string { return `:root[data-theme="` + id + `"] {` }
+
+// Кнопка обязана показывать то, чего не показывает другая, и сравнивать для
+// этого надо ПАЛИТРЫ, а не имена. Правило оплачено сокращением набора с четырёх
+// тем до двух: «Классика» и «Светлая» отдавали одни и те же токены НГС, и
+// нажатие ничем не отличалось от нажатия соседней кнопки (экран владельца,
+// 18.08.2026 — «не понял, чем Классика отличается от светлой»).
+func TestThemePalettesAreDistinct(t *testing.T) {
+	css := cssText(t)
+	seen := map[string]string{}
+	for _, th := range themes {
+		if th.ID != "classic" && !strings.Contains(css, themeBlock(th.ID)) {
+			t.Errorf("у темы «%s» нет своего блока токенов: кнопка есть, показывать нечего", th.Name)
+			continue
+		}
+		p := palette(t, css, th.ID)
+		keys := make([]string, 0, len(p))
+		for k := range p {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var fp strings.Builder
+		for _, k := range keys {
+			fp.WriteString(k + "=" + p[k] + ";")
+		}
+		if other, ok := seen[fp.String()]; ok {
+			t.Errorf("«%s» и «%s» — одна и та же палитра: два имени на одно оформление", other, th.Name)
+		}
+		seen[fp.String()] = th.Name
+	}
+}
+
+// hexLum — светлота по WCAG. Нужна ровно для одного вопроса — тёмная палитра
+// или светлая, — и потому понимает только #rgb/#rrggbb: словами (red, pink) в
+// наборе заданы лишь цвета старой разметки, а карточка всегда шестнадцатеричная.
+func hexLum(t *testing.T, v string) float64 {
+	t.Helper()
+	h := strings.TrimPrefix(v, "#")
+	if len(h) == 3 {
+		h = string([]byte{h[0], h[0], h[1], h[1], h[2], h[2]})
+	}
+	if len(h) != 6 {
+		t.Fatalf("цвет %q не шестнадцатеричный — светлоту по нему не посчитать", v)
+	}
+	var lin [3]float64
+	for i := 0; i < 3; i++ {
+		var b int
+		if _, err := fmt.Sscanf(h[i*2:i*2+2], "%x", &b); err != nil {
+			t.Fatalf("цвет %q не разобрался: %v", v, err)
+		}
+		c := float64(b) / 255
+		if c <= 0.03928 {
+			lin[i] = c / 12.92
+		} else {
+			lin[i] = math.Pow((c+0.055)/1.055, 2.4)
+		}
+	}
+	return 0.2126*lin[0] + 0.7152*lin[1] + 0.0722*lin[2]
+}
+
+// В базовом :root цвета старой разметки стоят СЛОВАМИ автора (blue, purple), а
+// подсветка анкора почти белая: всё это рассчитано на белый лист. Тема
+// наследует их от голого :root, а не от «Тёмной», — значит палитра с тёмной
+// карточкой обязана назвать свои, иначе [color=blue] пропадает в фоне, а приход
+// по ссылке на комментарий засвечивает реплику целиком. Проверка общая, а не
+// «не забыть в графите»: следующую тёмную тему заведут без этого разговора.
+func TestDarkPalettesRestateWhatBaseWroteForWhite(t *testing.T) {
+	css := cssText(t)
+	for _, th := range themes {
+		p := palette(t, css, th.ID)
+		if hexLum(t, p["card"]) > 0.5 {
+			continue
+		}
+		own := tokens(cssRule(t, css, themeBlock(th.ID)))
+		for _, k := range []string{"bb-red", "bb-green", "bb-blue", "bb-purple", "bb-orange", "bb-pink", "hl"} {
+			if own[k] == "" {
+				t.Errorf("тёмная «%s» не объявила --%s: достанется значение для белого листа", th.Name, k)
+			}
+		}
 	}
 }
 

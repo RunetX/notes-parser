@@ -31,7 +31,7 @@
   </nav>
   <div class="note notebox">
     <div class="author">
-      {{template "avatar" (av $n.Author.AvatarURL $n.Name)}}
+      {{template "avatar" (av $n.Author.AvatarURL $n.Author.Gender $n.Anonymous)}}
       <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
     </div>
     <div class="nbody">
@@ -78,7 +78,7 @@
 <ul class="thread{{if .Linear}} linear{{end}}">
 {{range .Comments}}
   <li class="c {{depth .Depth}}{{if ne .Status 0}} chid{{end}}" id="c{{.ID}}" data-depth="{{.Depth}}">
-    <div class="cava">{{template "avatar" (av .Author.AvatarURL .Name)}}</div>
+    <div class="cava">{{template "avatar" (av .Author.AvatarURL .Author.Gender .Anonymous)}}</div>
     <div class="cbody">
       <div class="chead">
         <span class="nick {{.Author.Gender.Class}}{{if .Anonymous}} anon{{end}}">{{.Name}}</span>

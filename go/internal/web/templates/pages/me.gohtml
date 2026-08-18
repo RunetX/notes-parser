@@ -4,7 +4,7 @@
 {{if .Problem}}<p class="warn">{{.Problem}}</p>{{end}}
 
 <div class="whoami">
-  {{template "avatar" (av .Member.AvatarURL .Member.Nick)}}
+  {{template "avatar" (av .Member.AvatarURL .Member.Gender false)}}
   <div>
     <span class="nick {{.Member.Gender.Class}}">{{.Member.Nick}}</span>
     <span class="fine">

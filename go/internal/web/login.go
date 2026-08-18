@@ -195,7 +195,10 @@ type codePage struct {
 	ProfileID int64
 	Nick      string
 	Avatar    string // наш путь /media/…, если этого человека знает зеркало
-	ByTalks   bool
+	// Gender — из анкеты НГС, и нужен он ровно для силуэта: фото зеркало знает
+	// далеко не про всех, а входящий должен узнать на этом экране СЕБЯ.
+	Gender  platform.Gender
+	ByTalks bool
 	// Code заполняется ТОЛЬКО у запасного канала. Показанный код, принимаемый
 	// введённым обратно, — это вход под чужой анкетой в одно нажатие.
 	Code    string
@@ -303,6 +306,7 @@ func (s *Server) renderCode(w http.ResponseWriter, r *http.Request, status int,
 		ProfileID: id,
 		Nick:      prof.Nick,
 		Avatar:    avatar,
+		Gender:    prof.Gender,
 		ByTalks:   byTalks,
 		Code:      code,
 		Problem:   problem,
