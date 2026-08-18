@@ -332,11 +332,14 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	if in.ReplyToID != 0 {
 		source = ReplyNative // отвечали у нас: адресат известен точно, а не угадан
 	}
+	// anonymous не задаётся вовсе: комментарий на площадке подписан всегда
+	// (см. NewComment). Колонка остаётся ради зеркала — на НГС анонимные
+	// комментарии в старых тредах встречаются.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO comments (id, note_id, author_id, anonymous, body,
+		INSERT INTO comments (id, note_id, author_id, body,
 		                      branch_root_id, reply_to_id, reply_source, path, depth, published_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		id, in.NoteID, in.AuthorID, in.Anonymous, body,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		id, in.NoteID, in.AuthorID, body,
 		nullID(branchRoot), nullID(in.ReplyToID), source, path, PathDepth(path), now); err != nil {
 		return 0, fmt.Errorf("публикация комментария: %w", err)
 	}

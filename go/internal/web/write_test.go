@@ -259,6 +259,23 @@ func TestReplyFormNamesTheAddressee(t *testing.T) {
 	}
 }
 
+// Анонимной бывает ЗАМЕТКА, а реплика подписана всегда — так на НГС. В ядре это
+// держится отсутствием поля у platform.NewComment, здесь проверяется вторая
+// половина: на экране нет и предложения ответить анонимно.
+func TestReplyIsAlwaysSigned(t *testing.T) {
+	h, _, token := writeServer(t, noteStore())
+
+	page := do(h, as(guest(t, "GET", "/n/312811"), token)).Body.String()
+	form := page[strings.Index(page, `class="replybox"`):]
+	if strings.Contains(form, `name="anonymous"`) {
+		t.Error("в форме ответа предложена анонимность")
+	}
+	// А у заметки она есть и остаётся.
+	if !strings.Contains(do(h, as(guest(t, "GET", "/new"), token)).Body.String(), `name="anonymous"`) {
+		t.Error("у заметки пропала анонимность, а она нужна")
+	}
+}
+
 // Единственное место, где «своё» и «пришедшее с НГС» различаются на экране, — и
 // различие показано на АВТОРЕ: у пишущего вопрос не «откуда текст», а «дойдёт
 // ли мой ответ».

@@ -182,7 +182,6 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	id, err := s.wr.CreateComment(r.Context(), platform.NewComment{
 		NoteID:    noteID,
 		AuthorID:  u.ID,
-		Anonymous: r.FormValue("anonymous") != "",
 		Body:      body,
 		ReplyToID: replyTo,
 	})
