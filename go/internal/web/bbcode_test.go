@@ -15,10 +15,16 @@ var (
 	now = time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 )
 
-// plainNote — заметка, написанная после заката разметки: так показывается всё,
-// что не застало разбор тегов на сайте, включая написанное на площадке.
+// plainNote — заметка НГС, написанная после заката разметки: сайт печатал теги
+// буквально, и такими они остаются. Написанное на площадке сюда НЕ относится —
+// у своего текста разметка живая, см. nativeNote.
 func plainNote(text string) string {
 	return string(noteBodyHTML(platform.NoteView{ID: 312811, Body: text, PublishedAt: now}))
+}
+
+// nativeNote — заметка, написанная ЗДЕСЬ: нативная полоса идентификаторов.
+func nativeNote(text string) string {
+	return string(noteBodyHTML(platform.NoteView{ID: platform.NativeIDBase + 7, Body: text, PublishedAt: now}))
 }
 
 func legacyNote(text string) string {
@@ -36,7 +42,8 @@ func TestLegacyMarkupRendered(t *testing.T) {
 }
 
 // После рубежа сайт печатал теги буквально, и человек, читавший ту страницу,
-// видел именно скобки. Переезд не место для улучшений оригинала.
+// видел именно скобки. Переезд не место для улучшений оригинала — рубеж этот
+// про ЧУЖОЙ текст и своего не касается (TestNativeMarkupRendered).
 func TestMarkupAfterSunsetStaysText(t *testing.T) {
 	got := string(noteBodyHTML(platform.NoteView{ID: 312811, Body: "[b]жирный[/b]", PublishedAt: now}))
 	if got != "<p>[b]жирный[/b]</p>" {
@@ -136,5 +143,83 @@ func TestLegacyAddressKeptWithoutEdge(t *testing.T) {
 	want := "<p>Для <b><i>Сибирский кот</i></b> а вот и нет</p>"
 	if got := string(commentBodyHTML(nil, c)); got != want {
 		t.Errorf("получено %q, ожидалось %q", got, want)
+	}
+}
+
+// Написанное ЗДЕСЬ разметку знает — решение владельца 21.08.2026. Случай из
+// жизни: закреплённая заметка «[b]Хотелки[/b]» вышла на страницу скобками, и
+// правило «своего синтаксиса не заводим» на этом кончилось. Знаки те же, что у
+// сайта: у переехавших они в пальцах, а заводить рядом второй набор значило бы
+// переучивать людей ради чистоты замысла.
+func TestNativeMarkupRendered(t *testing.T) {
+	got := nativeNote("[b]Хотелки[/b]\n\nА накидайте, чего хотелось бы.")
+	want := "<p><b>Хотелки</b></p><p>А накидайте, чего хотелось бы.</p>"
+	if got != want {
+		t.Errorf("получено %q, ожидалось %q", got, want)
+	}
+}
+
+// Своя реплика — то же самое: разметку разбираем и в комментарии, иначе
+// справочник под формой ответа обещал бы то, чего страница не делает.
+func TestNativeCommentMarkupRendered(t *testing.T) {
+	c := platform.CommentView{
+		ID: platform.NativeIDBase + 12, PublishedAt: now,
+		Body:    "[i]совсем[/i] другое дело",
+		ReplyTo: &platform.ReplyRef{CommentID: 312811, Nick: "Кот"},
+	}
+	want := `<p><a class="to" href="#c312811">Кот</a>, <i>совсем</i> другое дело</p>`
+	if got := string(commentBodyHTML(nil, c)); got != want {
+		t.Errorf("получено %q, ожидалось %q", got, want)
+	}
+}
+
+// Обращение образца 2013 года — работа САЙТА, и в своём тексте его не снимают:
+// человек написал эти слова сам, а ребро у реплики своё.
+func TestNativeCommentKeepsLegacyLookingAddress(t *testing.T) {
+	c := platform.CommentView{
+		ID: platform.NativeIDBase + 13, PublishedAt: now,
+		Body:    "Для [b][i]Сибирский кот[/i][/b] это цитата, а не обращение",
+		ReplyTo: &platform.ReplyRef{CommentID: 312811, Nick: "Кот"},
+	}
+	if got := string(commentBodyHTML(nil, c)); !strings.Contains(got, "Сибирский кот") {
+		t.Errorf("свой текст урезан по правилу сайта: %s", got)
+	}
+}
+
+// Незакрытый тег в СВОЁМ тексте опаснее, чем в архивном: его пишут прямо
+// сейчас, руками, и «[b]» без пары — обычная опечатка. Утёкший <b> сделал бы
+// жирной всю страницу после карточки.
+func TestNativeMarkupNeverLeaks(t *testing.T) {
+	got := nativeNote("[b]начало без конца")
+	if strings.Count(got, "<b>") != strings.Count(got, "</b>") {
+		t.Errorf("разметка утекла: %s", got)
+	}
+}
+
+// Справочник под формой и разбор — один список цветов, а не два похожих:
+// разъехавшись, подсказка пообещала бы человеку цвет, которого страница не
+// красит. Заодно проверяется, что образцы прогнаны РАЗБОРОМ, а не написаны
+// руками: скобки в них не остаются.
+func TestMarkupHelpCoversEveryColor(t *testing.T) {
+	rows := markupHelp()
+	if len(rows) == 0 {
+		t.Fatal("справочник разметки пуст")
+	}
+	for _, r := range rows {
+		if strings.Contains(string(r.Sample), "[") {
+			t.Errorf("образец %q не разобран: %s", r.Code, r.Sample)
+		}
+	}
+	colors := string(rows[len(rows)-1].Sample)
+	if n := strings.Count(colors, `<span class="bb-`); n != len(bbColors) {
+		t.Errorf("в справочнике %d цветов из %d", n, len(bbColors))
+	}
+	for _, c := range bbColorNames {
+		if !bbColors[c.Code] {
+			t.Errorf("цвет %s назван в справочнике, но разбором не красится", c.Code)
+		}
+		if !strings.Contains(colors, `class="bb-`+c.Code+`"`) {
+			t.Errorf("цвет %s не показан образцом", c.Code)
+		}
 	}
 }

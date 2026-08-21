@@ -108,17 +108,18 @@ func TestSmileAssetsEmbedded(t *testing.T) {
 	}
 }
 
-// Написанное ЗДЕСЬ смайлы знает: площадка сама предлагает их выбиралкой, и код
-// в нативном тексте обязан стать картинкой — иначе человек нажимает кнопку, а
-// получает «:::popcorn:::». BB-коды при этом остаются мёртвыми и в своём тексте.
-func TestNativeTextRendersSmileysButNotMarkup(t *testing.T) {
+// Написанное ЗДЕСЬ знает и смайлы, и разметку: площадка предлагает их сама
+// (выбиралка и справочник под формой), а код, оставшийся на экране скобками, —
+// это человек нажал кнопку и не получил обещанного. Рубежи сайта своему тексту
+// не указ: у него свои правила, и они шире.
+func TestNativeTextRendersSmileysAndMarkup(t *testing.T) {
 	n := platform.NoteView{ID: platform.NativeIDBase + 7, Body: "[b]наши[/b] :::popcorn:::", PublishedAt: now}
 	got := string(noteBodyHTML(n))
 	if !strings.Contains(got, `<img class="sm"`) {
 		t.Errorf("смайл в своём тексте не подставлен: %s", got)
 	}
-	if !strings.Contains(got, "[b]наши[/b]") {
-		t.Errorf("BB-код в своём тексте разобран: %s", got)
+	if !strings.Contains(got, "<b>наши</b>") {
+		t.Errorf("BB-код в своём тексте не разобран: %s", got)
 	}
 }
 

@@ -365,6 +365,17 @@ span.rxb { cursor: default; }
 .smgrid button.smi:hover { border-color: var(--accent); }
 .smgrid .smi .sm { height: 20px; width: auto; }
 
+/* Справочник разметки под той же кнопкой-раскладушкой. Список, а не сетка:
+   строк пять, и в каждой две части — как набирают и что выйдет. Код набран
+   моноширинным, чтобы скобки не сливались с образцом рядом. */
+.mkref {
+  margin: 8px 0 0; padding: 8px 8px 8px 24px; list-style: disc;
+  border: 1px solid var(--rule); border-radius: 4px; background: var(--btn);
+  font-size: 13px; color: var(--meta);
+}
+.mkref li { margin: 2px 0; }
+.mkref code { font-size: 12px; color: var(--fg); }
+
 /* Закреплённая заметка. Отличается меткой и полосой слева, а не цветом фона:
    лента и так пёстрая от аватаров, а закреплённых бывает не больше пяти. */
 .pin {
