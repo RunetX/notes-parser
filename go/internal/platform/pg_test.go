@@ -66,6 +66,13 @@ func testPlatform(t *testing.T) *Platform {
 	if err := shared.Migrate(ctx); err != nil {
 		t.Fatalf("миграции: %v", err)
 	}
+	// Тексты согласий публикуются ВМЕСТЕ со схемой — так их накатывает
+	// администратор (одна команда `platform migrate`), и без них любое согласие
+	// падает на внешнем ключе consents → consent_docs. Реквизиты пустые: они
+	// подставляются в текст, а для теста важно, что редакция опубликована.
+	if err := shared.EnsureConsentDocs(ctx, Operator{}); err != nil {
+		t.Fatalf("тексты согласий: %v", err)
+	}
 	return shared
 }
 

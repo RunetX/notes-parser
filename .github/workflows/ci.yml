@@ -108,9 +108,14 @@ jobs:
             key=$(echo "$key" | tr -d '[:space:]')
             val=$(echo "$val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
             [ -n "$key" ] || continue
+            # Значение всегда в кавычках: «768MB», «15min», «200ms» — для
+            # postgresql.conf это норма, а для SQL «trailing junk after numeric
+            # literal». Молча пропустить их нельзя: effective_cache_size из тех,
+            # что и решают выбор индекса.
+            val=$(echo "$val" | sed "s/^'//; s/'$//")
             if psql -h 127.0.0.1 -U platform -d platform_test -q \
-                 -c "ALTER DATABASE platform_test SET ${key} = ${val}" 2>/dev/null; then
-              echo "  ${key} = ${val}"
+                 -c "ALTER DATABASE platform_test SET ${key} = '${val}'" 2>/dev/null; then
+              echo "  ${key} = '${val}'"
             else
               echo "  пропущено (задаётся только серверу): ${key}"
             fi
