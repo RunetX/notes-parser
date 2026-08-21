@@ -343,6 +343,19 @@ messages, and all user-facing bot strings are in Russian.
     No addressee (no prefix, unknown nick, or the note's own author) → reply to
     the thread root, as before; a rejected reply (message deleted) falls back to
     the root too, or the note's queue would stall forever.
+    **Тихий отказ источника** (21.08.2026, `briefs/notes-comments-silence.md`):
+    сайт умеет отдать 200 и целый каркас, в котором списка комментариев нет
+    вовсе. Ноль реплик считается законным, только если это подтверждает счётчик
+    треда `.lv-note__comments-count` (он серверный) и память зеркала — тред, из
+    которого уже зеркалились реплики, сам не пустеет; иначе это `MarkupError` и
+    алерт. Молчание источника вдобавок ТЕРЯЕТ реплики (страница отдаёт последние
+    30), поэтому расхождение со счётчиком добирается пейджером, а границей спуска
+    служит `first_seen_at`: ниже лежит предыстория заметки, взятой в работу
+    посреди жизни, и от потери по id она неотличима. **Снесённую заметку** сайт
+    отдаёт кодом 200 и страницей «Заметка N удалена» (`love.ErrNoteDeleted`):
+    воркер переходит на получасовой такт и молчит, но заметку НЕ хоронит —
+    снятая на премодерацию выглядит так же и возвращается, а архив сделал бы
+    потерю окончательной.
     `mirror.Config.AlertSend` DMs the
     admin after 3 consecutive markup-drift or 403 failures and again on recovery.
     Subscriber DMs are described by `SubEvent` (subscription + note + optional
