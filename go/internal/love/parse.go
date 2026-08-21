@@ -35,6 +35,12 @@ const (
 	selNotePageText = ".lv-note__note-text"
 	selNotePageDate = ".lv-notes__note-date"
 	selNoteComments = ".lv-note__comments" // блок списка комментариев (для признака заморозки)
+	// selCommentsCount — счётчик комментариев в шапке списка на самой
+	// странице треда («Комментарии 325»). Считает ВЕСЬ тред, а страница
+	// отдаёт последние 30, поэтому равенства с числом разобранных элементов
+	// не бывает — счётчик отвечает ровно на один вопрос: «ноль тут законный
+	// или источник замолчал».
+	selCommentsCount = ".lv-note__comments-count"
 
 	// Список гостей своей анкеты (/guests/page~N/limit~24/, только под своей
 	// сессией). Ярлык у времени — «Был:/Была:», но это ВРЕМЯ ВИЗИТА, а не
@@ -177,7 +183,37 @@ func parseCommentsDoc(doc *goquery.Document, baseURL string) ([]Comment, error) 
 	if parseErr != nil {
 		return nil, parseErr
 	}
+	// Пустой тред законен (свежая заметка), а вот «счётчик говорит N, а
+	// элементов ноль» — это молчащий источник: так выглядит и дрейф классов, и
+	// переезд комментариев на клиентский рендер (17.08.2026 сайт стал отдавать
+	// каркас с пустым lv-note__comments-list). Без этой проверки поломка
+	// неотличима от пустой заметки и обнаруживается по жалобам людей.
+	if len(comments) == 0 {
+		if n, ok := commentsCount(doc); ok && n > 0 {
+			return nil, &MarkupError{
+				Selector: selCommentItem,
+				Context:  fmt.Sprintf("счётчик обещает %d комментариев, разобрано ноль", n),
+			}
+		}
+	}
 	return comments, nil
+}
+
+// commentsCount читает счётчик комментариев треда из шапки списка. Второй
+// результат false — счётчика на странице нет вовсе: тогда утверждать нечего,
+// и молчаливый ноль остаётся законным (сам счётчик тоже могут увезти на
+// клиент, и придумывать по его отсутствию поломку значило бы менять тихий
+// отказ на ложную тревогу).
+func commentsCount(doc *goquery.Document) (int, bool) {
+	sel := doc.Find(selCommentsCount).First()
+	if sel.Length() == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digitsOf(sel.Text()))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // parseCommentItem разбирает один элемент списка комментариев. Любой

@@ -7,6 +7,7 @@ package mirror
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -546,12 +547,28 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) {
 	comments := page.Comments
 	m.alert.OK(ctx, keyCommentsDrift)
 	m.alert.OK(ctx, keyCommentsForbidden)
-	m.applyNoteHeader(ctx, n, page.Note)
 	known, err := m.st.CommentIDs(ctx, n.ID)
 	if err != nil {
 		m.log.Error("чтение известных комментариев", "note", n.ID, "err", err)
 		return
 	}
+	// Второй рубеж к счётчику в парсере: тред, из которого мы уже зеркалили
+	// реплики, сам не пустеет. Ноль на такой заметке — источник замолчал
+	// (перенос комментариев на клиентский рендер выглядит ровно так: 200,
+	// целая страница, ноль элементов), и об этом надо кричать, а не тихо
+	// ждать следующего такта. Судим только там, где есть с чем сравнить: у
+	// свежей заметки ноль законен, и трогать счётчик алертов ею нельзя.
+	switch {
+	case len(comments) > 0:
+		m.alert.OK(ctx, keyCommentsSilent)
+	case len(known) > 0:
+		m.log.Warn("страница комментариев пуста, а реплики известны",
+			"note", n.ID, "known", len(known))
+		m.alert.Fail(ctx, keyCommentsSilent,
+			fmt.Sprintf("заметка %s: известно %d комментариев, страница отдала ноль", n.ID, len(known)))
+		return
+	}
+	m.applyNoteHeader(ctx, n, page.Note)
 
 	// Страница отдаёт новые сверху — сохраняем от старых к новым.
 	sort.Slice(comments, func(i, j int) bool { return comments[i].ID < comments[j].ID })

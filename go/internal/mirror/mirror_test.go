@@ -802,6 +802,74 @@ func TestCommentsForbiddenAlertSurvivesFeedSuccess(t *testing.T) {
 	}
 }
 
+// Тред, из которого мы уже зеркалили реплики, сам не пустеет: ноль на такой
+// заметке — молчащий источник, и админ обязан узнать об этом за минуты.
+func TestSilentCommentsSourceAlertsAdmin(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{"n1": {{ID: 1, AuthorName: "А", Text: "раз"}}},
+	}
+	var alerted []string
+	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, func(_ context.Context, text string) {
+		alerted = append(alerted, text)
+	})
+	m.feedCycle(ctx, false)
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pollComments(ctx, n) // комментарий известен зеркалу
+
+	site.comments["n1"] = nil // страница цела, а списка нет
+	for i := 0; i < alertThreshold; i++ {
+		m.pollComments(ctx, n)
+	}
+	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsSilent) {
+		t.Fatalf("ожидался один алерт о молчащем источнике, получено: %v", alerted)
+	}
+
+	site.comments["n1"] = []love.Comment{{ID: 1, AuthorName: "А", Text: "раз"}}
+	m.pollComments(ctx, n)
+	if len(alerted) != 2 || !strings.Contains(alerted[1], "восстановилось") {
+		t.Fatalf("ожидалось уведомление о восстановлении, получено: %v", alerted)
+	}
+}
+
+// Свежая заметка без комментариев ничего не доказывает, и счётчик алертов ею
+// двигать нельзя — иначе на боевой ленте порог не набрался бы никогда: пустые
+// заметки сбрасывали бы счёт, набранный сломанными тредами.
+func TestEmptyFreshNoteDoesNotTouchSilentCounter(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}, {ID: "n2", Text: "т2"}},
+		comments: map[string][]love.Comment{"n1": {{ID: 1, AuthorName: "А", Text: "раз"}}},
+	}
+	var alerted []string
+	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, func(_ context.Context, text string) {
+		alerted = append(alerted, text)
+	})
+	m.feedCycle(ctx, false)
+	n1, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n2, err := st.NoteByID(ctx, "n2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pollComments(ctx, n1)
+
+	site.comments["n1"] = nil
+	for i := 0; i < alertThreshold; i++ {
+		m.pollComments(ctx, n1)
+		m.pollComments(ctx, n2) // пустая заметка между сломанными тактами
+	}
+	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsSilent) {
+		t.Fatalf("пустая заметка не должна сбрасывать счётчик: %v", alerted)
+	}
+}
+
 func TestPollInterval(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
@@ -935,7 +1003,6 @@ func TestPreexistingNoteSkipsLateSink(t *testing.T) {
 		t.Errorf("MAX не должен участвовать в старой заметке: %v", mx.calls)
 	}
 }
-
 
 // Модераторы добавляют/заменяют иллюстрации после публикации: новая картинка
 // из шапки страницы комментариев доезжает в тред, повторный опрос не дублирует.

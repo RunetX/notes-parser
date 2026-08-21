@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 )
 
 // Фикстуры notes_feed.html и comments_312696.html — реальные страницы сайта,
@@ -297,6 +299,52 @@ func TestParseCommentsEmptyIsOK(t *testing.T) {
 	}
 	if len(comments) != 0 {
 		t.Fatalf("ожидался пустой список, получено %d", len(comments))
+	}
+}
+
+// Переезд комментариев на клиентский рендер выглядит как целая страница с
+// пустым списком: ни ошибки, ни 403, ни сломанного элемента. Отличает такую
+// страницу от честно пустого треда счётчик в шапке списка.
+func TestParseCommentsEmptyWithCounterIsMarkupError(t *testing.T) {
+	html := `<div class="lv-note__comments">
+	           <div class="lv-note__comments-header">
+	             Комментарии <span class="lv-note__comments-count">45</span>
+	           </div>
+	           <div class="lv-note__comments-list"></div>
+	         </div>`
+	_, err := ParseComments(strings.NewReader(html), "https://love.ngs.ru")
+	var me *MarkupError
+	if !errors.As(err, &me) {
+		t.Fatalf("ожидалась MarkupError про молчащий источник, получено: %v", err)
+	}
+	if !strings.Contains(me.Context, "45") {
+		t.Errorf("в тексте ошибки нет обещанного счётчиком числа: %q", me.Context)
+	}
+}
+
+// Обратная сторона того же правила: счётчик в нуле — тред честно пуст.
+func TestParseCommentsEmptyWithZeroCounterIsOK(t *testing.T) {
+	html := `<div class="lv-note__comments">
+	           <div class="lv-note__comments-header">
+	             Комментарии <span class="lv-note__comments-count">0</span>
+	           </div>
+	         </div>`
+	comments, err := ParseComments(strings.NewReader(html), "https://love.ngs.ru")
+	if err != nil || len(comments) != 0 {
+		t.Fatalf("пустой тред с нулевым счётчиком: %d комментариев, err %v", len(comments), err)
+	}
+}
+
+// Счётчик — свидетель, а не обязательный селектор: увезут на клиент и его —
+// молчаливый ноль снова станет законным, но ложной тревоги не будет.
+func TestParseCommentsCounterOnRealPage(t *testing.T) {
+	doc, err := goquery.NewDocumentFromReader(openFixture(t, "comments_312696.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := commentsCount(doc)
+	if !ok || n != 325 {
+		t.Errorf("счётчик записанной страницы: %d, ok=%v (ожидалось 325)", n, ok)
 	}
 }
 
