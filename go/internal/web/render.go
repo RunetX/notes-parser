@@ -70,6 +70,7 @@ var funcs = template.FuncMap{
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
 	"smilelist":   smileList,
+	"markuphelp":  markupHelp,
 	"threadURL":   func(base string) template.URL { return template.URL(base + "#reply") },
 }
 
@@ -116,7 +117,7 @@ func commentBodyHTML(b *addressBook, c platform.CommentView) template.HTML {
 		return renderBody("", c.Body, e)
 	}
 	body := c.Body
-	if e.markup {
+	if e.siteMarkup {
 		// «Для [b][i]Ник[/i][/b] » — так обращение рисовал САМ сайт осенью
 		// 2013-го, до перехода на «Ник, ». Ребро у такой строки уже есть
 		// (его принёс архив), поэтому оставленный в теле префикс дал бы

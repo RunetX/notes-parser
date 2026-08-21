@@ -16,6 +16,7 @@
     <textarea name="body" rows="12" required autofocus
       placeholder="О чём заметка?">{{.Body}}</textarea>
     {{template "smilepick"}}
+    {{template "markpick"}}
 
     {{if not .Editing}}
     {{/* Авторство выбирается ДО публикации и потом не меняется: анонимность,

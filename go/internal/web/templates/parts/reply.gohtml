@@ -32,6 +32,7 @@
     <input type="hidden" name="reply_to" value="{{.Compose.ReplyTo}}">
     <textarea name="body" rows="5" required placeholder="Ваш ответ">{{.Compose.Body}}</textarea>
     {{template "smilepick"}}
+    {{template "markpick"}}
     {{/* Галочки «анонимно» тут нет и не будет: анонимной бывает заметка, а
          реплика подписана всегда — так на НГС, и разница не косметическая.
          Заметку анонимно ПУБЛИКУЮТ, а в тред анонимно ОТВЕЧАЮТ людям, которые

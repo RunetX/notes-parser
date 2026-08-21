@@ -402,3 +402,20 @@ func TestNickChange(t *testing.T) {
 		t.Errorf("пустой ник: код %d, ожидался 400", got)
 	}
 }
+
+// Разметка в своём тексте ожила (bbcode.go), и узнать о ней человеку неоткуда:
+// на самом НГС теги умерли в 2014-м. Поэтому справочник стоит под ОБЕИМИ
+// формами — и заметки, и ответа.
+func TestFormsShowMarkupHelp(t *testing.T) {
+	h, _, token := writeServer(t, noteStore())
+
+	for _, target := range []string{"/new", "/n/312811"} {
+		page := do(h, as(guest(t, "GET", target), token)).Body.String()
+		if !strings.Contains(page, "<summary>Разметка</summary>") {
+			t.Errorf("%s: справочника разметки под формой нет", target)
+		}
+		if !strings.Contains(page, "<code>[b]жирный[/b]</code>") {
+			t.Errorf("%s: в справочнике нет кода, который набирают", target)
+		}
+	}
+}
