@@ -1,0 +1,129 @@
+# Проверки на каждый push и pull request.
+#
+# Зачем это здесь, если тесты и так гоняются руками: половина решений пакета
+# `platform` живёт в SQL, и проверяются они ТОЛЬКО против настоящего Postgres —
+# а на рабочей машине его нет, и тесты идут по ssh-туннелю к боевому хосту (две
+# минуты, почти целиком сетевые задержки). Здесь база поднимается сервисным
+# контейнером рядом с раннером, поэтому интеграционный набор перестаёт быть
+# «когда руки дойдут».
+#
+# Секретов у этого workflow нет вовсе и быть не должно: репозиторий публичный, а
+# pull request из форка выполняет чужой код. Всё, что требует доступа к хосту,
+# живёт в deploy.yml и запускается только кнопкой.
+name: CI
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+# Гонять два прогона на один и тот же коммит незачем: новый push отменяет
+# предыдущий, а на main отмены нет — там прогон и есть запись о том, что коммит
+# проверен.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  checks:
+    name: build, vet, тесты без Postgres
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      # Без LOVEGW_TEST_PG_DSN интеграционные наборы пропускаются сами — это то
+      # же, что видит человек на машине без базы.
+      - run: go test ./...
+
+  postgres:
+    name: тесты против настоящего Postgres
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    services:
+      postgres:
+        # Та же версия, что в бою (deploy/platform/docker-compose.yml): планы
+        # запросов — часть контракта, и проверять их на другой мажорной версии
+        # значит проверять другую базу.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: platform
+          POSTGRES_PASSWORD: platform
+          # Имя обязано содержать «test»: тесты сносят схему целиком, и на этом
+          # стоит предохранитель в pg_test.go. Здесь база одноразовая, но имя
+          # держим таким же, чтобы предохранитель проверялся тоже.
+          POSTGRES_DB: platform_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U platform"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      # Схему накатывают сами тесты (DROP SCHEMA + Migrate перед каждым),
+      # поэтому отдельного шага миграций здесь нет и быть не должно.
+      #
+      # `-p 1` обязателен, и это не про скорость: go test гоняет ПАКЕТЫ
+      # параллельно, а оба набора перед каждым тестом сносят схему целиком —
+      # то есть на общей базе они вычищают друг друга на ходу. Руками это не
+      # ловится (пакеты запускают по одному), а в прогоне выглядит бредом:
+      # «relation "notes" does not exist», нарушение FK у согласий, «слишком
+      # часто» (после чужого сноса сбрасывается *_native_seq, и заметки разных
+      # прогонов ложатся на один id автора) и не тот план у треда — статистику
+      # планировщик считает по вычищенной таблице.
+      # Планы запросов — часть контракта, а значит проверять их надо при БОЕВЫХ
+      # настройках: выбор индекса зависит от random_page_cost и
+      # effective_cache_size не меньше, чем от самого запроса, и на настройках
+      # по умолчанию тест проверял бы другую базу. Настройки не переписаны
+      # сюда списком, а читаются из того же файла, что монтируется в бою, —
+      # второй список разошёлся бы с первым молча. Что нельзя задать базе
+      # (shared_buffers и прочее из postmaster), просто пропускается.
+      - name: Настройки планировщика как в бою
+        env:
+          PGPASSWORD: platform
+        run: |
+          set -euo pipefail
+          # В образе раннера psql обычно есть, но красный прогон из-за
+          # отсутствующего клиента — худший вид красного.
+          command -v psql >/dev/null || sudo apt-get install -y -qq postgresql-client
+          psql -h 127.0.0.1 -U platform -d platform_test -c 'SELECT version()'
+          grep -vE '^\s*(#|$)' ../deploy/platform/postgresql.conf | sed 's/[[:space:]]*#.*$//' |
+          while IFS= read -r line; do
+            key=${line%%=*}; val=${line#*=}
+            key=$(echo "$key" | tr -d '[:space:]')
+            val=$(echo "$val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            [ -n "$key" ] || continue
+            # Значение всегда в кавычках: «768MB», «15min», «200ms» — для
+            # postgresql.conf это норма, а для SQL «trailing junk after numeric
+            # literal». Молча пропустить их нельзя: effective_cache_size из тех,
+            # что и решают выбор индекса.
+            val=$(echo "$val" | sed "s/^'//; s/'$//")
+            if psql -h 127.0.0.1 -U platform -d platform_test -q \
+                 -c "ALTER DATABASE platform_test SET ${key} = '${val}'" 2>/dev/null; then
+              echo "  ${key} = '${val}'"
+            else
+              echo "  пропущено (задаётся только серверу): ${key}"
+            fi
+          done
+
+      # `-count=1` не украшение: результат прогона кэшируется, и первый же
+      # зелёный запуск БЕЗ базы (в соседнем job'е тесты пропускаются) выдаётся
+      # потом за пройденный интеграционный набор. Один раз это уже случилось.
+      - run: go test -count=1 -p 1 ./internal/platform/ ./internal/platsink/
+        env:
+          LOVEGW_TEST_PG_DSN: postgres://platform:platform@127.0.0.1:5432/platform_test?sslmode=disable

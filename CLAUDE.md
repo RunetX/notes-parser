@@ -225,6 +225,16 @@ messages, and all user-facing bot strings are in Russian.
   `go run ./cmd/lovegw import ...` — idempotent (`INSERT OR IGNORE`).
 - Windows: `start.bat` / `stop.bat` / `status.bat` / `restart.bat` launch/stop
   the daemon (write-through SQLite is crash-safe, so a hard kill is fine).
+- CI/выкатка: `.github/workflows/ci.yml` — build/vet/тесты на каждый push и PR,
+  плюс интеграционный набор `platform`/`platsink` против настоящего
+  `postgres:18-alpine` сервисным контейнером (руками это требует ssh-туннеля к
+  бою, поэтому гонялось редко). `deploy.yml` — выкатка КНОПКОЙ
+  (`workflow_dispatch`): сборка бинарника у раннера, проверка «сертификатов
+  Минцифры в бинарнике ровно 2», `gzip | ssh`, `Dockerfile.prebuilt`,
+  `docker compose up -d platform`, healthz через Caddy и откат на `lovegw:prev`,
+  если не ответил. Миграции роботом НЕ накатываются никогда — схему меняет
+  админ в известный момент. Секреты (ssh-ключ с root, PEM'ы) — в окружении
+  `production`, а не в репозитории: он публичный.
 - Deploy: container image via `go/Dockerfile` (multi-stage, `CGO_ENABLED=0` →
   `distroless/static`, ~100 MB: a ~23 MB binary plus a static `ffmpeg` copied in
   for ASR; tzdata baked in via `time/tzdata`). `deploy/` has

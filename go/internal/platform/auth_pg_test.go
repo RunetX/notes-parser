@@ -396,6 +396,13 @@ func TestInviteWithoutBindCreatesNativeUser(t *testing.T) {
 func TestPublishedConsentIsImmutable(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
+	// Этот тест — про саму ПУБЛИКАЦИЮ, поэтому начинает с чистого листа: общий
+	// помощник выпускает редакции безличным оператором (так их накатывает
+	// администратор вместе со схемой), а здесь проверяется, что выпущенное
+	// нельзя переписать молча.
+	if _, err := p.pool.Exec(ctx, `DELETE FROM consent_docs`); err != nil {
+		t.Fatalf("очистка редакций: %v", err)
+	}
 	if err := p.EnsureConsentDocs(ctx, Operator{Name: "Первый"}); err != nil {
 		t.Fatal(err)
 	}
