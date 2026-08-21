@@ -1,0 +1,159 @@
+# Выкатка на боевой хост — кнопкой, а не по push.
+#
+# Ровно та процедура, что в deploy/platform/README.md, выполненная роботом:
+# бинарник собирается ЗДЕСЬ (на хосте одно ядро, `go build` просит ~1,5 ГБ RSS и
+# 25 минут — сборка уронила бы и площадку, и зеркало), приезжает сжатым, на
+# хосте вокруг него собирается тонкий образ (Dockerfile.prebuilt).
+#
+# Кнопкой, а не автоматом на main, сознательно: на хосте живёт не только морда,
+# а выкатка — отдельное решение, принимаемое в известный момент. По той же
+# причине здесь НЕТ шага `platform migrate`: схему меняет администратор, руками,
+# и молчаливая миграция из робота — ровно то, чего это правило не допускает.
+#
+# По умолчанию пересоздаётся ТОЛЬКО веб-морда: демон держит getUpdates у
+# Telegram (single-consumer) и обход НГС, и трогать его ради правки страницы
+# незачем. Новый образ он подхватит при своей выкатке — вариант «все».
+name: Выкатка
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Что выкатывать (ветка, тег или sha)'
+        default: main
+      services:
+        description: 'Какие сервисы пересоздать'
+        type: choice
+        options: [platform, 'platform lovegw', все]
+        default: platform
+
+permissions:
+  contents: read
+
+# Две выкатки разом на один хост — это гонка за один и тот же тег образа.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Окружение даёт кнопку «требовать подтверждение» и хранит секреты отдельно
+    # от репозитория: репозиторий публичный, а ключ здесь с правами root.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      # PEM'ы Минцифры гитигнорятся намеренно (их подлинность каждый проверяет
+      # сам при скачивании с Госуслуг), поэтому в сборку они приезжают секретом.
+      # Без них TLS к platform-api2.max.ru не встанет: в distroless российского
+      # корневого сертификата нет.
+      - name: Сертификаты Минцифры в дерево сборки
+        env:
+          ROOT_PEM: ${{ secrets.MINTSIFRA_ROOT_PEM }}
+          SUB_PEM: ${{ secrets.MINTSIFRA_SUB_PEM }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ROOT_PEM}" ] || [ -z "${SUB_PEM}" ]; then
+            echo "::error::нет секретов MINTSIFRA_ROOT_PEM / MINTSIFRA_SUB_PEM — образ без них ломает MAX"
+            exit 1
+          fi
+          mkdir -p go/internal/maxx/cacert
+          printf '%s\n' "${ROOT_PEM}" > go/internal/maxx/cacert/russian_trusted_root_ca.pem
+          printf '%s\n' "${SUB_PEM}" > go/internal/maxx/cacert/russian_trusted_sub_ca.pem
+
+      - name: Тесты
+        working-directory: go
+        run: go test ./...
+
+      - name: Сборка бинарника
+        working-directory: go
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w" -o "${RUNNER_TEMP}/lovegw-linux" ./cmd/lovegw
+
+      # Условие, которое незаметно, пока не сломается: сертификаты обязаны
+      # оказаться ВНУТРИ бинарника. Проверка из runbook, дословно.
+      - name: Проверка сертификатов в бинарнике
+        run: |
+          set -euo pipefail
+          n=$(grep -ac "BEGIN CERTIFICATE" "${RUNNER_TEMP}/lovegw-linux" || true)
+          echo "сертификатов в бинарнике: ${n}"
+          [ "${n}" = "2" ] || { echo "::error::ожидалось 2, получено ${n}"; exit 1; }
+
+      - name: Ключ и known_hosts
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${KEY}" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          # Отпечаток хоста задан секретом, а не собирается ssh-keyscan'ом на
+          # месте: keyscan доверяет тому, кто ответил, то есть проверяет ровно
+          # ничего.
+          printf '%s\n' "${KNOWN}" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CONF
+          Host deploy
+            HostName ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            BatchMode yes
+            ServerAliveInterval 20
+          CONF
+          chmod 600 ~/.ssh/config
+
+      # Прежний образ помечается lovegw:prev ДО сборки нового — это весь откат.
+      - name: Метка отката
+        run: ssh deploy 'docker image inspect lovegw:latest >/dev/null 2>&1 && docker tag lovegw:latest lovegw:prev || echo "прежнего образа нет — откатывать будет некуда"'
+
+      - name: Бинарник на хост и сборка образа
+        run: |
+          set -euo pipefail
+          gzip -9 -c "${RUNNER_TEMP}/lovegw-linux" | ssh deploy '
+            set -eu
+            gunzip -c > /root/platform/lovegw.new
+            chmod +x /root/platform/lovegw.new
+            mv /root/platform/lovegw.new /root/platform/lovegw
+            cd /root/platform && docker build -q -f Dockerfile.prebuilt -t lovegw:latest .'
+          # Что именно сейчас в бою — вопрос, который задают в неудачный момент.
+          ssh deploy "echo '${{ github.sha }} ${{ inputs.ref }}' > /root/platform/deployed.sha"
+
+      - name: Пересоздать сервисы
+        run: |
+          set -euo pipefail
+          svc='${{ inputs.services }}'
+          if [ "$svc" = "все" ]; then svc=''; fi
+          ssh deploy "cd /root/platform && docker compose up -d ${svc} && docker compose ps"
+
+      # Здоровье проверяется ЧЕРЕЗ CADDY и с хоста: так проверяется вся цепочка
+      # (прокси → морда → Postgres), а не то, что контейнер запустился. Морда при
+      # расхождении версии схемы отказывается стартовать намеренно — и именно
+      # это здесь и должно поймать забытую миграцию.
+      - name: Проверка здоровья
+        run: |
+          set -euo pipefail
+          ssh deploy '
+            for i in $(seq 1 10); do
+              if curl -fsS -m 10 https://t3h.ru/healthz >/dev/null; then echo "healthz ок"; exit 0; fi
+              echo "попытка $i: морда ещё не отвечает"; sleep 3
+            done
+            echo "healthz не ответил"; cd /root/platform && docker compose logs --tail=50 platform; exit 1'
+
+      - name: Откат
+        if: failure()
+        run: |
+          set -euo pipefail
+          ssh deploy '
+            set -eu
+            docker image inspect lovegw:prev >/dev/null 2>&1 || { echo "отката нет: образа lovegw:prev не существует"; exit 0; }
+            docker tag lovegw:prev lovegw:latest
+            cd /root/platform && docker compose up -d platform && docker compose ps platform'
