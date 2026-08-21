@@ -489,7 +489,7 @@ func (m *Mirror) managePollers(ctx context.Context) {
 // pollNote — воркер одной заметки: опрашивает комментарии с адаптивным
 // интервалом, пока заметка не уйдёт в архив.
 func (m *Mirror) pollNote(ctx context.Context, noteID string) {
-	goneLogged := false
+	st := &noteState{}
 	for {
 		n, err := m.st.NoteByID(ctx, noteID)
 		if err != nil {
@@ -523,7 +523,7 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 		}
 
 		wait := PollInterval(now, n.FirstSeenAt, n.LastCommentAt)
-		if m.pollComments(ctx, n) {
+		if m.pollComments(ctx, n, st) {
 			// Заметки на сайте нет. Воркер не закрывается и заметку не
 			// хоронит: снятая на премодерацию возвращается, и архив сделал бы
 			// потерю окончательной — комментариев вернувшейся заметки зеркало
@@ -531,14 +531,14 @@ func (m *Mirror) pollNote(ctx context.Context, noteID string) {
 			// адрес (лимитер сайта общий на всё зеркало) и молчит после
 			// первого сообщения: снесённых заметок в ленте бывает по три
 			// разом, а строка в логе на каждый такт — это не наблюдение, а шум.
-			if !goneLogged {
+			if !st.goneLogged {
 				m.log.Info("заметки нет на сайте, опрос редкий", "note", noteID)
-				goneLogged = true
+				st.goneLogged = true
 			}
 			wait = deletedPollInterval
-		} else if goneLogged {
+		} else if st.goneLogged {
 			m.log.Info("заметка вернулась на сайт", "note", noteID)
-			goneLogged = false
+			st.goneLogged = false
 		}
 
 		select {
@@ -569,7 +569,14 @@ func (m *Mirror) archiveNote(ctx context.Context, noteID string, now time.Time, 
 // заметки на сайте больше нет: воркеру незачем ходить по мёртвому адресу
 // каждые полминуты, но и хоронить заметку он не вправе — снятая на
 // премодерацию (автор дописал картинку) выглядит так же и возвращается.
-func (m *Mirror) pollComments(ctx context.Context, n store.Note) (gone bool) {
+// noteState — память воркера между тактами. В БД ей не место: она не про тред,
+// а про то, что этот запуск уже проверил и с чем смирился.
+type noteState struct {
+	goneLogged bool // про исчезновение заметки уже сказано в лог
+	deficit    int  // расхождение со счётчиком треда, признанное неустранимым
+}
+
+func (m *Mirror) pollComments(ctx context.Context, n store.Note, st *noteState) (gone bool) {
 	page, err := m.site.FetchCommentsPage(ctx, n.ID)
 	if errors.Is(err, love.ErrNoteDeleted) {
 		return true
@@ -605,24 +612,20 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note) (gone bool) {
 	}
 	m.applyNoteHeader(ctx, n, page.Note)
 
-	// Верхняя граница того, что зеркало уже видело, — снимок ДО вставки: по
-	// ней ниже опознаётся дыра.
-	var prevMax int64
-	for id := range known {
-		if id > prevMax {
-			prevMax = id
-		}
-	}
-
 	fresh := m.saveComments(ctx, n.ID, comments, known)
 	// Дыра: страница отдаёт последнее окно limit~30, и если источник молчал
-	// дольше, чем тред уехал вперёд, реплики между нашей последней и нижним
-	// краем окна не увидит уже никто (21.08.2026 так потерялись 27 реплик в
-	// 313036: на сайте 58, в базе 30). Добираем их пейджером — но только то,
-	// что НОВЕЕ уже известного: под нижней границей лежит предыстория заметки,
-	// взятой в зеркало посреди жизни, и вываливать её в тред никто не просил.
-	if prevMax > 0 && len(comments) > 0 && oldestID(comments) > prevMax {
-		fresh += m.backfillGap(ctx, n, known, prevMax)
+	// дольше, чем тред уехал вперёд, пропущенное не увидит уже никто
+	// (21.08.2026 так потерялись 24 реплики в 313036: на сайте 58, в базе 30,
+	// причём наши 30 оказались серединой треда). Отсюда и признак — не «дыра
+	// выше нашей последней реплики», а расхождение со счётчиком треда: с какой
+	// стороны от известного пропало, заранее не знает никто.
+	if deficit := page.Total - len(known); page.Total > 0 && deficit > st.deficit {
+		fresh += m.backfillGap(ctx, n, known, page.Total)
+		// С остатком миримся до следующего РОСТА расхождения: счётчик сайта
+		// считает и скрытые модератором реплики, поэтому в ноль он сходится не
+		// всегда, а без этой памяти воркер листал бы вторую страницу на каждом
+		// такте ради нуля новых.
+		st.deficit = page.Total - len(known)
 	}
 	if fresh > 0 {
 		if err := m.st.SetNoteLastCommentAt(ctx, n.ID, time.Now()); err != nil {
@@ -666,16 +669,23 @@ func (m *Mirror) saveComments(ctx context.Context, noteID string, comments []lov
 	return saved
 }
 
-// backfillGap спускается по страницам треда, пока не дойдёт до уже известной
-// реплики (floor — самая новая из тех, что зеркало видело до этого такта), и
-// сохраняет всё, что лежит выше неё. Страницы сайта не перекрываются, поэтому
-// спуск конечен; ниже floor не берётся ничего — это предыстория, а не потеря.
-// Потолок страниц за такт — предохранитель: лимитер сайта общий на всё
-// зеркало, и разовый провал источника не вправе занять его целиком. Дыра
-// глубже потолка остаётся человеку (`lovegw pull -full <id>`), но не молча.
-func (m *Mirror) backfillGap(ctx context.Context, n store.Note, known map[int64]bool, floor int64) int {
+// backfillGap спускается по страницам треда, добирая незнакомые реплики, пока
+// их число не сойдётся со счётчиком (target) либо пока обход не уйдёт НИЖЕ
+// того момента, когда зеркало взяло заметку под наблюдение.
+//
+// Граница — время, а не id: зеркало должно треду ровно то, что написано с
+// момента, когда оно его увидело. Всё, что старше, — предыстория заметки,
+// взятой в работу посреди жизни (pull, seed, догон после простоя); вываливать
+// её в канал никто не просил. Правило по id этого различия не даёт: потерянное
+// окно и предыстория лежат по одну сторону от известного — у 313036 наши
+// тридцать реплик оказались серединой треда.
+//
+// Потолок страниц за такт — предохранитель: лимитер сайта общий на всё зеркало,
+// и разовый провал источника не вправе занять его целиком. Остаток дотянет
+// следующий такт: расхождение со счётчиком никуда не денется.
+func (m *Mirror) backfillGap(ctx context.Context, n store.Note, known map[int64]bool, target int) int {
 	added := 0
-	for p := 2; p <= backfillPages; p++ {
+	for p := 2; p <= backfillPages && len(known) < target; p++ {
 		page, err := m.site.FetchCommentsPageAt(ctx, n.ID, p)
 		if err != nil {
 			m.log.Warn("добор пропущенных комментариев прерван",
@@ -685,37 +695,25 @@ func (m *Mirror) backfillGap(ctx context.Context, n store.Note, known map[int64]
 		if len(page.Comments) == 0 {
 			break
 		}
-		reached := oldestID(page.Comments) <= floor
-		var above []love.Comment
+		var ours []love.Comment
+		below := 0
 		for _, c := range page.Comments {
-			if c.ID > floor {
-				above = append(above, c)
+			if c.PublishedAt.Before(n.FirstSeenAt) {
+				below++
+				continue
 			}
+			ours = append(ours, c)
 		}
-		added += m.saveComments(ctx, n.ID, above, known)
-		if reached {
-			m.log.Info("добраны реплики, пропущенные пока источник молчал",
-				"note", n.ID, "count", added, "pages", p-1)
-			return added
+		added += m.saveComments(ctx, n.ID, ours, known)
+		if below == len(page.Comments) {
+			break // страница целиком старше нашего наблюдения — дальше предыстория
 		}
 	}
 	if added > 0 {
-		m.log.Warn("дыра глубже потолка добора — остаток дотянуть вручную (pull -full)",
-			"note", n.ID, "count", added, "pages", backfillPages-1)
+		m.log.Info("добраны реплики, пропущенные пока источник молчал",
+			"note", n.ID, "count", added)
 	}
 	return added
-}
-
-// oldestID — наименьший id в срезе реплик (страница отдаётся от новых к старым,
-// но порядок среза после сортировки менялся, поэтому считаем честно).
-func oldestID(comments []love.Comment) int64 {
-	oldest := comments[0].ID
-	for _, c := range comments[1:] {
-		if c.ID < oldest {
-			oldest = c.ID
-		}
-	}
-	return oldest
 }
 
 // applyNoteHeader применяет необязательные обновления из шапки заметки на

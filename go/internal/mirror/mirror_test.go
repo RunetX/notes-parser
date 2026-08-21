@@ -27,6 +27,10 @@ type fakeSite struct {
 	// pages — вторая и следующие страницы окна комментариев (ключ — номер
 	// страницы), как их отдаёт пейджер сайта: без перекрытия с первой.
 	pages map[string]map[int][]love.Comment
+	// totals — счётчик реплик всего треда из шапки списка (0 — счётчика нет).
+	totals map[string]int
+	// pageCalls — сколько раз воркер ходил за НЕ первой страницей окна.
+	pageCalls int
 }
 
 func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
@@ -34,16 +38,17 @@ func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.Comment
 	if f.commentsErr != nil {
 		return love.CommentsPage{}, f.commentsErr
 	}
-	return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id]}, nil
+	return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id], Total: f.totals[id]}, nil
 }
 func (f *fakeSite) FetchCommentsPageAt(_ context.Context, id string, page int) (love.CommentsPage, error) {
 	if f.commentsErr != nil {
 		return love.CommentsPage{}, f.commentsErr
 	}
 	if page <= 1 {
-		return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id]}, nil
+		return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id], Total: f.totals[id]}, nil
 	}
-	return love.CommentsPage{Comments: f.pages[id][page]}, nil
+	f.pageCalls++
+	return love.CommentsPage{Comments: f.pages[id][page], Total: f.totals[id]}, nil
 }
 
 func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
@@ -323,7 +328,7 @@ func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 	}
 
 	// Тред не пойман: комментарии сохраняются, но не отправляются.
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	for _, c := range sink.calls {
 		if c.kind == "comment" {
 			t.Fatalf("комментарий отправлен до захвата треда: %v", sink.calls)
@@ -341,7 +346,7 @@ func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 		t.Fatalf("захват треда: %q %v %v", noteID, ok, err)
 	}
 	n, _ = st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	var sent []int64
 	for _, c := range sink.calls {
@@ -355,7 +360,7 @@ func TestPollCommentsQueuedUntilThreadCaptured(t *testing.T) {
 
 	// Повторный цикл ничего не шлёт.
 	before := len(sink.calls)
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if len(sink.calls) != before {
 		t.Errorf("повторная отправка: %v", sink.calls[before:])
 	}
@@ -387,7 +392,7 @@ func TestCommentRepliesToAddressee(t *testing.T) {
 		t.Fatal(err)
 	}
 	n, _ = st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	// Комментарии получают сообщения 2..5 по порядку id.
 	want := map[int64]string{
@@ -432,7 +437,7 @@ func TestNoteImagePostedBeforeComments(t *testing.T) {
 	n, _ := st.NoteByID(ctx, "n1")
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, strconv.FormatInt(n.TGMessageID, 10), "777")
 	n, _ = st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	firstImage, firstComment := -1, -1
 	for i, c := range sink.calls {
@@ -622,7 +627,7 @@ func TestNotifySubscribersOnKeyword(t *testing.T) {
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
 
 	n, _ := st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	notified := notifies(sink.calls)
 	if len(notified) != 1 || notified[0].userID != 42 {
@@ -651,7 +656,7 @@ func TestNotifySubscribersOnNoteComments(t *testing.T) {
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
 
 	n, _ := st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	notified := notifies(sink.calls)
 	if len(notified) != 1 || notified[0].userID != 42 || notified[0].subKind != store.SubNoteComments {
@@ -677,7 +682,7 @@ func TestNotifySubscribersDedup(t *testing.T) {
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, "1", "777")
 
 	n, _ := st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	notified := notifies(sink.calls)
 	if len(notified) != 1 {
@@ -807,8 +812,8 @@ func TestCommentsForbiddenAlertSurvivesFeedSuccess(t *testing.T) {
 
 	site.commentsErr = love.ErrForbidden
 	for i := 0; i < alertThreshold; i++ {
-		m.feedCycle(ctx, false) // лента живая — счётчик тредов не сбрасывается
-		m.pollComments(ctx, n)  // треды под 403
+		m.feedCycle(ctx, false)              // лента живая — счётчик тредов не сбрасывается
+		m.pollComments(ctx, n, &noteState{}) // треды под 403
 	}
 	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsForbidden) {
 		t.Fatalf("ожидался один алерт 403 комментариев, получено: %v", alerted)
@@ -832,18 +837,18 @@ func TestSilentCommentsSourceAlertsAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.pollComments(ctx, n) // комментарий известен зеркалу
+	m.pollComments(ctx, n, &noteState{}) // комментарий известен зеркалу
 
 	site.comments["n1"] = nil // страница цела, а списка нет
 	for i := 0; i < alertThreshold; i++ {
-		m.pollComments(ctx, n)
+		m.pollComments(ctx, n, &noteState{})
 	}
 	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsSilent) {
 		t.Fatalf("ожидался один алерт о молчащем источнике, получено: %v", alerted)
 	}
 
 	site.comments["n1"] = []love.Comment{{ID: 1, AuthorName: "А", Text: "раз"}}
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if len(alerted) != 2 || !strings.Contains(alerted[1], "восстановилось") {
 		t.Fatalf("ожидалось уведомление о восстановлении, получено: %v", alerted)
 	}
@@ -871,25 +876,30 @@ func TestEmptyFreshNoteDoesNotTouchSilentCounter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.pollComments(ctx, n1)
+	m.pollComments(ctx, n1, &noteState{})
 
 	site.comments["n1"] = nil
 	for i := 0; i < alertThreshold; i++ {
-		m.pollComments(ctx, n1)
-		m.pollComments(ctx, n2) // пустая заметка между сломанными тактами
+		m.pollComments(ctx, n1, &noteState{})
+		m.pollComments(ctx, n2, &noteState{}) // пустая заметка между сломанными тактами
 	}
 	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsSilent) {
 		t.Fatalf("пустая заметка не должна сбрасывать счётчик: %v", alerted)
 	}
 }
 
-// Пока источник молчал, тред уехал дальше окна limit~30: реплики между нашей
-// последней и нижним краем окна не увидел бы больше никто. Их добирает пейджер.
-func TestBackfillClosesGapAboveKnown(t *testing.T) {
+// Пока источник молчал, тред уехал дальше окна limit~30: реплики, не попавшие
+// в него, не увидел бы больше никто. Расхождение со счётчиком треда — признак
+// дыры, пейджер — способ её закрыть.
+func TestBackfillClosesGapByCounter(t *testing.T) {
 	ctx := context.Background()
+	// Реплики написаны ПОСЛЕ того, как зеркало взяло заметку под наблюдение, —
+	// иначе это предыстория, и добор до неё не опускается (следующий тест).
+	now := time.Now().Add(time.Minute)
 	site := &fakeSite{
 		notes:    []love.Note{{ID: "n1", Text: "т"}},
-		comments: map[string][]love.Comment{"n1": {{ID: 11, AuthorName: "А", Text: "одиннадцать"}}},
+		comments: map[string][]love.Comment{"n1": {{ID: 11, AuthorName: "А", Text: "одиннадцать", PublishedAt: now}}},
+		totals:   map[string]int{"n1": 1},
 	}
 	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, nil)
 	m.feedCycle(ctx, false)
@@ -897,16 +907,17 @@ func TestBackfillClosesGapAboveKnown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.pollComments(ctx, n) // зеркало знает реплику 11
+	state := &noteState{}
+	m.pollComments(ctx, n, state) // зеркало знает реплику 11
 
 	// Окно уехало: на первой странице только новые, пропущенные — на второй.
-	site.comments["n1"] = []love.Comment{{ID: 30, AuthorName: "Б", Text: "тридцать"}}
+	site.comments["n1"] = []love.Comment{{ID: 30, AuthorName: "Б", Text: "тридцать", PublishedAt: now}}
+	site.totals["n1"] = 4
 	site.pages = map[string]map[int][]love.Comment{"n1": {2: {
-		{ID: 13, AuthorName: "В", Text: "тринадцать"},
-		{ID: 12, AuthorName: "Г", Text: "двенадцать"},
-		{ID: 11, AuthorName: "А", Text: "одиннадцать"},
+		{ID: 13, AuthorName: "В", Text: "тринадцать", PublishedAt: now},
+		{ID: 12, AuthorName: "Г", Text: "двенадцать", PublishedAt: now},
 	}}}
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, state)
 
 	ids, err := st.CommentIDs(ctx, "n1")
 	if err != nil {
@@ -917,16 +928,35 @@ func TestBackfillClosesGapAboveKnown(t *testing.T) {
 			t.Errorf("реплика %d не добрана: %v", want, ids)
 		}
 	}
+
+	// Счётчик сайта считает и скрытые модератором реплики, поэтому в ноль он
+	// сходится не всегда. С неустранимым остатком воркер обязан смириться, а
+	// не листать вторую страницу на каждом такте ради нуля новых.
+	site.totals["n1"] = 9
+	site.pages["n1"][2] = nil
+	m.pollComments(ctx, n, state)
+	before := site.pageCalls
+	m.pollComments(ctx, n, state)
+	if site.pageCalls != before {
+		t.Errorf("воркер продолжает листать пейджер ради неустранимого остатка: %d", site.pageCalls-before)
+	}
 }
 
-// Обратная сторона: у заметки, взятой в зеркало посреди жизни, всё, что старше
-// нашей первой реплики, — предыстория, а не потеря. Вываливать её в тред никто
-// не просил, и пейджер обязан остановиться на нижней границе известного.
+// Обратная сторона: у заметки, взятой в зеркало посреди жизни (pull, seed,
+// догон после простоя), всё, что написано ДО начала наблюдения, — предыстория,
+// а не потеря. Граница по времени, а не по id: у 313036 потерянное окно и
+// предыстория лежали по одну сторону от известного.
 func TestBackfillDoesNotWalkIntoPrehistory(t *testing.T) {
 	ctx := context.Background()
+	now := time.Now()
 	site := &fakeSite{
 		notes:    []love.Note{{ID: "n1", Text: "т"}},
-		comments: map[string][]love.Comment{"n1": {{ID: 100, AuthorName: "А", Text: "сотая"}}},
+		comments: map[string][]love.Comment{"n1": {{ID: 100, AuthorName: "А", Text: "сотая", PublishedAt: now}}},
+		totals:   map[string]int{"n1": 40},
+		pages: map[string]map[int][]love.Comment{"n1": {2: {
+			{ID: 99, AuthorName: "В", Text: "предыстория", PublishedAt: now.Add(-72 * time.Hour)},
+			{ID: 98, AuthorName: "Г", Text: "предыстория", PublishedAt: now.Add(-73 * time.Hour)},
+		}}},
 	}
 	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, nil)
 	m.feedCycle(ctx, false)
@@ -934,14 +964,7 @@ func TestBackfillDoesNotWalkIntoPrehistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.pollComments(ctx, n)
-
-	site.comments["n1"] = []love.Comment{{ID: 101, AuthorName: "Б", Text: "сто первая"}}
-	site.pages = map[string]map[int][]love.Comment{"n1": {2: {
-		{ID: 99, AuthorName: "В", Text: "предыстория"},
-		{ID: 98, AuthorName: "Г", Text: "предыстория"},
-	}}}
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	ids, err := st.CommentIDs(ctx, "n1")
 	if err != nil {
@@ -950,8 +973,8 @@ func TestBackfillDoesNotWalkIntoPrehistory(t *testing.T) {
 	if ids[99] || ids[98] {
 		t.Errorf("предыстория заметки попала в зеркало: %v", ids)
 	}
-	if !ids[101] {
-		t.Errorf("новая реплика не сохранена: %v", ids)
+	if !ids[100] {
+		t.Errorf("своя реплика не сохранена: %v", ids)
 	}
 }
 
@@ -973,7 +996,7 @@ func TestDeletedNoteStopsFrequentPolling(t *testing.T) {
 
 	site.commentsErr = love.ErrNoteDeleted
 	for i := 0; i < alertThreshold+2; i++ {
-		if !m.pollComments(ctx, n) {
+		if !m.pollComments(ctx, n, &noteState{}) {
 			t.Fatal("удалённая заметка должна опознаваться")
 		}
 	}
@@ -1055,7 +1078,7 @@ func TestFanOutDualSinks(t *testing.T) {
 		t.Fatalf("захват треда max: %v %v", ok, err)
 	}
 	n, _ := st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if comments(mx) != 1 {
 		t.Errorf("комментарий должен уйти в max: %v", mx.calls)
 	}
@@ -1067,7 +1090,7 @@ func TestFanOutDualSinks(t *testing.T) {
 	tgMsg, _, _, _ := st.Target(ctx, store.MessengerTelegram, store.TargetNotePost, "n1")
 	st.CaptureNoteThread(ctx, store.MessengerTelegram, tgMsg, "777")
 	n, _ = st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if comments(tg) != 1 || comments(mx) != 1 {
 		t.Errorf("после захвата треда telegram комментарий доехал ровно по разу: tg=%v max=%v", tg.calls, mx.calls)
 	}
@@ -1109,7 +1132,7 @@ func TestPreexistingNoteSkipsLateSink(t *testing.T) {
 
 	m := New(st, site, []Sink{tg, mx}, Config{NotesLimit: 5, FeedInterval: time.Minute}, slog.Default())
 	n, _ := st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	if comments(tg) != 1 {
 		t.Errorf("комментарий должен уйти в telegram: %v", tg.calls)
@@ -1136,27 +1159,27 @@ func TestModeratorImageUpdatePostedToThread(t *testing.T) {
 	n, _ = st.NoteByID(ctx, "n1")
 
 	// Пока картинок нет — в тред ничего не уходит.
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if images(sink) != 0 {
 		t.Fatalf("картинок ещё нет: %v", sink.calls)
 	}
 
 	// Модератор добавил картинку.
 	site.headers = map[string]*love.Note{"n1": {Images: []string{"https://cdn/v1.jpg"}}}
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if images(sink) != 1 {
 		t.Fatalf("новая картинка должна уйти в тред: %v", sink.calls)
 	}
 
 	// Модератор заменил картинку на новую (другой URL).
 	site.headers["n1"] = &love.Note{Images: []string{"https://cdn/v2.jpg"}}
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if images(sink) != 2 {
 		t.Fatalf("заменённая картинка должна уйти в тред: %v", sink.calls)
 	}
 
 	// Повторный опрос ничего не дублирует.
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 	if images(sink) != 2 {
 		t.Errorf("дубли картинок: %v", sink.calls)
 	}
@@ -1176,7 +1199,7 @@ func TestClosedMarkerFromNotePage(t *testing.T) {
 
 	site.headers = map[string]*love.Note{"n1": {CommentsClosed: true}}
 	n, _ := st.NoteByID(ctx, "n1")
-	m.pollComments(ctx, n)
+	m.pollComments(ctx, n, &noteState{})
 
 	n, _ = st.NoteByID(ctx, "n1")
 	if !n.CommentsClosed {
