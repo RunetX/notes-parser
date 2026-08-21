@@ -554,6 +554,27 @@ func TestVanishedNoteIsNotAMiss(t *testing.T) {
 	}
 }
 
+// TestDeletedNotePageIsNotAMiss — то же, но так, как снос выглядит на самом
+// деле: сайт отдаёт 200 и страницу «Заметка N удалена», а не 404.
+func TestDeletedNotePageIsNotAMiss(t *testing.T) {
+	ctx := context.Background()
+	site := newFakeSite(note("n1"))
+	site.autoShow = false
+	svc, st, _ := newTestService(t, site, &fakeGen{}, nil)
+
+	svc.cycle(ctx)
+	site.pageErr["n1"] = fmt.Errorf("страница заметки: %w", love.ErrNoteDeleted)
+	svc.cycle(ctx)
+
+	row, err := st.PulpitNote(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcomeOf(row) != outcomeVanished {
+		t.Fatalf("снесённая заметка не должна считаться промахом: %+v", row)
+	}
+}
+
 // TestColdStartMarksWithoutPosting — рестарт демона не должен выдавать очередь
 // реплик под старьё из ленты.
 func TestColdStartMarksWithoutPosting(t *testing.T) {

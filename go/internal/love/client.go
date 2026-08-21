@@ -113,6 +113,11 @@ func (c *Client) FetchNotes(ctx context.Context) ([]Note, error) {
 type CommentsPage struct {
 	Comments []Comment
 	Note     *Note
+	// Total — счётчик реплик всего треда из шапки списка («Комментарии 58»),
+	// тогда как Comments — одна страница окна limit~30. Ноль означает «на
+	// странице счётчика нет», а не «реплик нет»: он и отвечает на вопрос,
+	// законен ли пустой список и всё ли мы видели.
+	Total int
 }
 
 // FetchCommentsPage загружает страницу комментариев целиком: комментарии и
@@ -122,17 +127,31 @@ func (c *Client) FetchCommentsPage(ctx context.Context, noteID string) (Comments
 	if err != nil {
 		return CommentsPage{}, err
 	}
-	comments, note, err := ParseCommentsPage(bytes.NewReader(body), c.baseURL)
+	page, err := ParseCommentsPage(bytes.NewReader(body), c.baseURL)
 	if err != nil {
 		return CommentsPage{}, err
 	}
-	if note == nil {
+	if page.Note == nil {
 		// Шапка не разобралась — это не повод ронять зеркалирование, но и
 		// молчать нельзя: так теряются свежие иллюстрации и признак
 		// «комментарии запрещены».
 		c.log.Warn("шапка заметки на странице комментариев не разобрана", "note", noteID)
 	}
-	return CommentsPage{Comments: comments, Note: note}, nil
+	return page, nil
+}
+
+// FetchCommentsPageAt — та же страница комментариев, но заданная страница окна
+// (page ≥ 1, от новых к старым). Нужна, чтобы добрать реплики, пропущенные
+// зеркалом: страница отдаёт последние 30, и молчание источника дольше этого
+// окна означает дыру, которую иначе не закрыть ничем, кроме ручного `pull`.
+// Страницы не перекрываются: page~2 начинается ровно там, где кончилась первая
+// (замер на боевом треде 21.08.2026: 30 + 27 реплик, id встык).
+func (c *Client) FetchCommentsPageAt(ctx context.Context, noteID string, page int) (CommentsPage, error) {
+	body, err := c.RawCommentsView(ctx, noteID, page, ViewLinear)
+	if err != nil {
+		return CommentsPage{}, err
+	}
+	return ParseCommentsPage(bytes.NewReader(body), c.baseURL)
 }
 
 // RawNotes возвращает сырой HTML ленты (для crawl --save-html и фикстур).

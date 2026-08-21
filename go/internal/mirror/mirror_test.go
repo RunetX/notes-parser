@@ -24,6 +24,9 @@ type fakeSite struct {
 	// headers — шапка заметки на странице комментариев (nil — не разобралась).
 	headers map[string]*love.Note
 	avatar  []byte
+	// pages — вторая и следующие страницы окна комментариев (ключ — номер
+	// страницы), как их отдаёт пейджер сайта: без перекрытия с первой.
+	pages map[string]map[int][]love.Comment
 }
 
 func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
@@ -33,6 +36,16 @@ func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.Comment
 	}
 	return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id]}, nil
 }
+func (f *fakeSite) FetchCommentsPageAt(_ context.Context, id string, page int) (love.CommentsPage, error) {
+	if f.commentsErr != nil {
+		return love.CommentsPage{}, f.commentsErr
+	}
+	if page <= 1 {
+		return love.CommentsPage{Comments: f.comments[id], Note: f.headers[id]}, nil
+	}
+	return love.CommentsPage{Comments: f.pages[id][page]}, nil
+}
+
 func (f *fakeSite) FetchMedia(context.Context, string) ([]byte, error) { return f.avatar, nil }
 
 type sinkCall struct {
@@ -867,6 +880,108 @@ func TestEmptyFreshNoteDoesNotTouchSilentCounter(t *testing.T) {
 	}
 	if len(alerted) != 1 || !strings.Contains(alerted[0], keyCommentsSilent) {
 		t.Fatalf("пустая заметка не должна сбрасывать счётчик: %v", alerted)
+	}
+}
+
+// Пока источник молчал, тред уехал дальше окна limit~30: реплики между нашей
+// последней и нижним краем окна не увидел бы больше никто. Их добирает пейджер.
+func TestBackfillClosesGapAboveKnown(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{"n1": {{ID: 11, AuthorName: "А", Text: "одиннадцать"}}},
+	}
+	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, nil)
+	m.feedCycle(ctx, false)
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pollComments(ctx, n) // зеркало знает реплику 11
+
+	// Окно уехало: на первой странице только новые, пропущенные — на второй.
+	site.comments["n1"] = []love.Comment{{ID: 30, AuthorName: "Б", Text: "тридцать"}}
+	site.pages = map[string]map[int][]love.Comment{"n1": {2: {
+		{ID: 13, AuthorName: "В", Text: "тринадцать"},
+		{ID: 12, AuthorName: "Г", Text: "двенадцать"},
+		{ID: 11, AuthorName: "А", Text: "одиннадцать"},
+	}}}
+	m.pollComments(ctx, n)
+
+	ids, err := st.CommentIDs(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []int64{11, 12, 13, 30} {
+		if !ids[want] {
+			t.Errorf("реплика %d не добрана: %v", want, ids)
+		}
+	}
+}
+
+// Обратная сторона: у заметки, взятой в зеркало посреди жизни, всё, что старше
+// нашей первой реплики, — предыстория, а не потеря. Вываливать её в тред никто
+// не просил, и пейджер обязан остановиться на нижней границе известного.
+func TestBackfillDoesNotWalkIntoPrehistory(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{"n1": {{ID: 100, AuthorName: "А", Text: "сотая"}}},
+	}
+	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, nil)
+	m.feedCycle(ctx, false)
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pollComments(ctx, n)
+
+	site.comments["n1"] = []love.Comment{{ID: 101, AuthorName: "Б", Text: "сто первая"}}
+	site.pages = map[string]map[int][]love.Comment{"n1": {2: {
+		{ID: 99, AuthorName: "В", Text: "предыстория"},
+		{ID: 98, AuthorName: "Г", Text: "предыстория"},
+	}}}
+	m.pollComments(ctx, n)
+
+	ids, err := st.CommentIDs(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids[99] || ids[98] {
+		t.Errorf("предыстория заметки попала в зеркало: %v", ids)
+	}
+	if !ids[101] {
+		t.Errorf("новая реплика не сохранена: %v", ids)
+	}
+}
+
+// Снесённую заметку сайт отдаёт целой страницей-заглушкой с кодом 200. Воркер
+// обязан узнать её и перестать долбить мёртвый адрес — но не хоронить заметку:
+// снятая на премодерацию выглядит так же и возвращается.
+func TestDeletedNoteStopsFrequentPolling(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "n1", Text: "т"}}}
+	var alerted []string
+	m, st := newTestMirrorAlert(t, site, &fakeSink{}, false, func(_ context.Context, text string) {
+		alerted = append(alerted, text)
+	})
+	m.feedCycle(ctx, false)
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	site.commentsErr = love.ErrNoteDeleted
+	for i := 0; i < alertThreshold+2; i++ {
+		if !m.pollComments(ctx, n) {
+			t.Fatal("удалённая заметка должна опознаваться")
+		}
+	}
+	if len(alerted) != 0 {
+		t.Errorf("удаление заметки — не повод тревожить админа: %v", alerted)
+	}
+	if note, err := st.NoteByID(ctx, "n1"); err != nil || note.Status == store.StatusArchived {
+		t.Errorf("заметку хоронить нельзя (премодерация возвращает её): %+v %v", note, err)
 	}
 }
 
