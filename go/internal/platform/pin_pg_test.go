@@ -96,7 +96,12 @@ func TestПотолокЗакреплённых(t *testing.T) {
 			t.Fatalf("закрепление %d: %v", i, err)
 		}
 	}
-	extra := mustNote(t, p, author, "ещё одна")
+	// Шестая заметка — от ДРУГОГО автора, и это не обход ограничения частоты
+	// (хотя и он: 5 заметок в сутки на человека уже выбраны), а то, что тест
+	// обязан сказать. Потолок закреплённых — правило ЛЕНТЫ: он про чужое
+	// внимание, а не про то, сколько своего закрепил один человек.
+	other := mustUser(t, p, "Пятачок")
+	extra := mustNote(t, p, other, "ещё одна")
 	if err := p.SetNotePinned(ctx, mod, extra, true, ""); !errors.Is(err, ErrTooManyPinned) {
 		t.Fatalf("сверх потолка: %v, ожидалось ErrTooManyPinned", err)
 	}
