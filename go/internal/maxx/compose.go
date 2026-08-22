@@ -37,16 +37,7 @@ const (
 // Чем именно меряет сервер — рунами или единицами — неизвестно; единиц всегда
 // не меньше, поэтому уложившись в них, укладываемся в любом случае. На
 // кириллице и латинице обе меры совпадают, расходятся только на эмодзи.
-func apiLen(s string) int {
-	n := 0
-	for _, r := range s {
-		n++
-		if r > 0xFFFF { // вне BMP — суррогатная пара
-			n++
-		}
-	}
-	return n
-}
+func apiLen(s string) int { return chantext.UTF16Len(s) }
 
 // escapeFit экранирует сырой текст, укладывая результат в budget единиц. Руна
 // добавляется вместе со своим экранированием целиком, поэтому сущность
@@ -91,7 +82,7 @@ const authorFieldLimit = 100
 
 // ComposeNoteMessage собирает HTML-текст поста заметки. Текст заметки сайтом не
 // ограничен, поэтому укладывается в бюджет MAX; шапка и подпись в бюджет
-// заложены.
+// заложены и не режутся — по ним читатель находит оригинал.
 func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 	name := html.EscapeString(textutil.TruncateTrim(n.AuthorName, authorFieldLimit))
 	var head strings.Builder
@@ -102,10 +93,37 @@ func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
 			html.EscapeString(baseURL+"/profile/"+n.AuthorID), name, "\n")
 	}
 	tail := ""
-	if signature != "" {
-		tail = "\n\n" + signature
+	if foot := noteFooter(signature, n.SourceURL); foot != "" {
+		tail = "\n\n" + foot
 	}
-	return head.String() + escapeFit(n.Text, messageBudget-apiLen(head.String())-apiLen(tail)) + tail
+	budget := messageBudget - apiLen(head.String()) - apiLen(tail)
+	return head.String() + fitBody(n.TextHTML, n.Text, budget) + tail
+}
+
+// noteFooter — подвал поста: ссылка на оригинал и подпись канала одной строкой.
+// Ссылка стоит первой и нужна заметке, написанной на площадке: на НГС её нет
+// вовсе, и другого адреса, по которому её читают и отвечают, не существует.
+func noteFooter(signature, sourceURL string) string {
+	parts := make([]string, 0, 2)
+	if sourceURL != "" {
+		parts = append(parts, chantext.SourceLink(sourceURL))
+	}
+	if signature != "" {
+		parts = append(parts, signature)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// fitBody укладывает тело в бюджет: размеченное отправителем режется как HTML
+// (разметку рвать нельзя), сырое — экранируется по руне. Разные пути потому,
+// что резать уже экранированную строку нельзя посреди сущности, а размеченную
+// — посреди тега.
+func fitBody(textHTML, text string, budget int) string {
+	if textHTML == "" {
+		return escapeFit(text, budget)
+	}
+	body, _ := chantext.FitMeasured(textHTML, budget, apiLen)
+	return body
 }
 
 // ComposeCommentMessage собирает HTML комментария с заголовком-ссылкой автора,
@@ -124,7 +142,7 @@ func ComposeCommentMessage(c store.Comment) string {
 		inner = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), inner)
 	}
 	head := "<b>" + inner + "</b>\n"
-	return head + escapeFit(c.Text, messageBudget-apiLen(head))
+	return head + fitBody(c.TextHTML, c.Text, messageBudget-apiLen(head))
 }
 
 // Выдержки в уведомлении подписчика: длиннее сайт всё равно покажет по ссылке.

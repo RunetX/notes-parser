@@ -20,6 +20,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"lovegw/internal/alerts"
+	"lovegw/internal/chantext"
 	"lovegw/internal/kbd"
 	"lovegw/internal/msglimit"
 	"lovegw/internal/store"
@@ -214,7 +215,7 @@ func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (str
 	subLink := m.subscribeLink(n)
 	text := ComposeNoteMessage(m.baseURL, m.signature, n, subLink)
 
-	if len(avatar) > 0 && visibleNoteLen(m.signature, subLink, n) <= captionLimit {
+	if len(avatar) > 0 && chantext.VisibleUTF16Len(text) <= captionLimit {
 		msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
 			return m.b.SendPhoto(ctx, &bot.SendPhotoParams{
 				ChatID:    m.channelID,
@@ -590,53 +591,67 @@ func (m *Mirror) sendInterval(chatID int64) time.Duration {
 // экранируются: в Python-версии сырой текст в parse_mode=HTML был
 // латентным багом (символы <, > и & ломали отправку). subLink — deep-link
 // подписки для подвала (пусто — подвал только из подписи канала).
+//
+// Тело УКЛАДЫВАЕТСЯ в предел сообщения, и это не аккуратность, а защита
+// очереди: Telegram отвечает на слишком длинный текст отказом, а приёмник идёт
+// по заметкам строго по порядку и на отказе встаёт — то есть одна такая заметка
+// останавливает канал насовсем (в MAX эта пробка уже случалась, 06.08.2026).
+// У заметок НГС такой длины не бывает; у написанных ЗДЕСЬ потолок тела —
+// 20 000 знаков, то есть впятеро больше сообщения.
 func ComposeNoteMessage(baseURL, signature string, n store.Note, subLink string) string {
+	return composeNote(baseURL, signature, n, subLink, messageLimit)
+}
+
+// composeNote собирает пост под заданный предел видимой длины. Режется только
+// ТЕЛО: шапка с автором и подвал со ссылками — то, по чему читатель находит
+// оригинал, и терять их ради лишней строки текста нельзя.
+func composeNote(baseURL, signature string, n store.Note, subLink string, limit int) string {
 	name := html.EscapeString(n.AuthorName)
-	var b strings.Builder
-	if n.AuthorID == "" || n.AuthorID == "0" {
-		fmt.Fprintf(&b, "<b>%s:</b>\n", name)
-	} else {
-		fmt.Fprintf(&b, `<b><a href="%s">%s:</a></b>%s`,
+	head := fmt.Sprintf("<b>%s:</b>\n", name)
+	if n.AuthorID != "" && n.AuthorID != "0" {
+		head = fmt.Sprintf(`<b><a href="%s">%s:</a></b>%s`,
 			html.EscapeString(baseURL+"/profile/"+n.AuthorID), name, "\n")
 	}
-	b.WriteString(html.EscapeString(n.Text))
 	sub := ""
 	if subLink != "" {
 		sub = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(subLink), linkSubscribe)
 	}
-	if foot := noteFooter(signature, sub); foot != "" {
-		b.WriteString("\n\n")
-		b.WriteString(foot)
+	tail := ""
+	if foot := noteFooter(signature, sub, n.SourceURL); foot != "" {
+		tail = "\n\n" + foot
 	}
-	return b.String()
+	// Тело либо размечено отправителем (площадка), либо экранируется целиком,
+	// как весь текст НГС.
+	body := n.TextHTML
+	if body == "" {
+		body = html.EscapeString(n.Text)
+	}
+	body, _ = chantext.FitMeasured(body,
+		limit-chantext.VisibleUTF16Len(head)-chantext.VisibleUTF16Len(tail),
+		chantext.VisibleUTF16Len)
+	return head + body + tail
 }
 
-// noteFooter — подвал поста: подпись канала и ссылка «Подписаться» одной
-// строкой. sub — готовая ссылка с разметкой либо (при подсчёте видимой длины)
-// один её текст; подпись приходит из конфига и уходит как есть.
-func noteFooter(signature, sub string) string {
-	switch {
-	case sub == "":
-		return signature
-	case signature == "":
-		return sub
+// noteFooter — подвал поста одной строкой: ссылка на оригинал, подпись канала,
+// «Подписаться». sub — готовая ссылка с разметкой; подпись приходит из конфига
+// и уходит как есть.
+//
+// Ссылка на источник стоит ПЕРВОЙ и появилась вместе с заметками площадки: у
+// заметки НГС адрес читатель и так найдёт через обсуждение, а у написанной
+// здесь другого адреса нет вовсе — по нему её читают целиком и по нему же
+// отвечают.
+func noteFooter(signature, sub, sourceURL string) string {
+	parts := make([]string, 0, 3)
+	if sourceURL != "" {
+		parts = append(parts, chantext.SourceLink(sourceURL))
 	}
-	return signature + " · " + sub
-}
-
-// visibleNoteLen — длина видимого текста поста заметки (без HTML-тегов), по
-// которой решаем, влезает ли он в подпись к фото (лимит Telegram captionLimit).
-// Ссылки/теги в лимит не считаются, поэтому оцениваем по именам и тексту.
-func visibleNoteLen(signature, subLink string, n store.Note) int {
-	l := len([]rune(n.AuthorName)) + len(":\n") + len([]rune(n.Text))
-	sub := ""
-	if subLink != "" {
-		sub = linkSubscribe // в лимит идёт видимый текст ссылки, не URL
+	if signature != "" {
+		parts = append(parts, signature)
 	}
-	if foot := noteFooter(signature, sub); foot != "" {
-		l += len("\n\n") + len([]rune(foot))
+	if sub != "" {
+		parts = append(parts, sub)
 	}
-	return l
+	return strings.Join(parts, " · ")
 }
 
 // Лимиты Telegram на видимый текст: подпись к медиа и обычное сообщение.
@@ -663,24 +678,24 @@ func commentHead(name, age string) string {
 }
 
 // composeComment собирает HTML комментария с заголовком-ссылкой автора,
-// обрезая ТЕКСТ по границе руны под лимит видимой длины limit (Python резал
-// сырой HTML по байтам и мог сломать разметку). Заголовок в лимит заложен.
+// обрезая ТЕЛО под лимит видимой длины limit (Python резал сырой HTML по
+// байтам и мог сломать разметку). Заголовок в лимит заложен и не режется.
+//
+// Тело либо размечено отправителем (реплика площадки со знаками НГС), либо
+// экранируется целиком, как весь текст сайта.
 func composeComment(c store.Comment, limit int) string {
-	visibleHead := len([]rune(c.AuthorName)) + len([]rune(c.AuthorAge)) + len(", :\n")
-	// Запас на случай расхождения рун и UTF-16 (эмодзи считаются за два).
-	budget := limit - visibleHead - 8
-	if budget < 0 {
-		budget = 0
-	}
-	text := c.Text
-	if r := []rune(text); len(r) > budget {
-		text = string(r[:budget]) + "…"
-	}
 	head := commentHead(c.AuthorName, c.AuthorAge)
 	if c.AuthorLink != "" {
 		head = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), head)
 	}
-	return "<b>" + head + "</b>\n" + html.EscapeString(text)
+	head = "<b>" + head + "</b>\n"
+	body := c.TextHTML
+	if body == "" {
+		body = html.EscapeString(c.Text)
+	}
+	body, _ = chantext.FitMeasured(body, limit-chantext.VisibleUTF16Len(head),
+		chantext.VisibleUTF16Len)
+	return head + body
 }
 
 // ComposeCommentCaption — подпись к документу-аватару (лимит подписи).

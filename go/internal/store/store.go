@@ -32,12 +32,23 @@ type Note struct {
 	AuthorName      string
 	Text            string
 	AuthorAvatarURL string // аватар автора; пусто/плейсхолдер — не показываем
-	Status          string
-	TGMessageID     int64 // 0 — не запощена
-	TGThreadID      int64 // 0 — автофорвард ещё не пойман
-	FirstSeenAt     time.Time
-	LastCommentAt   time.Time // zero — комментариев не было
-	CommentsClosed  bool      // сайт пометил заметку «не актуальна»: комментарии закрыты
+	// TextHTML — тело, размеченное ОТПРАВИТЕЛЕМ: у площадки текст хранится
+	// плоским со знаками НГС, и превращает их в разметку канала тот, кто знает
+	// происхождение строки (platout), а не композер приёмника. Пусто — прежний
+	// путь: Text экранируется целиком, как и весь зеркальный текст НГС.
+	TextHTML string
+	// SourceURL — адрес записи у отправителя. Нужен заметке, написанной на
+	// площадке: страницы на НГС у неё нет вовсе, и без ссылки читателю канала
+	// негде отвечать. Стоит отдельным полем, а не в конце текста, потому что
+	// длинное тело режется под предел сообщения — приписанную к нему ссылку
+	// обрезка съела бы первой.
+	SourceURL      string
+	Status         string
+	TGMessageID    int64 // 0 — не запощена
+	TGThreadID     int64 // 0 — автофорвард ещё не пойман
+	FirstSeenAt    time.Time
+	LastCommentAt  time.Time // zero — комментариев не было
+	CommentsClosed bool      // сайт пометил заметку «не актуальна»: комментарии закрыты
 }
 
 // NoteImage — иллюстрация заметки, публикуемая первым сообщением в треде.
@@ -58,6 +69,8 @@ type Comment struct {
 	AvatarURL   string
 	PublishedAt time.Time // zero — дата неизвестна
 	Text        string
+	// TextHTML — тело, размеченное отправителем (см. Note.TextHTML).
+	TextHTML    string
 	TGMessageID int64
 	CreatedAt   time.Time
 }
