@@ -133,9 +133,13 @@ func (s *Service) recheckConfirmed(ctx context.Context, row store.PulpitComment)
 // threadOf читает тред заметки. ok == false — вердикта нет: сбой загрузки
 // промахом НЕ считается (иначе известные короткие 5xx-штормы сайта или 403
 // геоблока выключали бы фичу), а исчезнувшая заметка — это снесли её, а не нас.
+// Снос сайт показывает страницей-заглушкой с кодом 200 (ErrNoteDeleted), а не
+// 404: до того как парсер научился её узнавать, снесённая заметка приезжала
+// сюда пустым тредом, реплика в нём не находилась — и снос засчитывался
+// промахом, то есть три сноса подряд гасили фичу за чужое действие.
 func (s *Service) threadOf(ctx context.Context, row store.PulpitComment) ([]love.Comment, bool) {
 	page, err := s.site.FetchCommentsPage(ctx, row.NoteID)
-	if errors.Is(err, love.ErrNotFound) {
+	if errors.Is(err, love.ErrNotFound) || errors.Is(err, love.ErrNoteDeleted) {
 		if err := s.st.SetPulpitState(ctx, row.NoteID, store.PulpitVanished, reasonNoteGone, time.Now()); err != nil {
 			s.log.Error("амвон: отметка исчезнувшей заметки", "note", row.NoteID, "err", err)
 		}

@@ -1,9 +1,11 @@
 package love
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,12 @@ const (
 	selNotePageText = ".lv-note__note-text"
 	selNotePageDate = ".lv-notes__note-date"
 	selNoteComments = ".lv-note__comments" // блок списка комментариев (для признака заморозки)
+	// selCommentsCount — счётчик комментариев в шапке списка на самой
+	// странице треда («Комментарии 325»). Считает ВЕСЬ тред, а страница
+	// отдаёт последние 30, поэтому равенства с числом разобранных элементов
+	// не бывает — счётчик отвечает ровно на один вопрос: «ноль тут законный
+	// или источник замолчал».
+	selCommentsCount = ".lv-note__comments-count"
 
 	// Список гостей своей анкеты (/guests/page~N/limit~24/, только под своей
 	// сессией). Ярлык у времени — «Был:/Была:», но это ВРЕМЯ ВИЗИТА, а не
@@ -67,6 +75,18 @@ const commentsClosedMarker = "не актуальна"
 // закрытой для новых ответов. В ленте тот же смысл несёт commentsClosedMarker
 // («не актуальна»), но на странице комментариев формулировка другая.
 const commentsForbiddenMarker = "Комментарии запрещены"
+
+// noteDeletedRe — страница снесённой заметки. Сайт отвечает на неё обычным
+// 200 и целым каркасом, в котором вместо заметки одна фраза «Заметка 313038
+// удалена.»; ни блока заметки, ни счётчика комментариев там нет. Без этого
+// признака удаление неотличимо от дрейфа вёрстки: демон бесконечно опрашивает
+// мёртвый адрес и на каждом такте пишет «шапка не разобрана».
+var noteDeletedRe = regexp.MustCompile(`Заметка\s+\d+\s+удалена`)
+
+// ErrNoteDeleted — заметку снесли на сайте. Для обходов это рабочий случай, а
+// не сбой: опрос такого адреса надо прекращать, а не тревожить админа. Отдельно
+// от ErrNotFound, потому что сайт отдаёт не 404, а 200 со страницей-заглушкой.
+var ErrNoteDeleted = errors.New("заметка удалена на сайте")
 
 // dateLayout — формат даты комментария, время новосибирское.
 const dateLayout = "02.01.2006, 15:04:05"
@@ -177,7 +197,37 @@ func parseCommentsDoc(doc *goquery.Document, baseURL string) ([]Comment, error) 
 	if parseErr != nil {
 		return nil, parseErr
 	}
+	// Пустой тред законен (свежая заметка), а вот «счётчик говорит N, а
+	// элементов ноль» — это молчащий источник: так выглядит и дрейф классов, и
+	// переезд комментариев на клиентский рендер (17.08.2026 сайт стал отдавать
+	// каркас с пустым lv-note__comments-list). Без этой проверки поломка
+	// неотличима от пустой заметки и обнаруживается по жалобам людей.
+	if len(comments) == 0 {
+		if n, ok := commentsCount(doc); ok && n > 0 {
+			return nil, &MarkupError{
+				Selector: selCommentItem,
+				Context:  fmt.Sprintf("счётчик обещает %d комментариев, разобрано ноль", n),
+			}
+		}
+	}
 	return comments, nil
+}
+
+// commentsCount читает счётчик комментариев треда из шапки списка. Второй
+// результат false — счётчика на странице нет вовсе: тогда утверждать нечего,
+// и молчаливый ноль остаётся законным (сам счётчик тоже могут увезти на
+// клиент, и придумывать по его отсутствию поломку значило бы менять тихий
+// отказ на ложную тревогу).
+func commentsCount(doc *goquery.Document) (int, bool) {
+	sel := doc.Find(selCommentsCount).First()
+	if sel.Length() == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digitsOf(sel.Text()))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // parseCommentItem разбирает один элемент списка комментариев. Любой
@@ -264,25 +314,36 @@ func ParseNoteFromCommentsPage(r io.Reader, baseURL string) (Note, error) {
 // шапка нужна зеркалу только для необязательных обновлений (свежие
 // иллюстрации, «комментарии запрещены»), и её дрейф не должен останавливать
 // зеркалирование — возвращается nil.
-func ParseCommentsPage(r io.Reader, baseURL string) ([]Comment, *Note, error) {
+func ParseCommentsPage(r io.Reader, baseURL string) (CommentsPage, error) {
 	doc, err := goquery.NewDocumentFromReader(r)
 	if err != nil {
-		return nil, nil, fmt.Errorf("разбор HTML комментариев: %w", err)
+		return CommentsPage{}, fmt.Errorf("разбор HTML комментариев: %w", err)
 	}
 	comments, err := parseCommentsDoc(doc, baseURL)
 	if err != nil {
-		return nil, nil, err
+		return CommentsPage{}, err
 	}
+	page := CommentsPage{Comments: comments}
+	page.Total, _ = commentsCount(doc)
 	n, err := parseNoteDoc(doc, baseURL)
 	if err != nil {
-		return comments, nil, nil
+		// Дрейф шапки — не повод ронять комментарии, а вот удаление заметки
+		// касается вызывающего напрямую: опрашивать этот адрес больше незачем.
+		if errors.Is(err, ErrNoteDeleted) {
+			return CommentsPage{}, err
+		}
+		return page, nil
 	}
-	return comments, &n, nil
+	page.Note = &n
+	return page, nil
 }
 
 func parseNoteDoc(doc *goquery.Document, baseURL string) (Note, error) {
 	item := doc.Find(selNotePageItem).First()
 	if item.Length() == 0 {
+		if noteDeletedRe.MatchString(doc.Text()) {
+			return Note{}, ErrNoteDeleted
+		}
 		return Note{}, &MarkupError{Selector: selNotePageItem, Context: "шапка заметки на странице комментариев"}
 	}
 
