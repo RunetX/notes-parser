@@ -824,7 +824,22 @@ func (d *daemon) setupDigest() error {
 		Notify:      fanOutAlerts(d.alerters),
 		AutoPublish: cfg.Digest.AutoPublish,
 	}
-	// Автопубликация идёт в те же приёмники, что и зеркало.
+	// Куда выходит выпуск. С площадкой — заметкой ЗДЕСЬ, а в Telegram и MAX её
+	// несёт исходящий обход, как всякую написанную здесь: один текст, один
+	// адрес, один тред, и ответ из канала попадает в этот же тред. Приёмники
+	// зеркала остаются собранными для работы БЕЗ площадки — тогда выпуск идёт
+	// прямо в каналы, своим сплитом и своими ссылками на треды.
+	if d.plat != nil {
+		if cfg.Platform.BaseURL == "" {
+			return errors.New("дайджест: площадка включена, но platform.base_url пуст — ссылки в выпуске вели бы в никуда")
+		}
+		author, err := digestAuthorID(cfg)
+		if err != nil {
+			return fmt.Errorf("дайджест: %w", err)
+		}
+		dcfg.Site = digestSite{p: d.plat, author: author}
+		dcfg.SiteBaseURL = cfg.Platform.BaseURL
+	}
 	for _, s := range d.sinks {
 		if p, ok := s.(digest.Publisher); ok {
 			dcfg.Publishers = append(dcfg.Publishers, p)
@@ -843,9 +858,13 @@ func (d *daemon) setupDigest() error {
 	d.starts = append(d.starts, func(ctx context.Context) error {
 		return digest.RunSchedule(ctx, st, dcfg, log)
 	})
+	where := "каналы"
+	if dcfg.Site != nil {
+		where = "площадка"
+	}
 	log.Info("дайджест включён", "слот",
 		fmt.Sprintf("%s %02d:00 %s", weekday, hour, loc), "out", dcfg.OutDir,
-		"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel)
+		"auto_publish", cfg.Digest.AutoPublish, "llm", llmModel, "выпуск", where)
 	return nil
 }
 

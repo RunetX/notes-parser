@@ -34,7 +34,7 @@ import (
 
 // Name — имя приёмника в message_targets. Колонка messenger там свободный TEXT
 // без CHECK, поэтому новый приёмник встраивается без миграции SQLite.
-const Name = "platform"
+const Name = store.MessengerPlatform
 
 // opBudget — потолок одного обращения к площадке из потока зеркала.
 //

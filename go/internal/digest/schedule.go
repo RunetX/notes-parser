@@ -34,11 +34,21 @@ type ScheduleConfig struct {
 	// плейсхолдерами под полуручной цикл). Ошибка редактуры не срывает
 	// выпуск: пишется черновик с плейсхолдерами и зовётся админ.
 	LLM JSONGenerator
-	// AutoPublish — публиковать выпуск сразу после генерации через
-	// Publishers. С настроенным LLM выпуск уходит с редактурой; без LLM —
-	// «сухим» (LLM-секции выпадают). Если LLM настроен, но редактура не
-	// удалась, автопубликация не выполняется — премодерация админа.
+	// AutoPublish — публиковать выпуск сразу после генерации. С настроенным LLM
+	// выпуск уходит с редактурой; без LLM — «сухим» (LLM-секции выпадают). Если
+	// LLM настроен, но редактура не удалась, автопубликация не выполняется —
+	// премодерация админа.
 	AutoPublish bool
+
+	// Site — площадка. Есть она — выпуск выходит ЗДЕСЬ нативной заметкой, а в
+	// Telegram и MAX его несёт исходящий обход (`platout`), как всякую
+	// написанную здесь: один текст, один адрес, один тред.
+	//
+	// Нет её (площадка не настроена) — остаётся прежний путь, публикация прямо
+	// в каналы через Publishers. Это не запасной сценарий на случай сбоя, а
+	// работа без площадки вообще: без неё заметке взяться неоткуда.
+	Site        Site
+	SiteBaseURL string // адрес площадки для ссылок в теле выпуска
 	Publishers  []Publisher
 }
 
@@ -80,6 +90,27 @@ func RunSchedule(ctx context.Context, st *store.Store, cfg ScheduleConfig, log *
 	}
 }
 
+// issuePublished — вышел ли уже выпуск этой недели. Спрашивать надо ровно то
+// место, куда он выходит СЕЙЧАС: с площадкой это её отметка, без неё — отметки
+// мессенджеров. Перепутав, планировщик либо выпустит второй раз, либо сочтёт
+// неделю закрытой.
+func issuePublished(ctx context.Context, st *store.Store, cfg ScheduleConfig, weekID string) (bool, error) {
+	if cfg.Site != nil {
+		_, _, found, err := st.Target(ctx, store.MessengerPlatform, store.TargetDigest, weekID)
+		return found, err
+	}
+	for _, m := range []string{store.MessengerTelegram, store.MessengerMax} {
+		_, _, found, err := st.Target(ctx, m, store.TargetDigest, weekID)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // slotAction — решение по последнему прошедшему слоту.
 type slotAction int
 
@@ -109,15 +140,9 @@ func decideSlot(now time.Time, w Window, grace time.Duration, published, drafted
 // слот не протух — строит черновик, пишет файлы и зовёт админа.
 func processSlot(ctx context.Context, st *store.Store, cfg ScheduleConfig, now time.Time, log *slog.Logger) error {
 	w := SlotFor(now, cfg.Loc, cfg.Weekday, cfg.Hour, 0)
-	published := false
-	for _, m := range []string{store.MessengerTelegram, store.MessengerMax} {
-		_, _, found, err := st.Target(ctx, m, store.TargetDigest, w.ID)
-		if err != nil {
-			return err
-		}
-		if found {
-			published = true
-		}
+	published, err := issuePublished(ctx, st, cfg, w.ID)
+	if err != nil {
+		return err
 	}
 	_, statErr := os.Stat(DraftPath(cfg.OutDir, w.ID))
 	drafted := statErr == nil
@@ -182,21 +207,61 @@ func notify(ctx context.Context, cfg ScheduleConfig, text string) {
 	}
 }
 
-// publishDraft публикует свежесобранный черновик во все приёмники и
-// возвращает сводку по частям. Частичный сбой безопасен: публикация
-// идемпотентна, admin докатывает командой digest publish.
+// publishDraft публикует свежесобранный черновик и возвращает сводку. Частичный
+// сбой безопасен: публикация идемпотентна, админ докатывает командой
+// digest publish.
 func publishDraft(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, draftPath string) (string, error) {
-	if len(cfg.Publishers) == 0 {
-		return "", errors.New("нет приёмников публикации")
-	}
-	f, err := os.Open(draftPath)
+	d, err := readDraft(draftPath)
 	if err != nil {
 		return "", err
+	}
+	summary := ""
+	if cfg.Site != nil {
+		summary, err = publishToSite(ctx, st, cfg, w, d)
+	} else {
+		summary, err = publishToChannels(ctx, st, cfg, w, d)
+	}
+	if err != nil {
+		return "", err
+	}
+	if d.Dropped > 0 {
+		summary += fmt.Sprintf(" (без LLM-рубрик: %d секций выпало)", d.Dropped)
+	}
+	return summary, nil
+}
+
+func readDraft(path string) (Draft, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Draft{}, err
 	}
 	defer f.Close()
-	d, err := ParseDraft(f, false) // не-strict: «сухой» выпуск тоже публикуем
+	return ParseDraft(f, false) // не-strict: «сухой» выпуск тоже публикуем
+}
+
+// publishToSite — основной путь: выпуск выходит заметкой на площадке, в каналы
+// его несёт исходящий обход. Незакреплённый выпуск — не повод считать
+// публикацию неудавшейся, поэтому про закреп только сообщают.
+func publishToSite(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, d Draft) (string, error) {
+	noteID, created, err := PublishPlatform(ctx, st, cfg.Site, d, w.ID, cfg.SiteBaseURL)
 	if err != nil {
 		return "", err
+	}
+	if !created {
+		return fmt.Sprintf("площадка — выпуск уже был опубликован (заметка %d)", noteID), nil
+	}
+	summary := fmt.Sprintf("площадка — заметка %d, в каналы отнесёт исходящий обход", noteID)
+	if err := PinIssue(ctx, st, cfg.Site, noteID); err != nil {
+		summary += fmt.Sprintf("; закрепить не вышло: %v", err)
+	}
+	return summary, nil
+}
+
+// publishToChannels — работа без площадки: выпуск уходит прямо в каналы своим
+// сплитом и своими per-sink ссылками на треды.
+func publishToChannels(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, d Draft) (string, error) {
+	if len(cfg.Publishers) == 0 {
+		return "", errors.New("нет приёмников публикации")
 	}
 	var parts []string
 	for _, p := range cfg.Publishers {
@@ -206,11 +271,7 @@ func publishDraft(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Wi
 		}
 		parts = append(parts, fmt.Sprintf("%s — %d ч.", p.Name(), sent))
 	}
-	summary := strings.Join(parts, ", ")
-	if d.Dropped > 0 {
-		summary += fmt.Sprintf(" (без LLM-рубрик: %d секций выпало)", d.Dropped)
-	}
-	return summary, nil
+	return strings.Join(parts, ", "), nil
 }
 
 // WriteIssueFiles пишет черновик и материалы выпуска в dir (создавая его).

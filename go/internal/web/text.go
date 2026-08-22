@@ -36,19 +36,51 @@ const linkTailCut = `.,;:!?…»)]"'`
 // растягивает страницу по горизонтали на телефоне.
 const linkTextLimit = 60
 
-// linksClickable — делать ли адреса в ЧУЖОМ тексте ссылками.
+// linkMode — какие адреса в этом тексте становятся ссылками.
 //
-// Выключено 18.08.2026 решением владельца, и причина не в паранойе: в базе
-// лежат 10,7 млн чужих реплик за тринадцать лет, а инструмента контроля пока
-// нет вовсе (он в Ш7). Живая ссылка из архива уводит человека туда, за что мы
-// не ручаемся, — и первым это заметит не модератор, а тот, кто уже перешёл.
-// Домены за эти годы к тому же меняли владельцев, так что «ссылка была
-// приличной в 2011-м» ничего не значит сегодня.
+// Три состояния, а не флаг, потому что вопросов здесь два и они разные: «можно
+// ли вообще» и «чьи». Решение владельца 18.08.2026 гасило ЧУЖИЕ адреса (в базе
+// 10,7 млн чужих реплик за тринадцать лет, инструмента контроля нет, а домены
+// за эти годы меняли владельцев — «ссылка была приличной в 2011-м» сегодня не
+// значит ничего), и 22.08.2026 оно уточнено: адреса САМОЙ ПЛОЩАДКИ кликаются
+// везде. Своя ссылка никуда не уводит — она ведёт на соседнюю страницу, за
+// которую мы отвечаем целиком, — а понадобилась она с выпуском дайджеста:
+// сводка недели состоит из ссылок на заметки, и набирать их руками никто не
+// станет.
 //
-// Адрес при этом остаётся ТЕКСТОМ и виден целиком: человек волен скопировать
-// его сам, и это осознанное действие вместо случайного клика. Включать обратно
-// — вместе с модерацией, одним значением.
-const linksClickable = false
+// Чужой адрес по-прежнему остаётся ТЕКСТОМ и виден целиком: человек волен
+// скопировать его сам, и это осознанное действие вместо случайного клика.
+type linkMode int
+
+const (
+	linkOwn  linkMode = iota // только адреса площадки (обычные тексты)
+	linkAll                  // все (тексты согласий — документ пишем мы сами)
+	linkNone                 // никакие
+)
+
+// ownLinkPrefix — адрес площадки, по которому и опознаётся «своя» ссылка.
+// Ставится один раз при создании сервера (web.New) и дальше только читается:
+// сервер в процессе один, а сделать префикс аргументом рендера нечем — шаблоны
+// разбираются один раз на процесс с общей FuncMap.
+var ownLinkPrefix string
+
+// setOwnLinkPrefix запоминает адрес площадки. Пустой base_url значит «своих
+// ссылок не бывает» — тогда кликаться не будет ничего, как до 22.08.2026.
+func setOwnLinkPrefix(baseURL string) {
+	ownLinkPrefix = strings.TrimSuffix(baseURL, "/")
+}
+
+// isOwnLink — ведёт ли адрес на саму площадку. Сравнивается ПРЕФИКС вместе со
+// схемой и хостом: «https://t3h.ru.evil.example/» начинается с «https://t3h.ru»
+// по буквам, поэтому за префиксом обязан идти конец строки, «/», «?» или «#».
+func isOwnLink(addr string) bool {
+	if ownLinkPrefix == "" || !strings.HasPrefix(addr, ownLinkPrefix) {
+		return false
+	}
+	rest := addr[len(ownLinkPrefix):]
+	return rest == "" || strings.HasPrefix(rest, "/") ||
+		strings.HasPrefix(rest, "?") || strings.HasPrefix(rest, "#")
+}
 
 // era — что из знаков сайта показывать в этом тексте. Решает ДАТА, а не полоса
 // идентификаторов: полоса отделяет «НГС» от «наше», а нужен другой рубеж —
@@ -57,7 +89,8 @@ const linksClickable = false
 // (smileySunset). Написанное ЗДЕСЬ не попадает ни под один — у него свои
 // правила, и они шире: своё мы показываем так, как человек его написал.
 type era struct {
-	markup, smiles, links bool
+	markup, smiles bool
+	links          linkMode
 
 	// siteMarkup — разметку в ЭТОМ тексте рисовал сам сайт, а не мы. Отдельный
 	// флаг нужен ровно одному месту (commentBodyHTML): обращение образца 2013
@@ -84,13 +117,13 @@ func eraOf(id int64, t time.Time) era {
 	// печатал их буквально, и человек, читавший ту страницу, видел именно их.
 	native := platform.IsNative(id)
 	if t.IsZero() {
-		return era{markup: native, smiles: native, links: linksClickable}
+		return era{markup: native, smiles: native, links: linkOwn}
 	}
 	site := !native && t.Before(bbSunset)
 	return era{
 		markup:     native || site,
 		smiles:     native || t.Before(smileySunset),
-		links:      linksClickable,
+		links:      linkOwn,
 		siteMarkup: site,
 	}
 }
@@ -114,7 +147,7 @@ func docHTML(text string) template.HTML {
 	// Документ пишем мы сами: разметки НГС в нём нет, а вот ссылки живые. Гашение
 	// адресов (linksClickable) касается ЧУЖОГО текста — согласие с неработающей
 	// ссылкой на оператора было бы издевательством над правом, которое оно даёт.
-	st := bbState{era: era{links: true}}
+	st := bbState{era: era{links: linkAll}}
 	for i, para := range paragraphs(text) {
 		if i == 0 {
 			// Первая строка файла и есть заголовок документа — тот же, что
@@ -208,8 +241,9 @@ func writeLines(b *strings.Builder, para string, st *bbState) {
 // картинки. Порядок важен: ссылки ищутся в СЫРОЙ строке, а экранируется каждый
 // кусок отдельно — иначе «&amp;» из уже экранированного текста попал бы в href
 // как есть. Смайлы разбираются только в кусках ВНЕ ссылки: «:::» внутри адреса
-// это часть адреса.
-func writeText(b *strings.Builder, line string, smiles, links bool) {
+// это часть адреса. Какие адреса вообще становятся ссылками, решает links
+// (см. linkMode): чужие остаются текстом, свои кликаются.
+func writeText(b *strings.Builder, line string, smiles bool, links linkMode) {
 	write := func(s string) {
 		if smiles {
 			writeSmileys(b, s)
@@ -217,7 +251,7 @@ func writeText(b *strings.Builder, line string, smiles, links bool) {
 		}
 		b.WriteString(html.EscapeString(s))
 	}
-	if !links {
+	if links == linkNone {
 		write(line)
 		return
 	}
@@ -227,6 +261,9 @@ func writeText(b *strings.Builder, line string, smiles, links bool) {
 		addr := strings.TrimRight(raw, linkTailCut)
 		if addr == "" || len(addr) < len("http://x") {
 			continue
+		}
+		if links == linkOwn && !isOwnLink(addr) {
+			continue // чужой адрес остаётся текстом и виден целиком
 		}
 		write(line[idx:loc[0]])
 		b.WriteString(`<a href="`)

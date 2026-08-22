@@ -194,6 +194,10 @@ func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *
 		guard:  newGuard(log),
 		secure: strings.HasPrefix(cfg.BaseURL, "https://"),
 	}
+	// Свой адрес — единственный, который в текстах становится ссылкой
+	// (см. linkMode). Ставится здесь и только читается: сервер в процессе
+	// один, а шаблоны с их FuncMap разбираются один раз на процесс.
+	setOwnLinkPrefix(cfg.BaseURL)
 	if site == nil {
 		log.Warn("клиент НГС не задан — вход по коду в анкете недоступен, остаются приглашения")
 	}

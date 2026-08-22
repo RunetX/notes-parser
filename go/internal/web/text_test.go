@@ -30,17 +30,54 @@ func TestBodyKeepsParagraphsAndBreaks(t *testing.T) {
 	}
 }
 
-// Адреса в чужом тексте НЕ кликабельны (решение владельца 18.08.2026: инструмента
-// контроля нет, а в базе 10,7 млн чужих реплик за тринадцать лет). Текст адреса
-// при этом остаётся целым — человек волен скопировать его сам.
-func TestBodyDoesNotLinkAddresses(t *testing.T) {
-	got := plainNote("см. https://t3h.ru/n/312811, там всё")
+// Адреса в ЧУЖОМ тексте не кликабельны (решение владельца 18.08.2026:
+// инструмента контроля нет, а в базе 10,7 млн чужих реплик за тринадцать лет).
+// Текст адреса при этом остаётся целым — человек волен скопировать его сам.
+func TestBodyDoesNotLinkForeignAddresses(t *testing.T) {
+	defer withOwnLinks("https://t3h.ru")()
+	got := plainNote("см. https://example.org/x, там всё")
 	if strings.Contains(got, "<a ") {
-		t.Fatalf("адрес стал ссылкой: %s", got)
+		t.Fatalf("чужой адрес стал ссылкой: %s", got)
 	}
-	if !strings.Contains(got, "см. https://t3h.ru/n/312811, там всё") {
+	if !strings.Contains(got, "см. https://example.org/x, там всё") {
 		t.Errorf("текст адреса потерян: %s", got)
 	}
+}
+
+// А свой — кликается (22.08.2026): он никуда не уводит, а ведёт на соседнюю
+// страницу, за которую мы отвечаем целиком. Понадобилось это с выпуском
+// дайджеста: сводка недели состоит из ссылок на заметки.
+func TestBodyLinksOwnAddresses(t *testing.T) {
+	defer withOwnLinks("https://t3h.ru")()
+	got := plainNote("см. https://t3h.ru/n/312811, там всё")
+	if !strings.Contains(got, `<a href="https://t3h.ru/n/312811"`) {
+		t.Errorf("свой адрес не стал ссылкой: %s", got)
+	}
+}
+
+// Свой адрес опознаётся по границе, а не по началу строки: «t3h.ru.evil.example»
+// начинается с «t3h.ru» по буквам, но это чужой хост.
+func TestBodyDoesNotLinkLookalikeHost(t *testing.T) {
+	defer withOwnLinks("https://t3h.ru")()
+	got := plainNote("https://t3h.ru.evil.example/n/1")
+	if strings.Contains(got, "<a ") {
+		t.Fatalf("похожий адрес стал ссылкой: %s", got)
+	}
+}
+
+// Без base_url своих ссылок не бывает — кликаться не должно ничего.
+func TestBodyWithoutBaseURLLinksNothing(t *testing.T) {
+	defer withOwnLinks("")()
+	if got := plainNote("https://t3h.ru/n/1"); strings.Contains(got, "<a ") {
+		t.Errorf("без base_url собрана ссылка: %s", got)
+	}
+}
+
+// withOwnLinks подменяет адрес площадки на время теста.
+func withOwnLinks(base string) func() {
+	prev := ownLinkPrefix
+	setOwnLinkPrefix(base)
+	return func() { ownLinkPrefix = prev }
 }
 
 // А в тексте согласия ссылки живые: это НАШ документ, и адрес оператора в нём
