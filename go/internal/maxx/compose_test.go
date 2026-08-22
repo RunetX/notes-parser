@@ -172,6 +172,39 @@ func TestComposeNoteMessageShortIntact(t *testing.T) {
 	}
 }
 
+// Заметка площадки: разметка отправителя доезжает, ссылка на оригинал стоит в
+// подвале перед подписью канала и переживает обрезку длинного тела — обрезанный
+// текст без адреса оригинала оставляет читателя ни с чем.
+func TestComposeNoteMessagePlatformNote(t *testing.T) {
+	n := store.Note{
+		ID: "100000000001", AuthorID: "1", AuthorName: "Паноптикум",
+		Text: "[b]Хотелки[/b]", TextHTML: "<b>Хотелки</b>",
+		SourceURL: "https://t3h.ru/n/100000000001",
+	}
+	got := ComposeNoteMessage("https://love.ngs.ru", "Заметки 18+", n)
+	if !strings.Contains(got, "<b>Хотелки</b>") {
+		t.Errorf("разметка отправителя не доехала: %q", got)
+	}
+	want := "\n\n" + chantext.SourceLink(n.SourceURL) + " · Заметки 18+"
+	if !strings.HasSuffix(got, want) {
+		t.Errorf("подвал:\n получили %q\n ожидали  %q", got, want)
+	}
+
+	long := n
+	long.TextHTML = "<b>" + strings.Repeat("ы", 20000) + "</b>"
+	got = ComposeNoteMessage("https://love.ngs.ru", "Заметки 18+", long)
+	if l := apiLen(got); l > messageLimit {
+		t.Errorf("длинная заметка не влезает: %d > %d", l, messageLimit)
+	}
+	if !strings.Contains(got, chantext.SourceLinkLabel) {
+		t.Error("ссылка на оригинал срезана вместе с телом")
+	}
+	body := got[len("<b><a href=\"https://love.ngs.ru/profile/1\">Паноптикум:</a></b>\n"):]
+	if err := chantext.ValidateHTML(body); err != nil {
+		t.Errorf("обрезанное тело невалидно: %v", err)
+	}
+}
+
 func TestFitHTMLKeepsMarkupValid(t *testing.T) {
 	// Дайджест: много ссылок, то есть много разметки при умеренном видимом
 	// тексте — ровно тот случай, где бюджета chantext по видимой длине мало.

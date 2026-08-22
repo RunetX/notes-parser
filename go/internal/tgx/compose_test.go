@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"lovegw/internal/chantext"
 	"lovegw/internal/store"
 )
 
@@ -29,7 +30,7 @@ func TestComposeNoteMessageFooter(t *testing.T) {
 	if want := `@grfmn · <a href="` + link + `">` + linkSubscribe + `</a>`; !strings.HasSuffix(got, want) {
 		t.Errorf("подвал с подписью:\n%s", got)
 	}
-	if n := visibleNoteLen("@grfmn", link, n); n != len([]rune("Анонимно:\nт\n\n@grfmn · 🔔 Подписаться")) {
+	if n := chantext.VisibleUTF16Len(got); n != chantext.UTF16Len("Анонимно:\nт\n\n@grfmn · 🔔 Подписаться") {
 		t.Errorf("видимая длина с подписью: %d", n)
 	}
 
@@ -37,8 +38,51 @@ func TestComposeNoteMessageFooter(t *testing.T) {
 	if want := "т\n\n" + `<a href="` + link + `">` + linkSubscribe + `</a>`; !strings.HasSuffix(got, want) {
 		t.Errorf("подвал без подписи:\n%s", got)
 	}
-	if n := visibleNoteLen("", link, n); n != len([]rune("Анонимно:\nт\n\n🔔 Подписаться")) {
+	if n := chantext.VisibleUTF16Len(got); n != chantext.UTF16Len("Анонимно:\nт\n\n🔔 Подписаться") {
 		t.Errorf("видимая длина без подписи: %d", n)
+	}
+}
+
+// Длинная заметка не роняет отправку. Telegram отвечает на текст сверх 4096
+// отказом, а приёмник идёт по заметкам строго по порядку и на отказе встаёт —
+// то есть одна заметка площадки (потолок тела там 20 000 знаков) остановила бы
+// канал насовсем. Подвал при этом обязан уцелеть: обрезанный текст без ссылки
+// на оригинал — тупик для читателя.
+func TestComposeNoteMessageFitsLimit(t *testing.T) {
+	n := store.Note{ID: "100000000001", AuthorID: "1", AuthorName: "Паноптикум",
+		Text:      strings.Repeat("ы", 20000),
+		SourceURL: "https://t3h.ru/n/100000000001"}
+	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n, "")
+	if l := chantext.VisibleUTF16Len(got); l > messageLimit {
+		t.Errorf("видимая длина %d > предела %d", l, messageLimit)
+	}
+	if !strings.Contains(got, chantext.SourceLinkLabel) {
+		t.Error("ссылка на оригинал срезана вместе с телом")
+	}
+	if !strings.Contains(got, "@grfmn") {
+		t.Error("подпись канала срезана вместе с телом")
+	}
+	if !strings.Contains(got, "…") {
+		t.Error("обрезка не помечена многоточием")
+	}
+}
+
+// Тело, размеченное отправителем (площадка), уходит разметкой, а не скобками и
+// не экранированными тегами; обрезка такого тела не оставляет незакрытых тегов
+// — непарный тег Telegram не принимает вовсе.
+func TestComposeNoteMessageKeepsSenderMarkup(t *testing.T) {
+	n := store.Note{ID: "100000000001", AuthorID: "1", AuthorName: "Паноптикум",
+		Text: "[b]Хотелки[/b]", TextHTML: "<b>Хотелки</b>"}
+	if got := ComposeNoteMessage("https://love.ngs.ru", "", n, ""); !strings.Contains(got, "<b>Хотелки</b>") {
+		t.Errorf("разметка отправителя не доехала: %q", got)
+	}
+
+	long := store.Note{ID: "100000000002", AuthorID: "1", AuthorName: "Паноптикум",
+		TextHTML: "<b>" + strings.Repeat("ы", 20000) + "</b>"}
+	got := ComposeNoteMessage("https://love.ngs.ru", "", long, "")
+	body := got[strings.Index(got, "</b>\n")+len("</b>\n"):]
+	if err := chantext.ValidateHTML(body); err != nil {
+		t.Errorf("обрезанное тело невалидно: %v", err)
 	}
 }
 

@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"lovegw/internal/chantext"
 	"lovegw/internal/mirror"
 	"lovegw/internal/platform"
 	"lovegw/internal/store"
@@ -377,20 +378,26 @@ func (s *Service) replyTarget(ctx context.Context, sink mirror.Sink, replyToID i
 
 // noteRow собирает строку заметки в том виде, в каком её ждут приёмники.
 //
-// Ссылка на страницу площадки приписывается к ТЕКСТУ, а не в подвал поста:
-// подвал собирает композер каждого мессенджера по-своему, и лезть туда значило
-// бы править оба. А ссылка обязательна — у заметки, написанной здесь, страницы
-// на НГС нет вовсе, и без неё читатель канала не найдёт, где отвечать.
+// Две вещи здесь делаются ЗА приёмника, потому что знание о происхождении
+// текста есть только тут.
+//
+// Первая — РАЗМЕТКА. На площадке текст хранится плоским, а начертания в нём —
+// знаки НГС («[b]жирный[/b]»), те самые, что у переехавших в пальцах.
+// Композер приёмника экранирует строку целиком и другого не умеет, поэтому без
+// этого превращения в канале выходили скобки.
+//
+// Вторая — ССЫЛКА на страницу площадки. Она отдельным полем, а не припиской к
+// тексту: у заметки, написанной здесь, страницы на НГС нет вовсе, а тело
+// длиной с эту режется под предел сообщения — приписанную к нему ссылку
+// обрезка съела бы первой, то есть ровно у тех заметок, где она нужнее всего.
 func (s *Service) noteRow(n platform.OutNote) store.Note {
-	body := n.Body
-	if s.baseURL != "" {
-		body += "\n\n" + s.noteURL(n.ID)
-	}
 	return store.Note{
 		ID:              strconv.FormatInt(n.ID, 10),
 		AuthorID:        authorRef(n.AuthorID),
 		AuthorName:      n.AuthorNick,
-		Text:            body,
+		Text:            n.Body,
+		TextHTML:        chantext.FromSiteMarkup(n.Body),
+		SourceURL:       s.noteURL(n.ID),
 		AuthorAvatarURL: s.mediaURL(n.AvatarSHA, n.AvatarMIME),
 		FirstSeenAt:     n.PublishedAt,
 	}
@@ -405,7 +412,8 @@ func (s *Service) noteStub(noteID int64) store.Note {
 //
 // Возраст пуст: анкетных полей площадка не заводит вовсе. Обращения «Ник, » в
 // теле тоже нет — оно хранится ребром, а в мессенджере его роль играет реплай
-// на сообщение адресата, и цитату рисует сам мессенджер.
+// на сообщение адресата, и цитату рисует сам мессенджер. Разметка разбирается
+// по той же причине, что и у заметки: знаки НГС в теле остались бы скобками.
 func (s *Service) commentRow(c platform.OutComment) store.Comment {
 	return store.Comment{
 		ID:          c.ID,
@@ -415,11 +423,16 @@ func (s *Service) commentRow(c platform.OutComment) store.Comment {
 		AvatarURL:   s.mediaURL(c.AvatarSHA, c.AvatarMIME),
 		PublishedAt: c.PublishedAt,
 		Text:        c.Body,
+		TextHTML:    chantext.FromSiteMarkup(c.Body),
 	}
 }
 
-// noteURL — адрес заметки на площадке.
+// noteURL — адрес заметки на площадке; пусто, если адрес площадки не задан
+// (тогда ссылки в посте не будет, как было до Ш5а).
 func (s *Service) noteURL(id int64) string {
+	if s.baseURL == "" {
+		return ""
+	}
 	return s.baseURL + "/n/" + strconv.FormatInt(id, 10)
 }
 

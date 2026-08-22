@@ -209,3 +209,47 @@ func TestProcessSlotSkipsStale(t *testing.T) {
 		t.Error("черновик протухшего слота не должен создаваться")
 	}
 }
+
+// С площадкой выпуск выходит ЗАМЕТКОЙ, а не постами в каналы: в мессенджеры её
+// отнесёт исходящий обход, и публикация обоими путями сразу дала бы по два
+// поста в Telegram и MAX.
+func TestProcessSlotAutoPublishToPlatform(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	var notes []string
+	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg.LLM = &fakeGen{resp: map[string]string{
+		"week_summary": "Неделя была тихой.", "dispute_note_id": "",
+		"dispute": "", "quote": "", "topics": "",
+	}}
+	pub := &fakePub{name: "tg"}
+	site := newFakeSite()
+	cfg.AutoPublish = true
+	cfg.Publishers = []Publisher{pub}
+	cfg.Site = site
+	cfg.SiteBaseURL = "https://t3h.ru"
+	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk)
+
+	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(site.bodies) != 1 || !strings.Contains(site.bodies[0], "Неделя была тихой.") {
+		t.Fatalf("выпуск должен выйти заметкой на площадке: %q", site.bodies)
+	}
+	if len(pub.posts) != 0 {
+		t.Errorf("в каналы напрямую выпуск больше не публикуется: %q", pub.posts)
+	}
+	if _, _, done, _ := st.Target(ctx, store.MessengerPlatform, store.TargetDigest, "2026-W31"); !done {
+		t.Error("после публикации должна стоять отметка площадки")
+	}
+	if pinned := site.pins[site.nextID]; !pinned {
+		t.Error("свежий выпуск должен быть закреплён наверху ленты")
+	}
+	// Повторный тик: неделя закрыта — второй заметки быть не должно.
+	if err := processSlot(ctx, st, cfg, now.Add(time.Hour), quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(site.bodies) != 1 || len(notes) != 1 {
+		t.Errorf("повторный тик опубликовал ещё раз: заметок=%d уведомлений=%d", len(site.bodies), len(notes))
+	}
+}

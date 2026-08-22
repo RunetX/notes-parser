@@ -44,6 +44,15 @@ func VisibleLen(s string) int {
 	return len([]rune(html.UnescapeString(tagRe.ReplaceAllString(s, ""))))
 }
 
+// VisibleUTF16Len — видимая длина в единицах UTF-16: тем и другим сразу.
+// Именно так считает сообщение Telegram — он меряет текст ПОСЛЕ разбора
+// разметки (теги в предел 4096 не идут), но считает его в кодовых единицах, а
+// не в рунах, поэтому эмодзи стоит двух. Мера MAX другая и живёт у него
+// (сырая строка вместе с тегами, `maxx.apiLen`).
+func VisibleUTF16Len(s string) int {
+	return UTF16Len(html.UnescapeString(tagRe.ReplaceAllString(s, "")))
+}
+
 // ValidateHTML проверяет текст: только разрешённые парные теги, никаких
 // неэкранированных < и > вне них.
 func ValidateHTML(s string) error {

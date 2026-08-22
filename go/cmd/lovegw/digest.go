@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-telegram/bot/models"
@@ -22,6 +24,7 @@ import (
 	"lovegw/internal/config"
 	"lovegw/internal/digest"
 	"lovegw/internal/maxx"
+	"lovegw/internal/platform"
 	"lovegw/internal/store"
 	"lovegw/internal/tgx"
 )
@@ -185,12 +188,19 @@ func loadDraft(o digestOpts, w digest.Window) (digest.Draft, error) {
 	return d, nil
 }
 
-// digestPreview рендерит выпуск по каждому мессенджеру в stdout: ссылки,
-// разбиение на части и видимые длины — без создания ботов и без отправки.
+// digestPreview рендерит выпуск в stdout без отправки и без создания ботов.
+// С настроенной площадкой первым идёт ТЕЛО ЗАМЕТКИ — то, что увидят люди, — а
+// за ним разбиение по мессенджерам: оно остаётся способом посмотреть длины, но
+// в бою выпуск в каналы несёт исходящий обход.
 func digestPreview(ctx context.Context, cfg *config.Config, st *store.Store, w digest.Window, o digestOpts) error {
 	d, err := loadDraft(o, w)
 	if err != nil {
 		return err
+	}
+	if cfg.Platform.Enabled && o.to == "" {
+		body := digest.RenderPlatform(d, cfg.Platform.BaseURL)
+		fmt.Printf("=== площадка: выпуск %s, %d знаков (потолок тела %d) ===\n%s\n\n",
+			w.ID, len([]rune(body)), platform.MaxBodyRunes, body)
 	}
 	pubs := previewPublishers(cfg, o.to)
 	if len(pubs) == 0 {
@@ -269,13 +279,17 @@ func previewPublishers(cfg *config.Config, only string) []digest.Publisher {
 	return pubs
 }
 
-// digestPublish постит выпуск во включённые мессенджеры. Части и головная
-// запись фиксируются в message_targets — повторный запуск докатывает
-// недостающее и не дублирует уже отправленное.
+// digestPublish публикует выпуск. С настроенной площадкой — нативной заметкой
+// ЗДЕСЬ (в каналы её отнесёт исходящий обход демона), без площадки — прямо в
+// каналы. И то и другое идемпотентно по message_targets: повторный запуск
+// докатывает недостающее и не дублирует уже опубликованное.
 func digestPublish(ctx context.Context, cfg *config.Config, st *store.Store, w digest.Window, o digestOpts) error {
 	d, err := loadDraft(o, w)
 	if err != nil {
 		return err
+	}
+	if cfg.Platform.Enabled && o.to == "" {
+		return digestPublishSite(ctx, cfg, st, w, d)
 	}
 	pubs, err := publishPublishers(cfg, o.to)
 	if err != nil {
@@ -294,6 +308,40 @@ func digestPublish(ctx context.Context, cfg *config.Config, st *store.Store, w d
 		default:
 			fmt.Printf("%s: выпуск %s опубликован, отправлено %d %s\n", p.Name(), w.ID, sent, pluralParts(sent))
 		}
+	}
+	return nil
+}
+
+// digestPublishSite — выпуск заметкой на площадке. Открывает свой пул: команду
+// запускают руками при работающем демоне, и делить с ним нечего.
+func digestPublishSite(ctx context.Context, cfg *config.Config, st *store.Store, w digest.Window, d digest.Draft) error {
+	if cfg.Platform.BaseURL == "" {
+		return errors.New("digest: platform.base_url пуст — ссылки в выпуске вели бы в никуда")
+	}
+	author, err := digestAuthorID(cfg)
+	if err != nil {
+		return err
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	site := digestSite{p: p, author: author}
+	noteID, created, err := digest.PublishPlatform(ctx, st, site, d, w.ID, cfg.Platform.BaseURL)
+	if err != nil {
+		return err
+	}
+	if !created {
+		fmt.Printf("площадка: выпуск %s уже опубликован — %s/n/%d\n", w.ID,
+			strings.TrimSuffix(cfg.Platform.BaseURL, "/"), noteID)
+		return nil
+	}
+	fmt.Printf("площадка: выпуск %s опубликован — %s/n/%d (в каналы его отнесёт демон)\n",
+		w.ID, strings.TrimSuffix(cfg.Platform.BaseURL, "/"), noteID)
+	if err := digest.PinIssue(ctx, st, site, noteID); err != nil {
+		fmt.Printf("выпуск не закреплён: %v\n", err)
 	}
 	return nil
 }
@@ -340,4 +388,49 @@ func publishPublishers(cfg *config.Config, only string) ([]digest.Publisher, err
 		pubs = append(pubs, mx)
 	}
 	return pubs, nil
+}
+
+// digestSite — площадка глазами дайджеста (реализация digest.Site): выпуск
+// выходит нативной заметкой от анкеты подписанта и закрепляется наверху ленты.
+//
+// Прослойка нужна затем, чтобы `digest` не знал ни про pgx, ни про Viewer: у
+// него всего два дела с площадкой, и список этих дел — часть ответа на вопрос
+// «что выпуск вправе с ней сделать».
+type digestSite struct {
+	p      *platform.Platform
+	author int64
+}
+
+func (s digestSite) PublishNote(ctx context.Context, body string) (int64, error) {
+	return s.p.CreateNote(ctx, platform.NewNote{AuthorID: s.author, Body: body})
+}
+
+// PinNote закрепляет и открепляет выпуск. Роль подписанта читается КАЖДЫЙ раз,
+// а не запоминается на старте: закреп бывает раз в неделю, а права меняются
+// командой `platform role` — запомненная роль соврала бы при первой же смене.
+func (s digestSite) PinNote(ctx context.Context, noteID int64, pinned bool) error {
+	u, err := s.p.UserByID(ctx, s.author)
+	if err != nil {
+		return err
+	}
+	return s.p.SetNotePinned(ctx, platform.Viewer{UserID: u.ID, Role: u.Role},
+		noteID, pinned, "выпуск дайджеста")
+}
+
+// digestAuthorID — анкета подписанта выпуска: своя настройка, иначе владелец
+// амвона. Один и тот же человек, но настройки разные: амвон можно выключить
+// целиком, а выпуску подписант нужен всегда.
+func digestAuthorID(cfg *config.Config) (int64, error) {
+	raw := cfg.Digest.AuthorProfileID
+	if raw == "" {
+		raw = cfg.Pulpit.OwnerProfileID
+	}
+	if raw == "" {
+		return 0, errors.New("не задан подписант выпуска: digest.author_profile_id (или pulpit.owner_profile_id)")
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("подписант выпуска %q: не число", raw)
+	}
+	return id, nil
 }

@@ -58,6 +58,8 @@ type call struct {
 	thread   string
 	replyTo  string
 	text     string
+	textHTML string
+	source   string
 	author   string
 	link     string
 	hasImage bool
@@ -84,6 +86,7 @@ func (s *sink) PostNote(_ context.Context, n store.Note, avatar []byte) (string,
 		return "", s.fail
 	}
 	s.calls = append(s.calls, call{kind: "note", noteID: n.ID, text: n.Text,
+		textHTML: n.TextHTML, source: n.SourceURL,
 		author: n.AuthorName, link: n.AuthorID, hasImage: len(avatar) > 0})
 	return s.id(), nil
 }
@@ -94,7 +97,8 @@ func (s *sink) PostComment(_ context.Context, n store.Note, threadID, replyToID 
 		return "", s.fail
 	}
 	s.calls = append(s.calls, call{kind: "comment", noteID: n.ID, comID: c.ID, thread: threadID,
-		replyTo: replyToID, text: c.Text, author: c.AuthorName, link: c.AuthorLink,
+		replyTo: replyToID, text: c.Text, textHTML: c.TextHTML,
+		author: c.AuthorName, link: c.AuthorLink,
 		hasImage: len(avatar) > 0})
 	return s.id(), nil
 }
@@ -168,8 +172,10 @@ func TestNotePostedOnce(t *testing.T) {
 	}
 }
 
-// Ссылка на страницу площадки приписана к тексту поста. Без неё у заметки,
-// написанной здесь, нет вообще ни одного адреса: на НГС такой страницы нет.
+// Ссылка на страницу площадки едет ОТДЕЛЬНЫМ полем, а не припиской к тексту.
+// Без неё у заметки, написанной здесь, нет вообще ни одного адреса: на НГС
+// такой страницы нет. А отдельным полем — потому что длинное тело композер
+// режет под предел сообщения, и ссылку в конце текста обрезка съела бы первой.
 func TestNoteCarriesPlatformLink(t *testing.T) {
 	st := newStore(t)
 	src := &source{notes: []platform.OutNote{{
@@ -181,12 +187,47 @@ func TestNoteCarriesPlatformLink(t *testing.T) {
 	if _, err := svc.Once(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := "давайте\n\nhttps://t3h.ru/n/100000000000"
-	if sk.calls[0].text != want {
-		t.Errorf("текст поста:\n%q\nждали:\n%q", sk.calls[0].text, want)
+	if got := sk.calls[0].source; got != "https://t3h.ru/n/100000000000" {
+		t.Errorf("ссылка на страницу площадки: %q", got)
+	}
+	if got := sk.calls[0].text; got != "давайте" {
+		t.Errorf("тело поста изменено: %q", got)
 	}
 	if sk.calls[0].link != "294456" {
 		t.Errorf("ссылка на анкету автора: %q", sk.calls[0].link)
+	}
+}
+
+// Знаки НГС в написанном ЗДЕСЬ приезжают приёмнику РАЗМЕЧЕННЫМИ. Композер
+// экранирует всё, что ему дали сырым, поэтому без этого превращения заметка
+// выходила в канал скобками — «[b]Хотелки[/b]».
+func TestNativeMarkupReachesSink(t *testing.T) {
+	st := newStore(t)
+	src := &source{
+		notes: []platform.OutNote{{
+			ID: platform.NativeIDBase, AuthorID: 1, AuthorNick: "Паноптикум",
+			Body: "[b]Хотелки[/b] & прочее", PublishedAt: time.Now(),
+		}},
+		comments: []platform.OutComment{{
+			ID: platform.NativeIDBase, NoteID: platform.NativeIDBase, AuthorID: 2,
+			AuthorNick: "Ответчик", Body: "[i]да[/i]", PublishedAt: time.Now(),
+		}},
+	}
+	sk := &sink{}
+	svc := New(src, st, nil, []mirror.Sink{sk}, "https://t3h.ru", quiet())
+	if err := st.SetTarget(context.Background(), sk.Name(), store.TargetNoteThread,
+		strconv.FormatInt(platform.NativeIDBase, 10), "", "thread1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sk.calls[0].textHTML; got != "<b>Хотелки</b> &amp; прочее" {
+		t.Errorf("разметка заметки: %q", got)
+	}
+	com := sk.calls[len(sk.calls)-1]
+	if com.kind != "comment" || com.textHTML != "<i>да</i>" {
+		t.Errorf("разметка комментария: %+v", com)
 	}
 }
 
