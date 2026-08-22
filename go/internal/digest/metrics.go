@@ -1,40 +1,29 @@
 package digest
 
 // Расчёт рубрик выпуска: метрики окна считаются в Go по сырым комментариям,
-// сравнительная история — SQL-выборками store.
+// сравнительная история — выборками источника (Source).
 
 import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
-
-	"lovegw/internal/store"
 )
 
-// commentTime — время комментария: сайт (published_at), фолбэк — вставка.
-func commentTime(c store.Comment) time.Time {
-	if !c.PublishedAt.IsZero() {
-		return c.PublishedAt
-	}
-	return c.CreatedAt
-}
-
 // groupByNote раскладывает комментарии по заметкам, сохраняя порядок по id.
-func groupByNote(comments []store.Comment) map[string][]store.Comment {
-	byNote := make(map[string][]store.Comment)
+func groupByNote(comments []Comment) map[string][]Comment {
+	byNote := make(map[string][]Comment)
 	for _, c := range comments {
 		byNote[c.NoteID] = append(byNote[c.NoteID], c)
 	}
 	return byNote
 }
 
-func distinctLinks(comments []store.Comment) int {
+func distinctLinks(comments []Comment) int {
 	links := make(map[string]bool)
 	for _, c := range comments {
-		if c.AuthorLink != "" {
-			links[c.AuthorLink] = true
+		if c.Author != "" {
+			links[c.Author] = true
 		}
 	}
 	return len(links)
@@ -42,7 +31,7 @@ func distinctLinks(comments []store.Comment) int {
 
 // buildNoteStats считает метрики окна по каждой обсуждавшейся заметке.
 // Заметки без шапки в БД (удалённые вручную) пропускаются.
-func buildNoteStats(byNote map[string][]store.Comment, heads map[string]store.Note) []NoteStat {
+func buildNoteStats(byNote map[string][]Comment, heads map[string]Note) []NoteStat {
 	var stats []NoteStat
 	for noteID, cs := range byNote {
 		head, ok := heads[noteID]
@@ -56,14 +45,14 @@ func buildNoteStats(byNote map[string][]store.Comment, heads map[string]store.No
 }
 
 // noteStat — метрики окна одной заметки по её комментариям (в порядке id).
-func noteStat(head store.Note, cs []store.Comment) NoteStat {
+func noteStat(head Note, cs []Comment) NoteStat {
 	s := NoteStat{Note: head, Comments: len(cs), PingPong: pingPongPairs(cs)}
 	links := make(map[string]bool)
 	hours := make(map[time.Time]int)
 	for _, c := range cs {
-		t := commentTime(c)
-		if c.AuthorLink != "" {
-			links[c.AuthorLink] = true
+		t := c.PublishedAt
+		if c.Author != "" {
+			links[c.Author] = true
 		}
 		if s.FirstAt.IsZero() || t.Before(s.FirstAt) {
 			s.FirstAt = t
@@ -83,13 +72,13 @@ func noteStat(head store.Note, cs []store.Comment) NoteStat {
 
 // pingPongPairs — число соседних по id пар реплик разных авторов с зазором
 // не больше pingPongGap (признак перепалки).
-func pingPongPairs(cs []store.Comment) int {
+func pingPongPairs(cs []Comment) int {
 	pairs := 0
 	for i := 1; i < len(cs); i++ {
-		if cs[i-1].AuthorLink == cs[i].AuthorLink {
+		if cs[i-1].Author == cs[i].Author {
 			continue
 		}
-		if gap := commentTime(cs[i]).Sub(commentTime(cs[i-1])); gap >= 0 && gap <= pingPongGap {
+		if gap := cs[i].PublishedAt.Sub(cs[i-1].PublishedAt); gap >= 0 && gap <= pingPongGap {
 			pairs++
 		}
 	}
@@ -181,7 +170,7 @@ func pickDisputes(stats []NoteStat, top *NoteStat) []NoteStat {
 
 // pickQuotes — шорт-лист «цитаты недели»: комментарии внятной длины,
 // ранжированные по числу ответов других авторов сразу после.
-func pickQuotes(byNote map[string][]store.Comment) []Quote {
+func pickQuotes(byNote map[string][]Comment) []Quote {
 	var quotes []Quote
 	for _, cs := range byNote {
 		for _, c := range cs {
@@ -210,12 +199,12 @@ func pickQuotes(byNote map[string][]store.Comment) []Quote {
 
 // repliesAfter — комментарии других авторов того же треда в окно
 // quoteReplyWindow после реплики c (грубая мера «реакции»).
-func repliesAfter(cs []store.Comment, c store.Comment) int {
-	t := commentTime(c)
+func repliesAfter(cs []Comment, c Comment) int {
+	t := c.PublishedAt
 	replies := 0
 	for _, c2 := range cs {
-		t2 := commentTime(c2)
-		if c2.ID != c.ID && c2.AuthorLink != c.AuthorLink &&
+		t2 := c2.PublishedAt
+		if c2.ID != c.ID && c2.Author != c.Author &&
 			t2.After(t) && !t2.After(t.Add(quoteReplyWindow)) {
 			replies++
 		}
@@ -224,24 +213,31 @@ func repliesAfter(cs []store.Comment, c store.Comment) int {
 }
 
 // fillPersons заполняет «новые лица» и «возвращение недели»: комментаторы и
-// авторы заметок окна, слитые по анкете.
-func fillPersons(ctx context.Context, st *store.Store, is *Issue, siteBase string) error {
+// авторы заметок окна, слитые по человеку.
+//
+// Слияние идёт по ключу автора, каким его знает ИСТОЧНИК: у зеркала это ссылка
+// на анкету (числового id у комментария там нет вовсе), у площадки — номер
+// строки. Выпуску различие не видно и видно быть не должно: он спрашивает
+// адрес анкеты у источника и печатает его, если тот есть.
+func fillPersons(ctx context.Context, src Source, is *Issue) error {
 	w := is.Window
-	commenters, err := st.CommenterHistory(ctx, w.Start, w.End)
+	commenters, err := src.CommenterHistory(ctx, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("история комментаторов: %w", err)
 	}
-	authors, err := st.NoteAuthorHistory(ctx, w.Start, w.End)
+	authors, err := src.NoteAuthorHistory(ctx, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("история авторов: %w", err)
 	}
 
-	merged := make(map[string]*Person) // ключ — URL анкеты без хвостового «/»
-	add := func(name, url string, notes, comments int, prev time.Time) {
-		key := strings.TrimRight(url, "/")
+	merged := make(map[string]*Person) // ключ — автор глазами источника
+	add := func(key, name string, notes, comments int, prev time.Time) {
+		if key == "" {
+			return // без анкеты человека не опознать: в рубрику он не идёт
+		}
 		p, ok := merged[key]
 		if !ok {
-			p = &Person{Name: name, ProfileURL: url}
+			p = &Person{Name: name, ProfileURL: src.ProfileURL(key)}
 			merged[key] = p
 		}
 		p.Notes += notes
@@ -253,25 +249,30 @@ func fillPersons(ctx context.Context, st *store.Store, is *Issue, siteBase strin
 		}
 	}
 	for _, c := range commenters {
-		add(c.Name, c.Link, 0, c.InWindow, c.PrevSeenAt)
+		add(c.Author, c.Name, 0, c.InWindow, c.PrevSeenAt)
 	}
 	for _, a := range authors {
-		add(a.Name, siteBase+"/profile/"+a.AuthorID, a.NotesInWindow, 0, a.PrevNoteAt)
+		add(a.Author, a.Name, a.NotesInWindow, 0, a.PrevNoteAt)
 	}
 
-	var persons []Person
-	for _, p := range merged {
-		persons = append(persons, *p)
+	type keyed struct {
+		key string
+		p   Person
+	}
+	var persons []keyed
+	for k, p := range merged {
+		persons = append(persons, keyed{key: k, p: *p})
 	}
 	// Вес для ранжирования: заметка «дороже» комментария.
 	weight := func(p Person) int { return 3*p.Notes + p.Comments }
 	sort.Slice(persons, func(i, j int) bool {
-		if wi, wj := weight(persons[i]), weight(persons[j]); wi != wj {
+		if wi, wj := weight(persons[i].p), weight(persons[j].p); wi != wj {
 			return wi > wj
 		}
-		return persons[i].ProfileURL < persons[j].ProfileURL
+		return persons[i].key < persons[j].key
 	})
-	for _, p := range persons {
+	for _, k := range persons {
+		p := k.p
 		switch {
 		case p.PrevSeenAt.IsZero():
 			if len(is.Newcomers) < topPersons {
@@ -288,22 +289,27 @@ func fillPersons(ctx context.Context, st *store.Store, is *Issue, siteBase strin
 
 // fillRecords заполняет «рекорды»: числа только через сравнение с историей.
 // Неинтересные рекорды опускаются.
-func fillRecords(ctx context.Context, st *store.Store, is *Issue, comments []store.Comment) error {
+//
+// История берётся за ГОРИЗОНТ (RecordHorizon), а не за всё время: на площадке
+// лежит архив с 2009-го, и «за всю историю» означало бы рекорд 2013 года,
+// который не побьют никогда.
+func fillRecords(ctx context.Context, src Source, is *Issue, comments []Comment) error {
 	w := is.Window
-	if r, ok, err := longestThreadRecord(ctx, st, is); err != nil {
+	since := w.End.Add(-RecordHorizon)
+	if r, ok, err := longestThreadRecord(ctx, src, is, since); err != nil {
 		return err
 	} else if ok {
 		is.Records = append(is.Records, r)
 	}
-	// Пик-час: рекорд только если исторический максимум установлен в окне.
-	histHour, histNote, histN, err := st.PeakCommentHour(ctx)
+	// Пик-час: рекорд только если максимум горизонта установлен в окне.
+	histHour, histNote, histN, err := src.PeakCommentHour(ctx, since)
 	if err != nil {
 		return fmt.Errorf("пик-час истории: %w", err)
 	}
 	if histN >= minRecordPeakHour && histHour.After(w.Start) && !histHour.After(w.End) {
 		is.Records = append(is.Records, Record{
 			NoteID: histNote,
-			Text:   fmt.Sprintf("%s за час — рекорд за всю историю наблюдений.", nComments(histN)),
+			Text:   fmt.Sprintf("%s за час — рекорд года.", nComments(histN)),
 		})
 	}
 	// Самый шумный день окна против среднего дня.
@@ -313,51 +319,52 @@ func fillRecords(ctx context.Context, st *store.Store, is *Issue, comments []sto
 	return nil
 }
 
-// longestThreadRecord сравнивает заметку недели с итогами прошлых тредов.
-func longestThreadRecord(ctx context.Context, st *store.Store, is *Issue) (Record, bool, error) {
+// longestThreadRecord сравнивает заметку недели с итогами прошлых тредов
+// горизонта.
+func longestThreadRecord(ctx context.Context, src Source, is *Issue, since time.Time) (Record, bool, error) {
 	top, w := is.TopNote, is.Window
 	if top == nil || top.Comments < minRecordComments {
 		return Record{}, false, nil
 	}
-	totals, err := st.NoteCommentTotals(ctx)
+	totals, err := src.NoteTotals(ctx, since)
 	if err != nil {
 		return Record{}, false, fmt.Errorf("итоги тредов: %w", err)
 	}
-	var lastBigger *store.NoteTotals // последняя заметка до окна с итогом больше
+	var lastBigger *NoteTotals // последняя заметка до окна с итогом больше
 	for i := range totals {
 		t := &totals[i]
-		if t.NoteID == top.Note.ID || t.FirstSeenAt.After(w.Start) {
+		if t.NoteID == top.Note.ID || t.PublishedAt.After(w.Start) {
 			continue
 		}
 		if t.Comments > top.Comments {
-			lastBigger = t // totals идут по first_seen_at — останется последняя
+			lastBigger = t // totals идут по времени — останется последняя
 		}
 	}
 	switch {
 	case lastBigger == nil:
 		return Record{
 			NoteID: top.Note.ID,
-			Text:   fmt.Sprintf("%s — самый длинный тред за всю историю наблюдений.", nComments(top.Comments)),
+			Text:   fmt.Sprintf("%s — самый длинный тред за год.", nComments(top.Comments)),
 		}, true, nil
-	case w.End.Sub(lastBigger.FirstSeenAt) > returneeGap:
+	case w.End.Sub(lastBigger.PublishedAt) > returneeGap:
 		return Record{
 			NoteID: top.Note.ID,
 			Text: fmt.Sprintf("%s — самый длинный тред с %s.", nComments(top.Comments),
-				monthSince(lastBigger.FirstSeenAt.In(w.End.Location()), w.End.Year())),
+				monthSince(lastBigger.PublishedAt.In(w.End.Location()), w.End.Year())),
 		}, true, nil
 	}
 	return Record{}, false, nil // больший тред был недавно — не рекорд
 }
 
 // busiestDay — «самый шумный день» окна, если он заметно выше среднего.
-func busiestDay(comments []store.Comment, w Window) (Record, bool) {
+func busiestDay(comments []Comment, w Window) (Record, bool) {
 	if len(comments) == 0 {
 		return Record{}, false
 	}
 	loc := w.End.Location()
 	byDay := make(map[time.Weekday]int)
 	for _, c := range comments {
-		byDay[commentTime(c).In(loc).Weekday()]++
+		byDay[c.PublishedAt.In(loc).Weekday()]++
 	}
 	var maxDay time.Weekday
 	maxN := 0

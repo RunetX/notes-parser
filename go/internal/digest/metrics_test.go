@@ -69,7 +69,7 @@ func TestBuildTopNoteAndDisputes(t *testing.T) {
 			"мнение", base.Add(time.Duration(i)*3*time.Hour))
 	}
 
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestBuildQuotes(t *testing.T) {
 	addComment(t, st, 5, "Q", siteBase+"/profile/8/", "поздний ответ", base.Add(3*time.Hour))
 	addComment(t, st, 6, "Q", siteBase+"/profile/9/", strings.Repeat("щ", 700), base.Add(4*time.Hour))
 
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestBuildQuotes(t *testing.T) {
 	}
 }
 
-func TestBuildRecordAllTime(t *testing.T) {
+func TestBuildRecordWithinHorizon(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	w := testWindow()
@@ -127,12 +127,12 @@ func TestBuildRecordAllTime(t *testing.T) {
 	for i := int64(0); i < 12; i++ {
 		addComment(t, st, 300+i, "R", siteBase+"/profile/1/", "к", base.Add(time.Duration(i)*4*time.Minute))
 	}
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasRecord(is, "самый длинный тред за всю историю") {
-		t.Errorf("нет рекорда всей истории: %+v", is.Records)
+	if !hasRecord(is, "самый длинный тред за год") {
+		t.Errorf("нет рекорда горизонта: %+v", is.Records)
 	}
 	// Все 12 реплик уложились в час — заодно рекорд пик-часа.
 	if !hasRecord(is, "за час — рекорд") {
@@ -154,7 +154,7 @@ func TestBuildRecordSinceMonth(t *testing.T) {
 	for i := int64(0); i < 12; i++ {
 		addComment(t, st, 500+i, "T", siteBase+"/profile/3/", "к", w.Start.Add(24*time.Hour).Add(time.Duration(i)*time.Hour))
 	}
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestBuildRecordSkippedWhenBiggerRecent(t *testing.T) {
 	for i := int64(0); i < 12; i++ {
 		addComment(t, st, 500+i, "T", siteBase+"/profile/3/", "к", w.Start.Add(24*time.Hour).Add(time.Duration(i)*time.Hour))
 	}
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestBuildPersons(t *testing.T) {
 	addComment(t, st, 5, "n42", siteBase+"/profile/88/", "было", w.Start.Add(-5*24*time.Hour))
 	addComment(t, st, 6, "n42", siteBase+"/profile/88/", "есть", base.Add(2*time.Hour))
 
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestBuildStillAlive(t *testing.T) {
 	addNote(t, st, "L2", "3", w.Start.Add(time.Hour), store.StatusPosted, w.End.Add(-3*24*time.Hour))
 	addNote(t, st, "L3", "4", w.Start.Add(time.Hour), store.StatusArchived, w.End.Add(-time.Hour))
 
-	is, err := Build(ctx, st, w, siteBase)
+	is, err := Build(ctx, NewStoreSource(st, siteBase), w)
 	if err != nil {
 		t.Fatal(err)
 	}

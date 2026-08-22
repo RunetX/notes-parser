@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"lovegw/internal/chantext"
-	"lovegw/internal/store"
 )
 
 // Плейсхолдеры LLM-рубрик.
@@ -252,13 +251,13 @@ func durText(d time.Duration) string {
 }
 
 // noteMarker — messenger-agnostic ссылка на тред заметки.
-func noteMarker(n store.Note) string {
+func noteMarker(n Note) string {
 	return "{note:" + n.ID + "|" + noteExcerpt(n, 60) + "}"
 }
 
 // noteExcerpt — «первые руны заметки…» для текста ссылки: схлопнутые пробелы,
 // без символов разметки маркера, HTML экранирован.
-func noteExcerpt(n store.Note, maxRunes int) string {
+func noteExcerpt(n Note, maxRunes int) string {
 	text := strings.Map(func(c rune) rune {
 		if c == '{' || c == '}' || c == '|' {
 			return -1

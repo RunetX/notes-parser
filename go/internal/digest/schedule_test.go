@@ -41,9 +41,10 @@ func quietLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func scheduleCfg(t *testing.T, notify func(context.Context, string)) ScheduleConfig {
+func scheduleCfg(t *testing.T, st *store.Store, notify func(context.Context, string)) ScheduleConfig {
 	t.Helper()
 	return ScheduleConfig{
+		Data:     NewStoreSource(st, siteBase),
 		Loc:      nsk,
 		Weekday:  time.Friday,
 		Hour:     19,
@@ -58,7 +59,7 @@ func TestProcessSlotDraftsOnceAndNotifies(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	var notes []string
-	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg := scheduleCfg(t, st, func(_ context.Context, text string) { notes = append(notes, text) })
 	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk) // полчаса после слота W31
 
 	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
@@ -91,7 +92,7 @@ func TestProcessSlotSkipsPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	cfg := scheduleCfg(t, func(context.Context, string) { called = true })
+	cfg := scheduleCfg(t, st, func(context.Context, string) { called = true })
 	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk)
 
 	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
@@ -109,7 +110,7 @@ func TestProcessSlotAutoPublishWithLLM(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	var notes []string
-	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg := scheduleCfg(t, st, func(_ context.Context, text string) { notes = append(notes, text) })
 	cfg.LLM = &fakeGen{resp: map[string]string{
 		"week_summary": "Неделя была тихой.", "dispute_note_id": "",
 		"dispute": "", "quote": "", "topics": "",
@@ -144,7 +145,7 @@ func TestProcessSlotLLMFailureFallsBackToManual(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	var notes []string
-	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg := scheduleCfg(t, st, func(_ context.Context, text string) { notes = append(notes, text) })
 	cfg.LLM = &fakeGen{err: errors.New("api недоступен")}
 	pub := &fakePub{name: "tg"}
 	cfg.AutoPublish = true
@@ -174,7 +175,7 @@ func TestProcessSlotAutoPublishDryWithoutLLM(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	var notes []string
-	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg := scheduleCfg(t, st, func(_ context.Context, text string) { notes = append(notes, text) })
 	pub := &fakePub{name: "max"}
 	cfg.AutoPublish = true
 	cfg.Publishers = []Publisher{pub}
@@ -195,7 +196,7 @@ func TestProcessSlotSkipsStale(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	called := false
-	cfg := scheduleCfg(t, func(context.Context, string) { called = true })
+	cfg := scheduleCfg(t, st, func(context.Context, string) { called = true })
 	// Вторник: последний слот (пятница W31) старше 48 часов.
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, nsk)
 
@@ -217,7 +218,7 @@ func TestProcessSlotAutoPublishToPlatform(t *testing.T) {
 	ctx := context.Background()
 	st := openStore(t)
 	var notes []string
-	cfg := scheduleCfg(t, func(_ context.Context, text string) { notes = append(notes, text) })
+	cfg := scheduleCfg(t, st, func(_ context.Context, text string) { notes = append(notes, text) })
 	cfg.LLM = &fakeGen{resp: map[string]string{
 		"week_summary": "Неделя была тихой.", "dispute_note_id": "",
 		"dispute": "", "quote": "", "topics": "",

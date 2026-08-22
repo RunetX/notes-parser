@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"lovegw/internal/store"
 )
 
 // sampleIssue — выпуск со всеми рубриками, без БД.
@@ -13,13 +11,13 @@ func sampleIssue() *Issue {
 	w := testWindow()
 	base := w.Start.Add(24 * time.Hour)
 	top := NoteStat{
-		Note: store.Note{ID: "312696", AuthorID: "9", AuthorName: "Граф",
+		Note: Note{ID: "312696", Author: "u9", AuthorName: "Граф",
 			Text: "Почему все мужчины <такие> и {что} с этим делать"},
 		Comments: 87, Commenters: 19,
 		FirstAt: base, LastAt: base.Add(4 * 24 * time.Hour), PeakHourN: 21,
 	}
 	dispute := NoteStat{
-		Note:     store.Note{ID: "555", AuthorID: "10", AuthorName: "Барон", Text: "Спорная заметка"},
+		Note:     Note{ID: "555", Author: "u10", AuthorName: "Барон", Text: "Спорная заметка"},
 		Comments: 34, Commenters: 12, FirstAt: base, LastAt: base.Add(5 * time.Hour), PeakHourN: 9,
 	}
 	return &Issue{
@@ -28,7 +26,7 @@ func sampleIssue() *Issue {
 		TopNote:  &top,
 		Disputes: []NoteStat{dispute},
 		Quotes: []Quote{{
-			Comment: store.Comment{ID: 1, NoteID: "555", AuthorName: "Некто",
+			Comment: Comment{ID: 1, NoteID: "555", AuthorName: "Некто",
 				Text: strings.Repeat("яркая мысль ", 10)},
 			RepliesAfter: 3,
 		}},
@@ -41,12 +39,12 @@ func sampleIssue() *Issue {
 			{Text: "21 комментарий за час — рекорд за всю историю наблюдений.", NoteID: "777"},
 		},
 		StillAlive: []NoteStat{{
-			Note:     store.Note{ID: "888", AuthorName: "Кто-то", Text: "Живая заметка"},
+			Note:     Note{ID: "888", AuthorName: "Кто-то", Text: "Живая заметка"},
 			Comments: 5,
 		}},
 		ThisWeekNotes: []NoteBrief{{Note: top.Note, Comments: 87}},
 		PrevWeekNotes: []NoteBrief{{Note: dispute.Note, Comments: 3}},
-		CommentsByNote: map[string][]store.Comment{
+		CommentsByNote: map[string][]Comment{
 			"555": {{ID: 2, NoteID: "555", AuthorName: "Некто", Text: "реплика спора"}},
 		},
 	}

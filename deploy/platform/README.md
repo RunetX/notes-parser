@@ -207,6 +207,36 @@ docker compose run --rm --entrypoint /lovegw platform platform -config /config.j
 алерт. Недоступный на старте Postgres — наоборот, отказ: это чинится
 рестарт-политикой, а забытая миграция нет.
 
+
+**Когда миграция приезжает ВМЕСТЕ с образом** (так вышло у схемы 0011 —
+индексы под метрики дайджеста), порядок «сначала миграция, потом кнопка» упирается
+в курицу и яйцо: миграцию накатывает бинарник, а в боевом образе её ещё нет, и
+нажатая кнопка сама себя откатит — морда откажется стартовать на старой схеме,
+healthz не ответит, деплой вернёт `lovegw:prev`. Выход — тот же разовый бинарник,
+что и для администраторских команд (см. «Разовая команда новым бинарником»):
+
+```sh
+# рабочая машина, из каталога go/
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/lovegw-linux ./cmd/lovegw
+gzip -9 -c /tmp/lovegw-linux | ssh <хост> \
+  "gunzip -c > /root/platform/lovegw.migrate && chmod +x /root/platform/lovegw.migrate"
+
+# хост: накатить схему, НЕ трогая работающие контейнеры
+cd /root/platform && set -a && . ./secrets.env && set +a && \
+docker run --rm --network platform_default --user 65532:65532 \
+  -e LOVEGW_PLATFORM_DSN \
+  -v /root/platform/config.json:/config.json:ro \
+  -v /root/platform/lovegw.migrate:/lovegw.oneoff:ro \
+  --entrypoint /lovegw.oneoff lovegw:latest platform -config /config.json migrate
+
+rm -f /root/platform/lovegw.migrate
+```
+
+И только потом кнопка. У 0011 есть отдельная цена, о которой стоит знать
+заранее: `CREATE INDEX` на 10,7 млн строк идёт минуты и всё это время держит на
+`comments` блокировку, при которой **запись ждёт** (чтение — нет). То есть приём
+зеркала на эти минуты встанет и нагонит сам, а страницы всё это время живы.
+
 ## Наполнение: сверка и бэкфилл
 
 Площадка наполняется двумя ногами: живым приёмником внутри демона (третий
