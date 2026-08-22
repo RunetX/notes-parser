@@ -24,6 +24,7 @@ import (
 	"lovegw/internal/config"
 	"lovegw/internal/digest"
 	"lovegw/internal/maxx"
+	"lovegw/internal/platdigest"
 	"lovegw/internal/platform"
 	"lovegw/internal/store"
 	"lovegw/internal/tgx"
@@ -140,7 +141,13 @@ func digestDraft(ctx context.Context, cfg *config.Config, st *store.Store, w dig
 				digest.DraftPath(o.out, w.ID))
 		}
 	}
-	is, err := digest.Build(ctx, st, w, cfg.Site.BaseURL)
+	src, closeSrc, err := digestSource(ctx, cfg, st)
+	if err != nil {
+		return err
+	}
+	defer closeSrc()
+
+	is, err := digest.Build(ctx, src, w)
 	if err != nil {
 		return err
 	}
@@ -433,4 +440,22 @@ func digestAuthorID(cfg *config.Config) (int64, error) {
 		return 0, fmt.Errorf("подписант выпуска %q: не число", raw)
 	}
 	return id, nil
+}
+
+// digestSource — по чему считать выпуск. С площадкой — по ней: сводку
+// публикуют там, значит и считать её надо по тому, что человек видит вокруг
+// выпуска, а написанное на площадке в SQLite не попадает вовсе. Без площадки
+// остаётся зеркало НГС, по которому дайджест жил с самого начала.
+//
+// Возвращает закрывалку пула: команда разовая, и держать соединения после неё
+// незачем.
+func digestSource(ctx context.Context, cfg *config.Config, st *store.Store) (digest.Source, func(), error) {
+	if !cfg.Platform.Enabled {
+		return digest.NewStoreSource(st, cfg.Site.BaseURL), func() {}, nil
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return nil, nil, err
+	}
+	return platdigest.New(p, cfg.Site.BaseURL), p.Close, nil
 }

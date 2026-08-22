@@ -49,6 +49,7 @@ import (
 	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
 	"lovegw/internal/news"
+	"lovegw/internal/platdigest"
 	"lovegw/internal/platform"
 	"lovegw/internal/platmod"
 	"lovegw/internal/platout"
@@ -823,6 +824,14 @@ func (d *daemon) setupDigest() error {
 		SiteBase:    cfg.Site.BaseURL,
 		Notify:      fanOutAlerts(d.alerters),
 		AutoPublish: cfg.Digest.AutoPublish,
+	}
+	// По чему считать выпуск. С площадкой — по ней: сводку публикуют там, и
+	// считаться она обязана по тому, что человек видит вокруг выпуска, — а
+	// написанное на площадке в SQLite не попадает вовсе. Без площадки остаётся
+	// зеркало НГС, по которому дайджест жил с самого начала.
+	dcfg.Data = digest.NewStoreSource(d.st, cfg.Site.BaseURL)
+	if d.plat != nil {
+		dcfg.Data = platdigest.New(d.plat, cfg.Site.BaseURL)
 	}
 	// Куда выходит выпуск. С площадкой — заметкой ЗДЕСЬ, а в Telegram и MAX её
 	// несёт исходящий обход, как всякую написанную здесь: один текст, один

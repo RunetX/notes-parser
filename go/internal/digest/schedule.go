@@ -22,6 +22,10 @@ import (
 
 // ScheduleConfig — параметры планировщика выпусков.
 type ScheduleConfig struct {
+	// Data — по чему считается выпуск: зеркало НГС или площадка. С 22.08.2026
+	// это разные базы, и выбирает вызывающий: сводку публикуют на площадке,
+	// значит и считать её надо по тому, что человек видит вокруг выпуска.
+	Data     Source
 	Loc      *time.Location
 	Weekday  time.Weekday
 	Hour     int
@@ -155,7 +159,7 @@ func processSlot(ctx context.Context, st *store.Store, cfg ScheduleConfig, now t
 		return nil
 	}
 
-	is, err := Build(ctx, st, w, cfg.SiteBase)
+	is, err := Build(ctx, cfg.Data, w)
 	if err != nil {
 		return fmt.Errorf("выпуск %s: %w", w.ID, err)
 	}

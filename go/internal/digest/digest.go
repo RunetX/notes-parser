@@ -18,8 +18,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"lovegw/internal/store"
 )
 
 // Пороги и константы рубрик. Значения — редакционные эвристики.
@@ -48,7 +46,7 @@ type Stats struct {
 
 // NoteStat — обсуждение одной заметки в границах окна.
 type NoteStat struct {
-	Note       store.Note
+	Note       Note
 	Comments   int
 	Commenters int       // уникальных author_link (безанкетные не считаются)
 	FirstAt    time.Time // первый и последний комментарий окна
@@ -61,7 +59,7 @@ type NoteStat struct {
 
 // Quote — кандидат «цитаты недели».
 type Quote struct {
-	Comment      store.Comment
+	Comment      Comment
 	RepliesAfter int // комментариев других авторов в треде за quoteReplyWindow после
 }
 
@@ -82,7 +80,7 @@ type Record struct {
 
 // NoteBrief — строка списка заметок недели (материалы «тем недели»).
 type NoteBrief struct {
-	Note     store.Note
+	Note     Note
 	Comments int // комментариев за окно своей недели
 }
 
@@ -104,17 +102,17 @@ type Issue struct {
 	ThisWeekNotes []NoteBrief // материалы «тем недели»
 	PrevWeekNotes []NoteBrief
 
-	CommentsByNote map[string][]store.Comment // комментарии окна по заметкам (для материалов LLM)
+	CommentsByNote map[string][]Comment // комментарии окна по заметкам (для материалов LLM)
 
 	// Editorial — тексты LLM-рубрик (GenerateEditorial); nil — черновик
 	// пишется с плейсхолдерами под полуручной цикл.
 	Editorial *Editorial
 }
 
-// Build считает выпуск по живой БД. siteBase — базовый URL сайта для ссылок
-// на анкеты авторов заметок.
-func Build(ctx context.Context, st *store.Store, w Window, siteBase string) (*Issue, error) {
-	comments, err := st.CommentsBetween(ctx, w.Start, w.End)
+// Build считает выпуск по источнику: зеркалу НГС (SQLite) или площадке
+// (Postgres). Что именно спрашивается у базы — в Source.
+func Build(ctx context.Context, src Source, w Window) (*Issue, error) {
+	comments, err := src.CommentsBetween(ctx, w.Start, w.End)
 	if err != nil {
 		return nil, fmt.Errorf("комментарии окна: %w", err)
 	}
@@ -123,7 +121,7 @@ func Build(ctx context.Context, st *store.Store, w Window, siteBase string) (*Is
 	for id := range byNote {
 		noteIDs = append(noteIDs, id)
 	}
-	heads, err := st.NotesByIDs(ctx, noteIDs)
+	heads, err := src.NotesByIDs(ctx, noteIDs)
 	if err != nil {
 		return nil, fmt.Errorf("шапки заметок: %w", err)
 	}
@@ -135,16 +133,16 @@ func Build(ctx context.Context, st *store.Store, w Window, siteBase string) (*Is
 	is.Disputes = pickDisputes(stats, is.TopNote)
 	is.Quotes = pickQuotes(byNote)
 
-	if err := fillPersons(ctx, st, is, siteBase); err != nil {
+	if err := fillPersons(ctx, src, is); err != nil {
 		return nil, err
 	}
-	if err := fillRecords(ctx, st, is, comments); err != nil {
+	if err := fillRecords(ctx, src, is, comments); err != nil {
 		return nil, err
 	}
-	if err := fillStillAlive(ctx, st, is, stats); err != nil {
+	if err := fillStillAlive(ctx, src, is, stats); err != nil {
 		return nil, err
 	}
-	if err := fillWeekNotes(ctx, st, is); err != nil {
+	if err := fillWeekNotes(ctx, src, is); err != nil {
 		return nil, err
 	}
 
@@ -156,8 +154,8 @@ func Build(ctx context.Context, st *store.Store, w Window, siteBase string) (*Is
 	return is, nil
 }
 
-func fillStillAlive(ctx context.Context, st *store.Store, is *Issue, stats []NoteStat) error {
-	alive, err := st.ActiveNotesSince(ctx, is.Window.End.Add(-stillAliveWindow))
+func fillStillAlive(ctx context.Context, src Source, is *Issue, stats []NoteStat) error {
+	alive, err := src.ActiveNotesSince(ctx, is.Window.End.Add(-stillAliveWindow))
 	if err != nil {
 		return fmt.Errorf("живые заметки: %w", err)
 	}
@@ -181,9 +179,9 @@ func fillStillAlive(ctx context.Context, st *store.Store, is *Issue, stats []Not
 	return nil
 }
 
-func fillWeekNotes(ctx context.Context, st *store.Store, is *Issue) error {
+func fillWeekNotes(ctx context.Context, src Source, is *Issue) error {
 	w := is.Window
-	this, err := st.NotesSeenBetween(ctx, w.Start, w.End)
+	this, err := src.NotesPublishedBetween(ctx, w.Start, w.End)
 	if err != nil {
 		return fmt.Errorf("заметки окна: %w", err)
 	}
@@ -193,11 +191,11 @@ func fillWeekNotes(ctx context.Context, st *store.Store, is *Issue) error {
 	}
 
 	prevStart := w.Start.AddDate(0, 0, -7)
-	prev, err := st.NotesSeenBetween(ctx, prevStart, w.Start)
+	prev, err := src.NotesPublishedBetween(ctx, prevStart, w.Start)
 	if err != nil {
 		return fmt.Errorf("заметки прошлой недели: %w", err)
 	}
-	prevComments, err := st.CommentsBetween(ctx, prevStart, w.Start)
+	prevComments, err := src.CommentsBetween(ctx, prevStart, w.Start)
 	if err != nil {
 		return fmt.Errorf("комментарии прошлой недели: %w", err)
 	}
