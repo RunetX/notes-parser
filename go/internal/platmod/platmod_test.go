@@ -151,7 +151,9 @@ func TestГаситьМожноТолькоСписок(t *testing.T) {
 	for _, cat := range platform.AutoCategories() {
 		rec := decide(answerItem{Category: cat, Certain: true, Quote: "цитата"})
 		want := platform.VerdictReview
-		if platform.AutoHideable(cat) {
+		// Мат — единственное исключение, и оно в СТРОГУЮ сторону: гасит его код
+		// по словарю корней, а мнение модели о брани зовёт человека (см. decide).
+		if platform.AutoHideable(cat) && cat != platform.CatProfanity {
 			want = platform.VerdictHidden
 		}
 		if rec.Verdict != want {
@@ -160,6 +162,34 @@ func TestГаситьМожноТолькоСписок(t *testing.T) {
 	}
 	if platform.AutoHideable(platform.CatOther) {
 		t.Fatal("«на усмотрение модератора» не должно гаситься автоматом")
+	}
+}
+
+// Мат гасит КОД, а мнение модели о брани зовёт человека. Разница не в тяжести,
+// а в доказуемости: словарь корней воспроизводим и цитируется, «мне кажется,
+// это брань» — нет. Прогон по живой очереди: из восьми «нецензурных» модели
+// настоящим матом было одно.
+func TestМатГаситСловарь_АМнениеМоделиЗовётЧеловека(t *testing.T) {
+	st := newFakeStore(comment(1, 7, "Нахуя банить за флуд"), comment(2, 7, "хрен вас разберешь"))
+	gen := &fakeGen{reply: answerJSON(
+		answerItem{N: 1, Category: catClean},
+		answerItem{N: 2, Category: platform.CatProfanity, Certain: true, Quote: "хрен"},
+	)}
+	s := New(Config{}, st, gen, quiet())
+
+	if err := s.checkBatch(context.Background()); err != nil {
+		t.Fatalf("такт: %v", err)
+	}
+	мат := st.verdicts[platform.CommentSubject(1)]
+	if мат.Verdict != platform.VerdictHidden || мат.Category != platform.CatProfanity {
+		t.Fatalf("настоящий мат: вердикт %d категория %q", мат.Verdict, мат.Category)
+	}
+	if мат.Quote == "" {
+		t.Error("скрытие без цитаты: автору нечего показать")
+	}
+	грубость := st.verdicts[platform.CommentSubject(2)]
+	if грубость.Verdict != platform.VerdictReview {
+		t.Fatalf("грубость скрыта автоматом: вердикт %d", грубость.Verdict)
 	}
 }
 
