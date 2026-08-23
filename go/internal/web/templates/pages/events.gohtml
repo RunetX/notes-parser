@@ -6,7 +6,7 @@
      что меняет состояние, обязано работать без JS. Граница upto — самый свежий
      повод ЭТОЙ страницы, а не «всё вообще»: гасить то, до чего человек не
      долистал, кнопка не должна. */}}
-{{if .Unread}}
+{{if .Markable}}
 <form class="readall" method="post" action="/events/read">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="back" value="{{.Back}}">
