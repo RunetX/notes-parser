@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"lovegw/internal/love"
 )
 
 // Мессенджеры-приёмники.
@@ -235,31 +237,38 @@ func (s *Store) refBy(ctx context.Context, col, messenger, kind, value string) (
 // message_targets — комментарий без сообщения в этом мессенджере (запощен до
 // его включения) адресатом всё равно быть не может.
 func (s *Store) AddresseeMessage(ctx context.Context, messenger, noteID string,
-	beforeID int64, nick string) (string, error) {
+	beforeID int64, nick, replier string) (string, error) {
 	if nick == "" {
 		return "", nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.author_name, t.message_id
+		SELECT c.author_name, c.text, t.message_id
 		FROM comments c
 		JOIN message_targets t
 			ON t.messenger = ? AND t.kind = ? AND t.ref_id = CAST(c.id AS TEXT)
 		WHERE c.note_id = ? AND c.id < ? AND t.message_id IS NOT NULL
-		ORDER BY c.id DESC`, messenger, TargetComment, noteID, beforeID)
+		ORDER BY c.id`, messenger, TargetComment, noteID, beforeID)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
+	// Правило выбора — общее с приёмником площадки и живёт в love (Addressees):
+	// «последняя реплика адресата, обращённая к самому отвечающему, иначе просто
+	// последняя». Порядок обхода тут по ВОЗРАСТАНИЮ id, потому что память треда
+	// набирается так же, как он читается.
+	book := love.NewAddressees[string]()
 	for rows.Next() {
-		var name, msgID string
-		if err := rows.Scan(&name, &msgID); err != nil {
+		var name, text, msgID string
+		if err := rows.Scan(&name, &text, &msgID); err != nil {
 			return "", err
 		}
-		if strings.ToLower(name) == nick {
-			return msgID, nil
-		}
+		book.Add(msgID, name, text)
 	}
-	return "", rows.Err()
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	msgID, _ := book.Resolve(nick, replier)
+	return msgID, nil
 }
 
 // UnsentCommentsFor возвращает комментарии заметки, ещё не отправленные в

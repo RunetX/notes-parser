@@ -873,12 +873,17 @@ func (m *Mirror) sendUnsent(ctx context.Context, n store.Note, fresh int) {
 // love.AddressPrefix), ник ищется среди уже отзеркаленных комментаторов этой
 // заметки. Пусто — обращения нет, автор не комментировал (адресуются и автору
 // самой заметки) или ник не разошёлся: комментарий уйдёт на корень треда.
+//
+// Автор реплики передаётся не для порядка: у говорливого адресата реплик в
+// заметке много, и выбирается из них та, что обращена к самому отвечающему
+// (love.Addressees). Без этого ответ уезжал в чужую ветку — ту, где адресат
+// высказался последним.
 func (m *Mirror) addresseeMessage(ctx context.Context, sink Sink, n store.Note, c store.Comment) string {
 	nick := love.AddressPrefix(c.Text)
 	if nick == "" {
 		return ""
 	}
-	msgID, err := m.st.AddresseeMessage(ctx, sink.Name(), n.ID, c.ID, nick)
+	msgID, err := m.st.AddresseeMessage(ctx, sink.Name(), n.ID, c.ID, nick, c.AuthorName)
 	if err != nil {
 		m.log.Error("поиск адресата реплики", "comment", c.ID, "sink", sink.Name(), "err", err)
 		return ""

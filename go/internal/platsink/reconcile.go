@@ -23,7 +23,6 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"lovegw/internal/love"
@@ -246,8 +245,9 @@ func (r *Reconciler) syncComments(ctx context.Context, st *Stats) error {
 //
 // Адресата считаем сами, а не берём у зеркала: message_targets знает лишь то,
 // что УЖЕ ушло в этот приёмник, а сверке нужна вся заметка целиком (и на
-// бэкфилле там нет ни одной строки). Правило то же самое — «последний, кто
-// писал в этой заметке под этим ником», — поэтому живой приём и сверка сходятся
+// бэкфилле там нет ни одной строки). Правило при этом ОДНО на всех
+// (love.Addressees): «последняя реплика адресата, обращённая к самому
+// отвечающему, иначе просто последняя», — поэтому живой приём и сверка сходятся
 // на одном ответе, а кто из них успел первым, неважно: приём идемпотентен.
 //
 // Обход строго по возрастанию id: адресат всегда старше ответа, значит к моменту
@@ -261,14 +261,12 @@ func (r *Reconciler) syncNoteComments(ctx context.Context, noteID string, id int
 	if err != nil {
 		return 0, err
 	}
-	var (
-		seen = make(map[string]int64, len(comments)) // ник → последняя его реплика
-		n    int
-	)
+	book := love.NewAddressees[int64]()
+	var n int
 	for _, c := range comments {
 		var replyTo int64
 		if nick := love.AddressPrefix(c.Text); nick != "" {
-			replyTo = seen[nick]
+			replyTo, _ = book.Resolve(nick, c.AuthorName)
 		}
 		if !have[c.ID] {
 			if _, err := r.p.IngestComment(ctx, commentFrom(id, c, replyTo)); err != nil {
@@ -276,7 +274,7 @@ func (r *Reconciler) syncNoteComments(ctx context.Context, noteID string, id int
 			}
 			n++
 		}
-		seen[strings.ToLower(c.AuthorName)] = c.ID
+		book.Add(c.ID, c.AuthorName, c.Text)
 	}
 	return n, nil
 }

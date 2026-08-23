@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -114,19 +115,20 @@ func TestAddresseeMessage(t *testing.T) {
 	cases := []struct {
 		name     string
 		nick     string
+		replier  string
 		beforeID int64
 		want     string
 	}{
-		{"последняя реплика адресата", "ягода", 10, "103"},
-		{"более ранняя реплика", "ягода", 3, "101"},
-		{"регистр кириллицы", "пётр", 10, "102"},
-		{"адресат ещё не отзеркален", "гость", 10, ""},
-		{"ник не встречался", "хатуль", 10, ""},
-		{"обращения нет", "", 10, ""},
-		{"сам себе не адресат", "ягода", 1, ""},
+		{"последняя реплика адресата", "ягода", "Некто", 10, "103"},
+		{"более ранняя реплика", "ягода", "Некто", 3, "101"},
+		{"регистр кириллицы", "пётр", "Некто", 10, "102"},
+		{"адресат ещё не отзеркален", "гость", "Некто", 10, ""},
+		{"ник не встречался", "хатуль", "Некто", 10, ""},
+		{"обращения нет", "", "Некто", 10, ""},
+		{"сам себе не адресат", "ягода", "Некто", 1, ""},
 	}
 	for _, c := range cases {
-		got, err := st.AddresseeMessage(ctx, MessengerTelegram, "n1", c.beforeID, c.nick)
+		got, err := st.AddresseeMessage(ctx, MessengerTelegram, "n1", c.beforeID, c.nick, c.replier)
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -136,8 +138,50 @@ func TestAddresseeMessage(t *testing.T) {
 	}
 
 	// Цели у каждого мессенджера свои: в MAX те же комментарии не отправлены.
-	if got, err := st.AddresseeMessage(ctx, MessengerMax, "n1", 10, "ягода"); err != nil || got != "" {
+	if got, err := st.AddresseeMessage(ctx, MessengerMax, "n1", 10, "ягода", "Некто"); err != nil || got != "" {
 		t.Errorf("адресат из чужого мессенджера: %q %v", got, err)
+	}
+}
+
+// Ответ уходит той реплике адресата, что обращена К САМОМУ отвечающему, а не
+// просто последней. Жалоба владельца 23.08.2026: Хатуль ответил Т 72Б в одной
+// ветке, следом Лилит — в другой, и ответ Т 72Б «Хатуль мадан, …» уехал в ветку
+// Лилит, где Т 72Б не было вовсе.
+func TestAddresseeMessagePrefersWhoAnsweredYou(t *testing.T) {
+	ctx := context.Background()
+	st := openTest(t)
+	if _, err := st.InsertNote(ctx, Note{ID: "n1", Text: "т", Status: StatusPosted, FirstSeenAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	comments := []Comment{
+		{ID: 1, NoteID: "n1", AuthorName: "Т 72Б", Text: "чтобы уверенно планировать свидания"},
+		{ID: 2, NoteID: "n1", AuthorName: "Хатуль мадан", Text: "Есть у меня один знакомец"},
+		{ID: 3, NoteID: "n1", AuthorName: "Хатуль мадан", Text: "Т 72Б, а хоть одна на второе свидание согласилась?"},
+		{ID: 4, NoteID: "n1", AuthorName: "Лилит", Text: "мне с машиной Вайлдбэррис"},
+		{ID: 5, NoteID: "n1", AuthorName: "Хатуль мадан", Text: "Лилит, с газель-будкой что ли?"},
+	}
+	for _, c := range comments {
+		c.CreatedAt = time.Now()
+		if _, err := st.InsertComment(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetTarget(ctx, MessengerTelegram, TargetComment,
+			strconv.FormatInt(c.ID, 10), "m"+strconv.FormatInt(c.ID, 10), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Т 72Б отвечает Хатулю: его реплика к Т 72Б (3), а не последняя (5).
+	if got, err := st.AddresseeMessage(ctx, MessengerTelegram, "n1", 6, "хатуль мадан", "Т 72Б"); err != nil || got != "m3" {
+		t.Errorf("ответ Т 72Б уехал к %q (ожидалось m3), err=%v", got, err)
+	}
+	// Лилит отвечает тому же Хатулю — и попадает в свою ветку.
+	if got, err := st.AddresseeMessage(ctx, MessengerTelegram, "n1", 6, "хатуль мадан", "Лилит"); err != nil || got != "m5" {
+		t.Errorf("ответ Лилит уехал к %q (ожидалось m5), err=%v", got, err)
+	}
+	// Третий вступает в разговор, к нему никто не обращался: последняя реплика.
+	if got, err := st.AddresseeMessage(ctx, MessengerTelegram, "n1", 6, "хатуль мадан", "Прохожий"); err != nil || got != "m5" {
+		t.Errorf("вступивший в разговор уехал к %q (ожидалось m5), err=%v", got, err)
 	}
 }
 

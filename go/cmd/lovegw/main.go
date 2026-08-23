@@ -735,6 +735,18 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	rec := platsink.NewReconciler(d.st, p, log)
 	d.starts = append(d.starts, rec.Run)
 
+	// Настоящее дерево ответов у ЖИВЫХ тредов. Зеркало адресата УГАДЫВАЕТ по
+	// обращению «Ник, …» (love.Addressees), и ошибается заметно: 23.08.2026
+	// ответ уехал в чужую ветку, потому что адресат последний раз высказался
+	// там. Ребро отдаёт мобильная страница, и служба ходит за ним по свежим
+	// заметкам; историю по-прежнему добирает админ командой reply-scan —
+	// это тысячи запросов, и когда их тратить, решать не демону.
+	//
+	// Клиент сайта ОБЩИЙ с зеркалом: у него один лимитер, и обход честно ждёт
+	// своей очереди за зеркалированием, а не соревнуется с ним за полосу.
+	scan := platsink.NewReplyScanner(p, d.client, log)
+	d.starts = append(d.starts, scan.Run)
+
 	// Обратное направление: написанное на площадке уходит в каналы. Оно нужно
 	// именно теперь — с 17.08.2026 НГС не принимает комментарии, и площадка
 	// стала единственным местом, где разговор продолжается. Без этого обхода
@@ -753,7 +765,8 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	d.setupBus(p)
 
 	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
-		"reconcile", platsink.Interval, "outbound", platout.Interval,
+		"reconcile", platsink.Interval, "дерево_живых", platsink.ScanInterval,
+		"outbound", platout.Interval,
 		"outbound_sinks", len(msgSinks), "мост_в_площадку", len(d.cores))
 	return nil
 }
