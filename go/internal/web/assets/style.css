@@ -245,13 +245,45 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--rule); border-radius: 3px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
 }
-.acctmenu a, .acctmenu button {
+/* :not(.tbtn) — не придирка. Пункт меню занимает всю ширину и несёт
+   разделитель сверху; кнопки оформления внутри одного пункта — ряд, и под этим
+   правилом они вытянулись бы в четыре полосы с четырьмя линиями, а hover пункта
+   стёр бы подсветку выбранной темы. Исключение стоит здесь, чтобы весь набор
+   правил про .tbtn остался прежним и общим. */
+.acctmenu a, .acctmenu button:not(.tbtn) {
   display: block; width: 100%; text-align: left; font: inherit;
   padding: 12px 18px; color: var(--ink); background: none;
   border: 0; border-top: 1px solid var(--rule); cursor: pointer;
 }
 .acctmenu > :first-child, .acctmenu > form:first-child button { border-top: 0; }
-.acctmenu a:hover, .acctmenu button:hover { background: var(--btn); text-decoration: none; }
+.acctmenu a:hover, .acctmenu button:not(.tbtn):hover { background: var(--btn); text-decoration: none; }
+
+/* Оформление — пункт меню участника, а не подвал (решение владельца
+   23.08.2026): тема это настройка «про меня». Ряд кнопок — ОДИН пункт, поэтому
+   разделитель ставится блоку, а не каждой кнопке; две колонки, потому что
+   четыре имени в строку не встают в ширину выпадашки. */
+.themes {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+  padding: 10px 18px 12px; border-top: 1px solid var(--rule);
+}
+.themes .lbl { grid-column: 1 / -1; color: var(--meta); font-size: 12px; }
+.tbtn {
+  font: inherit; font-size: 12px; padding: 5px 8px; cursor: pointer; text-align: center;
+  background: var(--btn); color: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
+}
+.tbtn:hover { border-color: var(--meta); }
+/* Подсвечена та тема, которая сейчас на экране. Пока человек не выбирал,
+   её держит система, а сервер prefers-color-scheme не видит — поэтому в
+   этом единственном случае нажатую кнопку называет CSS, а не разметка.
+   Без этого переключатель до первого нажатия показывал бы обе кнопки
+   погашенными — врал бы ровно тем, кто его видит впервые. */
+.tbtn.on,
+:root:not([data-theme]) .tbtn.t-classic { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .tbtn.t-classic { background: var(--btn); border-color: var(--rule); color: var(--ink); }
+  :root:not([data-theme]) .tbtn.t-dark { background: var(--accent); border-color: var(--accent); color: #fff; }
+}
 .enter {
   display: inline-block; font: inherit; font-size: 14px; line-height: 1.45;
   color: var(--nav-ink); background: rgba(255, 255, 255, .18);
@@ -724,6 +756,17 @@ span.rxb { cursor: default; }
 .doc { max-width: 44rem; text-align: left; }
 .doctext h2 { font-size: 17px; font-weight: 700; margin: 22px 0 6px; }
 .doctext p { margin: 8px 0; }
+
+/* Документы отдельными страницами (соглашения, политика, отказ от
+ * ответственности). Та же колонка, что на экране входа, но без «карточки»:
+ * это не шаг, который проходят, а текст, который читают подряд.
+ *
+ * Соглашений на странице ДВА, и каждое остаётся собой — со своим заголовком
+ * первой строки, как в экране входа: сводить их под один заголовок значило бы
+ * показывать вместо двух документов один пересказ. Разделяет их линия. */
+.docpage { max-width: 44rem; margin: 0 auto; }
+.docpage .lead { margin: 0 0 22px; }
+.docsec + .docsec { margin-top: 34px; padding-top: 26px; border-top: 1px solid var(--rule); }
 .agree { margin: 24px 0 8px; }
 .agree button {
   font: inherit; font-size: 16px; padding: 10px 30px; cursor: pointer;
@@ -849,25 +892,13 @@ span.rxb { cursor: default; }
 /* ---------------------------------------------------------------- подвал */
 
 .foot { flex: 0 0 auto; border-top: 1px solid var(--rule); background: var(--card); padding: 12px 0 24px; }
-.fnav { margin: 0 0 8px; font-size: 12px; }
-.themes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.themes .lbl { color: var(--meta); font-size: 12px; margin-right: 4px; }
-.tbtn {
-  font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
-  background: var(--btn); color: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
-}
-/* Подсвечена та тема, которая сейчас на экране. Пока человек не выбирал,
-   её держит система, а сервер prefers-color-scheme не видит — поэтому в
-   этом единственном случае нажатую кнопку называет CSS, а не разметка.
-   Без этого переключатель до первого нажатия показывал бы обе кнопки
-   погашенными — врал бы ровно тем, кто его видит впервые. */
-.tbtn.on,
-:root:not([data-theme]) .tbtn.t-classic { background: var(--accent); border-color: var(--accent); color: #fff; }
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .tbtn.t-classic { background: var(--btn); border-color: var(--rule); color: var(--ink); }
-  :root:not([data-theme]) .tbtn.t-dark { background: var(--accent); border-color: var(--accent); color: #fff; }
-}
+/* Ряд документов. Разделитель между ссылками рисуется не символом в разметке
+   (точку или палку читалка озвучит), а промежутком: на узком экране ряд
+   переносится строкой, и в вертикальном списке разделитель был бы лишним.
+   Цвет ссылок обычный, а не приглушённый «служебный»: мелкий текст цветом
+   --meta на карточке даёт 2,85:1 в палитре НГС, и политику пришлось бы
+   разглядывать. */
+.fnav { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; }
 .fine { color: var(--meta); font-size: 11px; margin: 10px 0 0; }
 
 .sr-only {

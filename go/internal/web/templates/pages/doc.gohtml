@@ -1,0 +1,11 @@
+{{define "content"}}
+{{/* Документ (или два, если это соглашения) во всю страницу. Своего h1 у
+     страницы нет: заголовком служит первая строка самого документа — так же,
+     как на экране входа, где согласие показывается целиком. */}}
+<article class="docpage">
+  {{if .Lead}}<p class="lead">{{.Lead}}</p>{{end}}
+  {{range .Docs}}
+  <section class="docsec"><div class="doctext">{{doc .}}</div></section>
+  {{end}}
+</article>
+{{end}}

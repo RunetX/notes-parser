@@ -79,6 +79,20 @@
              и помнить адрес наизусть модератор не должен. У остальных пункта
              нет вовсе — существование закрытой двери само по себе сведения. */}}
         {{if .Moderator}}<a href="/mod">Модерация</a>{{end}}
+        {{/* Оформление переехало сюда из подвала (решение владельца
+             23.08.2026): тема — настройка «про меня», и место ей там же, где
+             остальное про меня, а не в конце страницы рядом с документами.
+
+             Плата названа честно: у гостя переключателя больше нет вовсе — до
+             входа тему держит системная настройка (prefers-color-scheme), и
+             подсвечивать в этом случае нужную кнопку всё равно было некому,
+             кроме CSS. Форма с POST, а не ссылки: смена темы меняет состояние,
+             а GET-ссылку браузер нажимает сам в префетче. */}}
+        <form class="themes" method="post" action="/theme">
+          <span class="lbl">Оформление</span>
+          <input type="hidden" name="back" value="{{.Back}}">
+          {{$cur := .Theme}}{{range themes}}<button type="submit" name="theme" value="{{.ID}}" class="tbtn t-{{.ID}}{{if eq .ID $cur}} on{{end}}"{{if eq .ID $cur}} aria-current="true"{{end}}>{{.Name}}</button>{{end}}
+        </form>
         <form method="post" action="/logout">
           <input type="hidden" name="back" value="{{.Back}}">
           <button type="submit">Выход</button>
@@ -103,14 +117,17 @@
 
 <footer class="foot">
   <div class="wrap">
-    {{/* Дубль пункта из шапки: подвал — то место, куда упирается взгляд,
-         дочитавший страницу до конца, и правила там ищут по привычке. */}}
-    <p class="fnav"><a href="/help">Справка и правила</a></p>
-    <form class="themes" method="post" action="/theme">
-      <span class="lbl">Оформление</span>
-      <input type="hidden" name="back" value="{{.Back}}">
-      {{$cur := .Theme}}{{range themes}}<button type="submit" name="theme" value="{{.ID}}" class="tbtn t-{{.ID}}{{if eq .ID $cur}} on{{end}}"{{if eq .ID $cur}} aria-current="true"{{end}}>{{.Name}}</button>{{end}}
-    </form>
+    {{/* Подвал держит ДОКУМЕНТЫ, и только их. Справка отсюда убрана: она
+         вкладкой в шапке, то есть видна с любой страницы и сверху, а дубль внизу
+         занимал место, которое нужнее бумагам. Бумаги же ищут именно здесь — по
+         привычке всего остального интернета, и ссылка на них обязана стоять на
+         КАЖДОЙ странице: политику, которую видно только из профиля, читать
+         пойдёт разве что тот, кто уже вошёл. */}}
+    <nav class="fnav">
+      <a href="/consents">Соглашения</a>
+      <a href="/privacy">Политика конфиденциальности</a>
+      <a href="/disclaimer">Отказ от ответственности</a>
+    </nav>
   </div>
 </footer>
 </body>

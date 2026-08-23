@@ -247,6 +247,13 @@ func (s *Server) routes() http.Handler {
 	// Справка открыта всем, включая не вошедших: правила, которые видно только
 	// изнутри, — это не правила, а сюрприз.
 	mux.HandleFunc("GET /help", s.handleHelp)
+	// Бумаги — по той же причине и с добавкой от закона: политику обработки
+	// оператор обязан опубликовать так, чтобы её прочёл ЛЮБОЙ (ч. 2 ст. 18.1),
+	// значит за вход её убирать нельзя. /consents (множественное) — чтение
+	// документов, /consent ниже — шаг входа, где их подписывают.
+	mux.HandleFunc("GET /consents", s.handleConsentDocs)
+	mux.HandleFunc("GET /privacy", s.handlePrivacy)
+	mux.HandleFunc("GET /disclaimer", s.handleDisclaimer)
 	mux.HandleFunc("GET /assets/{name...}", s.handleAsset)
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.HandleFunc("POST /login", s.handleLoginStart)
