@@ -180,7 +180,17 @@ a:hover { text-decoration: underline; }
 
 /* ---------------------------------------------------------------- шапка */
 
-.top { background: var(--nav); position: relative; z-index: 20; }
+/* Шапка ЛИПКАЯ (23.08.2026, просьба владельца: «из треда неудобно мотать наверх
+   к меню, чтобы куда-то перейти»). Тред у нас показывается ЦЕЛИКОМ — 891 реплика
+   на самой длинной заметке зеркала, — и дорога до навигации из его середины
+   измеряется экранами.
+   Липкость ничего не стоит: шапка это одна строка в 44px, своё место в потоке
+   она сохраняет, а `position: sticky` остаётся позиционированным элементом —
+   выпадающее меню участника, привязанное к ней, стоит где стояло. */
+.top { background: var(--nav); position: sticky; top: 0; z-index: 20; }
+/* Якорь под липкой шапкой. Без этого отступа реплика, на которую пришли по
+   ссылке «#», встаёт ПОД шапкой — а именно её человек и шёл читать. */
+.c, .cttl, .notebox, .replyrow { scroll-margin-top: 60px; }
 /* flex-wrap обязателен: без него на узком экране вкладки шапки наезжают на
    название, а «Вход» уезжает за край (жалоба 18.08.2026). */
 .topin { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 44px; padding: 5px 0; }
@@ -304,6 +314,16 @@ a:hover { text-decoration: underline; }
  *
  * Значок стоит и при нуле: элемент, пропадающий с шапки, дёргает вёрстку на
  * каждом переходе. */
+/* Счётчик реплик в шапке — спутник липкости: до заголовка «Комментарии N» из
+   середины треда уже не домотать. Значком с числом, а не словом: ширина строки
+   на телефоне кончается раньше всего, а объяснение живёт в title. */
+.hcount {
+  display: flex; align-items: center; gap: 5px;
+  color: var(--nav-ink); background: rgba(255, 255, 255, .18);
+  padding: 5px 10px; border-radius: 3px; font-size: 13px; font-weight: 700;
+}
+.hcount:hover { color: var(--nav-ink); text-decoration: none; background: rgba(255, 255, 255, .3); }
+
 .bell {
   position: relative; display: flex; align-items: center; margin-left: auto;
   color: var(--nav-ink); background: rgba(255, 255, 255, .18);

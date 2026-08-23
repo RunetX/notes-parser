@@ -85,7 +85,7 @@
 {{/* Замок и отметка НГС «не актуальна» — разные вещи, и на СТРАНИЦЕ их стоит
      различать: здесь человек собирается писать, и ему важно, кто закрыл дверь.
      В ленте они выглядят одинаково — там вопрос другой, «стоит ли заходить». */}}
-<h2 class="cttl">Комментарии <span class="cnt">{{$n.CommentCount}}</span>
+<h2 class="cttl" id="comments">Комментарии <span class="cnt">{{$n.CommentCount}}</span>
 {{- if $n.Locked}} <span class="closed">Обсуждение закрыто модератором</span>
 {{- else if $n.CommentsClosed}} <span class="closed">Комментарии запрещены</span>{{end}}</h2>
 

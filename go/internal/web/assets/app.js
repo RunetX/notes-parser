@@ -451,8 +451,14 @@ smilePanel(document);
   // Число над тредом ставит СЕРВЕР, а не счёт вставленных строк: порция добора
   // ограничена потолком, да и скрытая реплика в неё не попадёт вовсе.
   var setCount = function (n) {
+    if (!n) return;
+    // Число стоит в двух местах сразу: над тредом и в липкой шапке. Оба
+    // подкручиваются на месте — перечитывать страницу ради одной цифры дороже
+    // самой цифры.
     var head = document.querySelector('.cttl .cnt');
-    if (head && n) head.textContent = n;
+    if (head) head.textContent = n;
+    var top = document.querySelector('.hcount .n');
+    if (top) top.textContent = n;
   };
 
   var pull = function () {

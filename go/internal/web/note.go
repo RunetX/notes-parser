@@ -159,6 +159,9 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		ReactOpen: reactTarget(r),
 		PageNum:   1,
 	}
+	// Счётчик в шапку: она липкая, и из середины треда до заголовка
+	// «Комментарии N» уже не домотать.
+	p.Thread = note.CommentCount
 
 	// Граница живого добора берётся ДО чтения реплик и не по показанным строкам:
 	// в линейном виде на странице окно из тридцати самых свежих, и полоса, в него

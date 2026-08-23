@@ -572,3 +572,41 @@ func TestMobileTextIsBiggerAndControlsFitOneLine(t *testing.T) {
 		t.Error("на телефоне служебное под репликой снова занимает три строки")
 	}
 }
+
+// [Э] Шапка ЛИПКАЯ, и в ней стоит счётчик реплик читаемой заметки. Просьба
+// владельца 23.08.2026: «из треда неудобно мотать наверх к меню, чтобы куда-то
+// перейти». Тред показывается целиком — на самой длинной заметке зеркала это 891
+// реплика, — и дорога до навигации из его середины измеряется экранами.
+//
+// Счётчик — спутник липкости, а не украшение: до заголовка «Комментарии N»
+// оттуда же не домотать. Значком с числом, потому что ширина строки на телефоне
+// кончается раньше всего.
+func TestStickyHeaderCarriesCommentCount(t *testing.T) {
+	css := cssText(t)
+	if !strings.Contains(cssRule(t, css, ".top {"), "position: sticky") {
+		t.Error("шапка не липкая: из середины треда до неё не домотать")
+	}
+	// Якорь под липкой шапкой обязан иметь отступ прокрутки, иначе реплика, на
+	// которую пришли по ссылке «#», встаёт ПОД ней.
+	if !strings.Contains(css, "scroll-margin-top") {
+		t.Error("у якорей нет отступа под липкую шапку")
+	}
+
+	note := sampleNote()
+	note.CommentCount = 158
+	st := &fakeStore{note: note, thread: sampleThread(), total: 1, notes: []platform.NoteView{note}}
+	h := openServer(t, st)
+
+	page := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	if !strings.Contains(page, `class="hcount"`) || !strings.Contains(page, `<span class="n">158</span>`) {
+		t.Errorf("в шапке страницы заметки нет счётчика реплик:\n%s", page)
+	}
+	if !strings.Contains(page, `id="comments"`) {
+		t.Error("счётчику некуда вести: у заголовка треда нет якоря")
+	}
+	// В ленте его нет вовсе: там читают не одну заметку, и счётчик показывал бы
+	// число неизвестно чего.
+	if feed := do(h, guest(t, "GET", "/")).Body.String(); strings.Contains(feed, "hcount") {
+		t.Error("счётчик реплик оказался в шапке ленты")
+	}
+}
