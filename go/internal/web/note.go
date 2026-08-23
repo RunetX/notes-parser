@@ -137,7 +137,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		return
 	}
 	p := notePage{
-		page:    s.newPage(r, noteTitle(note.Body)),
+		page:    s.newPage(r, noteTitle(note)),
 		Note:    note,
 		Images:  images,
 		Linear:  linear,

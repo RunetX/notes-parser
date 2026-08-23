@@ -223,3 +223,45 @@ func TestMarkupHelpCoversEveryColor(t *testing.T) {
 		}
 	}
 }
+
+// Заголовок вкладки — плоский текст: показать жирное или картинку он не умеет,
+// поэтому знаки снимаются. Но ровно там, где страница их РАЗБИРАЕТ: у чужого
+// текста после заката сайт печатал скобки буквально, и вкладка обязана
+// совпадать с карточкой, а не улучшать её.
+func TestNoteTitleDropsMarkupWhereThePageParsesIt(t *testing.T) {
+	cases := []struct {
+		name string
+		note platform.NoteView
+		want string
+	}{
+		{
+			"своя заметка: знаки сняты",
+			platform.NoteView{ID: platform.NativeIDBase + 15, Body: "[b]Хотелки[/b] площадки :::popcorn:::",
+				PublishedAt: time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)},
+			"Хотелки площадки",
+		},
+		{
+			"НГС до заката: сайт их рисовал — снимаем",
+			platform.NoteView{ID: 250000, Body: "[b]Объявление[/b] КПН",
+				PublishedAt: time.Date(2013, 5, 1, 0, 0, 0, 0, time.UTC)},
+			"Объявление КПН",
+		},
+		{
+			"НГС после заката: сайт печатал буквально — оставляем",
+			platform.NoteView{ID: 312811, Body: "[b]Объявление[/b] КПН",
+				PublishedAt: time.Date(2020, 5, 1, 0, 0, 0, 0, time.UTC)},
+			"[b]Объявление[/b] КПН",
+		},
+		{
+			"незнакомый код смайла остаётся текстом",
+			platform.NoteView{ID: platform.NativeIDBase + 16, Body: ":::такогонет::: и всё",
+				PublishedAt: time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)},
+			":::такогонет::: и всё",
+		},
+	}
+	for _, c := range cases {
+		if got := noteTitle(c.note); got != c.want {
+			t.Errorf("%s: заголовок %q, ожидался %q", c.name, got, c.want)
+		}
+	}
+}
