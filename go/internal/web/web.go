@@ -223,6 +223,10 @@ func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *
 	// (см. linkMode). Ставится здесь и только читается: сервер в процессе
 	// один, а шаблоны с их FuncMap разбираются один раз на процесс.
 	setOwnLinkPrefix(cfg.BaseURL)
+	// Превью роликов лежат в том же каталоге медиа (video.go, preview.go).
+	// Ставится тут по той же причине и с той же оговоркой: пустой каталог значит
+	// «карточек не бывает», и ссылки остаются текстом.
+	setVideoPreviews(cfg.MediaDir, log)
 	if site == nil {
 		log.Warn("клиент НГС не задан — вход по коду в анкете недоступен, остаются приглашения")
 	}

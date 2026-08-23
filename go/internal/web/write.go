@@ -86,6 +86,7 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	videoWarm(id, body)
 	http.Redirect(w, r, "/n/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -207,6 +208,10 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		s.showNote(w, r, noteID, status, compose{Body: body, ReplyTo: replyTo, Problem: problem})
 		return
 	}
+	// Сходить за превью ролика, если он в тексте назван. Здесь, а не на показе:
+	// человек после публикации сразу оказывается на своей реплике, и ждать,
+	// пока карточку «откроет» второй читатель, ему незачем (preview.go).
+	videoWarm(id, body)
 	http.Redirect(w, r, noteURL(noteID, s.threadLinear(w, r), 1)+"#c"+strconv.FormatInt(id, 10),
 		http.StatusSeeOther)
 }

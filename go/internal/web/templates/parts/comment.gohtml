@@ -36,6 +36,10 @@
     {{else}}
     <div class="text">{{commentBody .Page.Book $c}}</div>
     {{end}}
+    {{/* Карточка ролика стоит ВНЕ ката: свёрнутая простыня прячет текст, но
+         ролик, названный в ней, читатель обязан увидеть — иначе «показать
+         полностью» становится единственным способом узнать, что он там есть. */}}
+    {{template "videos" (vid $c.ID $c.Body)}}
     {{template "reactions" (rx .Page $c.ID)}}
     {{if or .Page.CanWrite (index .Page.Replies $c.ID)}}
     <p class="cact">

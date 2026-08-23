@@ -73,6 +73,7 @@ var funcs = template.FuncMap{
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
 	"smilelist":   smileList,
+	"vid":         videoCards,
 	"markuphelp":  markupHelp,
 	"threadURL":   func(base string) template.URL { return template.URL(base + "#reply") },
 }

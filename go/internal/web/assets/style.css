@@ -526,6 +526,45 @@ span.rxb { cursor: default; }
 .shots { margin-top: 12px; }
 .shots img { max-width: 100%; height: auto; display: block; border: 1px solid var(--rule); }
 
+/* ------------------------------------------------------------------- ролик
+
+   Карточка ролика: наше превью, значок «play» и адрес. Плеера тут нет и не
+   будет — довод в web/video.go, он про согласие, а не про вёрстку.
+
+   Кадр держит aspect-ratio, а не width/height у картинки: превью приезжает с
+   разных площадок и разной формы (у YouTube это 480×360 с чёрными полями), и
+   единственный способ не дать странице прыгать при загрузке — задать место
+   заранее, а саму картинку вписать кадрированием. Поля при этом срезаются, что
+   и нужно. */
+
+.vid {
+  display: block; max-width: 420px; margin: 12px 0 0;
+  border: 1px solid var(--rule); border-radius: 3px; overflow: hidden;
+  background: var(--card); color: var(--ink);
+}
+.vid:hover { text-decoration: none; border-color: var(--link); }
+/* Фон чёрный, а не по теме: пока превью не загрузилось, на его месте обязан
+   быть кадр, а не дыра цвета карточки. */
+.vidpic { position: relative; display: block; background: #000; aspect-ratio: 16 / 9; }
+.vidpic img { display: block; width: 100%; height: 100%; object-fit: cover; }
+/* Значок нарисован рамками, а не картинкой: файл ради треугольника — это ещё
+   один запрос и ещё одно место, где однажды разойдутся тема и содержимое. */
+.vidplay {
+  position: absolute; left: 50%; top: 50%; width: 54px; height: 38px;
+  margin: -19px 0 0 -27px; border-radius: 8px;
+  background: rgba(0, 0, 0, .62); border: 1px solid rgba(255, 255, 255, .35);
+}
+.vidplay::after {
+  content: ""; position: absolute; left: 20px; top: 10px;
+  border: 8px solid transparent; border-left: 13px solid #fff; border-right: 0;
+}
+.vidfoot {
+  display: flex; gap: 8px; align-items: baseline; overflow: hidden;
+  padding: 7px 10px; font-size: 12px;
+}
+.vidfoot b { flex: 0 0 auto; }
+.vidurl { color: var(--meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .empty { color: var(--meta); padding: 20px 0; }
 
 /* ---------------------------------------------------------------- постраничка */

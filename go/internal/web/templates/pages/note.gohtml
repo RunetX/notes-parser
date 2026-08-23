@@ -36,6 +36,10 @@
     </div>
     <div class="nbody">
       <div class="text">{{body $n}}</div>
+      {{/* Ролики идут ПЕРЕД иллюстрациями: картинку к заметке приложил сайт, а
+           ролик назвал сам автор в тексте — и стоять он должен там, где о нём
+           сказано. */}}
+      {{template "videos" (vid $n.ID $n.Body)}}
       {{if .Images}}
       <div class="shots">
         {{range .Images}}{{if .URL}}
