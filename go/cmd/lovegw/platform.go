@@ -43,6 +43,7 @@ var platformSubcommands = map[string]bool{
 	"role":            true,
 	"import-archive":  true,
 	"moderation":      true,
+	"events":          true,
 	"anonymize":       true,
 	"export":          true,
 	"ban":             true,
@@ -124,6 +125,8 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformRole(ctx, cfg, id, tail[1])
 	case "moderation":
 		return platformModeration(ctx, cfg, *limit)
+	case "events":
+		return platformEvents(ctx, cfg, *limit)
 	case "anonymize":
 		id, err := oneUserID(tail, "platform anonymize <id участника> -yes")
 		if err != nil {
@@ -145,7 +148,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
 			"(migrate, doctor, reconcile, media, avatar, reply-scan, invite, role, " +
-			"moderation, ban, unban, anonymize, export, import-archive, import-restored)")
+			"moderation, events, ban, unban, anonymize, export, import-archive, import-restored)")
 	}
 }
 

@@ -240,6 +240,19 @@ func (p *Platform) IngestNote(ctx context.Context, in MirroredNote) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("приём заметки %d: %w", in.ID, err)
 	}
+	// Свежая зеркальная заметка нужна живой ленте — той же строкой, что и своя.
+	// Про свежесть см. EventHorizon: перенос зеркала идёт этой же дорогой.
+	if tag.RowsAffected() > 0 && worthTelling(in.PublishedAt) {
+		actor := author
+		if in.Anonymous {
+			actor = 0
+		}
+		if err := recordEvent(ctx, tx, newEvent{
+			Kind: EventNote, ActorID: actor, NoteID: in.ID,
+		}); err != nil {
+			return false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("приём заметки %d: %w", in.ID, err)
 	}
@@ -316,6 +329,20 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 		return 0, fmt.Errorf("публикация заметки: %w", err)
 	}
 	if err := enqueueCheck(ctx, tx, SubjectNote, id, id, in.AuthorID); err != nil {
+		return 0, err
+	}
+	// У анонимной заметки актор не записывается ВОВСЕ. Настоящий автор и так
+	// лежит в notes.author_id — там он нужен модерации и правам субъекта; а
+	// второе место, откуда его нельзя показывать, рано или поздно станет местом,
+	// откуда его показали. Поводов эта строка всё равно не даёт: заметка сама по
+	// себе не адресована никому, она нужна живой ленте.
+	actor := in.AuthorID
+	if in.Anonymous {
+		actor = 0
+	}
+	if err := recordEvent(ctx, tx, newEvent{
+		Kind: EventNote, ActorID: actor, NoteID: id,
+	}); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

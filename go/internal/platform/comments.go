@@ -288,6 +288,18 @@ func (p *Platform) IngestComment(ctx context.Context, in MirroredComment) (bool,
 		if err := bumpNote(ctx, tx, in.NoteID, in.PublishedAt); err != nil {
 			return false, err
 		}
+		// Реплика с НГС — такой же повод, как своя: человеку, которому ответили,
+		// всё равно, с какой стороны пришёл ответ. Но только СВЕЖАЯ (см.
+		// EventHorizon): этой же дорогой идут догоняющая сверка и перенос всего
+		// зеркала на пустую площадку, а рассылать поводы по репликам 2014 года
+		// значит завалить ими всех разом.
+		if worthTelling(in.PublishedAt) {
+			if err := recordEvent(ctx, tx, newEvent{
+				Kind: EventComment, ActorID: author, NoteID: in.NoteID, CommentID: in.ID,
+			}); err != nil {
+				return false, err
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("приём комментария %d: %w", in.ID, err)
@@ -375,6 +387,14 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 		return 0, err
 	}
 	if err := enqueueCheck(ctx, tx, SubjectComment, id, in.NoteID, in.AuthorID); err != nil {
+		return 0, err
+	}
+	// Факт — той же транзакцией, что и сама реплика: «ответили, а повода нет»
+	// это то же состояние, что и «опубликовано, но в очередь не попало». Кому
+	// это повод, решается уже потом и фоном (см. events.go).
+	if err := recordEvent(ctx, tx, newEvent{
+		Kind: EventComment, ActorID: in.AuthorID, NoteID: in.NoteID, CommentID: id,
+	}); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
