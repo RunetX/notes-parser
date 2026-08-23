@@ -699,7 +699,7 @@ func (p *Platform) PendingOfNote(ctx context.Context, noteID int64, limit int) (
 		  FROM comments c
 		 WHERE c.note_id = $1 AND c.status = $2
 		 ORDER BY c.id
-		 LIMIT $3`, noteID, StatusVisible, clampLimit(limit))
+		 LIMIT $3`, noteID, StatusVisible, clampTriage(limit))
 	if err != nil {
 		return nil, fmt.Errorf("тред %d для стенда: %w", noteID, err)
 	}
@@ -715,6 +715,21 @@ func (p *Platform) PendingOfNote(ctx context.Context, noteID int64, limit int) (
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// maxTriageRows — потолок стенда. Свой, а не общий `clampLimit`: тот держит
+// ПУБЛИЧНЫЕ страницы (лента по двадцать, сотня максимум) и к админской команде
+// отношения не имеет. Тред в девятьсот реплик обязан меряться ЦЕЛИКОМ — иначе
+// замер молча рассказывает про первую его восьмую и тем врёт: 23.08.2026 сотня
+// срезала ровно тот хвост, в котором лежал мат, ради которого замер и затевали.
+const maxTriageRows = 2000
+
+// clampTriage — сколько строк отдать стенду.
+func clampTriage(n int) int {
+	if n <= 0 || n > maxTriageRows {
+		return maxTriageRows
+	}
+	return n
 }
 
 // BumpAttempts отмечает, что автомат взял эти строки в работу.
