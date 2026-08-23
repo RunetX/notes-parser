@@ -629,8 +629,60 @@ func platformDoctor(ctx context.Context, cfg *config.Config) error {
 	} else {
 		fmt.Fprintf(w, "base_url\tok\t%s\n", cfg.Platform.BaseURL)
 	}
+
+	// Живой канал. Спрашиваем не «настроен ли», а «доходит ли звонок»: подписка
+	// и уведомление — это две разные способности Postgres, и отвечает эта строка
+	// на вопрос, в каком режиме поднимется морда, ДО того как её поднимут. Что у
+	// неё в этом режиме прямо сейчас, doctor не видит вовсе — она чужой процесс,
+	// и про сейчас отвечает её собственный healthz.
+	if err := liveRingCheck(ctx, p); err != nil {
+		fmt.Fprintf(w, "живой канал\tПО ТАКТУ\tзвонок не доходит: %v\n", err)
+	} else {
+		fmt.Fprintf(w, "живой канал\tok\tзвонок доходит, такт — страховка\n")
+	}
 	return nil
 }
+
+// liveRingCheck — звонок самому себе. Подписываемся, звоним и ждём: это ровно
+// тот путь, которым живой канал узнаёт о новом, и проверять его половинками
+// («LISTEN не упал») значило бы не проверять вовсе.
+func liveRingCheck(ctx context.Context, p *platform.Platform) error {
+	ctx, cancel := context.WithTimeout(ctx, liveRingWait)
+	defer cancel()
+
+	rang := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- p.ListenLive(ctx, func() {
+			// Звоним только ПОСЛЕ того, как подписка встала: уведомление, ушедшее
+			// раньше, честно потерялось бы, и проба соврала бы про бой.
+			_, _ = p.Pool().Exec(ctx, `SELECT pg_notify($1, '')`, platform.LiveChannel)
+		}, func() {
+			select {
+			case rang <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	select {
+	case <-rang:
+		cancel()
+		<-done
+		return nil
+	case err := <-done:
+		if err == nil {
+			err = errors.New("подписка кончилась молча")
+		}
+		return err
+	case <-ctx.Done():
+		<-done
+		return fmt.Errorf("звонок не пришёл за %s", liveRingWait)
+	}
+}
+
+// liveRingWait — сколько ждём собственный звонок. Пять секунд: локальный
+// Postgres отвечает за миллисекунды, а через ssh-туннель к бою — за десятки.
+const liveRingWait = 5 * time.Second
 
 // platformReplyScan уточняет дерево ответов по мобильной версии сайта и попутно
 // снимает пол участников с десктопной страницы комментариев.

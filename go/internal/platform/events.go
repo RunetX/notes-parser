@@ -136,12 +136,20 @@ func recordEvent(ctx context.Context, q querier, e newEvent) error {
 		}
 		raw = b
 	}
-	_, err := q.Exec(ctx, `
+	if _, err := q.Exec(ctx, `
 		INSERT INTO events (kind, actor_id, subject_user_id, note_id, comment_id, details)
 		VALUES ($1, $2, $3, $4, $5, $6)`,
 		e.Kind, nullID(e.ActorID), nullID(e.SubjectID),
-		nullID(e.NoteID), nullID(e.CommentID), raw)
-	return wrapf(err, "событие %d", e.Kind)
+		nullID(e.NoteID), nullID(e.CommentID), raw); err != nil {
+		return wrapf(err, "событие %d", e.Kind)
+	}
+	// Звонок открытым страницам — ТОЙ ЖЕ транзакцией (live.go). Стоит он ровно
+	// здесь по той же причине, по которой здесь стоит сама запись факта: точек
+	// вызова у recordEvent десяток с лишним, и звонок, забытый в одной из них,
+	// дал бы тишину именно в том виде событий, про который забыли, — а
+	// проявилась бы она задержкой до такта-страховки, то есть незаметно.
+	ringLive(ctx, q)
+	return nil
 }
 
 // worthTelling — о зеркальной публикации этого возраста ещё имеет смысл
@@ -383,6 +391,11 @@ func (p *Platform) FanOut(ctx context.Context, limit int) (int, error) {
 		`UPDATE events SET fanned_at = now() WHERE id = ANY($1)`, ids); err != nil {
 		return 0, wrapf(err, "отметка раздачи")
 	}
+	// Второй звонок живому каналу, и он не лишний: повод появляется НЕ тогда,
+	// когда случился факт, а когда его раздали, — то есть уже после звонка из
+	// recordEvent. Без него колокольчик ждал бы такта-страховки (см. live.go и
+	// разные курсоры у LiveSince и PokesSince).
+	ringLive(ctx, tx)
 	if err := tx.Commit(ctx); err != nil {
 		return 0, wrapf(err, "раздача поводов")
 	}
@@ -671,13 +684,20 @@ type LiveEvent struct {
 	Kind      EventKind
 	NoteID    int64
 	CommentID int64
+	// At — когда факт записан. Не для показа, а для ЗАМЕРА: живой канал меряет
+	// им путь «событие записано → сигнал ушёл в сокет» и раз в минуту кладёт
+	// сводку в лог. Время начала транзакции (now() в Postgres), то есть замер
+	// получается с запасом в её длительность — в сторону «хуже, чем на самом
+	// деле», а такой ошибке в измерении задержки можно верить.
+	At time.Time
 }
 
-// LiveSince — факты после afterID. Один запрос на такт хаба независимо от числа
-// открытых страниц: стоимость живого канала не должна расти вместе с публикой.
+// LiveSince — факты после afterID. Один запрос на проход хаба независимо от
+// числа открытых страниц: стоимость живого канала не должна расти вместе с
+// публикой.
 func (p *Platform) LiveSince(ctx context.Context, afterID int64, limit int) ([]LiveEvent, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT id, kind, coalesce(note_id, 0), coalesce(comment_id, 0)
+		SELECT id, kind, coalesce(note_id, 0), coalesce(comment_id, 0), at
 		  FROM events WHERE id > $1 ORDER BY id LIMIT $2`, afterID, clampLimit(limit))
 	if err != nil {
 		return nil, wrapf(err, "живая лента после %d", afterID)
@@ -686,7 +706,7 @@ func (p *Platform) LiveSince(ctx context.Context, afterID int64, limit int) ([]L
 	var out []LiveEvent
 	for rows.Next() {
 		var e LiveEvent
-		if err := rows.Scan(&e.ID, &e.Kind, &e.NoteID, &e.CommentID); err != nil {
+		if err := rows.Scan(&e.ID, &e.Kind, &e.NoteID, &e.CommentID, &e.At); err != nil {
 			return nil, wrapf(err, "живая лента после %d", afterID)
 		}
 		out = append(out, e)
@@ -699,6 +719,9 @@ func (p *Platform) LiveSince(ctx context.Context, afterID int64, limit int) ([]L
 type Poke struct {
 	UserID  int64
 	EventID int64
+	// At — когда записан факт, породивший повод. Как и у LiveEvent, только для
+	// замера задержки.
+	At time.Time
 }
 
 // PokesSince — поводы, появившиеся после afterID.
@@ -709,7 +732,7 @@ type Poke struct {
 // по уже увиденным фактам.
 func (p *Platform) PokesSince(ctx context.Context, afterID int64, limit int) ([]Poke, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT n.user_id, n.event_id
+		SELECT n.user_id, n.event_id, e.at
 		  FROM notifications n JOIN events e ON e.id = n.event_id
 		 WHERE n.event_id > $1 AND e.fanned_at IS NOT NULL
 		 ORDER BY n.event_id LIMIT $2`, afterID, clampLimit(limit))
@@ -720,7 +743,7 @@ func (p *Platform) PokesSince(ctx context.Context, afterID int64, limit int) ([]
 	var out []Poke
 	for rows.Next() {
 		var k Poke
-		if err := rows.Scan(&k.UserID, &k.EventID); err != nil {
+		if err := rows.Scan(&k.UserID, &k.EventID, &k.At); err != nil {
 			return nil, wrapf(err, "поводы после %d", afterID)
 		}
 		out = append(out, k)

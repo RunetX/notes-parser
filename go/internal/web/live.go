@@ -133,6 +133,13 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", m.ID, liveData(m)); err != nil {
 				return
 			}
+			// Замер закрывает обещание живого канала: «факт записан → сигнал ушёл
+			// в сокет». Считается ЗДЕСЬ, а не в хабе, потому что здесь он и
+			// становится правдой — до успешной записи сигнала нет. Сводку
+			// кладёт в лог сам хаб раз в минуту (см. report в hub.go).
+			if !m.at.IsZero() {
+				s.hub.observe(time.Since(m.at))
+			}
 		}
 		if err := rc.Flush(); err != nil {
 			return
