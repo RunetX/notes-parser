@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -215,7 +216,33 @@ const FreshLimit = 50
 type FreshAfter struct {
 	NGS    int64 // последняя показанная реплика НГС
 	Native int64 // последняя показанная реплика, написанная здесь
+	Moved  MovedAfter
 }
+
+// MovedAfter — граница по ПЕРЕЕЗДАМ: докуда странице известны правки строк,
+// которые она уже нарисовала.
+//
+// Полосы отвечают на вопрос «что появилось», и на «что переехало» ответить не
+// могут: у переехавшей реплики id прежний, и мимо границы по id она проходит
+// молча. А переезжают они постоянно — зеркало знает адресата лишь по обращению
+// «Ник, …» и угадывает его примерно с половинной точностью, настоящее ребро
+// приносит обход мобильной версии (см. миграцию 0015).
+//
+// Пара «время, id», а не одно время: одна транзакция обхода штампует все свои
+// строки одним now(), и порция, обрезанная потолком, обязана продолжиться с
+// середины этой отметки — иначе хвост переезда не приедет никогда.
+//
+// Нулевое значение значит «переездов не носим»: так выглядит граница со
+// страницы, открытой до выкатки этой правки. Заметка, где не переезжало ничего,
+// получает не ноль, а время запроса, — иначе ПЕРВЫЙ переезд в ней прошёл бы
+// мимо открытых окон.
+type MovedAfter struct {
+	At time.Time
+	ID int64
+}
+
+// On — носит ли эта граница переезды.
+func (m MovedAfter) On() bool { return !m.At.IsZero() }
 
 // Seen двигает границу: реплика с этим id на странице уже стоит.
 //
@@ -264,17 +291,120 @@ func (f FreshAfter) bounds() (ngs, native int64) {
 //
 // Оба максимума — обычный проход с конца по comments_flat, по одной строке на
 // полосу.
+//
+// Третьим и четвёртым идёт граница переездов — та же пара, что у MovedAfter, и
+// берётся она с конца comments_moved. Пусто (в заметке не переезжало ничего) —
+// это НЕ ноль, а время запроса: нулевая граница означала бы «переездов не
+// носим», и первая же правка дерева прошла бы мимо страницы. Границу спрашивают
+// ДО чтения реплик, поэтому переезд, случившийся между двумя запросами, попадёт
+// и на страницу, и в добор — а повтор гасится на странице по id.
 const freshAfterQuery = `
 	SELECT coalesce((SELECT max(id) FROM comments
 	                  WHERE note_id = $1 AND id < $2), 0),
 	       coalesce((SELECT max(id) FROM comments
-	                  WHERE note_id = $1 AND id >= $2 AND id < $3), 0)`
+	                  WHERE note_id = $1 AND id >= $2 AND id < $3), 0),
+	       coalesce((SELECT moved_at FROM comments
+	                  WHERE note_id = $1 AND moved_at IS NOT NULL
+	                  ORDER BY moved_at DESC, id DESC LIMIT 1), now()),
+	       coalesce((SELECT id FROM comments
+	                  WHERE note_id = $1 AND moved_at IS NOT NULL
+	                  ORDER BY moved_at DESC, id DESC LIMIT 1), 0)`
 
 func (p *Platform) ThreadFreshAfter(ctx context.Context, noteID int64) (FreshAfter, error) {
 	var f FreshAfter
 	err := p.pool.QueryRow(ctx, freshAfterQuery, noteID, NativeIDBase, RestoredIDBase).
-		Scan(&f.NGS, &f.Native)
+		Scan(&f.NGS, &f.Native, &f.Moved.At, &f.Moved.ID)
 	return f, wrapf(err, "граница добора заметки %d", noteID)
+}
+
+// commentsMovedQuery — ЧТО переехало: одни id с отметками, по возрастанию пары.
+//
+// Отдельный запрос, а не третья ветка добора, и причина в потолке порции.
+// Порядок у переездов свой (по отметке, а не по id), а общий LIMIT режет
+// склеенную выборку по ЧУЖОМУ порядку — то есть курсор было бы некуда двигать,
+// и хвост переезда пропадал бы молча.
+//
+// Строк он не собирает вовсе: в обычный такт переездов нет, и платить за пять
+// соединений ради пустого ответа незачем. Разметку добирает второй запрос —
+// только когда есть что добирать.
+//
+// Статус здесь НЕ спрашивается намеренно: граница обязана переступить и через
+// скрытую строку, иначе добор упёрся бы в неё навсегда. Разметки скрытой не
+// дадут ниже — там статус на месте.
+const commentsMovedQuery = `
+	SELECT id, moved_at FROM comments
+	 WHERE note_id = $1 AND moved_at IS NOT NULL AND (moved_at, id) > ($2, $3)
+	 ORDER BY moved_at, id
+	 LIMIT $4`
+
+// Строки переехавших глазами читателя. Порядок задаёт не этот запрос, а первый:
+// страница обязана получить родителя раньше ребёнка, иначе ребёнок встанет по
+// старому месту родителя.
+const commentsMovedViewQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.id = ANY($3) AND c.status = 0`
+
+const commentsMovedViewModQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.id = ANY($3) AND c.status IN (0, 2)`
+
+// CommentsMoved — реплики, переехавшие после границы, и новая граница.
+//
+// Возвращает их В ТОМ ЖЕ ВИДЕ, что и добор новых, потому что переезд меняет не
+// только место: вместе с ребром меняются глубина, подпись адресата («Ник, »
+// рисуется из ребра) и иногда тело — приём срезает обращение ровно тогда, когда
+// ребро появилось. Двигать строку на странице, не перерисовав её, значило бы
+// оставить на ней прежнего адресата.
+//
+// Граница возвращается ОТДЕЛЬНО, а не вычисляется вызывающим: отметка переезда
+// не часть показа, и класть её в CommentView значило бы носить служебное поле
+// по всем страницам площадки.
+func (p *Platform) CommentsMoved(ctx context.Context, v Viewer, noteID int64, after MovedAfter, limit int) ([]CommentView, MovedAfter, error) {
+	if !after.On() {
+		return nil, after, nil
+	}
+	limit = clampLimit(limit)
+	rows, err := p.pool.Query(ctx, commentsMovedQuery, noteID, after.At, after.ID, limit)
+	if err != nil {
+		return nil, after, fmt.Errorf("переезды заметки %d: %w", noteID, err)
+	}
+	next := after
+	ids := make([]int64, 0, 16)
+	order := make(map[int64]int, 16)
+	for rows.Next() {
+		var m MovedAfter
+		if err := rows.Scan(&m.ID, &m.At); err != nil {
+			rows.Close()
+			return nil, after, fmt.Errorf("переезды заметки %d: %w", noteID, err)
+		}
+		order[m.ID] = len(ids)
+		ids = append(ids, m.ID)
+		next = m
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, after, fmt.Errorf("переезды заметки %d: %w", noteID, err)
+	}
+	if len(ids) == 0 {
+		return nil, next, nil
+	}
+
+	q := commentsMovedViewQuery
+	if v.CanModerate() {
+		q = commentsMovedViewModQuery
+	}
+	vrows, err := p.pool.Query(ctx, q, v.UserID, noteID, ids)
+	if err != nil {
+		return nil, next, fmt.Errorf("строки переездов заметки %d: %w", noteID, err)
+	}
+	out, err := collectComments(vrows, len(ids))
+	if err != nil {
+		return nil, next, fmt.Errorf("строки переездов заметки %d: %w", noteID, err)
+	}
+	// Порядок первого запроса: скрытые строки из него выпали, и сортировка идёт
+	// по их прежним местам — родитель всё равно остаётся раньше ребёнка.
+	sort.Slice(out, func(i, j int) bool { return order[out[i].ID] < order[out[j].ID] })
+	return out, next, nil
 }
 
 // CommentsSince — реплики заметки новее границы. Виды здесь нет вовсе: и

@@ -73,6 +73,23 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Вторая половина добора — ПЕРЕЕЗДЫ: строки, которые на странице уже стоят,
+	// но с тех пор сменили место. Дерево под открытой страницей перестраивается
+	// постоянно (зеркало ставит ребро по обращению «Ник, …», обход мобильной
+	// версии заменяет его настоящим), а по границе id такая строка не приезжает
+	// никогда — id у неё прежний. Без этого читатель видит ветку, выросшую не
+	// там, и правильную — только после обновления.
+	//
+	// Отказ здесь новых реплик не отменяет: место строки хуже, чем её
+	// отсутствие, и терять из-за него живой добор целиком незачем.
+	moved, movedAfter, err := s.st.CommentsMoved(ctx, v, id, after.Moved, freshLimit)
+	if err != nil {
+		s.log.Warn("живой добор", "что", "переезды", "заметка", id, "err", err)
+		moved, movedAfter = nil, after.Moved
+	}
+	after.Moved = movedAfter
+	moved = withoutSeen(moved, comments)
+
 	me, signedIn := s.me(r)
 	// Контекст страницы собирается ЗАНОВО и такой же, как у настоящей: иначе
 	// дописанная реплика отличалась бы от нарисованной обновлением — то есть
@@ -105,10 +122,14 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 	// только текстов, где обращение стоит В ТЕЛЕ, то есть НГС до 2014 года и
 	// переименовавшихся. Свежая реплика ни тем, ни другим не бывает: у своей
 	// обращение это ребро, у зеркальной его срезал приёмник.
-	p.Book = newAddressBook(note, comments)
+	// Новое и переехавшее рисуются одним проходом и одним шаблоном: разница
+	// между ними не в разметке, а в том, что страница с ними сделает.
+	rows := append(append(make([]platform.CommentView, 0, len(comments)+len(moved)),
+		comments...), moved...)
+	p.Book = newAddressBook(note, rows)
 
 	var buf bytes.Buffer
-	for _, c := range comments {
+	for _, c := range rows {
 		if err := s.renderPart(&buf, "comment", commentItem(p, c)); err != nil {
 			http.Error(w, "внутренняя ошибка", http.StatusInternalServerError)
 			return
@@ -120,7 +141,48 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 	for _, c := range comments {
 		after.Seen(c.ID)
 	}
+	// Какие из присланных строк — переезды, а не новое. Заголовком, а не меткой
+	// в разметке: рисует строку ТОТ ЖЕ шаблон, что и страницу, и заводить в нём
+	// поле ради одного вызывающего значило бы завести второй вид реплики.
+	// Страница по этому списку снимает строку со старого места; всё остальное,
+	// что у неё уже стоит, она по-прежнему пропускает — этим гасится эхо
+	// собственной реплики.
+	if len(moved) > 0 {
+		w.Header().Set("X-Fresh-Moved", idList(moved))
+	}
 	s.sendFresh(w, &buf, threadCursor(after), note.CommentCount)
+}
+
+// withoutSeen выбрасывает из переездов то, что уже едет новым. Строка, которая
+// и появилась впервые, и успела переехать, годится в обоих качествах — берём её
+// как новую: на странице у неё ещё нет места, которое надо исправлять.
+func withoutSeen(moved, fresh []platform.CommentView) []platform.CommentView {
+	if len(moved) == 0 || len(fresh) == 0 {
+		return moved
+	}
+	seen := make(map[int64]bool, len(fresh))
+	for _, c := range fresh {
+		seen[c.ID] = true
+	}
+	kept := moved[:0]
+	for _, c := range moved {
+		if !seen[c.ID] {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
+// idList — номера строк через запятую, как их ждёт заголовок X-Fresh-Moved.
+func idList(cs []platform.CommentView) string {
+	var b strings.Builder
+	for i, c := range cs {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatInt(c.ID, 10))
+	}
+	return b.String()
 }
 
 // handleFreshFeed — новые заметки ленты. Только первая страница: остальные суть
@@ -215,12 +277,21 @@ func parseFeedCursor(s string) (time.Time, int64, bool) {
 // упорядочиваются (см. platform.FreshAfter). Клиент её не разбирает — получает
 // в data-fresh, возвращает в ?after=, — поэтому формат наш и менять его можно,
 // не трогая скрипт.
+// Составляющих четыре: две полосы («что появилось») и пара переездов («что
+// переехало», platform.MovedAfter). Пары разной природы, и одной их не заменить:
+// у появления ключ — номер строки, у переезда номер прежний, и заметен он только
+// по отметке времени.
 func threadCursor(a platform.FreshAfter) string {
-	return strconv.FormatInt(a.NGS, 10) + "," + strconv.FormatInt(a.Native, 10)
+	s := strconv.FormatInt(a.NGS, 10) + "," + strconv.FormatInt(a.Native, 10)
+	if a.Moved.On() {
+		s += "," + strconv.FormatInt(a.Moved.At.UnixNano(), 10) +
+			"," + strconv.FormatInt(a.Moved.ID, 10)
+	}
+	return s
 }
 
 func parseThreadCursor(s string) (platform.FreshAfter, bool) {
-	ngs, native, ok := strings.Cut(s, ",")
+	ngs, rest, ok := strings.Cut(s, ",")
 	if !ok {
 		// Граница ПРЕЖНЕГО вида — одно число. Её возвращают страницы, открытые
 		// до выкатки, и отвечать им отказом незачем: кладём число в его
@@ -243,9 +314,31 @@ func parseThreadCursor(s string) (platform.FreshAfter, bool) {
 	if err != nil || n < 0 {
 		return platform.FreshAfter{}, false
 	}
+	native, mv, hasMoved := strings.Cut(rest, ",")
 	m, err := strconv.ParseInt(native, 10, 64)
 	if err != nil || m < 0 {
 		return platform.FreshAfter{}, false
 	}
-	return platform.FreshAfter{NGS: n, Native: m}, true
+	a := platform.FreshAfter{NGS: n, Native: m}
+	if !hasMoved {
+		// Граница БЕЗ переездов — со страницы, открытой до выкатки этой правки.
+		// Такой странице их не носят: нулевая граница означала бы «неси всё, что
+		// когда-либо переезжало», то есть переставить читателю пол-треда разом.
+		// Обновление даёт нормальную границу.
+		return a, true
+	}
+	ns, id, ok := strings.Cut(mv, ",")
+	if !ok {
+		return platform.FreshAfter{}, false
+	}
+	at, err := strconv.ParseInt(ns, 10, 64)
+	if err != nil || at < 0 {
+		return platform.FreshAfter{}, false
+	}
+	mid, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || mid < 0 {
+		return platform.FreshAfter{}, false
+	}
+	a.Moved = platform.MovedAfter{At: time.Unix(0, at), ID: mid}
+	return a, true
 }

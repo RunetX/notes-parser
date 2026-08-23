@@ -58,6 +58,12 @@ type fakeStore struct {
 	freshSince  time.Time
 	freshNoteID int64
 
+	// Переезды: что отдать и с какой границей за ними пришли.
+	moved      []platform.CommentView
+	movedAfter platform.MovedAfter
+	movedNext  platform.MovedAfter
+	movedErr   error
+
 	pingErr error
 }
 
@@ -139,6 +145,23 @@ func (f *fakeStore) ThreadFreshAfter(_ context.Context, _ int64) (platform.Fresh
 func (f *fakeStore) CommentsSince(_ context.Context, _ platform.Viewer, noteID int64, after platform.FreshAfter, _ int) ([]platform.CommentView, error) {
 	f.freshNoteID, f.freshAfter = noteID, after
 	return f.fresh, nil
+}
+
+// Переезды. Пустая граница у фейка означает то же, что у ядра: страница
+// переездов не носит — и большинству тестов до них дела нет.
+func (f *fakeStore) CommentsMoved(_ context.Context, _ platform.Viewer, noteID int64, after platform.MovedAfter, _ int) ([]platform.CommentView, platform.MovedAfter, error) {
+	f.freshNoteID, f.movedAfter = noteID, after
+	if f.movedErr != nil {
+		return nil, after, f.movedErr
+	}
+	if !after.On() {
+		return nil, after, nil // как ядро: пустая граница — переездов не носим
+	}
+	next := after
+	if f.movedNext.On() {
+		next = f.movedNext
+	}
+	return f.moved, next, nil
 }
 
 func (f *fakeStore) NotesSince(_ context.Context, _ platform.Viewer, after time.Time, _ int64, _ int) ([]platform.NoteView, error) {

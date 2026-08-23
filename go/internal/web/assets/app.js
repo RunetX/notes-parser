@@ -391,23 +391,53 @@ smilePanel(document);
     list.insertBefore(li, at);
   };
 
-  var insert = function (html) {
+  // Какие строки порции — ПЕРЕЕЗДЫ (заголовок X-Fresh-Moved). Дерево под
+  // открытой страницей перестраивается: зеркало ставит ребро по обращению
+  // «Ник, …», а обход мобильной версии заменяет его настоящим — и ветка,
+  // нарисованная по догадке, уезжает на своё место. Такая строка приходит второй
+  // раз, ГОТОВОЙ разметкой: вместе с местом у неё сменились глубина, подпись
+  // адресата, а то и тело.
+  var movedSet = function (h) {
+    var s = {};
+    (h || '').split(',').forEach(function (v) { if (v) s['c' + v] = true; });
+    return s;
+  };
+
+  var insert = function (html, moved) {
     if (!html) return 0;
     var box = document.createElement('template');
     box.innerHTML = html;
     var items = Array.prototype.slice.call(box.content.children), added = 0;
     for (var i = 0; i < items.length; i++) {
       var li = items[i];
-      // Своя же только что отправленная реплика уже нарисована страницей, а
-      // сигнал о ней придёт всё равно: поток не знает, кто автор. Проверка по
-      // id закрывает это разом — и заодно любой повтор добора.
-      if (!li.id || document.getElementById(li.id)) continue;
+      if (!li.id) continue;
+      var old = document.getElementById(li.id);
+      if (old) {
+        // Своя же только что отправленная реплика уже нарисована страницей, а
+        // сигнал о ней придёт всё равно: поток не знает, кто автор. Проверка по
+        // id закрывает это разом — и заодно любой повтор добора.
+        if (!moved[li.id]) continue;
+        // Переезд. В дереве строку надо ПЕРЕСТАВИТЬ, поэтому старую снимаем и
+        // ищем ей место заново; потомки приедут той же порцией и встанут следом
+        // — переезд ветки родитель открывает, у него меньший id. В линейном
+        // виде и в ленте место не менялось (там порядок по времени), и строка
+        // просто заменяет себя на месте.
+        if (m && !linear) { old.parentNode.removeChild(old); placeInTree(li); }
+        else { old.replaceWith(li); }
+        continue;
+      }
+      // Переезд строки, которой на странице нет вовсе (линейный вид показывает
+      // окно, у дерева есть потолок): ставить её некуда, а «сверху» в линейном
+      // виде значило бы поднять старую реплику наверх. Если она и правда новая,
+      // её принесёт обычный добор — граница по id её ещё не прошла.
+      if (moved[li.id]) continue;
       if (!m) { placeOnTop(li); }
       else if (linear) { list.insertBefore(li, list.firstChild); }
       else { placeInTree(li); }
       // Подсветка — единственное, чем новое отличается от старого, и живёт она
       // в CSS: класс ставится навсегда, а гаснет анимацией. Снимать его
-      // таймером незачем, свою работу он к тому времени уже сделал.
+      // таймером незачем, свою работу он к тому времени уже сделал. Переезду её
+      // не ставят: строка не новая, человек её уже читал.
       li.className += ' fresh';
       added++;
     }
@@ -429,18 +459,19 @@ smilePanel(document);
     if (!url || cursor === null || cursor === undefined) return;
     if (busy) { again = true; return; }
     busy = true;
-    var next = null, count = null;
+    var next = null, count = null, moved = null;
     fetch(url + '?after=' + encodeURIComponent(cursor) + (linear ? '&view=linear' : ''),
       { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
       .then(function (res) {
         if (!res.ok) throw new Error('fresh');
         next = res.headers.get('X-Fresh-After');
         count = res.headers.get('X-Fresh-Count');
+        moved = movedSet(res.headers.get('X-Fresh-Moved'));
         return res.text();
       })
       .then(function (html) {
         if (next) cursor = next;
-        insert(html);
+        insert(html, moved);
         setCount(count);
       })
       .catch(function () {

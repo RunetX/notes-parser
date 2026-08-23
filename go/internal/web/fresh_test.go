@@ -312,3 +312,137 @@ func TestFreshCostsLessThanThread(t *testing.T) {
 		t.Error("страница треда перестала стоить как тред")
 	}
 }
+
+// ПЕРЕЕЗДЫ. Дерево перестраивается под открытой страницей: зеркало ставит ребро
+// по обращению «Ник, …» и угадывает его примерно с половинной точностью, а обход
+// мобильной версии заменяет догадку настоящим ребром. По границе id такая строка
+// не приезжает никогда — id у неё прежний, — и до этой правки читатель видел
+// ветку, выросшую не там, до самого обновления страницы.
+//
+// Замер 23.08.2026, боевая заметка 313058: Kowalski 63238879 нарисован страницей
+// на глубине 4, обход переставил его на 2, и следующая строка треда — его
+// собственный ответ 63238886 — приехала с глубиной 3, то есть МЕНЬШЕ, чем у
+// родителя строкой выше.
+func TestFreshCarriesMovedRows(t *testing.T) {
+	at := time.Date(2026, 8, 23, 21, 50, 0, 0, time.UTC)
+	next := platform.MovedAfter{At: at.Add(time.Minute), ID: 63238879}
+	st := &fakeStore{
+		note:      sampleNote(),
+		moved:     []platform.CommentView{freshComment(63238879, 63238869, 2)},
+		movedNext: next,
+	}
+	h := openServer(t, st)
+
+	from := platform.FreshAfter{NGS: 3, Moved: platform.MovedAfter{At: at, ID: 5}}
+	w := do(h, guest(t, "GET", "/n/312811/fresh?after="+threadCursor(from)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("добор ответил %d", w.Code)
+	}
+	// Сравниваем МОМЕНТ, а не структуру: с провода отметка приезжает наносекундами
+	// и оживает в местном поясе, а один и тот же миг — это один и тот же миг.
+	if !st.movedAfter.At.Equal(from.Moved.At) || st.movedAfter.ID != from.Moved.ID {
+		t.Errorf("в хранилище ушла граница переездов %+v, ожидалась %+v", st.movedAfter, from.Moved)
+	}
+	if body := w.Body.String(); !strings.Contains(body, `id="c63238879"`) ||
+		!strings.Contains(body, `data-parent="63238869"`) {
+		t.Errorf("переехавшая строка не приехала или приехала без нового места:\n%s", body)
+	}
+	// Какие строки — переезды, страница узнаёт заголовком: всё остальное, что у
+	// неё уже стоит, она по-прежнему пропускает (этим гасится эхо своей реплики).
+	if got := w.Header().Get("X-Fresh-Moved"); got != "63238879" {
+		t.Errorf("список переездов: %q, ожидался 63238879", got)
+	}
+	if got, want := w.Header().Get("X-Fresh-After"), threadCursor(platform.FreshAfter{NGS: 3, Moved: next}); got != want {
+		t.Errorf("граница после добора: %q, ожидалась %q", got, want)
+	}
+}
+
+// Страница, открытая до выкатки, возвращает границу без переездов — и переездов
+// ей не носят. Нулевая граница означала бы «неси всё, что когда-либо
+// переезжало», то есть переставить читателю пол-треда разом.
+func TestFreshMovedNotOfferedWithoutBoundary(t *testing.T) {
+	st := &fakeStore{note: sampleNote(), moved: []platform.CommentView{freshComment(9, 2, 2)}}
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=3,0"))
+
+	if st.movedAfter.On() {
+		t.Errorf("в хранилище ушла граница переездов %+v, ожидалась пустая", st.movedAfter)
+	}
+	if got := w.Header().Get("X-Fresh-Moved"); got != "" {
+		t.Errorf("переезды предложены странице, которая их не просила: %q", got)
+	}
+	if strings.Contains(w.Body.String(), `id="c9"`) {
+		t.Error("переехавшая строка уехала на страницу, которая её никогда не видела")
+	}
+}
+
+// Строка, которая и появилась впервые, и успела переехать, годится в обоих
+// качествах — берём её как новую: на странице у неё ещё нет места, которое надо
+// исправлять, а прислать её дважды значило бы вставить и тут же переставить.
+func TestFreshMovedYieldsToWhatCameAsNew(t *testing.T) {
+	at := time.Date(2026, 8, 23, 21, 50, 0, 0, time.UTC)
+	c := freshComment(9, 2, 2)
+	st := &fakeStore{
+		note:      sampleNote(),
+		fresh:     []platform.CommentView{c},
+		moved:     []platform.CommentView{c},
+		movedNext: platform.MovedAfter{At: at.Add(time.Minute), ID: 9},
+	}
+	w := do(openServer(t, st), guest(t, "GET",
+		"/n/312811/fresh?after="+threadCursor(platform.FreshAfter{Moved: platform.MovedAfter{At: at}})))
+
+	if n := strings.Count(w.Body.String(), `id="c9"`); n != 1 {
+		t.Errorf("строка приехала %d раз(а), ожидался один:\n%s", n, w.Body.String())
+	}
+	if got := w.Header().Get("X-Fresh-Moved"); got != "" {
+		t.Errorf("новая строка объявлена переездом: %q", got)
+	}
+}
+
+// Отказ на переездах — не отказ добора: место строки хуже, чем её отсутствие, и
+// терять из-за него новые реплики незачем.
+func TestFreshMovedFailureKeepsNewRows(t *testing.T) {
+	at := time.Date(2026, 8, 23, 21, 50, 0, 0, time.UTC)
+	from := platform.FreshAfter{NGS: 3, Moved: platform.MovedAfter{At: at, ID: 5}}
+	st := &fakeStore{
+		note:     sampleNote(),
+		fresh:    []platform.CommentView{freshComment(9, 2, 2)},
+		movedErr: errors.New("база молчит"),
+	}
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after="+threadCursor(from)))
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="c9"`) {
+		t.Fatalf("новые реплики потеряны вместе с переездами: %d\n%s", w.Code, w.Body.String())
+	}
+	// Граница переездов при отказе остаётся ПРЕЖНЕЙ: следующий такт попробует
+	// снова, а сдвинув её, мы потеряли бы переезд навсегда.
+	if got, want := w.Header().Get("X-Fresh-After"), threadCursor(platform.FreshAfter{NGS: 9, Moved: from.Moved}); got != want {
+		t.Errorf("граница после отказа: %q, ожидалась %q", got, want)
+	}
+}
+
+// Граница на проводе: четыре составляющие, и обратный разбор обязан вернуть ту
+// же самую. Клиент её не читает вовсе — но возвращает как есть, поэтому
+// расхождение туда-обратно означало бы тихо застрявший добор.
+func TestThreadCursorRoundTrip(t *testing.T) {
+	want := platform.FreshAfter{
+		NGS: 63238683, Native: platform.NativeIDBase + 719,
+		Moved: platform.MovedAfter{At: time.Date(2026, 8, 23, 21, 50, 4, 123456000, time.UTC), ID: 63238879},
+	}
+	got, ok := parseThreadCursor(threadCursor(want))
+	if !ok {
+		t.Fatalf("своя же граница %q не разобрана", threadCursor(want))
+	}
+	if got.NGS != want.NGS || got.Native != want.Native ||
+		!got.Moved.At.Equal(want.Moved.At) || got.Moved.ID != want.Moved.ID {
+		t.Errorf("туда-обратно: %+v, ожидалось %+v", got, want)
+	}
+}
+
+func TestThreadCursorRejectsBadMovedPart(t *testing.T) {
+	h := openServer(t, &fakeStore{note: sampleNote()})
+	for _, q := range []string{"3,0,абв,5", "3,0,-1,5", "3,0,17", "3,0,17,-1", "3,0,17,5,9"} {
+		if got := do(h, guest(t, "GET", "/n/312811/fresh?after="+q)).Code; got != http.StatusBadRequest {
+			t.Errorf("граница %q принята с кодом %d", q, got)
+		}
+	}
+}

@@ -324,8 +324,14 @@ func TestThreadFreshAfterIsPerBand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("граница: %v", err)
 	}
-	if want := (FreshAfter{NGS: 63238684}); after != want {
-		t.Fatalf("граница %+v, ожидалась %+v", after, want)
+	if after.NGS != 63238684 || after.Native != 0 {
+		t.Fatalf("граница %+v, ожидались полосы 63238684 и 0", after)
+	}
+	// Третья составляющая — переезды, и пустой она не бывает: пустая означает
+	// «переездов не носим», и первая же правка дерева прошла бы мимо открытой
+	// страницы (см. MovedAfter).
+	if !after.Moved.On() {
+		t.Fatal("граница переездов пуста")
 	}
 
 	own, err := p.CreateComment(ctx, NewComment{
@@ -346,8 +352,8 @@ func TestThreadFreshAfterIsPerBand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("граница: %v", err)
 	}
-	if want := (FreshAfter{NGS: 63238684, Native: own}); after != want {
-		t.Fatalf("граница %+v, ожидалась %+v", after, want)
+	if after.NGS != 63238684 || after.Native != own {
+		t.Fatalf("граница %+v, ожидались полосы 63238684 и %d", after, own)
 	}
 }
 
@@ -761,10 +767,19 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		// читают, тем самым и кладёт площадку.
 		{"добор треда", commentsSinceQuery,
 			[]any{int64(0), int64(200001), int64(0), NativeIDBase - 1, 50}, "comments_flat", 2},
+		// Переезды спрашивает тот же такт того же окна, и ответ у них почти
+		// всегда пустой — тем более он обязан стоить одного захода в индекс, а
+		// не обхода всех реплик заметки.
+		{"переезды", commentsMovedQuery,
+			[]any{int64(200001), time.Now().Add(-time.Hour), int64(0), 50}, "comments_moved", 1},
 		// Границу добора спрашивает КАЖДАЯ страница заметки, и это два прохода
 		// с конца по одной строке. Перебор здесь стоил бы дороже самой страницы.
 		{"граница добора", freshAfterQuery, []any{int64(200001), NativeIDBase, RestoredIDBase},
 			"comments_flat", 2},
+		// У той же границы есть и половина про переезды — её два прохода с конца
+		// обязаны идти по своему индексу.
+		{"граница переездов", freshAfterQuery, []any{int64(200001), NativeIDBase, RestoredIDBase},
+			"comments_moved", 2},
 		{"добор ленты", notesSinceQuery,
 			[]any{int64(0), time.Now().Add(-time.Hour), int64(0), 50}, "notes_feed", 1},
 		// Одна реплика — та, что нужна форме ответа. Имя индекса здесь не

@@ -88,6 +88,12 @@ type Store interface {
 	// каждую новую реплику у каждого открытого окна значит отнять ядро у
 	// зеркала, которое живёт на том же хосте.
 	CommentsSince(ctx context.Context, v platform.Viewer, noteID int64, after platform.FreshAfter, limit int) ([]platform.CommentView, error)
+	// CommentsMoved — вторая половина живого добора: строки, которые на странице
+	// уже стоят, но с тех пор переехали. Дерево перестраивается под открытой
+	// страницей (зеркало ставит ребро по обращению, обход мобильной версии
+	// заменяет его настоящим), а по границе id переехавшая строка не приезжает
+	// никогда — id у неё прежний. Возвращает и новую границу переездов.
+	CommentsMoved(ctx context.Context, v platform.Viewer, noteID int64, after platform.MovedAfter, limit int) ([]platform.CommentView, platform.MovedAfter, error)
 	// ThreadFreshAfter — граница добора для только что нарисованной страницы
 	// заметки. Спрашивается у ядра, а не считается по показанным репликам: в
 	// линейном виде на странице окно, а не весь тред.

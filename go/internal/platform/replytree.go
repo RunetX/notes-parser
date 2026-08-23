@@ -147,13 +147,28 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		if root, err := BranchRootID(newPath); err == nil && root != r.id {
 			branchRoot = root
 		}
+		// moved_at ставится ТОЙ ЖЕ правкой, и это не журнал, а адрес: по нему
+		// живой добор досылает строку тем, у кого она уже нарисована на старом
+		// месте (web/fresh.go). Без отметки открытая страница остаётся с
+		// угаданным деревом до перезагрузки — с чего эта колонка и заведена
+		// (миграция 0015). Отметка одна на всю транзакцию: now() в Postgres —
+		// время НАЧАЛА транзакции, поэтому переезд, тронувший ветку целиком,
+		// приезжает на страницу одной порцией и в правильном порядке.
+		//
+		// Ставится она только тогда, когда изменилось ВИДИМОЕ: место, адресат
+		// или тело. Смена одного `reply_source` («ребро теперь настоящее»)
+		// показу безразлична, а отмечать её значило бы прогнать через живой
+		// канал весь тред при первом же обходе заметки — ради строк, которые на
+		// экране не сдвинутся ни на пиксель.
+		shown := newParent != r.replyTo || newPath != r.path || newBody != r.body
 		if _, err := tx.Exec(ctx, `
 			UPDATE comments
 			   SET reply_to_id = $2, reply_source = $3, path = $4, depth = $5,
-			       branch_root_id = $6, body = $7
+			       branch_root_id = $6, body = $7,
+			       moved_at = CASE WHEN $8 THEN now() ELSE moved_at END
 			 WHERE id = $1`,
 			r.id, nullID(newParent), newSource, newPath, PathDepth(newPath),
-			nullID(branchRoot), newBody); err != nil {
+			nullID(branchRoot), newBody, shown); err != nil {
 			return st, fmt.Errorf("правка комментария %d: %w", r.id, err)
 		}
 	}
