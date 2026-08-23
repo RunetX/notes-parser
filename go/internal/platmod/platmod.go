@@ -224,6 +224,36 @@ func (s *Service) settleVisibility(ctx context.Context) {
 	}
 }
 
+// escalateExhausted отдаёт человеку то, что автомат проверить не смог.
+//
+// Отказ приходит на ВСЮ пачку, и причина бывает не в нашей строке вовсе:
+// провайдер умеет отказаться читать входной текст целиком из-за одной реплики.
+// Попытки при этом сгорают у всех десяти, а исчерпавшая их строка выпадает из
+// PendingChecks навсегда — то есть не проверена ни машиной, ни человеком.
+// Замер 23.08.2026: две пачки из семидесяти четырёх, двадцать строк.
+//
+// «Не смогли проверить» — это не «проверено». Поэтому последняя попытка не
+// теряет строку, а ставит её в очередь модератору; категория «на усмотрение»,
+// цитаты нет — её и неоткуда взять.
+func (s *Service) escalateExhausted(ctx context.Context, items []platform.Pending) {
+	for _, it := range items {
+		if it.Attempts+1 < s.cfg.MaxAttempts {
+			continue
+		}
+		if err := s.st.RecordVerdict(ctx, it.Subject, platform.VerdictRecord{
+			Verdict:  platform.VerdictReview,
+			Category: platform.CatOther,
+			Reason:   "автомат не смог проверить эту публикацию",
+			Model:    s.cfg.Model,
+		}); err != nil {
+			s.log.Error("не удалось передать человеку непроверенное",
+				"объект", it.Subject.String(), "ошибка", err)
+			return
+		}
+		s.log.Info("непроверенное передано человеку", "объект", it.Subject.String())
+	}
+}
+
 // checkBatch берёт порцию очереди и выносит по ней мнение.
 func (s *Service) checkBatch(ctx context.Context) error {
 	items, err := s.st.PendingChecks(ctx, s.cfg.Batch, s.cfg.MaxAttempts)
@@ -272,6 +302,7 @@ func (s *Service) checkBatch(ctx context.Context) error {
 	verdicts, err := s.classify(ctx, items)
 	if err != nil {
 		s.alert.Fail(ctx, alertKey, "классификатор не отвечает: "+err.Error())
+		s.escalateExhausted(ctx, items)
 		return err
 	}
 	s.alert.OK(ctx, alertKey)
