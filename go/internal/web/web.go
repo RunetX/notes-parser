@@ -158,12 +158,20 @@ func (s *Server) messenger() (SiteMessenger, bool) {
 
 // Server — HTTP-морда площадки.
 type Server struct {
-	cfg   Config
-	st    Store
-	auth  Auth
-	wr    Writer    // nil — площадка только на чтение
-	mod   Moderator // nil — модерации нет: ни /mod, ни кнопок под репликами
-	site  Site      // nil — вход по анкете НГС недоступен
+	cfg  Config
+	st   Store
+	auth Auth
+	wr   Writer    // nil — площадка только на чтение
+	mod  Moderator // nil — модерации нет: ни /mod, ни кнопок под репликами
+	site Site      // nil — вход по анкете НГС недоступен
+	// events — шина событий (эпик F): nil ⇒ ни страницы событий, ни
+	// колокольчика, ни живого канала. Подключается SetEvents, а не
+	// конструктором: способность необязательная (см. events.go).
+	events Events
+	// hub — живой канал (hub.go): nil, если шина не умеет отдавать поток. Живёт
+	// рядом с events, а не внутри, потому что это состояние ПРОЦЕССА (слушатели,
+	// курсоры), а не способность хранилища.
+	hub   *hub
 	log   *slog.Logger
 	http  *http.Server
 	media *mediaServer // nil, если каталог не задан
@@ -246,6 +254,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /me/nick", s.handleNick)
 	mux.HandleFunc("POST /me/avatar", s.handleAvatar)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	// События: свои поводы и отметка прочитанного. Маршруты заведены всегда —
+	// без шины они отвечают «нет такой страницы», как /mod без модерации.
+	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("POST /events/read", s.handleEventsRead)
+	// Живой канал. Идёт мимо семафора и срока запроса (см. withGuard и шапку
+	// live.go): соединение живёт минутами, а общий потолок морды — двенадцать
+	// запросов в работе разом при пуле в четыре соединения к базе.
+	mux.HandleFunc("GET /live", s.handleLive)
 	mux.HandleFunc("POST /theme", s.handleTheme)
 	// Запись. Правки и удаления ЧУЖОГО среди этих путей нет, и это не упущение:
 	// участник только пишет, остальное — у модератора (Ш7).
@@ -331,6 +347,17 @@ func (w *statusRecorder) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap отдаёт настоящий ResponseWriter. Обязателен, а не любезен: обёртка
+// ВСТРАИВАЕТ интерфейс, а встраивание интерфейса промотирует только его
+// собственные методы, — значит Flush и SetWriteDeadline настоящего писателя за
+// ней не видны вовсе. http.ResponseController ищет их именно через Unwrap.
+//
+// Пока страницы собирались в буфер и отдавались целиком, этого никто не
+// замечал. Живому каналу (live.go) без обеих способностей конец: без Flush
+// сигналы копятся в буфере, без снятого дедлайна поток обрывается на 45-й
+// секунде. Стережёт это TestLiveStreamHeaders — он и нашёл пропажу.
+func (w *statusRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // handleHealth отвечает 200, только если жива и база: иначе оркестратор будет
 // считать здоровым контейнер, который не может обслужить ни одного запроса.
@@ -424,6 +451,10 @@ func (s *Server) Close() error { return s.media.Close() }
 func (s *Server) Run(ctx context.Context) error {
 	defer s.Close() //nolint:errcheck // закрытие каталога на выходе ничего не решает
 	errc := make(chan error, 1)
+	if s.hub != nil {
+		// Один опрос базы на процесс, независимо от числа открытых страниц.
+		go s.hub.run(ctx)
+	}
 	go func() {
 		s.log.Info("веб-морда слушает", "addr", s.cfg.Listen)
 		if err := s.http.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

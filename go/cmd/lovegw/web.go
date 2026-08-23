@@ -89,6 +89,10 @@ func cmdWeb(ctx context.Context, args []string) error {
 		Operator: operatorOf(cfg),
 		Log:      log,
 	}, pf, pf, webWriter{Platform: pf, media: media}, pf, site)
+	// Шина событий: страница «События», колокольчик и живой канал. Морда только
+	// ЧИТАЕТ поводы и отмечает их прочитанными — раздаёт их демон (platbus),
+	// потому что горутина, поднятая и здесь, и там, делала бы одну работу вдвоём.
+	srv.SetEvents(pf)
 	return srv.Run(ctx)
 }
 
