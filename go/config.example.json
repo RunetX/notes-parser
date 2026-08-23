@@ -97,7 +97,10 @@
     "site_account": "",
     "moderation": {
       "enabled": false,
-      "model": "claude-haiku-4-5",
+      "provider": "yandex",
+      "api_key": "",
+      "folder_id": "",
+      "model": "yandexgpt-lite/latest",
       "effort": "",
       "interval_s": 30,
       "batch_size": 10,

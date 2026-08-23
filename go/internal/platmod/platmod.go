@@ -331,6 +331,24 @@ func (s *Service) classify(ctx context.Context, items []platform.Pending) ([]*pl
 	return out, nil
 }
 
+// Triage — прогон пачки БЕЗ каких-либо записей: стенд для замера модели и
+// промпта (команда `platform triage`).
+//
+// Не пишет ничего: ни вердиктов, ни попыток, ни расхода из суточного потолка, —
+// и потому безопасен при работающем демоне. Нужен он вот зачем: решение
+// автомата это право машины убрать чужие слова, и проверять его надо ДО того,
+// как она это право получит, а честная проверка одна — прогнать настоящие
+// реплики и посмотреть глазами.
+//
+// Шторм одинаковых сообщений здесь не считается намеренно: его ловит код по
+// базе, а не модель, и мнения о нём у неё нет.
+func (s *Service) Triage(ctx context.Context, items []platform.Pending) ([]*platform.VerdictRecord, error) {
+	if s.gen == nil {
+		return nil, errors.New("классификатор не настроен: см. platform.moderation")
+	}
+	return s.classify(ctx, items)
+}
+
 // takeBudget списывает один запрос из суточного потолка.
 func (s *Service) takeBudget() bool {
 	day := time.Now().UTC().Format(time.DateOnly)

@@ -239,10 +239,32 @@ type Bus struct {
 // секции НЕ зависят вовсе: они часть ядра и морды.
 type Moderation struct {
 	Enabled bool `json:"enabled"`
-	// Model — чем проверять. По умолчанию Haiku 4.5 (`claude-haiku-4-5`, $1/$5
-	// за млн токенов), а не общая модель из секции llm: это ТРИАЖ по закрытому
-	// списку, и решение владельца записано в бэклоге прямо — «триаж дешёвой
-	// моделью, дорогая только на сомнительной полосе».
+	// Provider — ЧЕЙ API проверяет тексты участников. «yandex» (по умолчанию) —
+	// Yandex AI Studio, пакет rullm; «anthropic» — Claude, пакет llm.
+	//
+	// Это не настройка вкуса и не переключатель качества. Опубликованное
+	// согласие обещает людям «не вывозит данные за пределы России», а на
+	// проверку уходит написанное ими же, — поэтому «anthropic» здесь и означает
+	// расхождение с бумагой, которую участники уже подписали. Значение
+	// оставлено ради дайджеста и амвона, живущих на Claude, и ради возможности
+	// сравнить модели на стенде (`platform triage`), но боевой выбор один.
+	Provider string `json:"provider,omitempty"`
+	// APIKey — ключ провайдера. Боевое место ему — env LOVEGW_MODERATION_KEY, а
+	// не файл: конфиг монтируется в контейнер файлом и попадает в бэкапы
+	// каталога развёртывания, то же правило, что у platform.dsn.
+	APIKey string `json:"api_key,omitempty"`
+	// FolderID — каталог Yandex Cloud (provider=yandex). Секретом не является:
+	// сам по себе он ничего не открывает, ключ лежит отдельно.
+	FolderID string `json:"folder_id,omitempty"`
+	// BaseURL — переопределение адреса API. Пусто — боевой адрес провайдера;
+	// нужен на случай смены хоста, чтобы это не требовало сборки.
+	BaseURL string `json:"base_url,omitempty"`
+	// Model — чем проверять. Смысл значения зависит от Provider: у yandex это
+	// «yandexgpt-lite/latest» (folder приезжает отдельным полем), у anthropic —
+	// Haiku 4.5 (`claude-haiku-4-5`, $1/$5 за млн токенов), а не общая модель из
+	// секции llm: это ТРИАЖ по закрытому списку, и решение владельца записано в
+	// бэклоге прямо — «триаж дешёвой моделью, дорогая только на сомнительной
+	// полосе».
 	//
 	// Отдельно от llm.model ещё и потому, что дайджест с амвоном живут на
 	// claude-opus-5: одно поле на всех означало бы либо дорогой триаж, либо
@@ -396,7 +418,11 @@ func Load(path string) (*Config, error) {
 			// Модель — дешёвая: это триаж по закрытому списку, и effort ей не
 			// передаётся вовсе (Haiku 4.5 отвечает на него ошибкой).
 			Moderation: Moderation{
-				Model:         "claude-haiku-4-5",
+				// Провайдер по умолчанию РОССИЙСКИЙ: на проверку уходит текст
+				// участников, а согласие обещает не вывозить его за пределы
+				// России. Имя модели пустое намеренно — оно своё у каждого
+				// провайдера и подставляется при сборке клиента.
+				Provider:      "yandex",
 				IntervalS:     30,
 				BatchSize:     10,
 				DailyRequests: 500,
@@ -564,6 +590,11 @@ func (c *Config) applyPlatformEnv() error {
 		return err
 	}
 	envString(&c.Platform.Moderation.Model, "LOVEGW_MODERATION_MODEL")
+	envString(&c.Platform.Moderation.Provider, "LOVEGW_MODERATION_PROVIDER")
+	// Ключ классификатора — только из окружения на боевом хосте: конфиг
+	// монтируется файлом и уезжает в бэкапы каталога развёртывания.
+	envString(&c.Platform.Moderation.APIKey, "LOVEGW_MODERATION_KEY")
+	envString(&c.Platform.Moderation.FolderID, "LOVEGW_MODERATION_FOLDER")
 	return envInt(&c.Platform.Moderation.DailyRequests, "LOVEGW_MODERATION_DAILY_REQUESTS")
 }
 

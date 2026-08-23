@@ -45,6 +45,7 @@ var platformSubcommands = map[string]bool{
 	"role":            true,
 	"import-archive":  true,
 	"moderation":      true,
+	"triage":          true,
 	"events":          true,
 	"anonymize":       true,
 	"export":          true,
@@ -67,6 +68,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	keepIdx := fs.Bool("keep-indexes", false, "import-archive: не снимать индексы comments")
 	dry := fs.Bool("dry-run", false, "import-archive / import-restored: посчитать, ничего не записывая")
 	out := fs.String("out", "", "export: файл выгрузки (пусто — stdout)")
+	model := fs.String("model", "", "triage: подменить модель классификатора, не трогая конфиг")
 	reason := fs.String("reason", "", "ban / unban: причина, её увидит сам человек")
 	yes := fs.Bool("yes", false, "anonymize: подтвердить необратимую операцию")
 	body := fs.String("body", "", "post: файл с текстом заметки («-» — читать stdin)")
@@ -132,6 +134,8 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformRole(ctx, cfg, id, tail[1])
 	case "moderation":
 		return platformModeration(ctx, cfg, *limit)
+	case "triage":
+		return platformTriage(ctx, cfg, *limit, *model)
 	case "events":
 		return platformEvents(ctx, cfg, *limit)
 	case "anonymize":

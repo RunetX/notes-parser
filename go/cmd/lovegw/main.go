@@ -952,18 +952,19 @@ func (d *daemon) setupModeration(p *platform.Platform) {
 	cfg, log := d.cfg, d.log
 	m := cfg.Platform.Moderation
 	var gen platmod.JSONGenerator
+	model := m.Model
 	if m.Enabled {
-		c, err := llmClientFor(cfg, m.Model, m.Effort, time.Duration(m.TimeoutS)*time.Second)
+		c, resolved, err := moderationClient(cfg)
 		if err != nil {
 			// Не отказ демона: модерация — не зеркало, и ронять канал из-за
 			// незаданного ключа нельзя. Очередь при этом жива.
 			log.Warn("автомат модерации не подключён", "err", err)
 		} else {
-			gen = c
+			gen, model = c, resolved
 		}
 	}
 	svc := platmod.New(platmod.Config{
-		Model:         m.Model,
+		Model:         model,
 		Interval:      time.Duration(m.IntervalS) * time.Second,
 		Batch:         m.BatchSize,
 		MaxAttempts:   m.MaxAttempts,
