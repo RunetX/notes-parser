@@ -1,0 +1,38 @@
+{{/* Одна реплика треда.
+
+     Вынесена в часть не ради опрятности, а потому, что рисуют её ДВОЕ: страница
+     заметки и живой добор (web/fresh.go), дописывающий тред без перезагрузки.
+     Ровно в этом смысл — путь сборки текста остаётся ОДИН. Собери фрагмент
+     скриптом из JSON, и у площадки появился бы второй способ превратить текст в
+     разметку, то есть вторая поверхность для XSS и второе место, где однажды
+     забудут про эпоху разметки, смайлы и обращение.
+
+     Точка — пара (Страница, Реплика), её собирает шаблонный глагол `ci`:
+     реплике самой по себе нужен контекст страницы (права, реакции, книга
+     обращений), а таскать его вторым аргументом шаблоны не умеют.
+
+     data-parent и data-depth нужны показу: по ним скрипт понимает, в какое
+     место ветки встала новая реплика. Пусто — ответ в корень треда. */}}
+{{define "comment"}}
+{{- $c := .Comment}}
+<li class="c {{depth $c.Depth}}{{if ne $c.Status 0}} chid{{end}}" id="c{{$c.ID}}"
+    data-depth="{{$c.Depth}}" data-parent="{{with $c.ReplyTo}}{{.CommentID}}{{end}}">
+  <div class="cava">{{template "avatar" (av $c.Author.AvatarURL $c.Author.Gender $c.Anonymous)}}</div>
+  <div class="cbody">
+    <div class="chead">
+      <span class="nick {{$c.Author.Gender.Class}}{{if $c.Anonymous}} anon{{end}}">{{$c.Name}}</span>
+      <a class="anchor" href="#c{{$c.ID}}" title="Ссылка на этот комментарий">#</a>
+      <div class="cdate">{{when $c.PublishedAt true}}</div>
+    </div>
+    <div class="text">{{commentBody .Page.Book $c}}</div>
+    {{template "reactions" (rx .Page $c.ID)}}
+    {{if or .Page.CanWrite (index .Page.Replies $c.ID)}}
+    <p class="cact">
+      {{if .Page.CanWrite}}<a class="rep" href="{{replyURL .Page.ReplyBase $c.ID}}">Ответить</a>{{end}}
+      {{with index .Page.Replies $c.ID}}<span class="rcount">Ответы <b>{{.}}</b></span>{{end}}
+    </p>
+    {{end}}
+    {{template "modbar" (modc .Page $c)}}
+  </div>
+</li>
+{{end}}

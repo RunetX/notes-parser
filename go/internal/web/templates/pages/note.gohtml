@@ -89,27 +89,14 @@
 <p class="empty">Комментариев пока нет.</p>
 {{end}}
 
-<ul class="thread{{if .Linear}} linear{{end}}">
+{{/* data-fresh — граница живого добора: реплики новее этой страница дописывает
+     сама, без перезагрузки (assets/app.js). Атрибут и есть выключатель: там,
+     где его нет, дописывать нельзя — так на страницах линейного вида, кроме
+     первой, потому что они исторический срез, а не хвост разговора. */}}
+<ul class="thread{{if .Linear}} linear{{end}}"
+    {{- if .FreshOK}} data-fresh="{{.FreshAfter}}" data-fresh-url="/n/{{$n.ID}}/fresh"{{end}}>
 {{range .Comments}}
-  <li class="c {{depth .Depth}}{{if ne .Status 0}} chid{{end}}" id="c{{.ID}}" data-depth="{{.Depth}}">
-    <div class="cava">{{template "avatar" (av .Author.AvatarURL .Author.Gender .Anonymous)}}</div>
-    <div class="cbody">
-      <div class="chead">
-        <span class="nick {{.Author.Gender.Class}}{{if .Anonymous}} anon{{end}}">{{.Name}}</span>
-        <a class="anchor" href="#c{{.ID}}" title="Ссылка на этот комментарий">#</a>
-        <div class="cdate">{{when .PublishedAt true}}</div>
-      </div>
-      <div class="text">{{commentBody $.Book .}}</div>
-      {{template "reactions" (rx $ .ID)}}
-      {{if or $.CanWrite (index $.Replies .ID)}}
-      <p class="cact">
-        {{if $.CanWrite}}<a class="rep" href="{{replyURL $.ReplyBase .ID}}">Ответить</a>{{end}}
-        {{with index $.Replies .ID}}<span class="rcount">Ответы <b>{{.}}</b></span>{{end}}
-      </p>
-      {{end}}
-      {{template "modbar" (modc $ .)}}
-    </div>
-  </li>
+  {{template "comment" (ci $ .)}}
 {{end}}
 </ul>
 

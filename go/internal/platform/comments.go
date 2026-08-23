@@ -115,6 +115,50 @@ const flatModQuery = `
 	 ORDER BY c.id DESC
 	 LIMIT $3 OFFSET $4`
 
+// commentsSinceQuery — добор реплик, появившихся ПОСЛЕ того, как страница была
+// нарисована. Это живой канал (web/fresh.go), и запрос у него свой, а не выборка
+// из дерева: тред отдаётся целиком до 5000 строк, и перечитывать его на каждую
+// новую реплику у каждого открытого окна — верный способ отнять ядро у зеркала.
+//
+// Порядок ПО ВОЗРАСТАНИЮ id, в отличие от линейного вида: страница дописывается
+// в том порядке, в каком реплики появлялись, иначе три пришедшие разом встали бы
+// в тред задом наперёд. Индекс тот же, comments_flat (note_id, id).
+const commentsSinceQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.status = 0 AND c.id > $3
+	 ORDER BY c.id
+	 LIMIT $4`
+
+const commentsSinceModQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.status IN (0, 2) AND c.id > $3
+	 ORDER BY c.id
+	 LIMIT $4`
+
+// FreshLimit — сколько реплик отдаётся за один добор. Не постраничка: если за
+// такт пришло больше, следующий запрос донесёт хвост, а курсор сдвинется сам.
+const FreshLimit = 50
+
+// CommentsSince — реплики заметки новее указанной. Виды здесь нет вовсе: и
+// дерево, и линейный добираются одним запросом, а куда встанет строка, решает
+// уже показ (у дерева — по ребру ответа, у линейного — сверху).
+func (p *Platform) CommentsSince(ctx context.Context, v Viewer, noteID, afterID int64, limit int) ([]CommentView, error) {
+	limit = clampLimit(limit)
+	q := commentsSinceQuery
+	if v.CanModerate() {
+		q = commentsSinceModQuery
+	}
+	rows, err := p.pool.Query(ctx, q, v.UserID, noteID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("новые реплики заметки %d: %w", noteID, err)
+	}
+	out, err := collectComments(rows, limit)
+	if err != nil {
+		return nil, fmt.Errorf("новые реплики заметки %d: %w", noteID, err)
+	}
+	return out, nil
+}
+
 // MaxThreadRows — потолок строк древовидного вида. Не постраничка, а
 // предохранитель: дерево показывается ЦЕЛИКОМ, как на НГС, — ветка, обрезанная
 // на середине, перестаёт быть деревом, и «дальше» в ней означало бы «продолжите

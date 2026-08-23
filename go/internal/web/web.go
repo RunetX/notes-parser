@@ -76,6 +76,13 @@ type Store interface {
 	NoteImages(ctx context.Context, noteID int64) ([]platform.Media, error)
 	Thread(ctx context.Context, v platform.Viewer, noteID int64) ([]platform.CommentView, error)
 	Flat(ctx context.Context, v platform.Viewer, noteID int64, offset, limit int) ([]platform.CommentView, error)
+	// CommentsSince и NotesSince — живой добор: что появилось ПОСЛЕ того, как
+	// страница была нарисована (fresh.go). Отдельные методы, а не «дай тред
+	// заново»: тред отдаётся целиком до 5000 строк, и перечитывать его на
+	// каждую новую реплику у каждого открытого окна значит отнять ядро у
+	// зеркала, которое живёт на том же хосте.
+	CommentsSince(ctx context.Context, v platform.Viewer, noteID, afterID int64, limit int) ([]platform.CommentView, error)
+	NotesSince(ctx context.Context, v platform.Viewer, after time.Time, afterID int64, limit int) ([]platform.NoteView, error)
 	// NoteReactions — реакции заметки и всего треда разом. Отдельным методом, а не
 	// полем в CommentView: реакции меняются чаще самих реплик и читаются одним
 	// запросом на страницу, а не по одному на строку.
@@ -285,6 +292,10 @@ func (s *Server) routes() http.Handler {
 	if s.media != nil {
 		mux.Handle("GET /media/", http.StripPrefix("/media/", s.media))
 	}
+	// Живой добор — вторая половина живого канала: /live говорит, ЧТО новое, а
+	// сюда страница приходит за готовой строкой (fresh.go).
+	mux.HandleFunc("GET /fresh", s.handleFreshFeed)
+	mux.HandleFunc("GET /n/{id}/fresh", s.handleFresh)
 	mux.HandleFunc("GET /{$}", s.handleFeed)
 	mux.HandleFunc("GET /n/{id}", s.handleNote)
 	mux.HandleFunc("/", s.handleNotFound)

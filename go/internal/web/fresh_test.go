@@ -1,0 +1,238 @@
+package web
+
+// Проверки живого добора (эпик F).
+//
+// Главная мысль набора: строка, ДОПИСАННАЯ в страницу, обязана быть той же
+// самой, что нарисовало бы обновление. Если эти два пути разойдутся, площадка
+// получит вторую разметку — а вместе с ней второе место, где однажды забудут
+// про маскирование анонима, обращение из ребра и права читателя.
+
+import (
+	"net/http"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"lovegw/internal/platform"
+)
+
+func freshComment(id int64, parent int64, depth int) platform.CommentView {
+	c := platform.CommentView{
+		ID: id, NoteID: 312811, Depth: depth,
+		Author:      platform.Author{ID: 1044551, Nick: "Линда"},
+		Body:        "только что написанное",
+		PublishedAt: time.Date(2026, 8, 23, 11, 0, 0, 0, time.UTC),
+	}
+	if parent != 0 {
+		c.ReplyTo = &platform.ReplyRef{CommentID: parent, Nick: "Мавр"}
+	}
+	return c
+}
+
+// Кусок разметки — это именно кусок: ни «базы», ни шапки, ни колокольчика.
+// Клиент вставляет его как есть, поэтому лишнее здесь не мусор, а поломка.
+func TestFreshReturnsBareItems(t *testing.T) {
+	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 2, 2)}}
+	h := openServer(t, st)
+
+	w := do(h, guest(t, "GET", "/n/312811/fresh?after=3"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("добор ответил %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, bad := range []string{"<!doctype", "<html", "class=\"top\"", "<title"} {
+		if strings.Contains(strings.ToLower(body), bad) {
+			t.Errorf("в куске разметки оказалась страница целиком (%q):\n%s", bad, body)
+		}
+	}
+	if !strings.HasPrefix(strings.TrimSpace(body), "<li") {
+		t.Errorf("кусок начинается не со строки списка:\n%s", body)
+	}
+	// Границу добора клиент не разбирает, а возвращает как есть — но сдвинуть её
+	// обязан сервер, иначе следующий добор принесёт то же самое ещё раз.
+	if got := w.Header().Get("X-Fresh-After"); got != "9" {
+		t.Errorf("граница после добора: %q, ожидалась 9", got)
+	}
+	if st.freshAfter != 3 || st.freshNoteID != 312811 {
+		t.Errorf("в хранилище ушло note=%d after=%d", st.freshNoteID, st.freshAfter)
+	}
+}
+
+// Куда встанет строка, решает КЛИЕНТ, и решает по этим двум атрибутам. Без них
+// ответ на давнюю реплику уехал бы в конец треда.
+func TestFreshItemCarriesItsPlaceInTree(t *testing.T) {
+	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 2, 2)}}
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=3")).Body.String()
+
+	for _, want := range []string{`id="c9"`, `data-depth="2"`, `data-parent="2"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("в строке нет %s:\n%s", want, body)
+		}
+	}
+}
+
+// Та же реплика, нарисованная страницей и добором, обязана дать ОДНУ И ТУ ЖЕ
+// разметку. Это и есть весь смысл общей части: разойдись они — и у площадки
+// стало бы два способа превратить текст в HTML.
+func TestFreshItemMatchesThePageItem(t *testing.T) {
+	c := freshComment(9, 0, 1)
+	st := &fakeStore{note: sampleNote(), thread: []platform.CommentView{c}, fresh: []platform.CommentView{c}}
+	h := openServer(t, st)
+
+	page := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	frag := strings.TrimSpace(do(h, guest(t, "GET", "/n/312811/fresh?after=0")).Body.String())
+
+	item := regexp.MustCompile(`(?s)<li class="c .*?</li>`).FindString(page)
+	if item == "" {
+		t.Fatal("на странице не нашлось строки комментария")
+	}
+	if squeeze(item) != squeeze(frag) {
+		t.Errorf("страница и добор рисуют по-разному:\n-- страница --\n%s\n-- добор --\n%s", item, frag)
+	}
+}
+
+// squeeze — сравниваем разметку, а не расстановку переносов: шаблон один, но
+// вокруг вызова у страницы и у куска отступы разные.
+func squeeze(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// Права у дописанной строки те же, что у страницы: гостю не предлагают
+// «Ответить» ни там, ни там.
+func TestFreshItemRespectsWhoIsAsking(t *testing.T) {
+	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 0, 1)}}
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0")).Body.String()
+	if strings.Contains(body, "Ответить") {
+		t.Errorf("гостю предложено отвечать:\n%s", body)
+	}
+}
+
+// Число над тредом ставит сервер: порция добора ограничена потолком, и считать
+// его по числу вставленных строк значило бы врать при первом же шторме.
+func TestFreshCarriesCommentCount(t *testing.T) {
+	note := sampleNote()
+	note.CommentCount = 158
+	st := &fakeStore{note: note, fresh: []platform.CommentView{freshComment(9, 0, 1)}}
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0"))
+	if got := w.Header().Get("X-Fresh-Count"); got != "158" {
+		t.Errorf("число комментариев: %q, ожидалось 158", got)
+	}
+}
+
+// Пустой добор — рабочий случай, а не отказ: сигнал мог прийти о реплике,
+// которую тут же скрыли. Граница при этом остаётся прежней.
+func TestFreshEmptyKeepsCursor(t *testing.T) {
+	st := &fakeStore{note: sampleNote()}
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=42"))
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "" {
+		t.Fatalf("пустой добор ответил %d, тело %q", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Fresh-After"); got != "42" {
+		t.Errorf("граница после пустого добора: %q, ожидалась прежняя 42", got)
+	}
+}
+
+func TestFreshRejectsBadCursor(t *testing.T) {
+	h := openServer(t, &fakeStore{note: sampleNote()})
+	for _, q := range []string{"", "?after=", "?after=абв", "?after=-1"} {
+		if got := do(h, guest(t, "GET", "/n/312811/fresh"+q)).Code; got != http.StatusBadRequest {
+			t.Errorf("граница %q принята с кодом %d", q, got)
+		}
+	}
+}
+
+// Лента добирается парой «время, id»: одного id мало — зеркальная заметка НГС
+// имеет номер МЕНЬШЕ любой нативной, будучи новее её.
+func TestFreshFeedUsesTimeCursor(t *testing.T) {
+	at := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	fresh := sampleNote()
+	fresh.ID = 100000000042
+	fresh.PublishedAt = at.Add(time.Hour)
+	st := &fakeStore{freshNotes: []platform.NoteView{fresh}}
+
+	w := do(openServer(t, st), guest(t, "GET", "/fresh?after="+feedCursor(at, 312811)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("добор ленты ответил %d", w.Code)
+	}
+	if !st.freshSince.Equal(at) {
+		t.Errorf("в хранилище ушло время %v, ожидалось %v", st.freshSince, at)
+	}
+	if !strings.Contains(w.Body.String(), `id="n100000000042"`) {
+		t.Errorf("заметки нет в ответе:\n%s", w.Body.String())
+	}
+	if got := w.Header().Get("X-Fresh-After"); got != feedCursor(fresh.PublishedAt, fresh.ID) {
+		t.Errorf("граница ленты после добора: %q", got)
+	}
+}
+
+// Запрос отдаёт от новых к старым, а клиент вставляет сверху — значит в теле
+// они обязаны идти НАОБОРОТ, иначе три пришедшие разом заметки встанут в ленту
+// задом наперёд.
+func TestFreshFeedReversesForTopInsertion(t *testing.T) {
+	at := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	older, newer := sampleNote(), sampleNote()
+	older.ID, older.PublishedAt = 111, at.Add(time.Minute)
+	newer.ID, newer.PublishedAt = 222, at.Add(2*time.Minute)
+	st := &fakeStore{freshNotes: []platform.NoteView{newer, older}} // как отдаёт лента
+
+	body := do(openServer(t, st), guest(t, "GET", "/fresh?after="+feedCursor(at, 0))).Body.String()
+	if strings.Index(body, `id="n111"`) > strings.Index(body, `id="n222"`) {
+		t.Errorf("порядок для вставки сверху перевёрнут не в ту сторону:\n%s", body)
+	}
+}
+
+func TestFreshFeedRejectsBadCursor(t *testing.T) {
+	h := openServer(t, &fakeStore{})
+	for _, q := range []string{"", "?after=42", "?after=абв,1", "?after=1,абв"} {
+		if got := do(h, guest(t, "GET", "/fresh"+q)).Code; got != http.StatusBadRequest {
+			t.Errorf("граница %q принята с кодом %d", q, got)
+		}
+	}
+}
+
+// Атрибут data-fresh и есть выключатель добора. Он стоит у дерева и у первой
+// страницы линейного вида — и не стоит у остальных: там срез истории, и хвост
+// разговора, дописанный сверху, врал бы о том, что человек читает.
+func TestFreshSwitchIsTheAttribute(t *testing.T) {
+	note := sampleNote()
+	note.CommentCount = 100 // хватит на несколько страниц линейного вида
+	st := &fakeStore{note: note, thread: sampleThread(), flat: sampleThread()}
+	h := openServer(t, st)
+
+	tree := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	if !strings.Contains(tree, `data-fresh="3"`) || !strings.Contains(tree, `data-fresh-url="/n/312811/fresh"`) {
+		t.Errorf("у дерева нет границы добора:\n%s", tree)
+	}
+	if first := do(h, guest(t, "GET", "/n/312811?view=linear")).Body.String(); !strings.Contains(first, "data-fresh=") {
+		t.Error("первая страница линейного вида не дописывается")
+	}
+	if second := do(h, guest(t, "GET", "/n/312811?view=linear&page=2")).Body.String(); strings.Contains(second, "data-fresh=") {
+		t.Error("вторая страница линейного вида дописывается, хотя это срез истории")
+	}
+}
+
+func TestFreshSwitchOnFeedIsFirstPageOnly(t *testing.T) {
+	st := &fakeStore{total: 100, notes: []platform.NoteView{sampleNote()}}
+	h := openServer(t, st)
+
+	if first := do(h, guest(t, "GET", "/")).Body.String(); !strings.Contains(first, `data-fresh-url="/fresh"`) {
+		t.Errorf("лента не дописывается:\n%s", first)
+	}
+	if second := do(h, guest(t, "GET", "/?page=2")).Body.String(); strings.Contains(second, "data-fresh=") {
+		t.Error("вторая страница ленты дописывается, хотя это срез истории")
+	}
+}
+
+// Живой добор дешевле страницы треда, и корзину частоты он тратит как обычная
+// страница: платить за него как за дерево значило бы наказывать читателя за то,
+// что он держит вкладку открытой.
+func TestFreshCostsLessThanThread(t *testing.T) {
+	if costOf(guest(t, "GET", "/n/312811/fresh?after=1")) != costPage {
+		t.Error("добор треда стоит не как страница")
+	}
+	if costOf(guest(t, "GET", "/fresh?after=1,1")) != costPage {
+		t.Error("добор ленты стоит не как страница")
+	}
+	if costOf(guest(t, "GET", "/n/312811")) != costThread {
+		t.Error("страница треда перестала стоить как тред")
+	}
+}

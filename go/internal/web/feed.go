@@ -57,6 +57,10 @@ type feedPage struct {
 	// можно всем, писать — только вошедшим, и кнопка, ведущая к отказу, хуже её
 	// отсутствия.
 	CanWrite bool
+	// FreshOK и FreshAfter — живой добор ленты (fresh.go). Граница непрозрачна
+	// для страницы: она её только печатает, а разбирает и двигает сервер.
+	FreshOK    bool
+	FreshAfter string
 }
 
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +86,13 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		s.oops(w, r, "лента", err)
 		return
 	}
+	// Граница живого добора берётся ДО того, как сверху лягут закреплённые:
+	// они стоят вне хронологии, и «самая свежая» среди них — не граница, а
+	// случайное старое время, с которого добор принёс бы половину ленты.
+	fresh := feedCursor(time.Now(), 0)
+	if len(notes) > 0 {
+		fresh = feedCursor(notes[0].PublishedAt, notes[0].ID)
+	}
 	// Закреплённое — только на первой странице. На остальных оно было бы
 	// шапкой, которая едет за читателем: он листает ленту как раз затем, чтобы
 	// уйти от начала. Лишнего запроса на страницах 2…5933 при этом нет вовсе.
@@ -99,6 +110,10 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		Notes:    notes,
 		Pager:    newPager(num, pages, feedURL),
 		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil,
+		// Дописывается только первая страница: остальные — срез истории, и
+		// новая заметка сверху сдвинула бы человеку то, что он читает.
+		FreshOK:    num == 1,
+		FreshAfter: fresh,
 	})
 }
 

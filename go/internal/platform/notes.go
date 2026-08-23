@@ -99,6 +99,45 @@ const feedQuery = `
 	 ORDER BY n.published_at DESC, n.id DESC
 	 LIMIT $2 OFFSET $3`
 
+// notesSinceQuery — заметки, опубликованные ПОСЛЕ того, как лента была
+// нарисована: живой добор первой страницы (web/fresh.go).
+//
+// Курсор здесь именно КЛЮЧЕВОЙ — пара (published_at, id), — и это тот самый
+// keyset, которого нет у самой ленты. Противоречия нет: ленте нужны НОМЕРА
+// страниц, ради них она и платит OFFSET'ом, а доборщику номер не нужен вовсе,
+// ему нужна граница. Сравнение строк ложится на тот же notes_feed, что и лента.
+//
+// Закреплённые исключены той же строкой, что и в ленте: они уже стоят наверху
+// страницы, и дописать их вторым экземпляром значило бы задвоить.
+const notesSinceQuery = `
+	SELECT ` + noteViewColumns + noteViewFrom + `
+	 WHERE n.status = 0 AND n.pinned_at IS NULL AND (n.published_at, n.id) > ($2, $3)
+	 ORDER BY n.published_at DESC, n.id DESC
+	 LIMIT $4`
+
+// NotesSince — заметки новее границы, от новых к старым.
+func (p *Platform) NotesSince(ctx context.Context, v Viewer, after time.Time, afterID int64, limit int) ([]NoteView, error) {
+	limit = clampLimit(limit)
+	rows, err := p.pool.Query(ctx, notesSinceQuery, v.UserID, after, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("новые заметки ленты: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]NoteView, 0, limit)
+	for rows.Next() {
+		n, err := scanNoteView(rows)
+		if err != nil {
+			return nil, fmt.Errorf("новые заметки ленты, разбор строки: %w", err)
+		}
+		out = append(out, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("новые заметки ленты: %w", err)
+	}
+	return out, nil
+}
+
 // pinnedQuery — закреплённые заметки, те самые, что лента показывает поверх
 // хронологии. Отдельным запросом, а не сортировкой внутри ленты, намеренно:
 // «ORDER BY pinned DESC, published_at DESC» отняло бы у ленты индекс

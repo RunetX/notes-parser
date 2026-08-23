@@ -278,16 +278,32 @@ a:hover { text-decoration: underline; }
 .evx.gone { color: var(--meta); font-style: italic; }
 .readall { margin: 0 0 14px; }
 
-/* Полоса «показать новое». Её рисует скрипт и только он: без JS страница
-   обновляется руками, и место под несуществующую кнопку резервировать незачем.
-   Во всю ширину — читателю она нужна как строка списка, а не как значок. */
-.newbar {
-  display: block; width: 100%; font: inherit; text-align: left; cursor: pointer;
-  margin: 0 0 12px; padding: 9px 14px;
-  color: var(--ink); background: var(--btn);
-  border: 1px solid var(--rule); border-radius: 3px;
+/* Живое дописывание (fresh.go, app.js). Новая реплика или заметка появляется
+   сама, без перезагрузки и без нажатий, — и отличается от соседних ровно
+   одним: короткой подсветкой, которая гаснет.
+   Цвет тот же --hl, что и у подсветки по анкору, а не свой: «на это стоит
+   посмотреть» на странице значит одно и то же, откуда бы указание ни пришло.
+   Гасит подсветку САМА анимация (both), поэтому скрипту не нужен таймер, а
+   классу — снятие: свою работу он к тому времени уже сделал.
+   Сдвиг страницы, когда строка встаёт ВЫШЕ прочитанного, разбирает браузер сам
+   (overflow-anchor: auto по умолчанию) — и именно поэтому его здесь никто не
+   отключает. */
+@keyframes fresh-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
 }
-.newbar:hover { border-color: var(--link); color: var(--link); }
+@keyframes fresh-glow {
+  from { background-color: var(--hl); }
+  to   { background-color: transparent; }
+}
+.c.fresh, .note.fresh { animation: fresh-in .28s ease-out, fresh-glow 6s ease-out .28s both; }
+
+/* Кому движение мешает — тому только подсветка: она не движение, а указание,
+   и без неё новая строка появлялась бы вовсе незаметно. */
+@media (prefers-reduced-motion: reduce) {
+  .c.fresh, .note.fresh { animation: fresh-glow 6s linear both; }
+}
+
 
 /* Ширина карточки постоянная и от содержимого не зависит — как на НГС.
    width:100% здесь обязателен ВМЕСТЕ с `margin: … auto`: у flex-элемента с

@@ -156,20 +156,28 @@
   });
 })();
 
-// Живая страница. Сервер шлёт СИГНАЛ («в этом треде новое», «вам есть что
-// прочесть»), а не содержимое, — поэтому здесь нет ни сборки разметки, ни
-// экранирования, ни второго способа показать текст. Всё, что делает этот блок:
-// рисует полосу «показать» и подкручивает число у колокольчика.
+// Живая страница: тред и лента дописывают себя сами, без перезагрузки и без
+// нажатий.
+//
+// Работает это в два шага, и разделение принципиальное (подробности — в шапке
+// fresh.go). Поток /live шлёт СИГНАЛ: «в этом треде новое». Разметку он не
+// несёт и нести не должен — хаб один на процесс и никого не знает, а строка у
+// каждого своя: модератор видит скрытое, автор свою реакцию, гость не видит
+// «Ответить». Получив сигнал, страница идёт за готовой строкой на /fresh, где
+// её рисует ТОТ ЖЕ шаблон, что и саму страницу.
+//
+// Поэтому здесь нет ни сборки разметки, ни экранирования: скрипт только
+// вставляет полученный кусок и решает, КУДА он встанет. Разбор текста в HTML
+// остаётся ровно в одном месте — на сервере.
 //
 // Без скрипта не появляется ничего, и это не ущерб: страница целиком работает
-// обновлением, а живой канал — удобство поверх неё. Полосу создаёт скрипт
-// (правило «мёртвых кнопок не бывает»), поток открывается только у вошедшего —
-// признаком служит колокольчик в шапке, которого у гостя нет.
+// обновлением, а живой добор — удобство поверх неё. Поток открывается только у
+// вошедшего — признаком служит колокольчик в шапке, которого у гостя нет.
 (function () {
   'use strict';
 
   var bell = document.querySelector('.bell');
-  if (!bell || !window.EventSource) return;
+  if (!bell || !window.EventSource || !window.fetch) return;
 
   // Что слушаем. Тред узнаём из адреса, а не из разметки: /n/312811 — это и
   // есть номер заметки, и лишний атрибут в шаблоне ради него не нужен.
@@ -177,30 +185,16 @@
   var query = m ? '?note=' + m[1] : (location.pathname === '/' ? '?feed=1' : '');
   if (!m && query === '') return; // на остальных страницах слушать нечего
 
-  var fresh = 0, bar = null, src = null;
-
-  var plural = function (n, one, few, many) {
-    var a = n % 100, b = n % 10;
-    if (a > 10 && a < 20) return many;
-    if (b === 1) return one;
-    if (b >= 2 && b <= 4) return few;
-    return many;
-  };
-
-  var show = function () {
-    if (!bar) {
-      bar = document.createElement('button');
-      bar.type = 'button';
-      bar.className = 'newbar';
-      bar.addEventListener('click', function () { location.reload(); });
-      var host = document.querySelector('.thread') || document.querySelector('.notes');
-      if (!host) return;
-      host.parentNode.insertBefore(bar, host);
-    }
-    bar.textContent = m
-      ? fresh + ' ' + plural(fresh, 'новый ответ', 'новых ответа', 'новых ответов') + ' — показать'
-      : fresh + ' ' + plural(fresh, 'новая заметка', 'новые заметки', 'новых заметок') + ' — показать';
-  };
+  // Список, который дописывается, и граница добора. Атрибут data-fresh и есть
+  // выключатель: его нет на страницах линейного вида кроме первой — там срез
+  // истории, и дописывать в него хвост разговора значит врать о том, что
+  // человек читает. Сигналы при этом принимаются всё равно: колокольчик живёт
+  // на любой странице.
+  var list = document.querySelector(m ? '.thread' : '.notes');
+  var url = list && list.getAttribute('data-fresh-url');
+  var cursor = list && list.getAttribute('data-fresh');
+  var linear = !!list && list.classList.contains('linear');
+  var src = null, busy = false, again = false, timer = null;
 
   // Счётчик у колокольчика подкручивается на месте, а не перечитывается с
   // сервера: лишний запрос ради одной цифры дороже самой цифры, а точное
@@ -218,6 +212,102 @@
     cnt.textContent = isNaN(n) ? '1' : (n >= 99 ? '99+' : String(n + 1));
   };
 
+  // Куда встанет новая реплика в ДЕРЕВЕ: после всей ветки того, кому отвечали.
+  // Это не догадка о порядке, а он самый: путь новой реплики считается от её
+  // же id, поэтому среди соседей по ветке он последний. Родителя на странице
+  // нет (ответ в корень треда) — значит в конец.
+  var placeInTree = function (li) {
+    var parent = li.getAttribute('data-parent');
+    var anchor = parent ? document.getElementById('c' + parent) : null;
+    if (!anchor) { list.appendChild(li); return; }
+    var depth = parseInt(anchor.getAttribute('data-depth'), 10);
+    var at = anchor.nextElementSibling;
+    while (at && parseInt(at.getAttribute('data-depth'), 10) > depth) {
+      at = at.nextElementSibling;
+    }
+    list.insertBefore(li, at); // at === null → в самый конец
+  };
+
+  // В ЛЕНТЕ новое идёт наверх, но НИЖЕ закреплённого: закреплённые стоят вне
+  // хронологии, и свежая заметка над ними выглядела бы поломкой сортировки.
+  var placeOnTop = function (li) {
+    var at = list.firstElementChild;
+    while (at && at.className.indexOf('pinned') >= 0) at = at.nextElementSibling;
+    list.insertBefore(li, at);
+  };
+
+  var insert = function (html) {
+    if (!html) return 0;
+    var box = document.createElement('template');
+    box.innerHTML = html;
+    var items = Array.prototype.slice.call(box.content.children), added = 0;
+    for (var i = 0; i < items.length; i++) {
+      var li = items[i];
+      // Своя же только что отправленная реплика уже нарисована страницей, а
+      // сигнал о ней придёт всё равно: поток не знает, кто автор. Проверка по
+      // id закрывает это разом — и заодно любой повтор добора.
+      if (!li.id || document.getElementById(li.id)) continue;
+      if (!m) { placeOnTop(li); }
+      else if (linear) { list.insertBefore(li, list.firstChild); }
+      else { placeInTree(li); }
+      // Подсветка — единственное, чем новое отличается от старого, и живёт она
+      // в CSS: класс ставится навсегда, а гаснет анимацией. Снимать его
+      // таймером незачем, свою работу он к тому времени уже сделал.
+      li.className += ' fresh';
+      added++;
+    }
+    if (added) {
+      var empty = document.querySelector('.empty');
+      if (empty && empty.parentNode) empty.parentNode.removeChild(empty);
+    }
+    return added;
+  };
+
+  // Число над тредом ставит СЕРВЕР, а не счёт вставленных строк: порция добора
+  // ограничена потолком, да и скрытая реплика в неё не попадёт вовсе.
+  var setCount = function (n) {
+    var head = document.querySelector('.cttl .cnt');
+    if (head && n) head.textContent = n;
+  };
+
+  var pull = function () {
+    if (!url || cursor === null || cursor === undefined) return;
+    if (busy) { again = true; return; }
+    busy = true;
+    var next = null, count = null;
+    fetch(url + '?after=' + encodeURIComponent(cursor) + (linear ? '&view=linear' : ''),
+      { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+      .then(function (res) {
+        if (!res.ok) throw new Error('fresh');
+        next = res.headers.get('X-Fresh-After');
+        count = res.headers.get('X-Fresh-Count');
+        return res.text();
+      })
+      .then(function (html) {
+        if (next) cursor = next;
+        insert(html);
+        setCount(count);
+      })
+      .catch(function () {
+        // Отказ добора — не поломка страницы: следующий сигнал попробует снова,
+        // а до тех пор человек видит ровно то, что видел.
+      })
+      .then(function () {
+        busy = false;
+        if (again) { again = false; schedule(); }
+      });
+  };
+
+  // Разброс обязателен. Сигнал о новой реплике приходит ВСЕМ, кто держит тред
+  // открытым, в одну и ту же секунду, — и без него они пошли бы за добором
+  // разом. У морды двенадцать слотов и четыре соединения к Postgres, так что
+  // популярный тред устроил бы отказ сам себе.
+  var schedule = function () {
+    if (timer) return;
+    timer = window.setTimeout(function () { timer = null; pull(); },
+      Math.floor(Math.random() * 1200));
+  };
+
   var open = function () {
     if (src) return;
     src = new EventSource('/live' + query);
@@ -225,8 +315,7 @@
       var d;
       try { d = JSON.parse(e.data); } catch (err) { return; }
       if (d.kind === 'poke') { poke(); return; }
-      fresh++;
-      show();
+      schedule();
     };
     // Переподключение EventSource берёт на себя сам; наше дело — не мешать.
     // Свой поток сервер закрывает каждые пять минут, и это штатный путь.
@@ -239,9 +328,10 @@
   };
 
   // Вкладка в фоне слот не занимает: соединений у площадки шестьдесят четыре
-  // на всех, и держать их за свёрнутыми окнами незачем.
+  // на всех, и держать их за свёрнутыми окнами незачем. Возвращаясь, страница
+  // добирает пропущенное сразу: сигналов за время сна она не слышала.
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) close(); else open();
+    if (document.hidden) { close(); } else { open(); schedule(); }
   });
   if (!document.hidden) open();
 })();

@@ -190,6 +190,72 @@ func TestThreadOrderIsTreeOrder(t *testing.T) {
 	}
 }
 
+// Живой добор отдаёт реплику вместе с её МЕСТОМ в дереве: глубиной и адресатом.
+// Без них страница не знает, куда её поставить, и ответ на давнюю реплику уехал
+// бы в конец треда.
+func TestCommentsSinceCarriesPlaceInTree(t *testing.T) {
+	p := testPlatform(t)
+	ingestNote(t, p, 312811, 175869, "Гадёныш")
+	ingestComment(t, p, 100, 312811, 1, 0)
+	ingestComment(t, p, 200, 312811, 2, 100)
+	// Всё, что выше, страница уже показала. Дальше — то, что пришло потом.
+	ingestComment(t, p, 300, 312811, 3, 100)
+
+	got, err := p.CommentsSince(context.Background(), Viewer{}, 312811, 200, FreshLimit)
+	if err != nil {
+		t.Fatalf("добор: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 300 {
+		t.Fatalf("добор принёс %+v, ожидалась одна реплика 300", got)
+	}
+	if got[0].Depth != 2 {
+		t.Errorf("глубина %d, ожидалась 2", got[0].Depth)
+	}
+	if got[0].ReplyTo == nil || got[0].ReplyTo.CommentID != 100 {
+		t.Errorf("адресат %+v, ожидался 100", got[0].ReplyTo)
+	}
+	// Порядок ПО ВОЗРАСТАНИЮ, в отличие от линейного вида: страница дописывается
+	// в том порядке, в каком реплики появлялись.
+	ingestComment(t, p, 400, 312811, 1, 300)
+	got, err = p.CommentsSince(context.Background(), Viewer{}, 312811, 200, FreshLimit)
+	if err != nil {
+		t.Fatalf("добор: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != 300 || got[1].ID != 400 {
+		t.Fatalf("порядок добора: %v", got)
+	}
+}
+
+// Скрытое модератором в добор не идёт — ровно как и на страницу. Иначе живое
+// обновление показывало бы то, чего обновление вручную уже не покажет.
+func TestCommentsSinceHidesWhatThePageHides(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 312811, 175869, "Гадёныш")
+	ingestComment(t, p, 100, 312811, 1, 0)
+	ingestComment(t, p, 200, 312811, 2, 0)
+
+	mod := moderator(t, p)
+	if err := p.HideSubject(ctx, mod, CommentSubject(200), CatFlood, "проверка"); err != nil {
+		t.Fatalf("скрытие: %v", err)
+	}
+	got, err := p.CommentsSince(ctx, Viewer{}, 312811, 0, FreshLimit)
+	if err != nil {
+		t.Fatalf("добор: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 100 {
+		t.Fatalf("скрытая реплика попала в добор: %v", got)
+	}
+	// Модератору она видна — там же, где он читает.
+	got, err = p.CommentsSince(ctx, mod, 312811, 0, FreshLimit)
+	if err != nil {
+		t.Fatalf("добор модератора: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("модератор не увидел скрытое в доборе: %v", got)
+	}
+}
+
 // Ветка глубже потолка схлопывается по раскладке, но адресат обязан уцелеть:
 // путь — это вёрстка, ребро — факт.
 func TestDeepReplyClampsPathButKeepsEdge(t *testing.T) {
@@ -505,6 +571,15 @@ func seedForPlans(t *testing.T, p *Platform) {
 	// ключу: когда условию note_id удовлетворяет вся таблица, отдельный индекс
 	// действительно не нужен. Такая заготовка проверяла бы не запрос, а саму
 	// себя; на живой базе у заметки доли процента строк.
+	//
+	// ЧИСЛО строк на заметку тоже часть заготовки, и оплачено оно двумя
+	// ложными падениями. При двенадцати репликах в треде обоим индексам
+	// comments всё равно, с чего начинать (оба ведут с note_id), сортировка
+	// дюжины строк ничего не стоит — и выбор между comments_tree и
+	// comments_flat становится случайным: тест краснел на чистом дереве и
+	// зеленел от перезапуска. Триста реплик на заметку делают разницу
+	// настоящей: упорядоченный обход против сортировки трёхсот строк — это
+	// уже решение, а не бросок монеты.
 	if _, err := p.pool.Exec(ctx, `
 		INSERT INTO users (id, nick)
 		SELECT 1000000 + g, 'ник' || g FROM generate_series(1, 200) g;
@@ -516,7 +591,7 @@ func seedForPlans(t *testing.T, p *Platform) {
 		SELECT 500000 + g, 200000 + (g % 400) + 1, 1000000 + (g % 200) + 1, 'комментарий ' || g,
 		       lpad((500000 + g)::text, 13, '0'), 1,
 		       timestamptz '2026-08-17 12:00Z' + g * interval '1 second'
-		  FROM generate_series(1, 5000) g;
+		  FROM generate_series(1, 120000) g;
 		ANALYZE notes, comments, users, media`); err != nil {
 		t.Fatalf("заливка: %v", err)
 	}
@@ -540,6 +615,12 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		{"закреплённые", pinnedQuery, []any{int64(0), MaxPinned}, "notes_pinned"},
 		{"тред", threadQuery, []any{int64(0), int64(200001), 100}, "comments_tree"},
 		{"линейный вид", flatQuery, []any{int64(0), int64(200001), 30, 0}, "comments_flat"},
+		// Живой добор ходит чаще всех: по разу на каждую новую реплику у каждого
+		// открытого окна. Полный перебор здесь означал бы, что тред, который
+		// читают, тем самым и кладёт площадку.
+		{"добор треда", commentsSinceQuery, []any{int64(0), int64(200001), int64(0), 50}, "comments_flat"},
+		{"добор ленты", notesSinceQuery,
+			[]any{int64(0), time.Now().Add(-time.Hour), int64(0), 50}, "notes_feed"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

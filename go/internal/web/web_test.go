@@ -49,6 +49,13 @@ type fakeStore struct {
 	flatOffset int
 	flatUsed   bool
 
+	// Живой добор: что отдать и с какой границей за ним пришли.
+	fresh       []platform.CommentView
+	freshAfter  int64
+	freshNotes  []platform.NoteView
+	freshSince  time.Time
+	freshNoteID int64
+
 	pingErr error
 }
 
@@ -95,6 +102,16 @@ func (f *fakeStore) NoteReactions(_ context.Context, viewerID, _ int64) (map[int
 func (f *fakeStore) Flat(_ context.Context, _ platform.Viewer, _ int64, offset, _ int) ([]platform.CommentView, error) {
 	f.flatUsed, f.flatOffset = true, offset
 	return f.flat, nil
+}
+
+func (f *fakeStore) CommentsSince(_ context.Context, _ platform.Viewer, noteID, afterID int64, _ int) ([]platform.CommentView, error) {
+	f.freshNoteID, f.freshAfter = noteID, afterID
+	return f.fresh, nil
+}
+
+func (f *fakeStore) NotesSince(_ context.Context, _ platform.Viewer, after time.Time, _ int64, _ int) ([]platform.NoteView, error) {
+	f.freshSince = after
+	return f.freshNotes, nil
 }
 
 func quietLog() *slog.Logger {
