@@ -392,6 +392,21 @@ func (p *Platform) setSubjectHidden(ctx context.Context, actor int64, s Subject,
 	if err := audit(ctx, tx, actor, action, s, details); err != nil {
 		return err
 	}
+	// Приглашения прийти и прочитать снимаются ТОЙ ЖЕ транзакцией — исполняем,
+	// а не проверяем на показе (см. dropUnreadAbout). Само сообщение о скрытии
+	// под эту уборку не попадает: она перечисляет виды фактов явно.
+	if hide {
+		if err := dropUnreadAbout(ctx, tx, s); err != nil {
+			return err
+		}
+	}
+	kind := EventRestored
+	if hide {
+		kind = EventHidden
+	}
+	if err := recordEvent(ctx, tx, hideEvent(kind, actor, s, facts, category, reason)); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("%s %s: %w", action, s, err)
 	}
@@ -569,6 +584,15 @@ func (p *Platform) BanUser(ctx context.Context, actor Viewer, userID int64, unti
 		map[string]any{"until": until.UTC().Format(time.RFC3339), "reason": reason}); err != nil {
 		return err
 	}
+	// Сессии не гасятся (см. шапку), поэтому повод забаненный увидит — и это
+	// единственный способ узнать о запрете раньше, чем упрёшься в него формой.
+	// Срок в details лежит в RFC 3339: показывает его страница, а не журнал.
+	if err := recordEvent(ctx, tx, newEvent{
+		Kind: EventBanned, ActorID: actor.UserID, SubjectID: userID,
+		Details: map[string]any{"until": until.UTC().Format(time.RFC3339), "reason": reason},
+	}); err != nil {
+		return err
+	}
 	return wrapf(tx.Commit(ctx), "запрет %d", userID)
 }
 
@@ -594,6 +618,11 @@ func (p *Platform) UnbanUser(ctx context.Context, actor Viewer, userID int64, re
 	}
 	if err := audit(ctx, tx, actor.UserID, ActionUnban, UserSubject(userID),
 		map[string]any{"reason": trimReason(reason)}); err != nil {
+		return err
+	}
+	if err := recordEvent(ctx, tx, newEvent{
+		Kind: EventUnbanned, ActorID: actor.UserID, SubjectID: userID,
+	}); err != nil {
 		return err
 	}
 	return wrapf(tx.Commit(ctx), "снятие запрета %d", userID)
@@ -730,6 +759,15 @@ func (p *Platform) RecordVerdict(ctx context.Context, s Subject, v VerdictRecord
 			"category": v.Category, "reason": v.Reason, "quote": v.Quote,
 			"model": v.Model, "author": facts.AuthorID,
 		}); err != nil {
+			return err
+		}
+		// Актор — ноль: скрыла машина. Автору это видно и по тексту повода, и
+		// по кнопке «на пересмотр», которая есть только у автоскрытия.
+		if err := dropUnreadAbout(ctx, tx, s); err != nil {
+			return err
+		}
+		if err := recordEvent(ctx, tx,
+			hideEvent(EventHidden, 0, s, facts, v.Category, v.Reason)); err != nil {
 			return err
 		}
 	}
@@ -947,6 +985,25 @@ func (p *Platform) Decide(ctx context.Context, actor Viewer, s Subject, d Decisi
 		"reason": reason, "author": facts.AuthorID, "decision": int(d),
 	}); err != nil {
 		return err
+	}
+	// Автору говорят только о том, что с его публикацией СЛУЧИЛОСЬ. Отклонённая
+	// жалоба (ActionDismiss) ничего не меняет, и рассказывать о ней значило бы
+	// сообщать человеку, что на него жаловались, — сведения о ЖАЛОВАВШЕМСЯ, а не
+	// о нём, и обсуждать их автору не с кем.
+	switch action {
+	case ActionHide:
+		if err := dropUnreadAbout(ctx, tx, s); err != nil {
+			return err
+		}
+		if err := recordEvent(ctx, tx,
+			hideEvent(EventHidden, actor.UserID, s, facts, "", reason)); err != nil {
+			return err
+		}
+	case ActionRestore:
+		if err := recordEvent(ctx, tx,
+			hideEvent(EventRestored, actor.UserID, s, facts, "", reason)); err != nil {
+			return err
+		}
 	}
 	return wrapf(tx.Commit(ctx), "решение по %s", s)
 }

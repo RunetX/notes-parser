@@ -155,3 +155,93 @@
     });
   });
 })();
+
+// Живая страница. Сервер шлёт СИГНАЛ («в этом треде новое», «вам есть что
+// прочесть»), а не содержимое, — поэтому здесь нет ни сборки разметки, ни
+// экранирования, ни второго способа показать текст. Всё, что делает этот блок:
+// рисует полосу «показать» и подкручивает число у колокольчика.
+//
+// Без скрипта не появляется ничего, и это не ущерб: страница целиком работает
+// обновлением, а живой канал — удобство поверх неё. Полосу создаёт скрипт
+// (правило «мёртвых кнопок не бывает»), поток открывается только у вошедшего —
+// признаком служит колокольчик в шапке, которого у гостя нет.
+(function () {
+  'use strict';
+
+  var bell = document.querySelector('.bell');
+  if (!bell || !window.EventSource) return;
+
+  // Что слушаем. Тред узнаём из адреса, а не из разметки: /n/312811 — это и
+  // есть номер заметки, и лишний атрибут в шаблоне ради него не нужен.
+  var m = location.pathname.match(/^\/n\/(\d+)$/);
+  var query = m ? '?note=' + m[1] : (location.pathname === '/' ? '?feed=1' : '');
+  if (!m && query === '') return; // на остальных страницах слушать нечего
+
+  var fresh = 0, bar = null, src = null;
+
+  var plural = function (n, one, few, many) {
+    var a = n % 100, b = n % 10;
+    if (a > 10 && a < 20) return many;
+    if (b === 1) return one;
+    if (b >= 2 && b <= 4) return few;
+    return many;
+  };
+
+  var show = function () {
+    if (!bar) {
+      bar = document.createElement('button');
+      bar.type = 'button';
+      bar.className = 'newbar';
+      bar.addEventListener('click', function () { location.reload(); });
+      var host = document.querySelector('.thread') || document.querySelector('.notes');
+      if (!host) return;
+      host.parentNode.insertBefore(bar, host);
+    }
+    bar.textContent = m
+      ? fresh + ' ' + plural(fresh, 'новый ответ', 'новых ответа', 'новых ответов') + ' — показать'
+      : fresh + ' ' + plural(fresh, 'новая заметка', 'новые заметки', 'новых заметок') + ' — показать';
+  };
+
+  // Счётчик у колокольчика подкручивается на месте, а не перечитывается с
+  // сервера: лишний запрос ради одной цифры дороже самой цифры, а точное
+  // значение приедет со следующей же страницей.
+  var poke = function () {
+    var cnt = bell.querySelector('.cnt');
+    if (!cnt) {
+      cnt = document.createElement('span');
+      cnt.className = 'cnt';
+      cnt.textContent = '0';
+      bell.appendChild(cnt);
+      bell.classList.add('has');
+    }
+    var n = parseInt(cnt.textContent, 10);
+    cnt.textContent = isNaN(n) ? '1' : (n >= 99 ? '99+' : String(n + 1));
+  };
+
+  var open = function () {
+    if (src) return;
+    src = new EventSource('/live' + query);
+    src.onmessage = function (e) {
+      var d;
+      try { d = JSON.parse(e.data); } catch (err) { return; }
+      if (d.kind === 'poke') { poke(); return; }
+      fresh++;
+      show();
+    };
+    // Переподключение EventSource берёт на себя сам; наше дело — не мешать.
+    // Свой поток сервер закрывает каждые пять минут, и это штатный путь.
+  };
+
+  var close = function () {
+    if (!src) return;
+    src.close();
+    src = null;
+  };
+
+  // Вкладка в фоне слот не занимает: соединений у площадки шестьдесят четыре
+  // на всех, и держать их за свёрнутыми окнами незачем.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) close(); else open();
+  });
+  if (!document.hidden) open();
+})();

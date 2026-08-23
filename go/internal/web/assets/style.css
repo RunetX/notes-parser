@@ -235,6 +235,60 @@ a:hover { text-decoration: underline; }
   color: var(--nav-ink); text-decoration: none; background: rgba(255, 255, 255, .3);
 }
 
+/* Колокольчик — единственный элемент шапки, которого на НГС не было вовсе, и
+ * поэтому единственный, который приходится объяснять (правило Ш5з о собственных
+ * метках: title здесь, слова в /help).
+ *
+ * margin-left:auto переезжает на него, а у соседнего .acct снимается: два
+ * автоматических поля во flex делят свободное место ПОПОЛАМ, и колокольчик уехал
+ * бы в середину шапки. Когда колокольчика нет (гость, шина не подключена),
+ * правило не срабатывает и .acct прижимается к краю сам, как раньше.
+ *
+ * Значок стоит и при нуле: элемент, пропадающий с шапки, дёргает вёрстку на
+ * каждом переходе. */
+.bell {
+  position: relative; display: flex; align-items: center; margin-left: auto;
+  color: var(--nav-ink); background: rgba(255, 255, 255, .18);
+  padding: 5px 12px; border-radius: 3px;
+}
+.bell:hover { color: var(--nav-ink); text-decoration: none; background: rgba(255, 255, 255, .3); }
+.bell + .acct { margin-left: 0; }
+/* Число непрочитанного. Кружок накладывается на значок, а не встаёт рядом:
+   ширина шапки на телефоне и без того спорная. */
+.bell .cnt {
+  position: absolute; top: 0; right: 2px;
+  min-width: 15px; padding: 0 3px; border-radius: 8px;
+  background: var(--accent); color: #fff;
+  font-size: 10px; line-height: 15px; text-align: center; font-weight: 700;
+}
+
+/* Страница «События». Список, а не таблица: строки разной длины, и читают их
+   сверху вниз, а не сравнивают между собой. */
+.evs { list-style: none; margin: 0; padding: 0; }
+.ev {
+  padding: 12px 0 14px; border-bottom: 1px solid var(--rule);
+}
+.ev:last-child { border-bottom: 0; }
+/* Непрочитанное помечено полосой слева, а не фоном: фон на карточке с текстом
+   спорит с самим текстом, а полоса видна и в тёмной палитре. */
+.ev.new { border-left: 3px solid var(--accent); padding-left: 11px; }
+.evt { font-weight: 600; }
+.evx { margin: 6px 0 0; color: var(--ink); }
+.evr { margin: 6px 0 0; color: var(--meta); font-size: 12px; }
+.evx.gone { color: var(--meta); font-style: italic; }
+.readall { margin: 0 0 14px; }
+
+/* Полоса «показать новое». Её рисует скрипт и только он: без JS страница
+   обновляется руками, и место под несуществующую кнопку резервировать незачем.
+   Во всю ширину — читателю она нужна как строка списка, а не как значок. */
+.newbar {
+  display: block; width: 100%; font: inherit; text-align: left; cursor: pointer;
+  margin: 0 0 12px; padding: 9px 14px;
+  color: var(--ink); background: var(--btn);
+  border: 1px solid var(--rule); border-radius: 3px;
+}
+.newbar:hover { border-color: var(--link); color: var(--link); }
+
 /* Ширина карточки постоянная и от содержимого не зависит — как на НГС.
    width:100% здесь обязателен ВМЕСТЕ с `margin: … auto`: у flex-элемента с
    автоматическими полями поперёк оси растяжение отменяется, и карточка

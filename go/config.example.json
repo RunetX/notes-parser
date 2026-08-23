@@ -106,6 +106,10 @@
       "max_attempts": 3,
       "flood_window_s": 3600,
       "flood_max": 3
+    },
+    "bus": {
+      "interval_s": 5,
+      "batch": 100
     }
   },
   "notes_limit": 5,

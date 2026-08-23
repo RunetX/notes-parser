@@ -49,6 +49,7 @@ import (
 	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
 	"lovegw/internal/news"
+	"lovegw/internal/platbus"
 	"lovegw/internal/platdigest"
 	"lovegw/internal/platform"
 	"lovegw/internal/platmod"
@@ -749,6 +750,7 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	}
 
 	d.setupModeration(p)
+	d.setupBus(p)
 
 	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
 		"reconcile", platsink.Interval, "outbound", platout.Interval,
@@ -947,6 +949,25 @@ func (d *daemon) setupModeration(p *platform.Platform) {
 		FloodMax:      m.FloodMax,
 		AlertSend:     fanOutAlerts(d.alerters),
 	}, p, gen, log)
+	d.starts = append(d.starts, svc.Run)
+}
+
+// setupBus — шина событий площадки (эпик F, пакет platbus).
+//
+// Поднимается ВСЕГДА вместе с площадкой, и выключателя у неё нет: молчащая шина
+// это не «фича выключена», а площадка, переставшая говорить людям, что им
+// ответили. Стоит она нескольких запросов в минуту к своему же Postgres —
+// экономить тут нечего.
+//
+// Место здесь, у демона, а не у веб-морды, хотя факты пишет чаще всего как раз
+// морда: горутина, поднятая у обоих, делала бы одну работу вдвоём, а демон —
+// единственный процесс образа, который заведомо один.
+func (d *daemon) setupBus(p *platform.Platform) {
+	b := d.cfg.Platform.Bus
+	svc := platbus.New(platbus.Config{
+		Interval: time.Duration(b.IntervalS) * time.Second,
+		Batch:    b.Batch,
+	}, p, d.log)
 	d.starts = append(d.starts, svc.Run)
 }
 

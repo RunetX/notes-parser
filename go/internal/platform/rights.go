@@ -95,6 +95,13 @@ func (p *Platform) AnonymizeUser(ctx context.Context, actor Viewer, userID int64
 	if _, err := moved(`UPDATE moderation_queue SET author_id = $2 WHERE author_id = $1`); err != nil {
 		return res, err
 	}
+	// Шина чистится, а не переезжает на могилу вместе с публикациями: событие
+	// «X ответил Y» — это связь между двумя людьми, и перенеся её, мы своей же
+	// рукой сохранили бы ту дополнительную информацию, отсутствие которой и
+	// делает обезличивание обезличиванием.
+	if err := dropUserEvents(ctx, tx, userID); err != nil {
+		return res, err
+	}
 	// Связь с анкетой НГС рвётся насовсем. Именно она и делает данные
 	// «принадлежащими субъекту»: id строки равен номеру анкеты, и пока
 	// identities на месте, обезличивание было бы косметикой.
@@ -207,6 +214,14 @@ func (p *Platform) ExportUser(ctx context.Context, userID int64, w io.Writer) er
 			       decision AS решение_человека, checked_at AS проверено,
 			       decided_at AS решено, appealed_at AS пересмотр_запрошен
 			  FROM moderation_queue WHERE author_id = $1 ORDER BY queued_at) x`},
+		// Поводы, которые площадка ему показывала. Это его данные, поэтому в
+		// выгрузку они идут; ссылками, а не текстами — чужие реплики остаются
+		// чужими и здесь (см. шапку про то, чего в выгрузке нет).
+		{"мои_события", `SELECT to_jsonb(x) FROM (
+			SELECT e.kind AS вид, n.reason AS повод, e.at AS когда,
+			       n.read_at AS прочитано, e.note_id AS заметка, e.comment_id AS комментарий
+			  FROM notifications n JOIN events e ON e.id = n.event_id
+			 WHERE n.user_id = $1 ORDER BY n.event_id) x`},
 	}
 	for _, s := range sections {
 		if err := write(",\n\"" + s.name + "\": ["); err != nil {

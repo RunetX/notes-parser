@@ -1,0 +1,53 @@
+{{define "content"}}
+<h1 class="ttl">События</h1>
+
+{{if .Lines}}
+{{/* Отметка прочитанного — форма с POST, как выход и переключение темы: всё,
+     что меняет состояние, обязано работать без JS. Граница upto — самый свежий
+     повод ЭТОЙ страницы, а не «всё вообще»: гасить то, до чего человек не
+     долистал, кнопка не должна. */}}
+{{if .Unread}}
+<form class="readall" method="post" action="/events/read">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <input type="hidden" name="upto" value="{{.Top}}">
+  <button type="submit">Отметить прочитанным</button>
+</form>
+{{end}}
+
+{{template "pager" .Pager}}
+
+<ul class="evs">
+  {{range .Lines}}
+  <li class="ev{{if not .Read}} new{{end}}">
+    <a class="evt" href="{{.URL}}">{{.Title}}</a>
+    <span class="fine">
+      {{/* Имя действующего лица — из ТЕКУЩЕГО ника, как подписи в треде: иначе
+           переименование и обезличивание не меняли бы его здесь. У реакций
+           имени нет вовсе, и это не пропуск показа — его нет в самой записи
+           (правило Ш5г: кто нажал, не показывается никому и нигде). */}}
+      {{if .ActorNick}}{{.ActorNick}} · {{end}}
+      {{if .Code}}{{smile .Code}}{{if gt .Count 1}} ×{{.Count}}{{end}} · {{end}}
+      {{when .At true}}
+    </span>
+    {{if .Hidden}}
+    <p class="evx gone">Запись скрыта.</p>
+    {{else if .Excerpt}}
+    <p class="evx">{{.Excerpt}}</p>
+    {{end}}
+    {{/* Причина модератора — единственный чужой текст, попадающий в шину, и он
+         наш служебный: скрыть реплику, не сказав за что, значит превратить
+         модерацию в молчаливое исчезновение. */}}
+    {{if .Detail}}<p class="evr">Причина: {{.Detail}}</p>{{end}}
+  </li>
+  {{end}}
+</ul>
+
+{{template "pager" .Pager}}
+{{else}}
+<p class="empty">Пока ничего не происходило.</p>
+<p class="fine">Здесь появятся ответы на ваши заметки и реплики, упоминания вашего
+ника и решения модерации о ваших публикациях. О том, что и когда сюда попадает,
+написано в <a href="/help">справке</a>.</p>
+{{end}}
+{{end}}
