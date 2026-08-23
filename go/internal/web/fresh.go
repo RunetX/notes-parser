@@ -46,8 +46,8 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
 		return
 	}
-	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
-	if err != nil || after < 0 {
+	after, ok := parseThreadCursor(r.URL.Query().Get("after"))
+	if !ok {
 		s.fail(w, r, http.StatusBadRequest, "Неверная граница добора.")
 		return
 	}
@@ -114,11 +114,13 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	cursor := strconv.FormatInt(after, 10)
-	if n := len(comments); n > 0 {
-		cursor = strconv.FormatInt(comments[n-1].ID, 10)
+	// Граница двигается ПО КАЖДОЙ полосе отдельно, а не «последней строкой
+	// порции»: порция склеена из двух диапазонов, и её хвост — максимум одной
+	// полосы, а не обеих.
+	for _, c := range comments {
+		after.Seen(c.ID)
 	}
-	s.sendFresh(w, &buf, cursor, note.CommentCount)
+	s.sendFresh(w, &buf, threadCursor(after), note.CommentCount)
 }
 
 // handleFreshFeed — новые заметки ленты. Только первая страница: остальные суть
@@ -208,15 +210,42 @@ func parseFeedCursor(s string) (time.Time, int64, bool) {
 	return time.Unix(0, n), id, true
 }
 
-// freshCursorOf — граница для только что нарисованной страницы треда: самая
-// свежая из показанных реплик. Ноль, если их нет вовсе, — тогда добор принесёт
-// первую же.
-func freshCursorOf(comments []platform.CommentView) string {
-	var max int64
-	for _, c := range comments {
-		if c.ID > max {
-			max = c.ID
+// threadCursor и parseThreadCursor — граница треда на проводе. Пара, как и у
+// ленты, и по той же причине: одним числом полосы идентификаторов не
+// упорядочиваются (см. platform.FreshAfter). Клиент её не разбирает — получает
+// в data-fresh, возвращает в ?after=, — поэтому формат наш и менять его можно,
+// не трогая скрипт.
+func threadCursor(a platform.FreshAfter) string {
+	return strconv.FormatInt(a.NGS, 10) + "," + strconv.FormatInt(a.Native, 10)
+}
+
+func parseThreadCursor(s string) (platform.FreshAfter, bool) {
+	ngs, native, ok := strings.Cut(s, ",")
+	if !ok {
+		// Граница ПРЕЖНЕГО вида — одно число. Её возвращают страницы, открытые
+		// до выкатки, и отвечать им отказом незачем: кладём число в его
+		// собственную полосу, а соседнюю оставляем закрытой. Что на такой
+		// странице уже стоит из другой полосы, число не говорит, а принести её с
+		// нуля значило бы выложить в открытый тред полсотни старых реплик.
+		// Обновление страницы даёт нормальную границу.
+		id, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || id < 0 {
+			return platform.FreshAfter{}, false
 		}
+		if platform.IsNGS(id) {
+			// Максимум оказался ngs'ным — значит своих реплик страница не
+			// показывала вовсе, и нативная полоса честно начинается с нуля.
+			return platform.FreshAfter{NGS: id}, true
+		}
+		return platform.FreshAfter{NGS: platform.NativeIDBase - 1, Native: id}, true
 	}
-	return strconv.FormatInt(max, 10)
+	n, err := strconv.ParseInt(ngs, 10, 64)
+	if err != nil || n < 0 {
+		return platform.FreshAfter{}, false
+	}
+	m, err := strconv.ParseInt(native, 10, 64)
+	if err != nil || m < 0 {
+		return platform.FreshAfter{}, false
+	}
+	return platform.FreshAfter{NGS: n, Native: m}, true
 }

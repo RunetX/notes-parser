@@ -87,7 +87,11 @@ type Store interface {
 	// заново»: тред отдаётся целиком до 5000 строк, и перечитывать его на
 	// каждую новую реплику у каждого открытого окна значит отнять ядро у
 	// зеркала, которое живёт на том же хосте.
-	CommentsSince(ctx context.Context, v platform.Viewer, noteID, afterID int64, limit int) ([]platform.CommentView, error)
+	CommentsSince(ctx context.Context, v platform.Viewer, noteID int64, after platform.FreshAfter, limit int) ([]platform.CommentView, error)
+	// ThreadFreshAfter — граница добора для только что нарисованной страницы
+	// заметки. Спрашивается у ядра, а не считается по показанным репликам: в
+	// линейном виде на странице окно, а не весь тред.
+	ThreadFreshAfter(ctx context.Context, noteID int64) (platform.FreshAfter, error)
 	NotesSince(ctx context.Context, v platform.Viewer, after time.Time, afterID int64, limit int) ([]platform.NoteView, error)
 	// NoteReactions — реакции заметки и всего треда разом. Отдельным методом, а не
 	// полем в CommentView: реакции меняются чаще самих реплик и читаются одним

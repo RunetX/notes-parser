@@ -76,6 +76,9 @@ type notePage struct {
 	// человек читает.
 	FreshOK    bool
 	FreshAfter string
+	// FreshKnown — границу удалось спросить у ядра. Её отказ выключает добор, а
+	// не страницу: дописываться она перестанет, читаться — нет.
+	FreshKnown bool
 	// Book — свидетельство этого треда о том, какие слова в нём ники (address.go).
 	// Собирается по показанным репликам и нужно ровно для одного: не дорисовать
 	// второе обращение там, где автор уже назвал адресата сам.
@@ -157,6 +160,17 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		PageNum:   1,
 	}
 
+	// Граница живого добора берётся ДО чтения реплик и не по показанным строкам:
+	// в линейном виде на странице окно из тридцати самых свежих, и полоса, в него
+	// не попавшая, получила бы границу «с начала» — см. ThreadFreshAfter. Отказ
+	// здесь страницу не роняет: без границы она просто не дописывается сама.
+	if after, err := s.st.ThreadFreshAfter(ctx, id); err != nil {
+		s.log.Warn("граница живого добора", "заметка", id, "err", err)
+	} else {
+		p.FreshAfter = threadCursor(after)
+		p.FreshKnown = true
+	}
+
 	if linear {
 		num := pageParam(r.URL.Query().Get("page"))
 		if num == 0 {
@@ -177,7 +191,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		p.Pager = newPager(num, pages, func(n int) string { return noteURL(id, true, n) })
 		p.ReplyBase = noteURL(id, true, num)
 		p.PageNum = num
-		p.FreshOK = num == 1
+		p.FreshOK = p.FreshKnown && num == 1
 	} else {
 		// Дерево отдаётся ЦЕЛИКОМ. Постранички у него нет и не должно быть:
 		// ветка, обрезанная на середине, перестаёт быть веткой, а «дальше»
@@ -190,9 +204,8 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		p.Comments = comments
 		p.Replies = replyCounts(comments)
 		p.ReplyBase = noteURL(id, false, 1)
-		p.FreshOK = true
+		p.FreshOK = p.FreshKnown
 	}
-	p.FreshAfter = freshCursorOf(p.Comments)
 	// Книга обращений строится по ПОКАЗАННЫМ репликам: свидетельство о том, что
 	// такое-то слово в этом треде ник, есть ровно в них (address.go). В линейном
 	// виде свидетельства меньше — там на странице тридцать реплик, — и это

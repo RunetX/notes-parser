@@ -8,6 +8,7 @@ package web
 // про маскирование анонима, обращение из ребра и права читателя.
 
 import (
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -36,7 +37,7 @@ func TestFreshReturnsBareItems(t *testing.T) {
 	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 2, 2)}}
 	h := openServer(t, st)
 
-	w := do(h, guest(t, "GET", "/n/312811/fresh?after=3"))
+	w := do(h, guest(t, "GET", "/n/312811/fresh?after=3,0"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("добор ответил %d", w.Code)
 	}
@@ -51,11 +52,11 @@ func TestFreshReturnsBareItems(t *testing.T) {
 	}
 	// Границу добора клиент не разбирает, а возвращает как есть — но сдвинуть её
 	// обязан сервер, иначе следующий добор принесёт то же самое ещё раз.
-	if got := w.Header().Get("X-Fresh-After"); got != "9" {
-		t.Errorf("граница после добора: %q, ожидалась 9", got)
+	if got := w.Header().Get("X-Fresh-After"); got != "9,0" {
+		t.Errorf("граница после добора: %q, ожидалась 9,0", got)
 	}
-	if st.freshAfter != 3 || st.freshNoteID != 312811 {
-		t.Errorf("в хранилище ушло note=%d after=%d", st.freshNoteID, st.freshAfter)
+	if (st.freshAfter != platform.FreshAfter{NGS: 3}) || st.freshNoteID != 312811 {
+		t.Errorf("в хранилище ушло note=%d after=%+v", st.freshNoteID, st.freshAfter)
 	}
 }
 
@@ -63,7 +64,7 @@ func TestFreshReturnsBareItems(t *testing.T) {
 // ответ на давнюю реплику уехал бы в конец треда.
 func TestFreshItemCarriesItsPlaceInTree(t *testing.T) {
 	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 2, 2)}}
-	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=3")).Body.String()
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=3,0")).Body.String()
 
 	for _, want := range []string{`id="c9"`, `data-depth="2"`, `data-parent="2"`} {
 		if !strings.Contains(body, want) {
@@ -81,7 +82,7 @@ func TestFreshItemMatchesThePageItem(t *testing.T) {
 	h := openServer(t, st)
 
 	page := do(h, guest(t, "GET", "/n/312811")).Body.String()
-	frag := strings.TrimSpace(do(h, guest(t, "GET", "/n/312811/fresh?after=0")).Body.String())
+	frag := strings.TrimSpace(do(h, guest(t, "GET", "/n/312811/fresh?after=0,0")).Body.String())
 
 	item := regexp.MustCompile(`(?s)<li class="c .*?</li>`).FindString(page)
 	if item == "" {
@@ -100,7 +101,7 @@ func squeeze(s string) string { return strings.Join(strings.Fields(s), " ") }
 // «Ответить» ни там, ни там.
 func TestFreshItemRespectsWhoIsAsking(t *testing.T) {
 	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 0, 1)}}
-	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0")).Body.String()
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0,0")).Body.String()
 	if strings.Contains(body, "Ответить") {
 		t.Errorf("гостю предложено отвечать:\n%s", body)
 	}
@@ -112,7 +113,7 @@ func TestFreshCarriesCommentCount(t *testing.T) {
 	note := sampleNote()
 	note.CommentCount = 158
 	st := &fakeStore{note: note, fresh: []platform.CommentView{freshComment(9, 0, 1)}}
-	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0"))
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0,0"))
 	if got := w.Header().Get("X-Fresh-Count"); got != "158" {
 		t.Errorf("число комментариев: %q, ожидалось 158", got)
 	}
@@ -122,12 +123,87 @@ func TestFreshCarriesCommentCount(t *testing.T) {
 // которую тут же скрыли. Граница при этом остаётся прежней.
 func TestFreshEmptyKeepsCursor(t *testing.T) {
 	st := &fakeStore{note: sampleNote()}
-	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=42"))
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=42,7"))
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "" {
 		t.Fatalf("пустой добор ответил %d, тело %q", w.Code, w.Body.String())
 	}
-	if got := w.Header().Get("X-Fresh-After"); got != "42" {
-		t.Errorf("граница после пустого добора: %q, ожидалась прежняя 42", got)
+	if got := w.Header().Get("X-Fresh-After"); got != "42,7" {
+		t.Errorf("граница после пустого добора: %q, ожидалась прежняя 42,7", got)
+	}
+}
+
+// Тред у площадки СМЕШАННЫЙ: своё и зеркальное живут в одном разговоре, а
+// нативный id больше любого ngs'ного. Граница поэтому обязана помнить обе полосы
+// — иначе первая же реплика, написанная здесь, уводит её в нативную полосу, и
+// приходящие следом комментарии НГС не догоняют страницу никогда. Ровно это и
+// было видно на боевой заметке 313056: в мессенджере реплики идут, на странице
+// их нет до обновления.
+func TestFreshCursorRemembersBothBands(t *testing.T) {
+	mixed := sampleThread()
+	mixed[0].ID = 63238683                    // с НГС
+	mixed[2].ID = platform.NativeIDBase + 719 // написана здесь
+	st := &fakeStore{note: sampleNote(), thread: mixed}
+	h := openServer(t, st)
+
+	page := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	want := `data-fresh="63238683,100000000719"`
+	if !strings.Contains(page, want) {
+		t.Fatalf("граница страницы потеряла полосу, ожидалось %s:\n%s", want, page)
+	}
+
+	// И обратно: та же граница обязана доехать до хранилища обеими половинами.
+	do(h, guest(t, "GET", "/n/312811/fresh?after=63238683,100000000719"))
+	if want := (platform.FreshAfter{NGS: 63238683, Native: platform.NativeIDBase + 719}); st.freshAfter != want {
+		t.Errorf("в хранилище ушло %+v, ожидалось %+v", st.freshAfter, want)
+	}
+}
+
+// Границу страница берёт У ЯДРА, а не считает по показанным строкам. В линейном
+// виде на странице ОКНО из тридцати самых свежих реплик, и полоса, в него не
+// попавшая, получила бы границу «с начала» — первый же сигнал притащил бы наверх
+// страницы самые старые реплики этой полосы.
+func TestFreshCursorComesFromTheCoreNotFromTheWindow(t *testing.T) {
+	note := sampleNote()
+	note.CommentCount = 100
+	window := sampleThread() // в окне только своё
+	for i := range window {
+		window[i].ID = platform.NativeIDBase + int64(i) + 1
+	}
+	bound := platform.FreshAfter{NGS: 63238683, Native: platform.NativeIDBase + 3}
+	st := &fakeStore{note: note, flat: window, freshBound: &bound}
+
+	page := do(openServer(t, st), guest(t, "GET", "/n/312811?view=linear")).Body.String()
+	if want := `data-fresh="63238683,100000000003"`; !strings.Contains(page, want) {
+		t.Errorf("страница посчитала границу по окну, ожидалось %s:\n%s", want, page)
+	}
+}
+
+// Отказ на границе выключает добор, а не страницу: дописываться она перестанет,
+// читаться — нет.
+func TestFreshCursorFailureLeavesThePageReadable(t *testing.T) {
+	st := &fakeStore{note: sampleNote(), thread: sampleThread(), freshErr: errors.New("база молчит")}
+	w := do(openServer(t, st), guest(t, "GET", "/n/312811"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("страница ответила %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "data-fresh=") {
+		t.Error("добор включён при неизвестной границе")
+	}
+}
+
+// Границу прежнего вида — одно число — страницы, открытые до выкатки, ещё
+// возвращают. Отвечать им отказом незачем: число кладётся в свою полосу.
+func TestFreshAcceptsCursorOfPreviousRelease(t *testing.T) {
+	st := &fakeStore{note: sampleNote()}
+	h := openServer(t, st)
+
+	if code := do(h, guest(t, "GET", "/n/312811/fresh?after=63238683")).Code; code != http.StatusOK {
+		t.Fatalf("прежняя граница отвергнута с кодом %d", code)
+	}
+	// Максимум оказался ngs'ным — значит своих реплик страница не показывала
+	// вовсе, и нативная полоса честно начинается с нуля.
+	if want := (platform.FreshAfter{NGS: 63238683}); st.freshAfter != want {
+		t.Errorf("прежняя граница разобрана как %+v, ожидалось %+v", st.freshAfter, want)
 	}
 }
 
@@ -199,7 +275,7 @@ func TestFreshSwitchIsTheAttribute(t *testing.T) {
 	h := openServer(t, st)
 
 	tree := do(h, guest(t, "GET", "/n/312811")).Body.String()
-	if !strings.Contains(tree, `data-fresh="3"`) || !strings.Contains(tree, `data-fresh-url="/n/312811/fresh"`) {
+	if !strings.Contains(tree, `data-fresh="3,0"`) || !strings.Contains(tree, `data-fresh-url="/n/312811/fresh"`) {
 		t.Errorf("у дерева нет границы добора:\n%s", tree)
 	}
 	if first := do(h, guest(t, "GET", "/n/312811?view=linear")).Body.String(); !strings.Contains(first, "data-fresh=") {

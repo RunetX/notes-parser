@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -92,7 +93,7 @@ const threadQuery = `
 const flatQuery = `
 	SELECT ` + commentViewColumns + commentViewFrom + `
 	 WHERE c.note_id = $2 AND c.status = 0
-	 ORDER BY c.id DESC
+	 ORDER BY c.published_at DESC, c.id DESC
 	 LIMIT $3 OFFSET $4`
 
 // Те же два вида, но глазами МОДЕРАТОРА: к видимому добавляется скрытое
@@ -112,7 +113,7 @@ const threadModQuery = `
 const flatModQuery = `
 	SELECT ` + commentViewColumns + commentViewFrom + `
 	 WHERE c.note_id = $2 AND c.status IN (0, 2)
-	 ORDER BY c.id DESC
+	 ORDER BY c.published_at DESC, c.id DESC
 	 LIMIT $3 OFFSET $4`
 
 // commentsSinceQuery — добор реплик, появившихся ПОСЛЕ того, как страница была
@@ -123,17 +124,47 @@ const flatModQuery = `
 // Порядок ПО ВОЗРАСТАНИЮ id, в отличие от линейного вида: страница дописывается
 // в том порядке, в каком реплики появлялись, иначе три пришедшие разом встали бы
 // в тред задом наперёд. Индекс тот же, comments_flat (note_id, id).
-const commentsSinceQuery = `
-	SELECT ` + commentViewColumns + commentViewFrom + `
-	 WHERE c.note_id = $2 AND c.status = 0 AND c.id > $3
-	 ORDER BY c.id
-	 LIMIT $4`
+//
+// Границ ЗДЕСЬ ДВЕ, по одной на полосу идентификаторов, и это не педантизм.
+// Тред у нас смешанный по устройству: своё и зеркальное живут в одном разговоре,
+// а нативный id больше любого ngs'ного — то есть одна общая граница после первой
+// же реплики, написанной ЗДЕСЬ, уезжает в нативную полосу, и ни один пришедший
+// следом комментарий НГС в неё уже не попадает. На боевой заметке 313056 это
+// выглядело так: в мессенджере реплики идут, на странице их нет до обновления.
+// У ленты такой ошибки не было: там граница с самого начала пара «время, id».
+//
+// UNION ALL, а не OR по двум диапазонам, по той же причине, по какой у вида
+// модератора отдельная константа: условие с OR планировщик не сводит к индексу и
+// уводит добор в перебор всех реплик заметки — на каждый такт каждого открытого
+// окна. Здесь же обе ветки — обычный range-scan по comments_flat.
+//
+// ORDER BY по НОМЕРУ колонки: после UNION имена столбцов не годятся — `id` тут
+// два, свой и адресата.
+var (
+	commentsSinceQuery    = commentsSinceSQL("= 0")
+	commentsSinceModQuery = commentsSinceSQL("IN (0, 2)")
+)
 
-const commentsSinceModQuery = `
-	SELECT ` + commentViewColumns + commentViewFrom + `
-	 WHERE c.note_id = $2 AND c.status IN (0, 2) AND c.id > $3
-	 ORDER BY c.id
-	 LIMIT $4`
+// commentsSinceSQL собирает добор для одного набора статусов. Числа полос берутся
+// из тех же констант, что и IsNGS/IsNative: написанные здесь руками, они однажды
+// разошлись бы с ними молча.
+//
+// Восстановленное (полоса с 2e11) добор не носит вовсе, и границы у него нет:
+// эпоха 2010 года приезжает разовой командой в пустые треды, «появиться» на
+// открытой странице она не может по устройству.
+func commentsSinceSQL(status string) string {
+	band := func(after string, top int64) string {
+		return `(SELECT ` + commentViewColumns + commentViewFrom + `
+		 WHERE c.note_id = $2 AND c.status ` + status + `
+		   AND c.id > ` + after + ` AND c.id < ` + strconv.FormatInt(top, 10) + `
+		 ORDER BY c.id
+		 LIMIT $5)`
+	}
+	return band("$3", NativeIDBase) + `
+UNION ALL
+` + band("$4", RestoredIDBase) + `
+ ORDER BY 1 LIMIT $5`
+}
 
 // commentQuery — ОДНА реплика заметки, со всем, что нужно её показу. Спрашивает
 // её форма ответа, открывающаяся без перезагрузки (web/replyform.go): страница
@@ -174,16 +205,89 @@ func (p *Platform) CommentViewByID(ctx context.Context, v Viewer, noteID, id int
 // такт пришло больше, следующий запрос донесёт хвост, а курсор сдвинется сам.
 const FreshLimit = 50
 
-// CommentsSince — реплики заметки новее указанной. Виды здесь нет вовсе: и
+// FreshAfter — граница живого добора: докуда тред на странице уже нарисован.
+//
+// Число на ПОЛОСУ, а не одно на всех. Полосы упорядочены между собой по
+// происхождению, а не по времени: реплика, написанная здесь минуту назад, имеет
+// номер больше любой ngs'ной, включая ту, что придёт завтра. Общая граница
+// поэтому означала бы «показывать только ту полосу, в которой оказался
+// максимум», и смешанный тред терял бы половину разговора.
+type FreshAfter struct {
+	NGS    int64 // последняя показанная реплика НГС
+	Native int64 // последняя показанная реплика, написанная здесь
+}
+
+// Seen двигает границу: реплика с этим id на странице уже стоит.
+//
+// Восстановленное (2010 год) не двигает ничего: своей границы у него нет, потому
+// что появиться на открытой странице оно не может — см. commentsSinceSQL.
+func (f *FreshAfter) Seen(id int64) {
+	switch {
+	case IsNGS(id) && id > f.NGS:
+		f.NGS = id
+	case IsNative(id) && id > f.Native:
+		f.Native = id
+	}
+}
+
+// bounds — границы для запроса. Нижний край нативной полосы поднимается ЗДЕСЬ, а
+// не в SQL: пустая граница значит «своих реплик страница ещё не показывала», а не
+// «неси всё с нуля», — иначе нативная ветка добора забрала бы себе и реплики НГС,
+// и каждая приехала бы дважды. Вторым условием в ветке это не решается: у
+// range-scan нижний край один, и лишнее сравнение стало бы фильтром после чтения.
+func (f FreshAfter) bounds() (ngs, native int64) {
+	ngs, native = f.NGS, f.Native
+	if ngs < 0 {
+		ngs = 0
+	}
+	if native < NativeIDBase {
+		native = NativeIDBase - 1
+	}
+	return ngs, native
+}
+
+// ThreadFreshAfter — граница живого добора для только что нарисованной страницы
+// заметки: самая свежая реплика В КАЖДОЙ полосе.
+//
+// Спрашивается ОТДЕЛЬНЫМ запросом, а не считается по показанным строкам, и
+// причина в линейном виде: там на странице ОКНО из тридцати самых свежих реплик.
+// Полосы в окно попадают не обе — тред, где сегодня отвечали только с НГС,
+// покажет тридцать ngs'ных строк и ни одной своей, — а «максимум показанного» в
+// отсутствующей полосе есть ноль, то есть «неси с начала». Первый же сигнал
+// притащил бы наверх страницы САМЫЕ СТАРЫЕ реплики этой полосы. У дерева такого
+// расхождения нет (оно показано целиком), но дорога здесь одна на оба вида:
+// второй способ вычислить границу — это второе место, где о полосах забудут.
+//
+// Спрашивать её надо ДО чтения реплик: реплика, пришедшая между двумя запросами,
+// при таком порядке попадёт и на страницу, и в добор — а повтор гасится на
+// странице по id. Обратный порядок терял бы её совсем.
+//
+// Оба максимума — обычный проход с конца по comments_flat, по одной строке на
+// полосу.
+const freshAfterQuery = `
+	SELECT coalesce((SELECT max(id) FROM comments
+	                  WHERE note_id = $1 AND id < $2), 0),
+	       coalesce((SELECT max(id) FROM comments
+	                  WHERE note_id = $1 AND id >= $2 AND id < $3), 0)`
+
+func (p *Platform) ThreadFreshAfter(ctx context.Context, noteID int64) (FreshAfter, error) {
+	var f FreshAfter
+	err := p.pool.QueryRow(ctx, freshAfterQuery, noteID, NativeIDBase, RestoredIDBase).
+		Scan(&f.NGS, &f.Native)
+	return f, wrapf(err, "граница добора заметки %d", noteID)
+}
+
+// CommentsSince — реплики заметки новее границы. Виды здесь нет вовсе: и
 // дерево, и линейный добираются одним запросом, а куда встанет строка, решает
 // уже показ (у дерева — по ребру ответа, у линейного — сверху).
-func (p *Platform) CommentsSince(ctx context.Context, v Viewer, noteID, afterID int64, limit int) ([]CommentView, error) {
+func (p *Platform) CommentsSince(ctx context.Context, v Viewer, noteID int64, after FreshAfter, limit int) ([]CommentView, error) {
 	limit = clampLimit(limit)
 	q := commentsSinceQuery
 	if v.CanModerate() {
 		q = commentsSinceModQuery
 	}
-	rows, err := p.pool.Query(ctx, q, v.UserID, noteID, afterID, limit)
+	ngs, native := after.bounds()
+	rows, err := p.pool.Query(ctx, q, v.UserID, noteID, ngs, native, limit)
 	if err != nil {
 		return nil, fmt.Errorf("новые реплики заметки %d: %w", noteID, err)
 	}
@@ -225,8 +329,14 @@ func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64) ([]Commen
 // Порядок именно такой, как на НГС, и это не мелочь: линейный вид там читают
 // как ленту свежих реплик — открыл заметку, увидел последнее. Восходящий
 // порядок заставлял бы листать в конец, чтобы узнать, чем всё кончилось.
-// Отдельный индекс (note_id, id), а не сортировка выборки дерева: переключатель
-// «дерево / линейный» на сайте живой, им пользуются.
+// Отдельный индекс, а не сортировка выборки дерева: переключатель «дерево /
+// линейный» на сайте живой, им пользуются.
+//
+// «Новые» считаются ПО ВРЕМЕНИ (индекс comments_flat_time, миграция 0014), а не
+// по убыванию id, как было до 23.08.2026. Порядок по id верен внутри одной
+// полосы идентификаторов и неверен между ними: нативная реплика позапрошлой
+// недели имеет номер больше пришедшей с НГС сегодня, и всё написанное здесь
+// вставало наверх страницы независимо от того, когда это было сказано.
 func (p *Platform) Flat(ctx context.Context, v Viewer, noteID int64, offset, limit int) ([]CommentView, error) {
 	limit = clampLimit(limit)
 	if offset < 0 {

@@ -51,7 +51,9 @@ type fakeStore struct {
 
 	// Живой добор: что отдать и с какой границей за ним пришли.
 	fresh       []platform.CommentView
-	freshAfter  int64
+	freshAfter  platform.FreshAfter
+	freshBound  *platform.FreshAfter
+	freshErr    error
 	freshNotes  []platform.NoteView
 	freshSince  time.Time
 	freshNoteID int64
@@ -116,8 +118,26 @@ func (f *fakeStore) Flat(_ context.Context, _ platform.Viewer, _ int64, offset, 
 	return f.flat, nil
 }
 
-func (f *fakeStore) CommentsSince(_ context.Context, _ platform.Viewer, noteID, afterID int64, _ int) ([]platform.CommentView, error) {
-	f.freshNoteID, f.freshAfter = noteID, afterID
+// Граница добора: по умолчанию фейк считает её по треду — так она совпадает с
+// показанным, и большинству тестов до неё дела нет. Настоящее ядро берёт
+// максимум по каждой полосе У ВСЕЙ ЗАМЕТКИ, и там, где проверяется именно это
+// (линейный вид показывает окно, а не тред), тест ставит freshBound.
+func (f *fakeStore) ThreadFreshAfter(_ context.Context, _ int64) (platform.FreshAfter, error) {
+	if f.freshErr != nil {
+		return platform.FreshAfter{}, f.freshErr
+	}
+	if f.freshBound != nil {
+		return *f.freshBound, nil
+	}
+	var a platform.FreshAfter
+	for _, c := range append(append([]platform.CommentView{}, f.thread...), f.flat...) {
+		a.Seen(c.ID)
+	}
+	return a, nil
+}
+
+func (f *fakeStore) CommentsSince(_ context.Context, _ platform.Viewer, noteID int64, after platform.FreshAfter, _ int) ([]platform.CommentView, error) {
+	f.freshNoteID, f.freshAfter = noteID, after
 	return f.fresh, nil
 }
 

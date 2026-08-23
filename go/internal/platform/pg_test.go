@@ -201,7 +201,7 @@ func TestCommentsSinceCarriesPlaceInTree(t *testing.T) {
 	// Всё, что выше, страница уже показала. Дальше — то, что пришло потом.
 	ingestComment(t, p, 300, 312811, 3, 100)
 
-	got, err := p.CommentsSince(context.Background(), Viewer{}, 312811, 200, FreshLimit)
+	got, err := p.CommentsSince(context.Background(), Viewer{}, 312811, FreshAfter{NGS: 200}, FreshLimit)
 	if err != nil {
 		t.Fatalf("добор: %v", err)
 	}
@@ -217,12 +217,137 @@ func TestCommentsSinceCarriesPlaceInTree(t *testing.T) {
 	// Порядок ПО ВОЗРАСТАНИЮ, в отличие от линейного вида: страница дописывается
 	// в том порядке, в каком реплики появлялись.
 	ingestComment(t, p, 400, 312811, 1, 300)
-	got, err = p.CommentsSince(context.Background(), Viewer{}, 312811, 200, FreshLimit)
+	got, err = p.CommentsSince(context.Background(), Viewer{}, 312811, FreshAfter{NGS: 200}, FreshLimit)
 	if err != nil {
 		t.Fatalf("добор: %v", err)
 	}
 	if len(got) != 2 || got[0].ID != 300 || got[1].ID != 400 {
 		t.Fatalf("порядок добора: %v", got)
+	}
+}
+
+// Тред у площадки СМЕШАННЫЙ по устройству, и живой добор обязан это пережить.
+// Полосы упорядочены по происхождению, а не по времени: реплика, написанная
+// здесь, имеет номер больше любой ngs'ной, включая ту, что придёт завтра. С
+// одной общей границей первая же своя реплика уводила добор в нативную полосу, и
+// приходящие следом комментарии НГС не догоняли страницу НИКОГДА — в мессенджере
+// они шли, на странице их не было до обновления (боевая заметка 313056).
+func TestCommentsSinceCrossesBands(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 312811, 175869, "Гадёныш")
+	ingestComment(t, p, 63238683, 312811, 1, 0)
+
+	// Своя реплика в том же треде: её номер на два порядка больше ngs'ного.
+	own, err := p.CreateComment(ctx, NewComment{
+		NoteID: 312811, AuthorID: mustUser(t, p, "Рио"), Body: "и я тут"})
+	if err != nil {
+		t.Fatalf("своя реплика: %v", err)
+	}
+	if !IsNative(own) {
+		t.Fatalf("реплика %d оказалась не в нативной полосе", own)
+	}
+	after := FreshAfter{}
+	after.Seen(63238683)
+	after.Seen(own)
+
+	// Дальше приходит комментарий с НГС — с номером МЕНЬШЕ своей реплики.
+	ingestComment(t, p, 63238684, 312811, 2, 63238683)
+	got, err := p.CommentsSince(ctx, Viewer{}, 312811, after, FreshLimit)
+	if err != nil {
+		t.Fatalf("добор: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 63238684 {
+		t.Fatalf("добор принёс %v, ожидалась одна реплика 63238684", ids(got))
+	}
+
+	// И наоборот: своя следующая реплика не теряется из-за того, что граница
+	// ngs'ной полосы ушла вперёд.
+	after.Seen(63238684)
+	own2, err := p.CreateComment(ctx, NewComment{
+		NoteID: 312811, AuthorID: mustUser(t, p, "Мавр"), Body: "и я"})
+	if err != nil {
+		t.Fatalf("своя реплика: %v", err)
+	}
+	got, err = p.CommentsSince(ctx, Viewer{}, 312811, after, FreshLimit)
+	if err != nil {
+		t.Fatalf("добор: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != own2 {
+		t.Fatalf("добор принёс %v, ожидалась одна реплика %d", ids(got), own2)
+	}
+}
+
+// Линейный вид — «сначала новые» ПО ВРЕМЕНИ. По убыванию id он был верен, пока
+// в треде жила одна полоса: нативная реплика позапрошлой недели имеет номер
+// больше комментария, пришедшего с НГС сегодня, и всё написанное здесь вставало
+// наверх страницы независимо от того, когда это было сказано.
+func TestFlatOrdersByTimeNotByBand(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 312811, 175869, "Гадёныш")
+
+	own, err := p.CreateComment(ctx, NewComment{
+		NoteID: 312811, AuthorID: mustUser(t, p, "Рио"), Body: "сказано на прошлой неделе"})
+	if err != nil {
+		t.Fatalf("своя реплика: %v", err)
+	}
+	// Времена ставим руками: CreateComment штампует now(), а весь вопрос теста в
+	// том, что своя реплика СТАРШЕ пришедшей с НГС.
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE comments SET published_at = $2 WHERE id = $1`, own, testTime); err != nil {
+		t.Fatalf("время своей реплики: %v", err)
+	}
+	ingestComment(t, p, 63238684, 312811, 2, 0) // testTime + 63238684 секунд, то есть позже
+
+	got, err := p.Flat(ctx, Viewer{}, 312811, 0, 30)
+	if err != nil {
+		t.Fatalf("линейный вид: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != 63238684 || got[1].ID != own {
+		t.Fatalf("порядок линейного вида: %v, ожидалось [63238684 %d]", ids(got), own)
+	}
+}
+
+// Границу живого добора страница спрашивает у ядра — по максимуму в КАЖДОЙ
+// полосе у всей заметки, а не по показанным строкам (в линейном виде на странице
+// окно). Восстановленное (2010 год) границы не имеет вовсе: появиться на
+// открытой странице оно не может.
+func TestThreadFreshAfterIsPerBand(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 312811, 175869, "Гадёныш")
+	ingestComment(t, p, 63238683, 312811, 1, 0)
+	ingestComment(t, p, 63238684, 312811, 2, 0)
+
+	after, err := p.ThreadFreshAfter(ctx, 312811)
+	if err != nil {
+		t.Fatalf("граница: %v", err)
+	}
+	if want := (FreshAfter{NGS: 63238684}); after != want {
+		t.Fatalf("граница %+v, ожидалась %+v", after, want)
+	}
+
+	own, err := p.CreateComment(ctx, NewComment{
+		NoteID: 312811, AuthorID: mustUser(t, p, "Рио"), Body: "и я тут"})
+	if err != nil {
+		t.Fatalf("своя реплика: %v", err)
+	}
+	// Строка восстановленной полосы: её приносит разовая команда, и на границу
+	// она влиять не должна.
+	if _, err := p.pool.Exec(ctx, `
+		INSERT INTO comments (id, note_id, body, path, depth, published_at)
+		VALUES ($1, 312811, 'август 2010', $2, 1, $3)`,
+		RestoredIDBase+7, pathSegment(RestoredIDBase+7), testTime); err != nil {
+		t.Fatalf("восстановленная реплика: %v", err)
+	}
+
+	after, err = p.ThreadFreshAfter(ctx, 312811)
+	if err != nil {
+		t.Fatalf("граница: %v", err)
+	}
+	if want := (FreshAfter{NGS: 63238684, Native: own}); after != want {
+		t.Fatalf("граница %+v, ожидалась %+v", after, want)
 	}
 }
 
@@ -239,7 +364,7 @@ func TestCommentsSinceHidesWhatThePageHides(t *testing.T) {
 	if err := p.HideSubject(ctx, mod, CommentSubject(200), CatFlood, "проверка"); err != nil {
 		t.Fatalf("скрытие: %v", err)
 	}
-	got, err := p.CommentsSince(ctx, Viewer{}, 312811, 0, FreshLimit)
+	got, err := p.CommentsSince(ctx, Viewer{}, 312811, FreshAfter{}, FreshLimit)
 	if err != nil {
 		t.Fatalf("добор: %v", err)
 	}
@@ -247,7 +372,7 @@ func TestCommentsSinceHidesWhatThePageHides(t *testing.T) {
 		t.Fatalf("скрытая реплика попала в добор: %v", got)
 	}
 	// Модератору она видна — там же, где он читает.
-	got, err = p.CommentsSince(ctx, mod, 312811, 0, FreshLimit)
+	got, err = p.CommentsSince(ctx, mod, 312811, FreshAfter{}, FreshLimit)
 	if err != nil {
 		t.Fatalf("добор модератора: %v", err)
 	}
@@ -566,6 +691,13 @@ func seedForPlans(t *testing.T, p *Platform) {
 	// зависит от того, как строки появились, а тысячи приёмов через туннель —
 	// это минуты ожидания вместо секунды.
 	//
+	// Полосы ОБЕ, и это тоже часть заготовки. У добора треда своя ветка на
+	// полосу (commentsSinceSQL), и в базе без единой нативной реплики
+	// планировщик берёт нативную ветку первичным ключом: диапазон полосы пуст,
+	// note_id ему не нужен. На живой площадке за этим стоял бы обход всего
+	// написанного здесь после границы — по всем заметкам сразу, на каждый такт
+	// каждого открытого окна.
+	//
 	// Комментарии РАЗМАЗАНЫ по заметкам намеренно. Первая попытка сложила все
 	// 600 в одну заметку — и планировщик честно выбрал обход по первичному
 	// ключу: когда условию note_id удовлетворяет вся таблица, отдельный индекс
@@ -592,6 +724,11 @@ func seedForPlans(t *testing.T, p *Platform) {
 		       lpad((500000 + g)::text, 13, '0'), 1,
 		       timestamptz '2026-08-17 12:00Z' + g * interval '1 second'
 		  FROM generate_series(1, 120000) g;
+		INSERT INTO comments (id, note_id, author_id, body, path, depth, published_at)
+		SELECT 100000000000 + g, 200000 + (g % 400) + 1, 1000000 + (g % 200) + 1, 'своя ' || g,
+		       lpad((100000000000 + g)::text, 13, '0'), 1,
+		       timestamptz '2026-08-20 12:00Z' + g * interval '1 second'
+		  FROM generate_series(1, 30000) g;
 		ANALYZE notes, comments, users, media`); err != nil {
 		t.Fatalf("заливка: %v", err)
 	}
@@ -610,29 +747,39 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		query string
 		args  []any
 		index string
+		// times — сколько раз индекс обязан встретиться в плане. Нужен добору
+		// треда: веток у него две, по одной на полосу, и уехать в перебор может
+		// любая — а «индекс в плане есть» этого не заметит.
+		times int
 	}{
-		{"лента", feedQuery, []any{int64(0), 20, 0}, "notes_feed"},
-		{"закреплённые", pinnedQuery, []any{int64(0), MaxPinned}, "notes_pinned"},
-		{"тред", threadQuery, []any{int64(0), int64(200001), 100}, "comments_tree"},
-		{"линейный вид", flatQuery, []any{int64(0), int64(200001), 30, 0}, "comments_flat"},
+		{"лента", feedQuery, []any{int64(0), 20, 0}, "notes_feed", 1},
+		{"закреплённые", pinnedQuery, []any{int64(0), MaxPinned}, "notes_pinned", 1},
+		{"тред", threadQuery, []any{int64(0), int64(200001), 100}, "comments_tree", 1},
+		{"линейный вид", flatQuery, []any{int64(0), int64(200001), 30, 0}, "comments_flat_time", 1},
 		// Живой добор ходит чаще всех: по разу на каждую новую реплику у каждого
 		// открытого окна. Полный перебор здесь означал бы, что тред, который
 		// читают, тем самым и кладёт площадку.
-		{"добор треда", commentsSinceQuery, []any{int64(0), int64(200001), int64(0), 50}, "comments_flat"},
+		{"добор треда", commentsSinceQuery,
+			[]any{int64(0), int64(200001), int64(0), NativeIDBase - 1, 50}, "comments_flat", 2},
+		// Границу добора спрашивает КАЖДАЯ страница заметки, и это два прохода
+		// с конца по одной строке. Перебор здесь стоил бы дороже самой страницы.
+		{"граница добора", freshAfterQuery, []any{int64(200001), NativeIDBase, RestoredIDBase},
+			"comments_flat", 2},
 		{"добор ленты", notesSinceQuery,
-			[]any{int64(0), time.Now().Add(-time.Hour), int64(0), 50}, "notes_feed"},
+			[]any{int64(0), time.Now().Add(-time.Hour), int64(0), 50}, "notes_feed", 1},
 		// Одна реплика — та, что нужна форме ответа. Имя индекса здесь не
 		// закрепляется: по (note_id, id) годятся и первичный ключ, и
 		// comments_flat, а выбор между ними дело планировщика. Закрепляется
 		// другое — что это не перебор: запрос идёт на каждое «Ответить», а в
 		// таблице 10,7 млн строк.
-		{"одна реплика", commentQuery, []any{int64(0), int64(200002), int64(500001)}, ""},
+		{"одна реплика", commentQuery, []any{int64(0), int64(200002), int64(500001)}, "", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			plan := explain(t, p, c.query, c.args...)
-			if c.index != "" && !strings.Contains(plan, c.index) {
-				t.Fatalf("план не берёт индекс %s:\n%s", c.index, plan)
+			if want := max(c.times, 1); c.index != "" && strings.Count(plan, c.index) < want {
+				t.Fatalf("план берёт индекс %s %d раз вместо %d:\n%s",
+					c.index, strings.Count(plan, c.index), want, plan)
 			}
 			if strings.Contains(plan, "Seq Scan on notes") || strings.Contains(plan, "Seq Scan on comments") {
 				t.Fatalf("полный перебор в плане:\n%s", plan)
