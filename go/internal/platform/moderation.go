@@ -666,7 +666,11 @@ type Pending struct {
 // тысячи долларов даже на дешёвой модели, и историю мы модерируем по жалобе.
 //
 // maxAttempts отсекает строки, на которых модель спотыкается раз за разом:
-// иначе одна такая занимала бы каждую пачку до конца времён.
+// иначе одна такая занимала бы каждую пачку до конца времён. Ноль и меньше
+// значит «без отсечки» — это нужно СТЕНДУ: спотыкающиеся строки как раз и
+// объясняют, почему очередь стоит, и прятать их от замера незачем. Раньше ноль
+// читался как `attempts < 0`, то есть стенд по всей очереди молча отвечал
+// «прогонять нечего» (найдено 23.08.2026 на 738 непроверенных строках).
 func (p *Platform) PendingChecks(ctx context.Context, limit, maxAttempts int) ([]Pending, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT q.subject_kind, q.subject_id, coalesce(q.note_id, 0), coalesce(q.author_id, 0),
@@ -674,7 +678,7 @@ func (p *Platform) PendingChecks(ctx context.Context, limit, maxAttempts int) ([
 		  FROM moderation_queue q
 		  LEFT JOIN notes    n ON q.subject_kind = 'note'    AND n.id = q.subject_id
 		  LEFT JOIN comments c ON q.subject_kind = 'comment' AND c.id = q.subject_id
-		 WHERE q.checked_at IS NULL AND q.verdict IS NULL AND q.attempts < $2
+		 WHERE q.checked_at IS NULL AND q.verdict IS NULL AND ($2 <= 0 OR q.attempts < $2)
 		 ORDER BY q.queued_at
 		 LIMIT $1`, clampLimit(limit), maxAttempts)
 	if err != nil {

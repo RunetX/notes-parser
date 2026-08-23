@@ -216,6 +216,35 @@ func TestОчередьОтПубликацииДоПересмотра(t *testi
 	}
 }
 
+// Стенд просит очередь БЕЗ отсечки по попыткам, и именно спотыкающиеся строки
+// ему интереснее всего: они объясняют, почему очередь стоит. Ноль читался как
+// «attempts < 0», и прогон по всей очереди молча отвечал «прогонять нечего».
+func TestОчередьБезОтсечкиПоПопыткам(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Пух")
+	noteID := mustNote(t, p, author, "текст, на котором модель спотыкается")
+
+	// Три неудачных захода — боевой автомат такую строку больше не берёт.
+	for range 3 {
+		if err := p.BumpAttempts(ctx, []Subject{NoteSubject(noteID)}); err != nil {
+			t.Fatalf("попытка: %v", err)
+		}
+	}
+	if left, err := p.PendingChecks(ctx, 10, 3); err != nil || len(left) != 0 {
+		t.Fatalf("исчерпавшая попытки строка осталась в боевой очереди: %v (%v)", left, err)
+	}
+	for _, max := range []int{0, -1} {
+		got, err := p.PendingChecks(ctx, 10, max)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Subject != NoteSubject(noteID) {
+			t.Fatalf("maxAttempts=%d: стенд получил %v", max, got)
+		}
+	}
+}
+
 // Жалоба — единственный вход в модерацию для СТАРЫХ строк: классификатор по
 // архиву не гоняется, и без неё 10,7 млн зеркальных реплик не модерируются вовсе.
 func TestЖалобаПоднимаетЗеркальнуюРеплику(t *testing.T) {
