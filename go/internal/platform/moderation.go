@@ -665,6 +665,11 @@ type Pending struct {
 // классификатор физически не может пойти по архиву: 10,8 млн комментариев это
 // тысячи долларов даже на дешёвой модели, и историю мы модерируем по жалобе.
 //
+// Потолок строк здесь СВОЙ (clampTriage), а не публичный: публичный в сотню
+// строк заведён для страниц, которые читает посторонний, а очередь спрашивают
+// автомат и стенд. Стенду сотня прямо мешает — она молча срезает хвост
+// очереди, то есть ровно то, ради чего прогон и затевается.
+//
 // maxAttempts отсекает строки, на которых модель спотыкается раз за разом:
 // иначе одна такая занимала бы каждую пачку до конца времён. Ноль и меньше
 // значит «без отсечки» — это нужно СТЕНДУ: спотыкающиеся строки как раз и
@@ -680,7 +685,7 @@ func (p *Platform) PendingChecks(ctx context.Context, limit, maxAttempts int) ([
 		  LEFT JOIN comments c ON q.subject_kind = 'comment' AND c.id = q.subject_id
 		 WHERE q.checked_at IS NULL AND q.verdict IS NULL AND ($2 <= 0 OR q.attempts < $2)
 		 ORDER BY q.queued_at
-		 LIMIT $1`, clampLimit(limit), maxAttempts)
+		 LIMIT $1`, clampTriage(limit), maxAttempts)
 	if err != nil {
 		return nil, fmt.Errorf("очередь проверки: %w", err)
 	}

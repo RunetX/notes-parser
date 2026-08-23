@@ -92,8 +92,14 @@ func platformTriage(ctx context.Context, cfg *config.Config, limit int, model st
 		chunk := items[start:end]
 		verdicts, err := svc.Triage(ctx, chunk)
 		if err != nil {
-			w.Flush() //nolint:errcheck // ошибку прогона показываем как есть
-			return fmt.Errorf("пачка %d–%d: %w", start+1, end, err)
+			// Пачка целиком не удалась — и прогон на этом НЕ кончается.
+			// Провайдер умеет отказаться читать входной текст, а отказ
+			// прилетает на ВСЮ пачку из-за одной строки; обрываясь, стенд
+			// показывал бы очередь только до первой такой строки — то есть
+			// прятал бы ровно то, ради чего его зовут.
+			fmt.Fprintf(w, "пачка %d–%d\tОТКАЗ\t\t%s\n", start+1, end, err)
+			t.failed += len(chunk)
+			continue
 		}
 		for i, v := range verdicts {
 			t.row(w, chunk[i], v)
@@ -105,13 +111,16 @@ func platformTriage(ctx context.Context, cfg *config.Config, limit int, model st
 	if t.silent > 0 {
 		fmt.Printf(" · модель промолчала %d", t.silent)
 	}
+	if t.failed > 0 {
+		fmt.Printf(" · не проверено из-за отказа %d", t.failed)
+	}
 	fmt.Println("\nсмотреть в первую очередь на «СКРЫТЬ»: ссора и грубость — жанр раздела, и там их быть не должно")
 	return nil
 }
 
 // triageTally — счёт прогона. Отдельно от печати не разнесён намеренно: строка
 // и счётчик описывают одно и то же решение, и разъехаться они не должны.
-type triageTally struct{ clean, review, hidden, silent int }
+type triageTally struct{ clean, review, hidden, silent, failed int }
 
 // row печатает одну строку прогона и учитывает её в сводке.
 func (t *triageTally) row(w io.Writer, it platform.Pending, v *platform.VerdictRecord) {
