@@ -243,12 +243,12 @@ func (r *Reconciler) syncComments(ctx context.Context, st *Stats) error {
 
 // syncNoteComments досылает недостающие комментарии одной заметки.
 //
-// Адресата считаем сами, а не берём у зеркала: message_targets знает лишь то,
-// что УЖЕ ушло в этот приёмник, а сверке нужна вся заметка целиком (и на
-// бэкфилле там нет ни одной строки). Правило при этом ОДНО на всех
-// (love.Addressees): «последняя реплика адресата, обращённая к самому
-// отвечающему, иначе просто последняя», — поэтому живой приём и сверка сходятся
-// на одном ответе, а кто из них успел первым, неважно: приём идемпотентен.
+// Адресата спрашиваем у ПЛОЩАДКИ, а не считаем по зеркалу: тред смешанный, и
+// зеркало нативных реплик не видит вовсе — ответ «Ник, …» на сказанное ЗДЕСЬ
+// уехал бы к последней реплике этого человека на НГС (см. Sink.PostComment).
+// Правило одно на обоих (platform.AddresseeInNote), поэтому живой приём и
+// сверка сходятся на одном ответе, а кто из них успел первым, неважно: приём
+// идемпотентен.
 //
 // Обход строго по возрастанию id: адресат всегда старше ответа, значит к моменту
 // вставки его путь в дереве уже есть.
@@ -261,20 +261,25 @@ func (r *Reconciler) syncNoteComments(ctx context.Context, noteID string, id int
 	if err != nil {
 		return 0, err
 	}
-	book := love.NewAddressees[int64]()
 	var n int
 	for _, c := range comments {
+		if have[c.ID] {
+			continue
+		}
 		var replyTo int64
 		if nick := love.AddressPrefix(c.Text); nick != "" {
-			replyTo, _ = book.Resolve(nick, c.AuthorName)
-		}
-		if !have[c.ID] {
-			if _, err := r.p.IngestComment(ctx, commentFrom(id, c, replyTo)); err != nil {
+			// Границей служит время самой реплики, поэтому досылка строки из
+			// середины треда видит ровно то, что видел бы живой приём в её
+			// момент, — и не цепляется за реплики, написанные ПОСЛЕ неё.
+			replyTo, err = r.p.AddresseeInNote(ctx, id, nick, c.AuthorName, publishedAt(c), c.ID)
+			if err != nil {
 				return n, fmt.Errorf("заметка %s: %w", noteID, err)
 			}
-			n++
 		}
-		book.Add(c.ID, c.AuthorName, c.Text)
+		if _, err := r.p.IngestComment(ctx, commentFrom(id, c, replyTo)); err != nil {
+			return n, fmt.Errorf("заметка %s: %w", noteID, err)
+		}
+		n++
 	}
 	return n, nil
 }

@@ -99,10 +99,19 @@ func (s *Sink) StartThread(_ context.Context, n store.Note, _ string) (string, e
 	return n.ID, nil
 }
 
-// PostComment принимает комментарий. replyToID — id нашего комментария-адресата
-// (зеркало нашло его по обращению «Ник, …»); пусто — обращения нет либо ник не
-// разошёлся, и комментарий встаёт корнем ветки.
-func (s *Sink) PostComment(ctx context.Context, n store.Note, _, replyToID string,
+// PostComment принимает комментарий.
+//
+// Адресата площадка ищет САМА, а ответ зеркала (replyToID) не берёт вовсе, и
+// это не пренебрежение: зеркало отвечает по своей памяти, а память эта — база
+// НГС, где нативной реплики нет и быть не может. Тред у площадки СМЕШАННЫЙ с
+// того дня, как здесь стало можно писать, и ответ «Ник, …», написанный на сайте
+// в ответ на сказанное ЗДЕСЬ, зеркало приклеивало к последней реплике этого
+// человека НА НГС — в чужую ветку, и починить это потом нечем: обход мобильного
+// дерева нативной реплики тоже не видит (жалоба владельца 24.08.2026).
+//
+// Правило при этом ТО ЖЕ (platform.AddresseeInNote), поэтому живой приём и
+// сверка по-прежнему сходятся на одном ответе.
+func (s *Sink) PostComment(ctx context.Context, n store.Note, _, _ string,
 	c store.Comment, avatar []byte) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, opBudget)
 	defer cancel()
@@ -110,7 +119,7 @@ func (s *Sink) PostComment(ctx context.Context, n store.Note, _, replyToID strin
 	if err != nil {
 		return "", err
 	}
-	replyTo, err := replyID(replyToID)
+	replyTo, err := s.addressee(ctx, noteID, c)
 	if err != nil {
 		return "", err
 	}
@@ -120,6 +129,20 @@ func (s *Sink) PostComment(ctx context.Context, n store.Note, _, replyToID strin
 	}
 	s.putAvatar(ctx, in.Author.ID, c.AvatarURL, avatar)
 	return strconv.FormatInt(c.ID, 10), nil
+}
+
+// addressee — кому отвечает реплика. Обращения нет — ноль, и реплика встаёт
+// корнем ветки, как вставала до слоя адресатов.
+func (s *Sink) addressee(ctx context.Context, noteID int64, c store.Comment) (int64, error) {
+	nick := love.AddressPrefix(c.Text)
+	if nick == "" {
+		return 0, nil
+	}
+	// Граница — ровно то время, под которым реплика ляжет в базу (publishedAt),
+	// а не время, когда её увидело зеркало: сравнивается она с published_at
+	// соседей по треду, и две разные шкалы дали бы разный ответ у живого приёма
+	// и у сверки.
+	return s.p.AddresseeInNote(ctx, noteID, nick, c.AuthorName, publishedAt(c), c.ID)
 }
 
 // PostNoteImage кладёт иллюстрацию в хранилище и привязывает её к заметке.
