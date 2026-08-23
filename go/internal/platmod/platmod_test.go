@@ -120,11 +120,15 @@ func TestПолитикаВердиктов(t *testing.T) {
 		cat  string
 	}{
 		{"чисто", answerItem{Category: catClean, Reason: "ничего"}, platform.VerdictClean, ""},
-		{"спам с цитатой", answerItem{Category: platform.CatSpam, Certain: true, Quote: "купи"},
-			platform.VerdictHidden, platform.CatSpam},
-		{"спам без уверенности", answerItem{Category: platform.CatSpam, Quote: "купи"},
-			platform.VerdictReview, platform.CatSpam},
-		{"спам без цитаты", answerItem{Category: platform.CatSpam, Certain: true},
+		{"чужой телефон с цитатой", answerItem{Category: platform.CatPII, Certain: true, Quote: "8-999"},
+			platform.VerdictHidden, platform.CatPII},
+		{"чужой телефон без уверенности", answerItem{Category: platform.CatPII, Quote: "8-999"},
+			platform.VerdictReview, platform.CatPII},
+		{"чужой телефон без цитаты", answerItem{Category: platform.CatPII, Certain: true},
+			platform.VerdictReview, platform.CatPII},
+		// Спам автомат больше НЕ гасит: за 738 живых строк он не нашёл ни одной
+		// настоящей рекламы, зато назвал спамом ссылку на нашу же справку.
+		{"спам зовёт человека", answerItem{Category: platform.CatSpam, Certain: true, Quote: "купи"},
 			platform.VerdictReview, platform.CatSpam},
 		{"сомнительное", answerItem{Category: platform.CatOther, Certain: true, Quote: "что-то"},
 			platform.VerdictReview, platform.CatOther},
@@ -298,7 +302,9 @@ func TestПачкаРаскладываетсяПоНомерам(t *testing.T) 
 		comment(3, 9, "третий"),
 	)
 	gen := &fakeGen{reply: answerJSON(
-		answerItem{N: 3, Category: platform.CatSpam, Certain: true, Quote: "реклама"},
+		// Категория из тех, что автомат гасит сам: тест про РАСКЛАДКУ по
+		// номерам, и вердикт здесь должен быть самым сильным из возможных.
+		answerItem{N: 3, Category: platform.CatPII, Certain: true, Quote: "телефон 8-999"},
 		answerItem{N: 1, Category: catClean},
 	)}
 	s := New(Config{Model: "тест"}, st, gen, quiet())
