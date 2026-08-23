@@ -224,6 +224,36 @@ func (s *Service) settleVisibility(ctx context.Context) {
 	}
 }
 
+// applyMat накладывает на ответ модели словарь мата — единственное, что автомат
+// гасит по СВОЕМУ доказательству.
+//
+// Порядок такой: модель судит первой, и если она нашла что-то СЕРЬЁЗНЕЕ (угроза,
+// наркотики, чужие данные), её вердикт остаётся — иначе тред, где выругались в
+// адрес угрозы, ушёл бы в очередь как брань, и модератор не увидел бы главного.
+// Мат ставится там, где модель не нашла ничего, — в том числе когда она
+// промолчала вовсе: решение по нему от неё не зависит.
+//
+// Живёт отдельной функцией, потому что её зовут ДВОЕ: боевой такт и стенд. Пока
+// правило стояло прямо в checkBatch, стенд показывал не то, что сделает бой, —
+// и первый же прогон после того, как мнение модели о брани отправили человеку,
+// «потерял» настоящий мат, который в бою был бы скрыт.
+func applyMat(items []platform.Pending, verdicts []*platform.VerdictRecord) {
+	for i, v := range verdicts {
+		if v != nil && v.Verdict != platform.VerdictClean {
+			continue
+		}
+		quote := FindMat(items[i].Body)
+		if quote == "" {
+			continue
+		}
+		verdicts[i] = &platform.VerdictRecord{
+			Verdict: platform.VerdictHidden, Category: platform.CatProfanity,
+			Reason: "нецензурная брань запрещена правилами площадки (пункт 11)",
+			Quote:  quote, Model: "", PromptSHA: promptSHA,
+		}
+	}
+}
+
 // escalateExhausted отдаёт человеку то, что автомат проверить не смог.
 //
 // Отказ приходит на ВСЮ пачку, и причина бывает не в нашей строке вовсе:
@@ -306,23 +336,8 @@ func (s *Service) checkBatch(ctx context.Context) error {
 		return err
 	}
 	s.alert.OK(ctx, alertKey)
+	applyMat(items, verdicts)
 	for i, v := range verdicts {
-		// Мат — не мнение модели, а факт написания, и последнее слово по нему
-		// за кодом. Порядок такой: модель судит первой, и если она нашла
-		// что-то СЕРЬЁЗНЕЕ (угроза, наркотики, чужие данные), её вердикт
-		// остаётся — иначе тред, где выругались в адрес угрозы, ушёл бы в
-		// очередь как брань, и модератор не увидел бы главного. Мат ставится
-		// там, где модель не нашла ничего, — в том числе когда она промолчала
-		// вовсе: решение по нему от неё не зависит.
-		if v == nil || v.Verdict == platform.VerdictClean {
-			if quote := FindMat(items[i].Body); quote != "" {
-				v = &platform.VerdictRecord{
-					Verdict: platform.VerdictHidden, Category: platform.CatProfanity,
-					Reason: "нецензурная брань запрещена правилами площадки (пункт 11)",
-					Quote:  quote, Model: "", PromptSHA: promptSHA,
-				}
-			}
-		}
 		if v == nil {
 			continue // модель промолчала про этот номер — попробуем в следующий раз
 		}
@@ -393,7 +408,14 @@ func (s *Service) Triage(ctx context.Context, items []platform.Pending) ([]*plat
 	if s.gen == nil {
 		return nil, errors.New("классификатор не настроен: см. platform.moderation")
 	}
-	return s.classify(ctx, items)
+	verdicts, err := s.classify(ctx, items)
+	if err != nil {
+		return nil, err
+	}
+	// Тот же словарь мата, что и в бою: стенд обязан показывать решение
+	// ЦЕЛИКОМ, иначе он предсказывает не то, что произойдёт.
+	applyMat(items, verdicts)
+	return verdicts, nil
 }
 
 // takeBudget списывает один запрос из суточного потолка.

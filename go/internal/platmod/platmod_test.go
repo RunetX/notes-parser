@@ -193,6 +193,27 @@ func TestМатГаситСловарь_АМнениеМоделиЗовётЧе
 	}
 }
 
+// Стенд обязан показывать ровно то, что сделает бой. Пока словарь мата стоял
+// прямо в такте, а Triage звал только модель, стенд «терял» настоящий мат — то
+// есть предсказывал не то, что произойдёт, а это и есть единственная его работа.
+func TestСтендРешаетТемЖе(t *testing.T) {
+	items := []platform.Pending{comment(1, 7, "Нахуя банить за флуд")}
+	gen := &fakeGen{reply: answerJSON(answerItem{N: 1, Category: catClean})}
+	s := New(Config{}, newFakeStore(items...), gen, quiet())
+
+	verdicts, err := s.Triage(context.Background(), items)
+	if err != nil {
+		t.Fatalf("стенд: %v", err)
+	}
+	if len(verdicts) != 1 || verdicts[0] == nil {
+		t.Fatalf("стенд вернул %v", verdicts)
+	}
+	if verdicts[0].Verdict != platform.VerdictHidden || verdicts[0].Category != platform.CatProfanity {
+		t.Fatalf("стенд не увидел мата: вердикт %d категория %q",
+			verdicts[0].Verdict, verdicts[0].Category)
+	}
+}
+
 // Отказ классификатора не должен ТЕРЯТЬ публикацию. Отказ приходит на всю
 // пачку, попытки сгорают у всех, и строка, у которой они кончились, выпадает из
 // очереди навсегда — не проверенная ни машиной, ни человеком. На живом прогоне
