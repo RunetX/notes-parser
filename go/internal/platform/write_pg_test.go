@@ -270,3 +270,48 @@ func mustNote(t *testing.T, p *Platform, author int64, body string) int64 {
 	}
 	return id
 }
+
+// Публиковать можно только по ДЕЙСТВУЮЩЕЙ редакции согласий. Проверка появилась
+// вместе с открытием площадки поисковикам (23.08.2026): условия распространения
+// стали другими, и выпустить новую редакцию, не спросив её, значило бы выпустить
+// бумагу, которая ничего не меняет.
+//
+// Реакция и жалоба через эту проверку не идут намеренно: реакцию не видит никто,
+// кроме счётчика, а жалоба — обращение к модератору, а не публикация. Иначе
+// человек не смог бы пожаловаться ровно на то изменение, которое ему предлагают
+// подписать.
+func TestPublishingNeedsCurrentConsent(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Амата")
+	note, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "по действующей редакции"})
+	if err != nil {
+		t.Fatalf("заметка: %v", err)
+	}
+
+	// Вышла новая редакция: прежняя подпись к ней не относится.
+	stale := mustUser(t, p, "Kowalski")
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE consents SET version = version - 1 WHERE user_id = $1 AND kind = $2`,
+		stale, ConsentDistribution); err != nil {
+		t.Fatalf("устаревание согласия: %v", err)
+	}
+	if _, err := p.CreateNote(ctx, NewNote{AuthorID: stale, Body: "по старой"}); !errors.Is(err, ErrConsentOutdated) {
+		t.Errorf("заметка по старой редакции: %v, ожидалось ErrConsentOutdated", err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: stale, Body: "и ответ"}); !errors.Is(err, ErrConsentOutdated) {
+		t.Errorf("комментарий по старой редакции: %v, ожидалось ErrConsentOutdated", err)
+	}
+	if err := p.React(ctx, NewReaction{UserID: stale, NoteID: note, Code: "agree"}); err != nil {
+		t.Errorf("реакция: %v, а она согласия не требует", err)
+	}
+	if err := p.AddReport(ctx, stale, NoteSubject(note), "не согласен с новой редакцией"); err != nil {
+		t.Errorf("жалоба: %v, а она согласия не требует", err)
+	}
+
+	// Подписал новую — снова пишет.
+	mustConsent(t, p, stale)
+	if _, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: stale, Body: "теперь можно"}); err != nil {
+		t.Errorf("комментарий после подписи: %v", err)
+	}
+}

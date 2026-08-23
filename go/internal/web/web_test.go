@@ -58,6 +58,9 @@ type fakeStore struct {
 	freshSince  time.Time
 	freshNoteID int64
 
+	// Карта сайта: что отдать роботу.
+	sitemap []platform.SitemapNote
+
 	// Переезды: что отдать и с какой границей за ними пришли.
 	moved      []platform.CommentView
 	movedAfter platform.MovedAfter
@@ -162,6 +165,10 @@ func (f *fakeStore) CommentsMoved(_ context.Context, _ platform.Viewer, noteID i
 		next = f.movedNext
 	}
 	return f.moved, next, nil
+}
+
+func (f *fakeStore) SitemapNotes(_ context.Context, _, _ int) ([]platform.SitemapNote, error) {
+	return f.sitemap, nil
 }
 
 func (f *fakeStore) NotesSince(_ context.Context, _ platform.Viewer, after time.Time, _ int64, _ int) ([]platform.NoteView, error) {
@@ -993,8 +1000,41 @@ func TestSecurityHeaders(t *testing.T) {
 	if strings.Contains(csp, "unsafe-inline") {
 		t.Error("CSP ослаблен unsafe-inline — тогда и глубина ветки поехала бы в style")
 	}
-	if !strings.Contains(head.Get("X-Robots-Tag"), "noindex") {
-		t.Error("нет запрета индексации заголовком")
+}
+
+// Индексация ОТКРЫТА с 23.08.2026 (решение владельца, вместе с новыми
+// редакциями согласий — прежние обещали обратное), а личное и служебное закрыто
+// по-прежнему. Заголовком, а не только robots.txt: robots.txt соблюдают не все,
+// а «Моя страница» в чужом кэше — это уже не вопрос вкуса.
+func TestRobotsHeaderClosesOnlyPrivatePages(t *testing.T) {
+	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}, note: sampleNote()})
+	for _, open := range []string{"/", "/n/312811", "/help", "/consents", "/privacy"} {
+		if got := do(h, guest(t, "GET", open)).Header().Get("X-Robots-Tag"); got != "" {
+			t.Errorf("%s закрыта от поисковиков заголовком %q", open, got)
+		}
+	}
+	for _, closed := range []string{"/me", "/events", "/login", "/mod", "/n/312811/fresh"} {
+		if got := do(h, guest(t, "GET", closed)).Header().Get("X-Robots-Tag"); !strings.Contains(got, "noindex") {
+			t.Errorf("%s открыта поисковикам: заголовок %q", closed, got)
+		}
+	}
+}
+
+// robots.txt собирается из ТОГО ЖЕ списка, что и заголовок: разъехавшись, они
+// дали бы страницу, закрытую в одном месте и открытую в другом.
+func TestRobotsFileMatchesTheHeader(t *testing.T) {
+	h := openServer(t, &fakeStore{})
+	body := do(h, guest(t, "GET", "/robots.txt")).Body.String()
+	if !strings.Contains(body, "Allow: /") {
+		t.Errorf("robots.txt не открывает площадку:\n%s", body)
+	}
+	for _, root := range privateRoots {
+		if !strings.Contains(body, "Disallow: "+root+"\n") {
+			t.Errorf("robots.txt не закрывает %s:\n%s", root, body)
+		}
+	}
+	if strings.Contains(body, "Disallow: /\n") {
+		t.Errorf("robots.txt по-прежнему закрывает всё:\n%s", body)
 	}
 }
 
@@ -1136,5 +1176,59 @@ func TestConsentDocsCallThePlatformByItsName(t *testing.T) {
 	}
 	if !named {
 		t.Errorf("ни один действующий документ не называет площадку «%s»", SiteName)
+	}
+}
+
+// ---------------------------------------------------------------- карта сайта
+
+// Карта — единственная страница, написанная не для человека. Понадобилась она
+// вместе со снятием запрета индексации: своим ходом робот дошёл бы до заметок
+// только через постраничку ленты, а это пять с лишним тысяч страниц.
+func TestSitemapListsNotesInChunks(t *testing.T) {
+	st := &fakeStore{total: platform.SitemapLimit + 1, sitemap: []platform.SitemapNote{
+		{ID: 312811, Changed: time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)},
+	}}
+	h := newTestServer(t, st, Config{BaseURL: "https://t3h.ru"})
+
+	index := do(h, guest(t, "GET", "/sitemap.xml"))
+	if index.Code != http.StatusOK {
+		t.Fatalf("оглавление карты ответило %d", index.Code)
+	}
+	// Заметок на файл больше, чем помещается, — значит файлов ровно два.
+	for _, want := range []string{"https://t3h.ru/sitemap/1.xml", "https://t3h.ru/sitemap/2.xml"} {
+		if !strings.Contains(index.Body.String(), want) {
+			t.Errorf("в оглавлении нет %s:\n%s", want, index.Body.String())
+		}
+	}
+	if strings.Contains(index.Body.String(), "sitemap/3.xml") {
+		t.Error("в оглавлении лишний файл")
+	}
+
+	page := do(h, guest(t, "GET", "/sitemap/1.xml"))
+	body := page.Body.String()
+	if !strings.Contains(body, "<loc>https://t3h.ru/n/312811</loc>") {
+		t.Errorf("в карте нет адреса заметки:\n%s", body)
+	}
+	// «Менялось» — время последней реплики: тред живёт дольше заметки, и робот,
+	// судящий по дате публикации, к разговору второй раз не придёт.
+	if !strings.Contains(body, "<lastmod>2026-08-23T12:00:00Z</lastmod>") {
+		t.Errorf("в карте нет времени последней правки:\n%s", body)
+	}
+	// Бумаги и справка стоят в первом файле: из ленты на них ведёт только
+	// подвал, а найтись они обязаны.
+	if !strings.Contains(body, "<loc>https://t3h.ru/help</loc>") {
+		t.Errorf("в карте нет справки:\n%s", body)
+	}
+	if second := do(h, guest(t, "GET", "/sitemap/2.xml")).Body.String(); strings.Contains(second, "/help") {
+		t.Error("бумаги повторяются в каждом файле карты")
+	}
+}
+
+func TestSitemapRejectsBadPage(t *testing.T) {
+	h := openServer(t, &fakeStore{})
+	for _, q := range []string{"/sitemap/0.xml", "/sitemap/99999.xml", "/sitemap/абв.xml", "/sitemap/1"} {
+		if got := do(h, guest(t, "GET", q)).Code; got != http.StatusNotFound {
+			t.Errorf("%s принят с кодом %d", q, got)
+		}
 	}
 }

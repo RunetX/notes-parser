@@ -354,7 +354,7 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
 
-	if err := writeGuard(ctx, tx, in.AuthorID); err != nil {
+	if err := publishGuard(ctx, tx, in.AuthorID); err != nil {
 		return 0, err
 	}
 	if err := enforceRate(ctx, tx, notesRecentQuery, in.AuthorID, time.Now(), noteRates); err != nil {

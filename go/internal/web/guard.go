@@ -291,6 +291,11 @@ func costOf(r *http.Request) float64 {
 	case p == "/healthz" || p == "/robots.txt" ||
 		strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/media/"):
 		return 0
+	// Карта сайта — запрос робота, и стоит он как тред: пятьдесят тысяч строк из
+	// базы. Ходят за ней редко, но потолок здесь не про честного робота, а про
+	// того, кто решит брать её в цикле.
+	case strings.HasPrefix(p, "/sitemap"):
+		return costThread
 	case goesToNGS(r):
 		return costLogin
 	case r.Method == http.MethodPost:

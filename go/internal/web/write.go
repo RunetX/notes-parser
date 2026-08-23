@@ -292,6 +292,10 @@ func writeProblem(err error) (int, string) {
 		return http.StatusForbidden,
 			"Ваши публикации скрыты: вы отозвали согласие на распространение. " +
 				"Верните его на своей странице, и можно будет писать снова."
+	case errors.Is(err, platform.ErrConsentOutdated):
+		return http.StatusForbidden,
+			"Соглашения обновились: страницы площадки теперь открыты поисковым системам. " +
+				"Откройте «Мою страницу» и подпишите новую редакцию — после этого можно писать дальше."
 	case errors.Is(err, platform.ErrNotMember):
 		return http.StatusForbidden, "Писать может только участник площадки."
 	case errors.Is(err, platform.ErrBadReaction):

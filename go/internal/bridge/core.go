@@ -237,6 +237,16 @@ func (c *Core) refusedByPlatform(ctx context.Context, userID int64, lead string,
 		c.notify(ctx, userID, lead+c.joinInvite())
 		return
 	}
+	// Согласия в прежней редакции — тоже не поломка, а шаг, который человек
+	// обязан сделать сам: условия распространения изменились (страницы открыты
+	// поисковикам), и опубликовать его слова по старой подписи мы не вправе.
+	if errors.Is(err, platform.ErrConsentOutdated) {
+		c.log.Info("ответ на площадку не ушёл: старая редакция согласий", "user", userID)
+		c.notify(ctx, userID, lead+"Соглашения площадки обновились: страницы теперь открыты "+
+			"поисковым системам. Откройте свою страницу"+c.platMe()+" и подпишите новую редакцию — "+
+			"после этого ответы отсюда снова будут уходить туда.")
+		return
+	}
 	// Срок — отдельным текстом: «context deadline exceeded» человеку ничего не
 	// говорит, а сказать надо ровно то, чего мы сами не знаем. Отменённый
 	// контекст обрывает ОЖИДАНИЕ, но не отменяет уже начатую транзакцию, так что
@@ -249,6 +259,16 @@ func (c *Core) refusedByPlatform(ctx context.Context, userID int64, lead string,
 	}
 	c.log.Warn("ответ на площадку не ушёл", "user", userID, "err", err)
 	c.notify(ctx, userID, lead+"Площадка тоже не приняла: "+err.Error()+".")
+}
+
+// platMe — адрес «Моей страницы», если он известен. Пустой адрес — рабочий
+// случай: площадка могла быть настроена без base_url, и текст обязан читаться и
+// без ссылки.
+func (c *Core) platMe() string {
+	if c.platURL == "" {
+		return ""
+	}
+	return " " + strings.TrimRight(c.platURL, "/") + "/me"
 }
 
 // joinInvite — приглашение войти на площадку. Зовём того, кто уже пишет в

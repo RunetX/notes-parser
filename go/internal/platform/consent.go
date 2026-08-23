@@ -27,6 +27,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -139,6 +140,24 @@ func CurrentConsentDocs(op Operator) ([]ConsentDoc, error) {
 	}
 	return out, nil
 }
+
+// currentConsentVersions — номера действующих редакций по видам. Реквизиты
+// оператора здесь ни при чём: номер версии от подстановки не зависит, а тексты
+// не нужны вовсе.
+//
+// Считается ОДИН раз на процесс: спрашивает их writeGuard, то есть каждая
+// публикация, а меняются они только вместе с бинарником.
+var currentConsentVersions = sync.OnceValues(func() (map[string]int, error) {
+	docs, err := CurrentConsentDocs(Operator{})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int, len(docs))
+	for _, d := range docs {
+		out[d.Kind] = d.Version
+	}
+	return out, nil
+})
 
 func parseConsentName(name string) (string, int, error) {
 	base := strings.TrimSuffix(name, ".txt")

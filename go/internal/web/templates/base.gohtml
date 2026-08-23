@@ -6,9 +6,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{{/* Индексация запрещена и заголовком X-Robots-Tag, и здесь: читать площадку
-     может каждый, но чужие тексты не должны оседать в поисковой выдаче. */}}
-<meta name="robots" content="noindex, nofollow, noarchive">
+{{/* Запрета индексации здесь больше НЕТ (23.08.2026): страницы открыты
+     поисковикам, а прежние редакции согласий, обещавшие обратное, заменены —
+     distribution.v2 и processing.v3. Личное и служебное закрыто по-прежнему, но
+     заголовком X-Robots-Tag на своих адресах (web.privatePath), а не общим
+     мета-тегом: место запрета — там же, где список закрытого. */}}
 <meta name="color-scheme" content="light dark">
 <title>{{.Title}}</title>
 <link rel="icon" href="{{asset "icon.svg"}}">

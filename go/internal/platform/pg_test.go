@@ -442,10 +442,7 @@ func TestOrphanReplyBecomesRoot(t *testing.T) {
 func TestAnonymousAuthorNeverLeavesTheDatabase(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
-	author, err := p.CreateNativeUser(ctx, "Ванилька")
-	if err != nil {
-		t.Fatalf("создание пользователя: %v", err)
-	}
+	author := mustUser(t, p, "Ванилька")
 	id, err := p.CreateNote(ctx, NewNote{AuthorID: author, Anonymous: true, Body: "анонимно"})
 	if err != nil {
 		t.Fatalf("публикация: %v", err)
@@ -638,13 +635,33 @@ func TestOurLockClosesThread(t *testing.T) {
 
 // mustUser заводит участника, которому можно писать: тень писать не вправе, а
 // CreateNativeUser сразу делает участника.
+// mustUser — участник, какой он в бою: заведён И подписал действующие редакции
+// согласий. Без подписи публиковать нельзя (writeGuard), и это не деталь теста:
+// участник без согласий на площадке не появляется вовсе — экран согласий стоит
+// последним шагом входа, а отказ на нём вход откатывает.
 func mustUser(t *testing.T, p *Platform, nick string) int64 {
 	t.Helper()
-	id, err := p.CreateNativeUser(context.Background(), nick)
+	ctx := context.Background()
+	id, err := p.CreateNativeUser(ctx, nick)
 	if err != nil {
 		t.Fatalf("пользователь %q: %v", nick, err)
 	}
+	mustConsent(t, p, id)
 	return id
+}
+
+// mustConsent подписывает за человека всё, что подписывают при входе.
+func mustConsent(t *testing.T, p *Platform, userID int64) {
+	t.Helper()
+	docs, err := CurrentConsentDocs(Operator{})
+	if err != nil {
+		t.Fatalf("тексты согласий: %v", err)
+	}
+	for _, d := range docs {
+		if err := p.GrantConsent(context.Background(), userID, d.Kind, d.Version, "тест"); err != nil {
+			t.Fatalf("согласие %s: %v", d.Kind, err)
+		}
+	}
 }
 
 func TestMediaPutIsIdempotent(t *testing.T) {

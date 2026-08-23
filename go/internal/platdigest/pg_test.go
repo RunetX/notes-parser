@@ -77,6 +77,12 @@ func newSource(t *testing.T) (*Source, *platform.Platform) {
 	if err := shared.Migrate(ctx); err != nil {
 		t.Fatalf("миграции: %v", err)
 	}
+	// Тексты согласий публикуются вместе со схемой — так их накатывает
+	// администратор одной командой `platform migrate`, и без них согласие
+	// участника падает на внешнем ключе consents → consent_docs.
+	if err := shared.EnsureConsentDocs(ctx, platform.Operator{}); err != nil {
+		t.Fatalf("тексты согласий: %v", err)
+	}
 	return New(shared, ngsBase), shared
 }
 
@@ -333,6 +339,18 @@ func nativeMember(t *testing.T, p *platform.Platform, nick string) int64 {
 	}
 	if err := p.Promote(ctx, id); err != nil {
 		t.Fatalf("участник: %v", err)
+	}
+	// Согласия — часть входа, а не украшение: публиковать можно только по
+	// действующей редакции (platform.publishGuard), и участник без подписи в бою
+	// не появляется вовсе.
+	docs, err := platform.CurrentConsentDocs(platform.Operator{})
+	if err != nil {
+		t.Fatalf("тексты согласий: %v", err)
+	}
+	for _, d := range docs {
+		if err := p.GrantConsent(ctx, id, d.Kind, d.Version, "тест"); err != nil {
+			t.Fatalf("согласие %s: %v", d.Kind, err)
+		}
 	}
 	return id
 }

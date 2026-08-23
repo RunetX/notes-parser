@@ -650,7 +650,7 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 
-	if err := writeGuard(ctx, tx, in.AuthorID); err != nil {
+	if err := publishGuard(ctx, tx, in.AuthorID); err != nil {
 		return 0, err
 	}
 	now := time.Now()

@@ -42,6 +42,11 @@ var (
 	// при отозванном согласии значило бы распространять то, на что согласия нет,
 	// а спрятать новое сразу после публикации — издевательство над обоими.
 	ErrHiddenAll = errors.New("ваши публикации скрыты: сначала верните согласие на распространение")
+	// ErrConsentOutdated — согласия человека остались в прежней редакции. Не
+	// «нет согласия», а «согласие не на те условия»: редакция меняется, когда
+	// меняется обещание (23.08.2026 — открытие страниц поисковикам), и
+	// публиковать под новыми условиями по старой подписи нельзя.
+	ErrConsentOutdated = errors.New("согласия обновились: подпишите новую редакцию")
 	// ErrRateLimited — слишком часто.
 	ErrRateLimited = errors.New("слишком часто")
 	// ErrThreadLocked — обсуждение закрыл НАШ модератор (а не отметка НГС).
@@ -108,6 +113,69 @@ func writeGuard(ctx context.Context, q querier, userID int64) error {
 		return ErrBanned
 	case hideAll:
 		return ErrHiddenAll
+	}
+	return nil
+}
+
+// publishGuard — writeGuard плюс действующая редакция согласий. Стоит он на
+// путях, где появляется ЧУЖОЙ ТЕКСТ на виду у всех: заметка, комментарий,
+// правка своей заметки.
+//
+// Реакция и жалоба через него не идут намеренно. Реакцию не видит никто, кроме
+// счётчика («кто нажал» не показывается вовсе), а жалоба — обращение к
+// модератору, а не публикация; требовать за них новую подпись значило бы
+// закрыть человеку жалобу на то самое изменение, о котором его и просят
+// подписаться.
+func publishGuard(ctx context.Context, q querier, userID int64) error {
+	if err := writeGuard(ctx, q, userID); err != nil {
+		return err
+	}
+	return consentGuard(ctx, q, userID)
+}
+
+// consentGuard — публиковать можно только по ДЕЙСТВУЮЩЕЙ редакции согласий.
+//
+// Проверка появилась вместе с открытием площадки поисковикам (23.08.2026):
+// выпустить новую редакцию и не спросить её — значит выпустить бумагу, которая
+// ничего не меняет, а условия распространения тем временем стали другими. Стоит
+// она в ядре, а не в форме, ровно потому, что писать можно не только с сайта:
+// ответ из телеграма приходит тем же путём (bridge), и второй список правил там
+// однажды разошёлся бы с этим.
+//
+// Читается той же транзакцией и тем же приёмом, что и остальной writeGuard:
+// последняя запись по каждому виду, отозванное не считается.
+func consentGuard(ctx context.Context, q querier, userID int64) error {
+	want, err := currentConsentVersions()
+	if err != nil {
+		return err
+	}
+	rows, err := q.Query(ctx, `
+		SELECT kind, version FROM (
+		    SELECT DISTINCT ON (kind) kind, version, revoked_at
+		      FROM consents WHERE user_id = $1
+		     ORDER BY kind, granted_at DESC
+		) last WHERE revoked_at IS NULL`, userID)
+	if err != nil {
+		return fmt.Errorf("согласия автора %d: %w", userID, err)
+	}
+	have := make(map[string]int, 2)
+	for rows.Next() {
+		var kind string
+		var version int
+		if err := rows.Scan(&kind, &version); err != nil {
+			rows.Close()
+			return fmt.Errorf("согласия автора %d: %w", userID, err)
+		}
+		have[kind] = version
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("согласия автора %d: %w", userID, err)
+	}
+	for kind, version := range want {
+		if have[kind] < version {
+			return ErrConsentOutdated
+		}
 	}
 	return nil
 }

@@ -99,6 +99,10 @@ type Store interface {
 	// линейном виде на странице окно, а не весь тред.
 	ThreadFreshAfter(ctx context.Context, noteID int64) (platform.FreshAfter, error)
 	NotesSince(ctx context.Context, v platform.Viewer, after time.Time, afterID int64, limit int) ([]platform.NoteView, error)
+	// SitemapNotes — адреса заметок для карты сайта. Отдельным методом, а не
+	// лентой с большим потолком: карте не нужны ни авторы, ни тела, ни
+	// маскирование анонима — только адрес и когда там последний раз говорили.
+	SitemapNotes(ctx context.Context, offset, limit int) ([]platform.SitemapNote, error)
 	// NoteReactions — реакции заметки и всего треда разом. Отдельным методом, а не
 	// полем в CommentView: реакции меняются чаще самих реплик и читаются одним
 	// запросом на страницу, а не по одному на строку.
@@ -264,6 +268,11 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /robots.txt", s.handleRobots)
+	// Карта сайта — для роботов, и появилась она вместе со снятием запрета
+	// индексации: своим ходом робот дошёл бы до заметок только через постраничку
+	// ленты, а это пять с лишним тысяч страниц.
+	mux.HandleFunc("GET /sitemap.xml", s.handleSitemapIndex)
+	mux.HandleFunc("GET /sitemap/{name}", s.handleSitemapPage)
 	// Справка открыта всем, включая не вошедших: правила, которые видно только
 	// изнутри, — это не правила, а сюрприз.
 	mux.HandleFunc("GET /help", s.handleHelp)
@@ -353,11 +362,20 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
-		// Чтение открыто людям, но не поисковикам: зеркало чужой переписки в
-		// выдаче — это распространение персональных данных без согласия
-		// (ст. 10.1), и снимать запрет можно только вместе с бумагой (Ш9).
-		// Заголовком, а не только robots.txt: robots.txt соблюдают не все.
-		h.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+		// Индексация ОТКРЫТА с 23.08.2026 (решение владельца), и открыта она не
+		// правкой трёх флагов: прежние редакции согласий обещали людям обратное
+		// («страницы закрыты, в поисковой выдаче ваших слов не будет»), поэтому
+		// вместе с запретом сняты и они — выпущены distribution.v2 и
+		// processing.v3, и каждый участник подписывает их заново.
+		//
+		// Закрытым остаётся ЛИЧНОЕ и служебное: «Моя страница», события,
+		// модерация, вход, живой добор. Заголовком, а не только robots.txt:
+		// robots.txt соблюдают не все, а личный раздел в чужом кэше — это уже не
+		// вопрос вкуса. Список один на оба места (см. handleRobots): разъехавшись,
+		// они дали бы страницу, закрытую в одном и открытую в другом.
+		if privatePath(r.URL.Path) {
+			h.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -415,9 +433,59 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ok")
 }
 
+// privateRoots — разделы, которых в поиске быть не должно. Три рода, и все три
+// закрыты по своей причине:
+//
+//	личное      — /me, /events: это страница ОДНОГО человека, и в чужом кэше ей
+//	              не место, даже если робот дошёл до неё без сессии;
+//	служебное   — /login, /consent, /report, /mod: страницы действия, а не
+//	              чтения; в выдаче от них один вред («вход на Зазеркалье» первой
+//	              ссылкой вместо самой площадки);
+//	дорогое     — /live, /fresh, /healthz: живой канал держит соединение пять
+//	              минут, а добор бессмыслен без страницы, которая его позвала.
+//
+// Совпадение считается по СЕГМЕНТАМ, а не по префиксу строки: «/consent» не
+// должен закрывать «/consents» — это опубликованные документы, и их читать
+// можно и нужно всем.
+var privateRoots = []string{"/me", "/events", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz"}
+
+// privatePath — этот адрес роботам закрыт.
+func privatePath(p string) bool {
+	for _, root := range privateRoots {
+		if p == root || strings.HasPrefix(p, root+"/") {
+			return true
+		}
+	}
+	// Живой добор и форма ответа висят ВНУТРИ адреса заметки, а сама заметка
+	// открыта: закрывать их надо поимённо.
+	return strings.HasPrefix(p, "/n/") &&
+		(strings.HasSuffix(p, "/fresh") || strings.HasSuffix(p, "/reply"))
+}
+
+// handleRobots — что роботам можно. Собирается из того же списка, что и
+// заголовок: один источник правды, иначе страница окажется закрытой в одном
+// месте и открытой в другом.
+//
+// Crawl-delay здесь не украшение: у морды свои потолки наплыва (guard.go), и
+// поток запросов быстрее двух в секунду она встретит отказами. Google его не
+// читает вовсе и подбирает темп сам — по тем же отказам; Яндекс и Bing читают.
 func (s *Server) handleRobots(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprint(w, "User-agent: *\nDisallow: /\n")
+	var b strings.Builder
+	b.WriteString("User-agent: *\n")
+	for _, root := range privateRoots {
+		b.WriteString("Disallow: " + root + "\n")
+	}
+	b.WriteString("Disallow: /n/*/fresh\nDisallow: /n/*/reply\n")
+	// Раскрытая коробка реакций — тот же адрес заметки с параметром: для робота
+	// это отдельная страница, а для читателя та же самая, и обойти их все
+	// значило бы обойти тред столько раз, сколько в нём реплик.
+	b.WriteString("Disallow: /*?react=\n")
+	b.WriteString("Allow: /\nCrawl-delay: 2\n")
+	if s.cfg.BaseURL != "" {
+		b.WriteString("\nSitemap: " + strings.TrimRight(s.cfg.BaseURL, "/") + "/sitemap.xml\n")
+	}
+	fmt.Fprint(w, b.String())
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {

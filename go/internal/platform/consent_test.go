@@ -80,9 +80,14 @@ func TestConsentTextsSayWhatTheCodeDoes(t *testing.T) {
 	if !strings.Contains(byKind[ConsentDistribution], "немедленно") {
 		t.Error("в тексте распространения не сказано о немедленном отзыве")
 	}
-	// Индексация закрыта — X-Robots-Tag и robots.txt в internal/web.
-	if !strings.Contains(byKind[ConsentDistribution], "noindex") {
-		t.Error("в тексте не сказано про запрет индексации")
+	// Индексация ОТКРЫТА (23.08.2026) — web.privatePath и handleRobots. Прежняя
+	// редакция обещала обратное, потому и заменена: текст, разошедшийся с
+	// поведением, обесценивает подпись под ним.
+	if !strings.Contains(byKind[ConsentDistribution], "поисковым системам") {
+		t.Error("в тексте распространения не сказано про поисковые системы")
+	}
+	if strings.Contains(byKind[ConsentDistribution], "noindex") {
+		t.Error("в действующей редакции осталось обещание закрытой индексации")
 	}
 	// IP не хранятся: колонки ip_hmac есть, но не заполняются.
 	if !strings.Contains(byKind[ConsentProcessing], "IP-адреса") {
