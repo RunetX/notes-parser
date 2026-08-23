@@ -3,6 +3,7 @@ package love
 import (
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/url"
 	"regexp"
@@ -28,6 +29,10 @@ const (
 	selAvatar      = ".avatar" // src; alt = "Имя, N лет"
 	selCommentDate = ".lv-comment__pubdate"
 	selCommentText = ".lv-comment__text"
+	// Эмодзи сайт хранит текстом, а показывает картинкой; сам знак стоит в alt.
+	// Селектор НЕОБЯЗАТЕЛЬНЫЙ: реплика без эмодзи — обычное дело, и ноль
+	// совпадений здесь не дрейф вёрстки (см. bodyText).
+	selEmoji = "img.emojione"
 
 	// Шапка заметки на её же странице комментариев (/notes/comments/<id>/).
 	// Классы отличаются от ленты — lv-note__ вместо lv-notes__. Это
@@ -153,7 +158,7 @@ func parseFeedNote(s *goquery.Selection) (Note, bool, error) {
 	if text.Length() == 0 {
 		return Note{}, false, &MarkupError{Selector: selNoteText, Context: "заметка " + id}
 	}
-	n.Text = strings.TrimSpace(text.Text())
+	n.Text = bodyText(text)
 
 	if src, ok := s.Find(selNoteAuthorPic).First().Attr("src"); ok {
 		n.AuthorAvatarURL = strings.TrimSpace(src)
@@ -290,7 +295,7 @@ func parseCommentItem(s *goquery.Selection, i int, baseURL string) (Comment, err
 		AuthorLink:  absolutize(baseURL, href),
 		AvatarURL:   absolutize(baseURL, src),
 		PublishedAt: published,
-		Text:        strings.TrimSpace(text.Text()),
+		Text:        bodyText(text),
 	}, nil
 }
 
@@ -359,7 +364,7 @@ func parseNoteDoc(doc *goquery.Document, baseURL string) (Note, error) {
 	if text.Length() == 0 {
 		return Note{}, &MarkupError{Selector: selNotePageText, Context: "текст заметки на странице комментариев"}
 	}
-	n.Text = strings.TrimSpace(text.Text())
+	n.Text = bodyText(text)
 
 	if src, ok := item.Find(selNoteAuthorPic).First().Attr("src"); ok {
 		n.AuthorAvatarURL = strings.TrimSpace(src)
@@ -381,6 +386,34 @@ func parseNoteDoc(doc *goquery.Document, baseURL string) (Note, error) {
 	// чтобы не поймать эту фразу в чьём-то комментарии.
 	n.CommentsClosed = strings.Contains(ownText(doc.Find(selNoteComments).First()), commentsForbiddenMarker)
 	return n, nil
+}
+
+// bodyText — текст заметки или реплики вместе с эмодзи.
+//
+// Простой Text() их ТЕРЯЕТ: сайт подменяет эмодзи картинками
+// (<img class="emojione" alt="😉">), а у картинки текстового узла нет вовсе.
+// Замечено 23.08.2026 на живом треде: ответ, состоявший из одних эмодзи,
+// приехал к нам телом «Анна,» — от реплики уцелело одно обращение, — и страница
+// площадки нарисовала ник дважды (своё обращение из ребра плюс уцелевшее в
+// теле). То есть терялись не «значки»: терялась вся реплика.
+//
+// Знак берём из alt — там стоит он сам, а не его имя (в src лежит 1F609.png, по
+// которому знак пришлось бы собирать из имени файла). Пустой alt пропускаем:
+// поставить вместо картинки пустоту мы и так умеем, а вот выдумывать знак — нет.
+//
+// Возвращается ТЕКСТ, а не разметка: тело у нас всюду плоское, и картинку с
+// чужого хоста в него класть незачем — на площадке эмодзи и так рисует шрифт.
+func bodyText(s *goquery.Selection) string {
+	s.Find(selEmoji).Each(func(_ int, img *goquery.Selection) {
+		alt, ok := img.Attr("alt")
+		if !ok || alt == "" {
+			return
+		}
+		// ReplaceWithHtml разбирает строку как разметку, поэтому знак
+		// экранируется: alt в принципе может содержать «<».
+		img.ReplaceWithHtml(html.EscapeString(alt))
+	})
+	return strings.TrimSpace(s.Text())
 }
 
 // ownText возвращает только прямые текстовые узлы выборки, без текста вложенных

@@ -447,3 +447,53 @@ func TestAbsolutize(t *testing.T) {
 		}
 	}
 }
+
+// Эмодзи сайт хранит текстом, а показывает картинкой — и разбор их терял.
+//
+// Жалоба владельца 23.08.2026 пришла с другого конца: на площадке ответ показал
+// ник ДВАЖДЫ. Причина оказалась здесь — реплика состояла из одних эмодзи, разбор
+// оставил от неё «Ник,», и обращение вышло и из тела, и из ребра. То есть
+// терялись не «значки»: терялась вся реплика.
+func TestCommentEmojiSurviveParsing(t *testing.T) {
+	comments, err := ParseComments(openFixture(t, "comments_312696.html"), "https://love.ngs.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found string
+	for _, c := range comments {
+		if strings.Contains(c.Text, "\U0001F609") {
+			found = c.Text
+			break
+		}
+	}
+	if found == "" {
+		t.Fatal("эмодзи потерялись при разборе страницы")
+	}
+	if !strings.HasSuffix(found, "не научит\U0001F609") {
+		t.Errorf("эмодзи встал не на своё место: %q", found)
+	}
+}
+
+// Тот самый случай: реплика ИЗ ОДНИХ эмодзи. До правки от неё оставалось
+// обращение, а после — пустота, и «пустой комментарий» на странице неотличим от
+// поломки.
+func TestEmojiOnlyCommentIsNotEmpty(t *testing.T) {
+	const page = `<div class="lv-note__comment-item">
+	  <a id="anchor-1"></a>
+	  <a class="lv-people__nickname" href="/profile/42/">Дракоша</a>
+	  <img class="avatar" alt="Дракоша, 40 лет" src="/a.jpg"/>
+	  <time class="lv-comment__pubdate">23.08.2026, 21:23:28</time>
+	  <div class="lv-comment__text"><b>Анна</b>, <img class="emojione" alt="&#x1f60a;" src="/1F60A.png"/><img class="emojione" alt="&#x1f446;" src="/1F446.png"/></div>
+	</div>`
+
+	comments, err := ParseComments(strings.NewReader(page), "https://love.ngs.ru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("разобрано %d комментариев", len(comments))
+	}
+	if want := "Анна, \U0001F60A\U0001F446"; comments[0].Text != want {
+		t.Errorf("текст %q, ожидался %q", comments[0].Text, want)
+	}
+}
