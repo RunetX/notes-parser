@@ -28,7 +28,7 @@ func helpBody(t *testing.T, cfg Config) string {
 // Правила, которые видно только изнутри, — это не правила, а сюрприз.
 func TestHelpIsOpenToGuests(t *testing.T) {
 	body := helpBody(t, Config{})
-	for _, want := range []string{"Справка и правила", "Правила раздела", "Как войти", "Модерация"} {
+	for _, want := range []string{"Справка и правила", "Правила площадки", "Как войти", "Модерация"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в справке нет раздела %q", want)
 		}

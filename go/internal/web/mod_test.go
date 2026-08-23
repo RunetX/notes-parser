@@ -131,11 +131,7 @@ func signedInAs(t *testing.T, u platform.User) (*fakeAuth, string) {
 	ctx := context.Background()
 	auth := newFakeAuth()
 	auth.users[u.ID] = u
-	for _, k := range []string{platform.ConsentProcessing, platform.ConsentDistribution} {
-		if err := auth.GrantConsent(ctx, u.ID, k, 1, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
+	grantConsents(t, auth, u.ID)
 	token, _, err := auth.CreateSession(ctx, u.ID, "")
 	if err != nil {
 		t.Fatal(err)
