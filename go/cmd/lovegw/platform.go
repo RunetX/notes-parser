@@ -58,7 +58,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	cfgPath := fs.String("config", "config.json", "путь к config.json")
 	dbPath := fs.String("db", "", "путь к боевой lovegw.db (по умолчанию из конфига)")
 	limit := fs.Int("limit", 500, "media: сколько файлов забрать за проход; reply-scan: сколько заметок обойти")
-	note := fs.Int64("note", 0, "reply-scan: обойти только эту заметку")
+	note := fs.Int64("note", 0, "reply-scan / triage: взять только эту заметку")
 	bind := fs.Int64("bind", 0, "invite: привязать приглашение к участнику (его прежний след станет своим)")
 	label := fs.String("note-text", "", "invite: пометка для себя, кому выдано")
 	days := fs.Int("days", 30, "invite: сколько дней действует")
@@ -135,7 +135,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	case "moderation":
 		return platformModeration(ctx, cfg, *limit)
 	case "triage":
-		return platformTriage(ctx, cfg, *limit, *model)
+		return platformTriage(ctx, cfg, *limit, *model, *note)
 	case "events":
 		return platformEvents(ctx, cfg, *limit)
 	case "anonymize":

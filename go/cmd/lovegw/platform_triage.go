@@ -29,8 +29,9 @@ import (
 	"lovegw/internal/platmod"
 )
 
-// platformTriage прогоняет очередь через классификатор вхолостую.
-func platformTriage(ctx context.Context, cfg *config.Config, limit int, model string) error {
+// platformTriage прогоняет очередь (или один тред) через классификатор
+// вхолостую.
+func platformTriage(ctx context.Context, cfg *config.Config, limit int, model string, noteID int64) error {
 	m := cfg.Platform.Moderation
 	if model != "" {
 		cfg.Platform.Moderation.Model = model
@@ -46,13 +47,27 @@ func platformTriage(ctx context.Context, cfg *config.Config, limit int, model st
 	}
 	defer p.Close()
 
-	// maxAttempts здесь ноль: стенду интересны и те строки, на которых боевой
-	// автомат уже спотыкался, — как раз они и объясняют, почему очередь стоит.
-	items, err := p.PendingChecks(ctx, limit, 0)
+	var items []platform.Pending
+	if noteID != 0 {
+		// Тред целиком. Нужен потому, что в очереди зеркальных реплик нет и не
+		// будет (строка заводится только публикацией у нас), а замерять
+		// классификатор на чём-то надо — и настоящие треды НГС для этого
+		// честнее любой придуманной пачки.
+		items, err = p.PendingOfNote(ctx, noteID, limit)
+	} else {
+		// maxAttempts здесь ноль: стенду интересны и те строки, на которых
+		// боевой автомат уже спотыкался, — как раз они и объясняют, почему
+		// очередь стоит.
+		items, err = p.PendingChecks(ctx, limit, 0)
+	}
 	if err != nil {
 		return err
 	}
 	if len(items) == 0 {
+		if noteID != 0 {
+			fmt.Printf("в заметке %d нет видимых публикаций — прогонять нечего\n", noteID)
+			return nil
+		}
 		fmt.Println("очередь проверки пуста — прогонять нечего")
 		return nil
 	}

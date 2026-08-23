@@ -676,6 +676,44 @@ func (p *Platform) PendingChecks(ctx context.Context, limit, maxAttempts int) ([
 	return out, rows.Err()
 }
 
+// PendingOfNote — заметка и весь её тред как строки проверки, ДЛЯ СТЕНДА.
+//
+// Очередь (`PendingChecks`) сюда не годится: строка заводится только публикацией
+// у нас, а замерять классификатор надо на том, что в базе уже лежит, — то есть
+// на зеркальных тредах, которых в очереди нет и не будет. Отсюда отдельный вход,
+// и он НЕ пишет ничего: попытки и вердикты остаются делом боевого автомата.
+//
+// Берутся только видимые строки: про скрытые решение уже принято, и мнение
+// машины о них — это разговор про пересмотр, а не про триаж.
+func (p *Platform) PendingOfNote(ctx context.Context, noteID int64, limit int) ([]Pending, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT ord, kind, id, note_id, author_id, body, created_at FROM (
+		  SELECT 0 AS ord, $2::text AS kind, n.id, n.id AS note_id,
+		         coalesce(n.author_id, 0) AS author_id, n.body, n.created_at
+		    FROM notes n WHERE n.id = $1 AND n.status = $4
+		  UNION ALL
+		  SELECT 1, $3::text, c.id, c.note_id,
+		         coalesce(c.author_id, 0), c.body, c.created_at
+		    FROM comments c WHERE c.note_id = $1 AND c.status = $4
+		) t ORDER BY ord, id LIMIT $5`,
+		noteID, string(SubjectNote), string(SubjectComment), StatusVisible, clampLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("тред %d для стенда: %w", noteID, err)
+	}
+	defer rows.Close()
+	var out []Pending
+	for rows.Next() {
+		var it Pending
+		var ord int
+		if err := rows.Scan(&ord, &it.Subject.Kind, &it.Subject.ID, &it.NoteID,
+			&it.AuthorID, &it.Body, &it.QueuedAt); err != nil {
+			return nil, fmt.Errorf("тред %d для стенда: %w", noteID, err)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // BumpAttempts отмечает, что автомат взял эти строки в работу.
 //
 // Считается ПОПЫТКА, а не успех, и записывается она ДО запроса к модели: иначе
