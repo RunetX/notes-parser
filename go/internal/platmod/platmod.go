@@ -239,7 +239,12 @@ func (s *Service) settleVisibility(ctx context.Context) {
 // «потерял» настоящий мат, который в бою был бы скрыт.
 func applyMat(items []platform.Pending, verdicts []*platform.VerdictRecord) {
 	for i, v := range verdicts {
-		if v != nil && v.Verdict != platform.VerdictClean {
+		// Своё мнение о брани модель высказывает, но последнее слово по мату не
+		// за ней: её profanity — это «человеку», и без этой оговорки словарь
+		// НЕ смог бы сделать своё именно там, где мат настоящий и виден обоим.
+		// Замер поймал: «Нахуя банить за флуд» съехало из скрытия в очередь
+		// ровно потому, что модель тоже назвала его бранью.
+		if v != nil && v.Verdict != platform.VerdictClean && v.Category != platform.CatProfanity {
 			continue
 		}
 		quote := FindMat(items[i].Body)
