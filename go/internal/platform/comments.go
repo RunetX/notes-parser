@@ -348,6 +348,48 @@ const commentsMovedViewModQuery = `
 	SELECT ` + commentViewColumns + commentViewFrom + `
 	 WHERE c.note_id = $2 AND c.id = ANY($3) AND c.status IN (0, 2)`
 
+// movedNotesQuery — в каких из НАЗВАННЫХ заметок ветки переехали после отметки.
+//
+// Спрашивают о заметках списком, а не «обо всех сразу», и это не оптимизация, а
+// единственный способ уложиться в существующий индекс: comments_moved ведёт с
+// note_id (миграция 0015), поэтому «все переезды после T» пришлось бы искать
+// перебором таблицы на 10,7 млн строк — либо заводить второй индекс ради того,
+// что и так известно спрашивающему. А известно ему ровно нужное: живой канал
+// спрашивает про заметки, у которых СЕЙЧАС открыта чья-то страница, и их не
+// больше числа потоков (64, потолок в web/live.go).
+//
+// moved_at IS NOT NULL стоит явно: без него частичный индекс не годится.
+const movedNotesQuery = `
+	SELECT note_id, max(moved_at) FROM comments
+	 WHERE note_id = ANY($1) AND moved_at IS NOT NULL AND moved_at > $2
+	 GROUP BY note_id`
+
+// MovedNotesSince — какие из заметок переставили ветки после отметки.
+//
+// Живому каналу этого достаточно: он шлёт СИГНАЛ «в этой заметке изменилось
+// показываемое», а что именно изменилось, страница спросит сама своим курсором
+// (CommentsMoved). Отсюда и max вместо списка строк — сигнал у заметки один.
+func (p *Platform) MovedNotesSince(ctx context.Context, notes []int64, after time.Time) (map[int64]time.Time, error) {
+	if len(notes) == 0 {
+		return nil, nil
+	}
+	rows, err := p.pool.Query(ctx, movedNotesQuery, notes, after)
+	if err != nil {
+		return nil, wrapf(err, "переезды после %s", after)
+	}
+	defer rows.Close()
+	out := make(map[int64]time.Time)
+	for rows.Next() {
+		var id int64
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, wrapf(err, "переезды после %s", after)
+		}
+		out[id] = at
+	}
+	return out, wrapf(rows.Err(), "переезды после %s", after)
+}
+
 // CommentsMoved — реплики, переехавшие после границы, и новая граница.
 //
 // Возвращает их В ТОМ ЖЕ ВИДЕ, что и добор новых, потому что переезд меняет не

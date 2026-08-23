@@ -156,6 +156,94 @@ func TestLiveRingRollsBackWithTransaction(t *testing.T) {
 	expectSilence(t, rings, "после отката")
 }
 
+// ПЕРЕЕЗД ВЕТКИ ЗВОНИТ. Оплачено жалобой владельца 24.08.2026: обход мобильного
+// дерева переставил ребро, в базе стало правильно, а на открытой странице ветка
+// осталась там, куда её поставила догадка зеркала, — и увиделось это только
+// перезагрузкой. Отметка moved_at и заголовок X-Fresh-Moved были на месте;
+// не было повода за ними сходить, потому что сигналы рождались только из events,
+// а переезд событием не является и становиться им не должен.
+func TestLiveRingOnMovedBranch(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 313058, 175869, "Паноптикум")
+	ingestComment(t, p, 63238869, 313058, 1, 0)
+	ingestComment(t, p, 63238877, 313058, 1, 63238869)
+	ingestComment(t, p, 63238879, 313058, 2, 63238877) // адресат УГАДАН
+
+	rings := listenFor(t, p)
+	// На самом деле отвечали корню треда.
+	st, err := p.ApplyReplyTree(ctx, 313058, map[int64]int64{
+		63238869: 0, 63238877: 63238869, 63238879: 63238869})
+	if err != nil {
+		t.Fatalf("дерево: %v", err)
+	}
+	if st.Edges != 1 {
+		t.Fatalf("переставлено рёбер %d, ожидалось 1 — тест ничего не проверяет", st.Edges)
+	}
+	expectRing(t, rings, "переезд ветки")
+
+	// И сигнал этот заметке адресован: хаб спрашивает про открытые треды.
+	moved, err := p.MovedNotesSince(ctx, []int64{313058}, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("переезды: %v", err)
+	}
+	if _, ok := moved[313058]; !ok {
+		t.Fatal("переезд не виден через MovedNotesSince — сигнал некуда адресовать")
+	}
+}
+
+// Проход, который ничего не сдвинул, молчит. Иначе обход ста заметок подряд
+// (командной очередью добора истории) поднимал бы хаб на каждой из них зря.
+func TestLiveSilentWhenNothingMoved(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 313058, 175869, "Паноптикум")
+	ingestComment(t, p, 63238869, 313058, 1, 0)
+	ingestComment(t, p, 63238877, 313058, 1, 63238869)
+	tree := map[int64]int64{63238869: 0, 63238877: 63238869}
+	if _, err := p.ApplyReplyTree(ctx, 313058, tree); err != nil {
+		t.Fatalf("дерево: %v", err)
+	}
+
+	// Второй проход тем же деревом двигать уже нечего.
+	rings := listenFor(t, p)
+	st, err := p.ApplyReplyTree(ctx, 313058, tree)
+	if err != nil {
+		t.Fatalf("дерево: %v", err)
+	}
+	if st.Edges != 0 {
+		t.Fatalf("второй проход переставил %d рёбер — заготовка не та", st.Edges)
+	}
+	expectSilence(t, rings, "проход без переездов")
+}
+
+// Про чужую заметку не спрашивают, а спросив — не получают: сигнал переезда
+// адресный, и разослать его всем значило бы гнать на /fresh все открытые треды
+// разом при каждом обходе.
+func TestMovedNotesSinceIsScopedToAsked(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 313058, 175869, "Паноптикум")
+	ingestComment(t, p, 63238869, 313058, 1, 0)
+	ingestComment(t, p, 63238877, 313058, 1, 63238869)
+	ingestComment(t, p, 63238879, 313058, 2, 63238877)
+	if _, err := p.ApplyReplyTree(ctx, 313058, map[int64]int64{
+		63238869: 0, 63238877: 63238869, 63238879: 63238869}); err != nil {
+		t.Fatalf("дерево: %v", err)
+	}
+
+	moved, err := p.MovedNotesSince(ctx, []int64{312811}, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("переезды: %v", err)
+	}
+	if len(moved) != 0 {
+		t.Fatalf("спросили про 312811, а ответили про %v", moved)
+	}
+	if moved, err := p.MovedNotesSince(ctx, nil, time.Now().Add(-time.Hour)); err != nil || len(moved) != 0 {
+		t.Fatalf("пустой список дал %v, %v — хаб без слушателей обязан молчать", moved, err)
+	}
+}
+
 // Подписка НЕ отбирает строку у пула. Требование брифа и заодно самое дорогое
 // место всей затеи: у морды четыре соединения на всю площадку, и пятая часть
 // пула, ушедшая в вечное ожидание, отбирается у страниц, а через них — у

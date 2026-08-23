@@ -31,6 +31,8 @@ type watchedLive struct {
 	drop   chan error // положить сюда ошибку — подписка кончилась
 	tries  int
 	listen chan struct{} // сигнал тесту: подписка встала
+	moved  map[int64]time.Time
+	asked  []int64
 }
 
 func newWatched() *watchedLive {
@@ -53,6 +55,37 @@ func (w *watchedLive) ListenLive(ctx context.Context, ready, ring func()) error 
 	case <-ctx.Done():
 		return nil
 	}
+}
+
+// MovedNotesSince — переезды, о которых тест решает сам. Заодно ЗАПОМИНАЕТ, о
+// чём спросили: половина смысла третьего насоса в том, что спрашивает он только
+// про открытые треды.
+func (w *watchedLive) MovedNotesSince(_ context.Context, notes []int64, after time.Time) (map[int64]time.Time, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.asked = append(w.asked, notes...)
+	out := map[int64]time.Time{}
+	for _, id := range notes {
+		if at, ok := w.moved[id]; ok && at.After(after) {
+			out[id] = at
+		}
+	}
+	return out, nil
+}
+
+func (w *watchedLive) move(note int64, at time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.moved == nil {
+		w.moved = map[int64]time.Time{}
+	}
+	w.moved[note] = at
+}
+
+func (w *watchedLive) askedAbout() []int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]int64(nil), w.asked...)
 }
 
 // call — звонок «снаружи», как его сделал бы Postgres.
@@ -220,6 +253,67 @@ func TestObserveIgnoresNegative(t *testing.T) {
 	}
 }
 
+// Переехавшая ветка доходит до открытой страницы СИГНАЛОМ, а не следующей
+// репликой. Ради этого теста всё и затевалось: разговор в треде затихает сразу
+// после ответа, новых фактов не будет, и без своего сигнала человек остаётся с
+// веткой, выросшей по догадке зеркала, до перезагрузки.
+func TestHubSignalsMovedBranch(t *testing.T) {
+	src := newWatched()
+	h := newHub(src, quietLog())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.run(ctx)
+	waitFor(t, func() bool { return h.Mode() == modeNotify })
+
+	l := &listener{ch: make(chan liveMsg, listenerBuffer), topics: []string{noteTopic(312811)}}
+	if !h.subscribe(l, maxLiveConns, maxLivePerUser) {
+		t.Fatal("хаб не принял слушателя")
+	}
+	defer h.unsubscribe(l)
+
+	src.move(312811, time.Now().Add(time.Minute))
+	src.call() // звонок, какой делает ApplyReplyTree
+
+	select {
+	case m := <-l.ch:
+		if m.Kind != "move" || m.Note != 312811 {
+			t.Fatalf("пришёл не тот сигнал: %+v", m)
+		}
+	case <-time.After(hubTickNotify / 4):
+		t.Fatal("о переезде не сказали: страница осталась бы с угаданной веткой")
+	}
+}
+
+// Спрашиваем только про ОТКРЫТЫЕ треды. Не педантизм: индекс переездов ведёт с
+// note_id, и вопрос «покажи все переезды» — это перебор таблицы на 10,7 млн
+// строк на каждом проходе хаба.
+func TestHubAsksOnlyAboutWatchedNotes(t *testing.T) {
+	src := newWatched()
+	h := newHub(src, quietLog())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.run(ctx)
+	waitFor(t, func() bool { return h.Mode() == modeNotify })
+
+	// Без слушателей о переездах не спрашивают вовсе.
+	src.call()
+	waitFor(t, func() bool { return len(src.askedAbout()) == 0 })
+
+	l := &listener{ch: make(chan liveMsg, listenerBuffer), topics: []string{noteTopic(312811)}}
+	if !h.subscribe(l, maxLiveConns, maxLivePerUser) {
+		t.Fatal("хаб не принял слушателя")
+	}
+	defer h.unsubscribe(l)
+	src.call()
+
+	waitFor(t, func() bool { return len(src.askedAbout()) > 0 })
+	for _, id := range src.askedAbout() {
+		if id != 312811 {
+			t.Fatalf("спросили про заметку %d, которую никто не открывал", id)
+		}
+	}
+}
+
 // Ядро обязано подходить обоим интерфейсам живого канала. Проверка выглядит
 // пустой, но закрывает самый тихий из отказов: способности подключаются
 // type-assertion'ом, и разошедшаяся подпись не даёт ни ошибки сборки, ни
@@ -232,6 +326,9 @@ func TestPlatformSatisfiesLiveInterfaces(t *testing.T) {
 	}
 	if _, ok := p.(LiveWatcher); !ok {
 		t.Error("platform.Platform больше не LiveWatcher — канал молча уехал на такт")
+	}
+	if _, ok := p.(LiveMover); !ok {
+		t.Error("platform.Platform больше не LiveMover — переезды ветки снова молчат")
 	}
 }
 

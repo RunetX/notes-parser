@@ -113,6 +113,9 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		paths[r.id] = np
 	}
 
+	// moved — тронул ли проход хоть одну ВИДИМУЮ строку. Нужен ради звонка в
+	// конце: см. ringLive перед Commit.
+	var moved bool
 	for i := range list {
 		r := &list[i]
 		newParent := parent[r.id]
@@ -161,6 +164,7 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		// канал весь тред при первом же обходе заметки — ради строк, которые на
 		// экране не сдвинутся ни на пиксель.
 		shown := newParent != r.replyTo || newPath != r.path || newBody != r.body
+		moved = moved || shown
 		if _, err := tx.Exec(ctx, `
 			UPDATE comments
 			   SET reply_to_id = $2, reply_source = $3, path = $4, depth = $5,
@@ -171,6 +175,22 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 			nullID(branchRoot), newBody, shown); err != nil {
 			return st, fmt.Errorf("правка комментария %d: %w", r.id, err)
 		}
+	}
+	// Звонок живому каналу — той же транзакцией, как и у записи факта (live.go).
+	//
+	// Без него отметка moved_at доходила до открытой страницы только ЗАОДНО со
+	// следующей репликой: добор идёт по сигналу, а сигналы рождались лишь из
+	// events. Разговор затихал — и человек до перезагрузки смотрел на ветку,
+	// выросшую по догадке зеркала, хотя в базе она уже стояла на месте (жалоба
+	// владельца 24.08.2026: обновил — все ветки на месте). Механика переезда
+	// была доведена до страницы наполовину; звонок — вторая половина.
+	//
+	// Событием этот переезд НЕ становится, и это не экономия: events — журнал
+	// того, о чём уместно сказать участнику, а «ветка встала на своё место» не
+	// повод ни для повода, ни для колокольчика. Звонок здесь говорит ровно то,
+	// что значит: «в этой заметке изменилось показываемое, сходи посмотри».
+	if moved {
+		ringLive(ctx, tx)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return st, fmt.Errorf("дерево заметки %d: %w", noteID, err)
