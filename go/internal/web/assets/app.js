@@ -122,10 +122,15 @@
 // скрипта код всё равно набирается руками, как на НГС все эти годы. Здесь
 // справочник превращается в кнопки, вставляющие код на месте курсора: то же
 // правило, что у сворачивания веток — мёртвых кнопок на странице не бывает.
-(function () {
+//
+// Функция, а не замкнутый в себе кусок, потому что оживлять панель приходится
+// ДВАЖДЫ: при загрузке страницы и ещё раз у формы ответа, которую скрипт
+// приносит с сервера уже после (ниже). Повторный вызов безопасен: отбор идёт по
+// [data-code], а у оживлённой кнопки этого атрибута нет.
+function smilePanel(scope) {
   'use strict';
 
-  var boxes = document.querySelectorAll('details.smbox');
+  var boxes = scope.querySelectorAll('details.smbox');
   if (!boxes.length) return;
 
   Array.prototype.forEach.call(boxes, function (box) {
@@ -133,7 +138,7 @@
     var area = form && form.querySelector('textarea');
     if (!area) return;
 
-    Array.prototype.forEach.call(box.querySelectorAll('.smi'), function (item) {
+    Array.prototype.forEach.call(box.querySelectorAll('.smi[data-code]'), function (item) {
       var code = ':::' + item.getAttribute('data-code') + ':::';
       var btn = document.createElement('button');
       btn.type = 'button'; // не submit: панель стоит ВНУТРИ формы
@@ -153,6 +158,127 @@
       });
       item.replaceWith(btn);
     });
+  });
+}
+smilePanel(document);
+
+// Форма ответа открывается НА МЕСТЕ, без перезагрузки.
+//
+// До этого «Ответить» было обычной ссылкой на ?reply=<id>, и стоило это полной
+// перерисовки треда — до 5000 строк ради одной формы, — да ещё и потери места, на
+// котором человек читал. Ссылкой оно и остаётся: без скрипта дорога прежняя, и
+// это условие, а не любезность.
+//
+// Разметку скрипт НЕ СОБИРАЕТ. Он просит у сервера готовую строку (replyform.go),
+// которую рисует тот же шаблон, что и страницу, — ровно как живой добор ниже.
+// Своей сборкой он не отличил бы участника от тени, а метка «ещё не переехал
+// сюда с НГС» отвечает на единственный вопрос отвечающего: дойдёт ли ответ.
+(function () {
+  'use strict';
+
+  var thread = document.querySelector('.thread');
+  var note = location.pathname.match(/^\/n\/(\d+)$/);
+  if (!thread || !note || !window.fetch) return;
+
+  var busy = false;
+
+  // Нижняя форма — та, что не лежит строкой треда: она про ответ НА ЗАМЕТКУ.
+  // Ищется на каждое нажатие, потому что строка с формой приходит и уходит.
+  var bottomBox = function () {
+    var found = null;
+    Array.prototype.forEach.call(document.querySelectorAll('.replybox'), function (b) {
+      if (!b.closest('.replyrow')) found = b;
+    });
+    return found;
+  };
+
+  // Набранное переносится в новую форму: человек начал писать одному, передумал
+  // и нажал «Ответить» другому — терять его слова из-за этого не за что.
+  var carry = function (row) {
+    var was = thread.querySelector('.replyrow textarea');
+    var now = row.querySelector('textarea');
+    if (was && now && was.value) now.value = was.value;
+  };
+
+  var drop = function () {
+    var row = thread.querySelector('.replyrow');
+    if (row) row.parentNode.removeChild(row);
+  };
+
+  // Адрес страницы меняется под то, что на ней открыто: обновление вернёт форму
+  // на то же место, то есть обе дороги — со скриптом и без — сходятся в одном
+  // адресе. Прокрутки при этом нет: replaceState якорь не отрабатывает.
+  var remember = function (href) {
+    if (window.history && history.replaceState) history.replaceState(null, '', href);
+  };
+
+  var open = function (link, cid) {
+    if (busy) return;
+    busy = true;
+    // Вид треда и номер страницы уже стоят в самой ссылке — «Ответить» не должно
+    // уводить человека из линейного вида в дерево. Отсюда и подмена reply на to
+    // вместо сборки адреса заново.
+    var url = '/n/' + note[1] + '/reply' + link.search.replace(/([?&])reply=/, '$1to=');
+    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+      .then(function (res) {
+        if (!res.ok) throw new Error('replyform');
+        return res.text();
+      })
+      .then(function (html) {
+        var box = document.createElement('template');
+        box.innerHTML = html;
+        var row = box.content.firstElementChild;
+        var at = document.getElementById('c' + cid);
+        if (!row || !at) throw new Error('replyform');
+        carry(row);
+        drop();
+        at.parentNode.insertBefore(row, at.nextSibling);
+        // Якорь #reply остаётся у НИЖНЕЙ формы: она тут одна такая на странице,
+        // и ведёт на неё «в общий тред». Строка же приходит с сервера в том
+        // виде, в каком он рисует её ЕДИНСТВЕННОЙ формой страницы (без скрипта
+        // нижней рядом не бывает), — здесь их две, а один и тот же id у двух
+        // элементов делает адрес #reply бессмысленным.
+        var boxed = row.querySelector('.replybox');
+        if (boxed && bottomBox()) boxed.removeAttribute('id');
+        smilePanel(row);
+        var area = row.querySelector('textarea');
+        if (area) area.focus();
+        remember(link.href);
+      })
+      .catch(function () {
+        // Реплику снесли, сессия истекла, сеть отпала — во всех случаях честнее
+        // уйти по той же ссылке обычным переходом: страница покажет, как есть.
+        location.href = link.href;
+      })
+      .then(function () { busy = false; });
+  };
+
+  document.addEventListener('click', function (e) {
+    if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (!e.target.closest) return;
+
+    var link = e.target.closest('a.rep');
+    if (link) {
+      var li = link.closest('li.c');
+      if (!li || !li.id) return;
+      e.preventDefault();
+      open(link, li.id.slice(1));
+      return;
+    }
+
+    // «в общий тред» — обратное действие, и перезагружать ради него страницу
+    // так же незачем. Работает это, только пока нижняя форма на месте: на
+    // странице, открытой по ?reply=<id>, её нет вовсе (её рисует сервер вместо
+    // строки в треде), и там ссылка остаётся ссылкой.
+    var alt = e.target.closest('.replyrow .repto .alt');
+    if (!alt) return;
+    var bottom = bottomBox();
+    if (!bottom) return;
+    e.preventDefault();
+    drop();
+    remember(alt.href);
+    var area = bottom.querySelector('textarea');
+    if (area) area.focus();
   });
 })();
 

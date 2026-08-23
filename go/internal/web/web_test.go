@@ -93,6 +93,18 @@ func (f *fakeStore) Thread(context.Context, platform.Viewer, int64) ([]platform.
 	return f.thread, nil
 }
 
+// Одна реплика ищется среди тех же, что отдаёт тред: у формы ответа, которая
+// открывается без перезагрузки, адресат обязан быть тем же самым, что и на
+// странице.
+func (f *fakeStore) CommentViewByID(_ context.Context, _ platform.Viewer, _, id int64) (platform.CommentView, error) {
+	for _, c := range append(append([]platform.CommentView{}, f.thread...), f.flat...) {
+		if c.ID == id {
+			return c, nil
+		}
+	}
+	return platform.CommentView{}, platform.ErrNotFound
+}
+
 // Реакции: ключ 0 — сама заметка, остальные — комментарии.
 func (f *fakeStore) NoteReactions(_ context.Context, viewerID, _ int64) (map[int64][]platform.Reaction, error) {
 	f.reactViewer = viewerID

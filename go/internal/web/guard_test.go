@@ -213,6 +213,11 @@ func TestЦенаМаршрутаРастётСРаботой(t *testing.T) {
 		{"GET", "/assets/style.css", 0},
 		{"GET", "/", costPage},
 		{"GET", "/n/312696", costThread},
+		{"GET", "/n/312696/fresh", costPage},
+		// Форма ответа — одна реплика по индексу, а не дерево: до неё то же
+		// нажатие перерисовывало ВЕСЬ тред. Публикация по тому же адресу
+		// остаётся записью.
+		{"GET", "/n/312696/reply", costPage},
 		{"POST", "/n/312696/reply", costWrite},
 		{"POST", "/login", costLogin},
 	}
