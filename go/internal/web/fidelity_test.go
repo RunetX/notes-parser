@@ -610,3 +610,36 @@ func TestStickyHeaderCarriesCommentCount(t *testing.T) {
 		t.Error("счётчик реплик оказался в шапке ленты")
 	}
 }
+
+// [Э] Название площадки на узком экране — ЗНАК, а не слово. Мера прежняя:
+// «человек не заметил переезда», — но шапка у нас своя (на НГС она не липкая и
+// счётчика в ней нет), и цена слова считается по ней. На телефоне «Зазеркалье»
+// занимает четверть строки, и угол «про меня» уезжал второй строкой: липкая
+// шапка в две строки съедает пол-экрана треда (жалоба владельца 23.08.2026).
+// Знак при этом обязан назвать себя сам — слово рядом скрыто ПОКАЗОМ, и без
+// подписи на ссылке площадка осталась бы на телефоне безымянной.
+func TestBrandBecomesMarkOnNarrowScreen(t *testing.T) {
+	css := cssText(t)
+	narrow := cssRule(t, css, "@media (max-width: 460px)")
+	if !strings.Contains(narrow, ".brand .bname { display: none; }") {
+		t.Error("на узком экране название площадки не уступает место знаку")
+	}
+	// Знак не должен уезжать вместе со словом: тогда от названия не осталось бы
+	// ничего вовсе. Правил про него в этом блоке хватает (размер, поле под
+	// палец) — запрещено ровно одно.
+	if strings.Contains(narrow, ".mark { display: none") {
+		t.Error("вместе со словом с узкого экрана уехал и знак площадки")
+	}
+
+	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}})
+	page := do(h, guest(t, "GET", "/")).Body.String()
+	if !strings.Contains(page, `class="mark"`) {
+		t.Errorf("в шапке нет знака площадки: %s", page)
+	}
+	if !strings.Contains(page, `aria-label="`+SiteName+`"`) {
+		t.Error("знак площадки не назван: с телефона имя площадки пропадёт вовсе")
+	}
+	if !strings.Contains(page, `<span class="bname">`+SiteName+`</span>`) {
+		t.Error("слово «" + SiteName + "» пропало из шапки совсем")
+	}
+}
