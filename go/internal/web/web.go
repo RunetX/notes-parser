@@ -74,6 +74,12 @@ type Store interface {
 	PinnedNotes(ctx context.Context, v platform.Viewer) ([]platform.NoteView, error)
 	NoteViewByID(ctx context.Context, v platform.Viewer, id int64) (platform.NoteView, error)
 	NoteImages(ctx context.Context, noteID int64) ([]platform.Media, error)
+	// CommentViewByID — одна реплика. Нужна форме ответа, которая открывается
+	// на месте, без перезагрузки (replyform.go): страница просит у сервера
+	// готовую строку с формой, а строке нужен адресат — его ник, тень он или
+	// участник и на какой глубине стоит. Читать ради этого весь тред заново
+	// было бы дороже той перезагрузки, от которой мы уходим.
+	CommentViewByID(ctx context.Context, v platform.Viewer, noteID, id int64) (platform.CommentView, error)
 	Thread(ctx context.Context, v platform.Viewer, noteID int64) ([]platform.CommentView, error)
 	Flat(ctx context.Context, v platform.Viewer, noteID int64, offset, limit int) ([]platform.CommentView, error)
 	// CommentsSince и NotesSince — живой добор: что появилось ПОСЛЕ того, как
@@ -283,6 +289,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /new", s.handleCreateNote)
 	mux.HandleFunc("GET /n/{id}/edit", s.handleEditNote)
 	mux.HandleFunc("POST /n/{id}/edit", s.handleUpdateNote)
+	// GET и POST по одному адресу: сервер отдаёт форму ответа и он же её
+	// принимает. Форма приходит ГОТОВОЙ строкой, как и живой добор, — второго
+	// способа собрать разметку у площадки не заводится (replyform.go).
+	mux.HandleFunc("GET /n/{id}/reply", s.handleReplyForm)
 	mux.HandleFunc("POST /n/{id}/reply", s.handleCreateComment)
 	mux.HandleFunc("POST /n/{id}/react", s.handleReact)
 	// Модерация. Скрытие и возврат — единственные способности, которых нет у

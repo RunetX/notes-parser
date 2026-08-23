@@ -135,6 +135,41 @@ const commentsSinceModQuery = `
 	 ORDER BY c.id
 	 LIMIT $4`
 
+// commentQuery — ОДНА реплика заметки, со всем, что нужно её показу. Спрашивает
+// её форма ответа, открывающаяся без перезагрузки (web/replyform.go): страница
+// приходит за готовой строкой формы, а строке нужен адресат — ник (текущий, а не
+// снимок), тень он или участник и на какой глубине стоит.
+//
+// Идёт по comments_flat (note_id, id), как и добор: заметка в условии не для
+// красоты — без неё запрос ходил бы по первичному ключу через всю таблицу на
+// 10,7 млн строк, а заодно позволял бы попросить чужую реплику под видом своей
+// заметки.
+const commentQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.id = $3 AND c.status = 0`
+
+const commentModQuery = `
+	SELECT ` + commentViewColumns + commentViewFrom + `
+	 WHERE c.note_id = $2 AND c.id = $3 AND c.status IN (0, 2)`
+
+// CommentViewByID — одна реплика заметки глазами читателя. ErrNotFound значит
+// «её здесь нет»: снесена, скрыта или принадлежит другой заметке — для показа
+// это один и тот же ответ.
+func (p *Platform) CommentViewByID(ctx context.Context, v Viewer, noteID, id int64) (CommentView, error) {
+	q := commentQuery
+	if v.CanModerate() {
+		q = commentModQuery
+	}
+	c, err := scanCommentView(p.pool.QueryRow(ctx, q, v.UserID, noteID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CommentView{}, fmt.Errorf("комментарий %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return CommentView{}, fmt.Errorf("чтение комментария %d: %w", id, err)
+	}
+	return c, nil
+}
+
 // FreshLimit — сколько реплик отдаётся за один добор. Не постраничка: если за
 // такт пришло больше, следующий запрос донесёт хвост, а курсор сдвинется сам.
 const FreshLimit = 50

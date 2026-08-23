@@ -621,11 +621,17 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		{"добор треда", commentsSinceQuery, []any{int64(0), int64(200001), int64(0), 50}, "comments_flat"},
 		{"добор ленты", notesSinceQuery,
 			[]any{int64(0), time.Now().Add(-time.Hour), int64(0), 50}, "notes_feed"},
+		// Одна реплика — та, что нужна форме ответа. Имя индекса здесь не
+		// закрепляется: по (note_id, id) годятся и первичный ключ, и
+		// comments_flat, а выбор между ними дело планировщика. Закрепляется
+		// другое — что это не перебор: запрос идёт на каждое «Ответить», а в
+		// таблице 10,7 млн строк.
+		{"одна реплика", commentQuery, []any{int64(0), int64(200002), int64(500001)}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			plan := explain(t, p, c.query, c.args...)
-			if !strings.Contains(plan, c.index) {
+			if c.index != "" && !strings.Contains(plan, c.index) {
 				t.Fatalf("план не берёт индекс %s:\n%s", c.index, plan)
 			}
 			if strings.Contains(plan, "Seq Scan on notes") || strings.Contains(plan, "Seq Scan on comments") {

@@ -299,7 +299,7 @@ func costOf(r *http.Request) float64 {
 	// правила «всё под /n/ — это тред»: он отдаёт не дерево до 5000 строк, а
 	// порцию по индексу (note_id, id), и платить за него как за тред значило бы
 	// выбирать корзину читателю, который просто держит вкладку открытой.
-	case isFresh(p):
+	case isFresh(p) || isReplyForm(r):
 		return costPage
 	case strings.HasPrefix(p, "/n/"):
 		return costThread
@@ -311,6 +311,15 @@ func costOf(r *http.Request) float64 {
 // isFresh — живой добор: «/fresh» у ленты и «/n/<id>/fresh» у треда.
 func isFresh(p string) bool {
 	return p == "/fresh" || (strings.HasPrefix(p, "/n/") && strings.HasSuffix(p, "/fresh"))
+}
+
+// isReplyForm — открытие формы ответа на месте. Ценой это страница, а не тред, и
+// это не поблажка: до неё то же нажатие перерисовывало ВЕСЬ тред до 5000 строк,
+// а теперь читается одна реплика по индексу. Только GET — POST по тому же адресу
+// это публикация, и стоит она как запись.
+func isReplyForm(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		strings.HasPrefix(r.URL.Path, "/n/") && strings.HasSuffix(r.URL.Path, "/reply")
 }
 
 // goesToNGS — запрос, который тянет за собой ЧУЖОЙ сайт: вход (анкета плюс
