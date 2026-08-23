@@ -8,6 +8,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 
 	"lovegw/internal/platform"
@@ -235,4 +236,39 @@ func (s talksSite) SendCode(_ context.Context, passportID int64, code string) er
 	}
 	*s.sent = append(*s.sent, strconv.FormatInt(passportID, 10)+":"+code)
 	return nil
+}
+
+// grantConsents подписывает за человека ДЕЙСТВУЮЩИЕ редакции обоих документов.
+// Версия берётся из самих текстов, а не пишется числом: опубликованная редакция
+// неизменяема, поэтому правка документа — всегда новая версия, и захардкоженная
+// единица роняла бы тесты, к согласиям отношения не имеющие.
+func grantConsents(t *testing.T, auth *fakeAuth, userID int64) {
+	t.Helper()
+	docs, err := platform.CurrentConsentDocs(platform.Operator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		if err := auth.GrantConsent(context.Background(), userID, d.Kind, d.Version, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// consentVersion — номер ДЕЙСТВУЮЩЕЙ редакции документа, каким его ждёт форма.
+// Хардкод «1» в тестах означал бы, что первая же новая редакция ломает не
+// проверку версий, а весь сценарий входа.
+func consentVersion(t *testing.T, kind string) string {
+	t.Helper()
+	docs, err := platform.CurrentConsentDocs(platform.Operator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		if d.Kind == kind {
+			return strconv.Itoa(d.Version)
+		}
+	}
+	t.Fatalf("нет действующей редакции %s", kind)
+	return ""
 }

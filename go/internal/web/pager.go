@@ -16,11 +16,21 @@ const pageWindow = 7
 
 // pageLink — одна позиция постранички. Gap — многоточие между окном и
 // последней страницей: у него нет ни номера, ни ссылки.
+//
+// Far и Mob — про УЗКИЙ экран. Семь номеров со стрелками не помещаются в строку
+// телефона (замер: 288 CSS-пикселей — это реальный viewport аппарата с крупным
+// системным шрифтом), и постраничка уезжала второй строкой, разрывая «5867» и
+// «След. »» от остальных. Ширины экрана сервер не знает и знать не может,
+// поэтому решение принимает CSS, а разметка обязана НАЗВАТЬ, что прятать:
+// Far — номер, который на телефоне не показывается, Mob — многоточие, которое
+// на телефоне, наоборот, появляется вместо спрятанного хвоста.
 type pageLink struct {
 	Num     int
 	URL     string
 	Current bool
 	Gap     bool
+	Far     bool
+	Mob     bool
 }
 
 type pager struct {
@@ -70,7 +80,11 @@ func newPager(cur, total int, url func(int) string) pager {
 		}
 	}
 	for n := from; n <= to; n++ {
-		p.Pages = append(p.Pages, pageLink{Num: n, URL: url(n), Current: n == cur})
+		// На телефоне остаются нынешняя страница и две соседние: шаг влево-вправо
+		// сохраняется, остальное делают стрелки. Первая и последняя не прячутся
+		// никогда — прыжок в начало и в конец ленты это обычное движение.
+		far := n != cur && n != 1 && n != total && (n-cur > 1 || cur-n > 1)
+		p.Pages = append(p.Pages, pageLink{Num: n, URL: url(n), Current: n == cur, Far: far})
 	}
 	// Последняя страница видна всегда: прыжок в конец ленты — обычное движение,
 	// и считать до неё стрелками невозможно.
@@ -80,7 +94,37 @@ func newPager(cur, total int, url func(int) string) pager {
 		}
 		p.Pages = append(p.Pages, pageLink{Num: total, URL: url(total)})
 	}
+	p.Pages = markMobileGaps(p.Pages)
 	return p
+}
+
+// markMobileGaps дорисовывает многоточия для узкого экрана — там, где спрятанные
+// номера разорвали бы подряд идущие. Без них «1 3 4 5» читается как поломка, а
+// «1 2 8» — как «страниц восемь, и они подряд»: пропуск обязан быть видимым, и
+// на широком экране ровно поэтому стоит своё многоточие.
+//
+// Проход идёт по УЗКОМУ виду (Far пропущены) и смотрит только на соседей: разрыв
+// между номерами n и n+2 — это дыра, а уже стоящее многоточие второго не просит.
+func markMobileGaps(in []pageLink) []pageLink {
+	out := make([]pageLink, 0, len(in)+2)
+	prev := -1 // номер последней видимой на узком экране страницы
+	gapped := true
+	for _, l := range in {
+		switch {
+		case l.Gap:
+			prev, gapped = -1, true
+		case l.Far:
+			// Спрятана: следующей видимой понадобится многоточие.
+			gapped = false
+		default:
+			if prev > 0 && l.Num > prev+1 && !gapped {
+				out = append(out, pageLink{Gap: true, Mob: true})
+			}
+			prev, gapped = l.Num, true
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // pageCount — сколько страниц выйдет из total строк по size на страницу.

@@ -181,7 +181,7 @@ a:hover { text-decoration: underline; }
 /* ---------------------------------------------------------------- шапка */
 
 .top { background: var(--nav); position: relative; z-index: 20; }
-/* flex-wrap обязателен: без него на узком экране «Общая лента» наезжает на
+/* flex-wrap обязателен: без него на узком экране вкладки шапки наезжают на
    название, а «Вход» уезжает за край (жалоба 18.08.2026). */
 .topin { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; min-height: 44px; padding: 5px 0; }
 .brand { color: var(--nav-ink); font-size: 17px; font-weight: 700; }
@@ -482,6 +482,8 @@ span.rxb { cursor: default; }
 .pg.cur { background: var(--accent); border-color: var(--accent); color: #fff; }
 .pg.gap { border-color: transparent; background: none; }
 .pg.off { color: var(--meta); background: none; border-color: transparent; }
+/* Многоточие для узкого экрана: на широком его место занимают сами номера. */
+.pg.gap.mob { display: none; }
 
 /* ---------------------------------------------------------------- тред */
 
@@ -529,6 +531,12 @@ span.rxb { cursor: default; }
 .c:target { background: var(--hl); }
 .thread.linear .c { margin-left: 0; }
 
+/* Строка треда с формой ответа. Отступ — как у реплики, которой отвечают: форма
+   про неё, и вровень с корнем ветки она читалась бы как ответ не тому. В
+   линейном виде отступов нет вовсе, значит нет и здесь. */
+.replyrow { margin-left: calc(var(--d, 0) * var(--step)); list-style: none; }
+.thread.linear .replyrow { margin-left: 0; }
+
 /* Аватар комментария такой же, как у заметки: .lv-comment__avatar
    { width:100px; height:100px }, а тело — с отступом 115px. Мельче он делает
    тред плотнее, но лица в ленте реплик — это половина узнавания собеседника. */
@@ -540,6 +548,43 @@ span.rxb { cursor: default; }
 .cdate { font-size: 12px; margin-top: 1px; }
 .anchor { color: var(--meta); font-size: 12px; margin-left: 8px; visibility: hidden; }
 .c:hover .anchor, .c:target .anchor { visibility: visible; }
+
+/* Простыня (реплика длиннее longBodyRunes) показывается началом, остальное — по
+   кнопке. Ограничение стоит ПОКАЗОМ, а не запретом писать: в базе 10,7 млн
+   зеркальных реплик, переписать их нельзя, а живому автору длину мысли мы не
+   назначаем.
+
+   Разворачивает галочка, а не скрипт: без JS страница обязана оставаться
+   рабочей. Сама галочка спрятана размером в пиксель, но НЕ display:none — иначе
+   она выпала бы и из порядка обхода клавиатурой, и из дерева доступности вместе
+   со своей подписью. */
+.expand {
+  position: absolute; width: 1px; height: 1px; margin: -1px;
+  padding: 0; border: 0; overflow: hidden; clip-path: inset(50%);
+}
+.clip { max-height: 20em; overflow: hidden; position: relative; }
+/* Затухание вниз говорит «текст продолжается» — обрыв на полуслове читается как
+   поломка. Цвет — фон СТРАНИЦЫ: у реплики своего фона нет. */
+.clip::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3.5em;
+  background: linear-gradient(to bottom, transparent, var(--page)); pointer-events: none;
+}
+.expand:checked ~ .clip { max-height: none; }
+.expand:checked ~ .clip::after { display: none; }
+.more { display: inline-block; margin-top: 6px; font-size: 12px; color: var(--link); cursor: pointer; }
+.more:hover { text-decoration: underline; }
+.more .mc { display: none; }
+.expand:checked ~ .more .mo { display: none; }
+.expand:checked ~ .more .mc { display: inline; }
+/* Фокус виден на ПОДПИСИ: сама галочка размером в пиксель, и обводка на ней
+   означала бы, что клавиатурой страница проходится вслепую. */
+.expand:focus-visible ~ .more { outline: 2px solid var(--link); outline-offset: 2px; }
+/* Пришли по ссылке на саму реплику (анкор, уведомление, ответ) — она
+   разворачивается сразу: человек шёл читать именно её, и лишнее нажатие тут
+   было бы издевательством. */
+.c:target .clip { max-height: none; }
+.c:target .clip::after { display: none; }
+.c:target .more { display: none; }
 
 /* Обращение «Ник, » — ребро, а не часть текста: в базе его нет, здесь оно
    дорисовано из ТЕКУЩЕГО ника адресата. На сайте оно выделено жирным. */
@@ -589,10 +634,11 @@ span.rxb { cursor: default; }
 .compose { max-width: 44rem; }
 .compose .bad, .replybox .bad { margin: 10px 0 0; }
 
-/* Форма ответа внизу треда — как на НГС: «Ответить» у комментария не раскрывает
-   поле на месте, а уводит сюда с подставленным адресатом. Без JS это
-   единственный способ, который работает вовсе. */
+/* Форма ответа. Внизу треда она отвечает ЗАМЕТКЕ, а под репликой (.replyrow) —
+   своему адресату; отступ сверху меньше в треде, где она стоит вплотную к
+   реплике, — большой зазор там читался бы как конец разговора. */
 .replybox { margin: 22px 0 0; padding-top: 16px; border-top: 1px solid var(--rule); }
+.replyrow .replybox { margin-top: 0; padding-bottom: 16px; }
 .repto { margin: 0; font-size: 13px; color: var(--meta); }
 .repto a { color: var(--link); }
 
@@ -832,6 +878,23 @@ span.rxb { cursor: default; }
      совсем: 76px на телефоне — это треть строки. */
   .switch { position: static; justify-content: flex-end; margin: 0 0 6px; }
   .notebox .nbody { padding-right: 0; }
+  /* Вкладки шапки ужимаются вместе с названием: «Зазеркалье», «Лента» и
+     «Справка» в прежнем кегле не оставляли места значку участника, и он уезжал
+     второй строкой. Переносу это не мешает — flex-wrap остаётся страховкой. */
+  .brand { font-size: 16px; }
+  .topin { gap: 8px 12px; }
+  .tab { padding: 5px 10px; font-size: 13px; }
+  /* Постраничка держится ОДНОЙ строкой (жалоба 23.08.2026: «5867» и «След. »»
+     уезжали вниз, отрываясь от номеров). Помещается это ровно потому, что
+     разметка назвала лишнее: слова у стрелок снимаются, дальние номера тоже, а
+     вместо спрятанного хвеста встаёт своё многоточие. nowrap здесь обещание, а
+     overflow-x — страховка: при системном шрифте вдвое крупнее обычного строка
+     прокрутится, но не порвётся. */
+  .pages { white-space: nowrap; overflow-x: auto; }
+  .pg { padding: 5px 7px; margin: 0 2px 0 0; font-size: 13px; min-width: 24px; }
+  .pg.arr .wd { display: none; }
+  .pg.far { display: none; }
+  .pg.gap.mob { display: inline-block; }
 }
 
 /* Совсем узкий экран — не редкость: аппарат 1080px с крупным системным шрифтом
@@ -845,7 +908,10 @@ span.rxb { cursor: default; }
   .note { gap: 8px; }
   .author { width: 56px; flex-basis: 56px; }
   .ava { width: 56px; height: 56px; }
-  .brand { font-size: 16px; }
+  /* 288 CSS-пикселей — реальный viewport телефона с крупным системным шрифтом.
+     Постраничка на нём считается по знакам: пять кнопок, из них две с
+     четырёхзначным номером. */
+  .pg { padding: 4px 6px; font-size: 12px; min-width: 20px; }
 }
 
 @media (min-width: 900px) {

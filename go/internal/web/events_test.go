@@ -154,6 +154,15 @@ func TestBellShowsCount(t *testing.T) {
 	if body := do(h, as(guest(t, "GET", "/"), token)).Body.String(); !strings.Contains(body, "99+") {
 		t.Errorf("потолок счётчика не показан как 99+:\n%s", body)
 	}
+
+	// И на САМОЙ странице событий тоже. Поле страницы, названное как поле общей
+	// части, перекрывает его в шаблоне молча, и колокольчик показывал «true»
+	// (жалоба владельца 23.08.2026). Видно это было только на экране: на
+	// остальных страницах столкновения имён нет.
+	h, token = busServer(t, &fakeEvents{list: sampleNotices(), unread: 2})
+	if body := do(h, as(guest(t, "GET", "/events"), token)).Body.String(); !strings.Contains(body, ">2</span>") || strings.Contains(body, ">true<") {
+		t.Errorf("на странице событий колокольчик показывает не число:\n%s", body)
+	}
 }
 
 // Отметка прочитанного гасит то, что человек ВИДЕЛ: границей служит самый свежий

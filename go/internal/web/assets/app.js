@@ -222,7 +222,11 @@
     if (!anchor) { list.appendChild(li); return; }
     var depth = parseInt(anchor.getAttribute('data-depth'), 10);
     var at = anchor.nextElementSibling;
-    while (at && parseInt(at.getAttribute('data-depth'), 10) > depth) {
+    // Не всякая строка треда — реплика: под адресатом может стоять форма
+    // ответа. Веткой она не является и конца её не означает, поэтому её просто
+    // проходим — иначе новая реплика встала бы ВЫШЕ уже лежащих соседей.
+    while (at && (!at.classList.contains('c') ||
+                  parseInt(at.getAttribute('data-depth'), 10) > depth)) {
       at = at.nextElementSibling;
     }
     list.insertBefore(li, at); // at === null → в самый конец

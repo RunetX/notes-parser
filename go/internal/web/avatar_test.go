@@ -29,12 +29,7 @@ func avatarServer(t *testing.T, site Site, userID int64) (http.Handler, *fakeWri
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
-	for _, k := range []string{platform.ConsentProcessing, platform.ConsentDistribution} {
-		if err := auth.GrantConsent(ctx, userID, k, 1, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
+	grantConsents(t, auth, userID)
 	wr := &fakeWriter{}
 	return newFullServer(t, &fakeStore{}, auth, wr, nil, site, Config{}), wr, token
 }

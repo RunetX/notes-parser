@@ -91,6 +91,51 @@ func TestPagerWindowMatchesOriginal(t *testing.T) {
 	}
 }
 
+// [Э] На телефоне постраничка держится ОДНОЙ строкой: 23.08.2026 «5867» и
+// «След. »» уезжали второй строкой, отрываясь от номеров, — прыжок в конец
+// ленты выглядел обломком чужого блока. Ширины экрана сервер не знает, поэтому
+// прячет лишнее CSS, а разметка обязана назвать, ЧТО прятать: дальние номера
+// (Far) и слова у стрелок. Пропуск при этом обязан быть виден — иначе «1 3 4 5»
+// читается как поломка сортировки.
+func TestPagerFitsOnePhoneLine(t *testing.T) {
+	for _, c := range []struct {
+		cur, total int
+		want       string
+	}{
+		{1, 5867, "1 2 … 5867"}, // первая страница ленты, экран владельца
+		{100, 5867, "99 100 101 … 5867"},
+		{1, 8, "1 2 … 8"},   // своего многоточия у постранички нет — нужно своё
+		{4, 5, "1 … 3 4 5"}, // дыра слева тоже дыра
+	} {
+		p := newPager(c.cur, c.total, func(n int) string { return "/?page=" + itoa(n) })
+		var narrow []string
+		for _, l := range p.Pages {
+			switch {
+			case l.Far:
+			case l.Gap:
+				narrow = append(narrow, "…")
+			default:
+				narrow = append(narrow, itoa(l.Num))
+			}
+		}
+		if got := strings.Join(narrow, " "); got != c.want {
+			t.Errorf("страница %d из %d: на телефоне постраничка «%s», ожидалась «%s»", c.cur, c.total, got, c.want)
+		}
+	}
+
+	mobile := cssRule(t, cssText(t), "@media (max-width: 700px)")
+	for _, want := range []string{".pages { white-space: nowrap", ".pg.arr .wd { display: none; }", ".pg.far { display: none; }"} {
+		if !strings.Contains(mobile, want) {
+			t.Errorf("в мобильных стилях нет %q — постраничка снова ляжет в две строки", want)
+		}
+	}
+	// Многоточие узкого экрана на широком не показывается: там его место
+	// занимают сами номера.
+	if !strings.Contains(cssText(t), ".pg.gap.mob { display: none; }") {
+		t.Error("многоточие для телефона видно и на широком экране")
+	}
+}
+
 // [С] .lv-notes__note-author { width:100px } + аватар 100×100 с ником ПОД ним.
 // Круглых аватарок на НГС нет нигде.
 func TestAuthorColumnIsSquareAvatarWithNickBelow(t *testing.T) {
@@ -404,7 +449,7 @@ func TestMobileHeaderKeepsEdgeMargin(t *testing.T) {
 
 // [Э] Шапка на узком экране ПЕРЕНОСИТСЯ, а не наезжает сама на себя. Правило
 // было описано в комментарии к стилям («flex перенесёт его строкой ниже»), но
-// flex-wrap не стоял, и «Общая лента» ложилась поверх названия площадки.
+// flex-wrap не стоял, и вкладки шапки ложились поверх названия площадки.
 func TestHeaderWrapsOnNarrowScreen(t *testing.T) {
 	if !strings.Contains(cssText(t), "flex-wrap: wrap; gap: 8px 20px") {
 		t.Error("шапка не переносится: на узком экране кнопки наедут на название")

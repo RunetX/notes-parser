@@ -475,7 +475,7 @@ func TestConsentAsksOneDocumentAtATime(t *testing.T) {
 	}
 
 	w = do(h, postAs(t, "/consent", url.Values{
-		"kind": {platform.ConsentProcessing}, "version": {"1"},
+		"kind": {platform.ConsentProcessing}, "version": {consentVersion(t, platform.ConsentProcessing)},
 	}, token))
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("после первого согласия: код %d", w.Code)
@@ -485,7 +485,7 @@ func TestConsentAsksOneDocumentAtATime(t *testing.T) {
 	}
 
 	w = do(h, postAs(t, "/consent", url.Values{
-		"kind": {platform.ConsentDistribution}, "version": {"1"},
+		"kind": {platform.ConsentDistribution}, "version": {consentVersion(t, platform.ConsentDistribution)},
 	}, token))
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("после второго согласия: код %d", w.Code)
@@ -503,7 +503,7 @@ func TestConsentAsksOneDocumentAtATime(t *testing.T) {
 func TestConsentIgnoresFormClaim(t *testing.T) {
 	h, auth, token := signedInServer(t)
 	do(h, postAs(t, "/consent", url.Values{
-		"kind": {platform.ConsentDistribution}, "version": {"1"},
+		"kind": {platform.ConsentDistribution}, "version": {consentVersion(t, platform.ConsentDistribution)},
 	}, token))
 	if _, ok := auth.consents[testProfileID][platform.ConsentDistribution]; ok {
 		t.Error("записано согласие на документ, который не показывался")
@@ -568,13 +568,9 @@ func TestHeaderShowsWhoYouAre(t *testing.T) {
 	}
 }
 
-func grantBoth(t *testing.T, auth *fakeAuth, ctx context.Context) {
+func grantBoth(t *testing.T, auth *fakeAuth, _ context.Context) {
 	t.Helper()
-	for _, k := range []string{platform.ConsentProcessing, platform.ConsentDistribution} {
-		if err := auth.GrantConsent(ctx, testProfileID, k, 1, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
+	grantConsents(t, auth, testProfileID)
 }
 
 func TestLogoutClearsSession(t *testing.T) {
@@ -1061,5 +1057,29 @@ func TestGuestHasNoAccountMenu(t *testing.T) {
 	}
 	if !strings.Contains(head, ">Вход<") {
 		t.Error("гостю не показали вход")
+	}
+}
+
+// Документ согласия называет площадку ТЕМ ЖЕ именем, что и шапка страницы.
+// Имя площадки попадает в текст согласия и (когда дойдёт до Ш9) в уведомление
+// РКН, поэтому расхождение здесь — не опечатка: человек подписывает документ о
+// площадке, названия которой не видит нигде. Опубликованная редакция при этом
+// неизменяема, так что смена имени — это всегда новая версия документа.
+func TestConsentDocsCallThePlatformByItsName(t *testing.T) {
+	docs, err := platform.CurrentConsentDocs(platform.Operator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named bool
+	for _, d := range docs {
+		if strings.Contains(d.Body, "«"+SiteName+"»") {
+			named = true
+		}
+		if strings.Contains(d.Body, "площадка «Заметки»") || strings.Contains(d.Body, "площадке «Заметки»") {
+			t.Errorf("%s v%d называет площадку старым именем", d.Kind, d.Version)
+		}
+	}
+	if !named {
+		t.Errorf("ни один действующий документ не называет площадку «%s»", SiteName)
 	}
 }
