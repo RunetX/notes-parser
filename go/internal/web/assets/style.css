@@ -622,10 +622,13 @@ span.rxb { cursor: default; }
 }
 .clip { max-height: 20em; overflow: hidden; position: relative; }
 /* Затухание вниз говорит «текст продолжается» — обрыв на полуслове читается как
-   поломка. Цвет — фон СТРАНИЦЫ: у реплики своего фона нет. */
+   поломка. Цвет — та поверхность, на которой текст ЛЕЖИТ, а лежит он на
+   карточке: фон красит .main, у самой реплики и у заметки своего фона нет.
+   Было --page (фон за карточкой), и в светлой теме затухание уходило в серую
+   полосу поверх белого листа. */
 .clip::after {
   content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3.5em;
-  background: linear-gradient(to bottom, transparent, var(--page)); pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--card)); pointer-events: none;
 }
 .expand:checked ~ .clip { max-height: none; }
 .expand:checked ~ .clip::after { display: none; }

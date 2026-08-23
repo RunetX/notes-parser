@@ -194,14 +194,46 @@ func TestFeedCommentLinkWording(t *testing.T) {
 	}
 }
 
-// [Ф] Лента показывает текст заметки ЦЕЛИКОМ: её листают, а не раскрывают.
-func TestFeedShowsWholeNote(t *testing.T) {
+// [Р] Длинная заметка в ленте показывается НАЧАЛОМ — и это сознательный отход
+// от оригинала (решение владельца 23.08.2026: «полный текст выглядит слишком
+// громоздко»). На НГС лента текст не сворачивала, но там и заметки были короче:
+// у нас в ленту попадают объявления площадки и выпуск дайджеста, а одна такая
+// простыня съедает экран, за которым лежат ещё девятнадцать заметок.
+//
+// Проверяется не «обрезано», а ровно обратное: свёрнут ПОКАЗ, текст при этом
+// отдан целиком — иначе поиск по странице и чтение без CSS теряли бы половину
+// заметки.
+func TestLongFeedNoteIsCollapsedButWhole(t *testing.T) {
+	n := sampleNote()
+	n.Body = strings.Repeat("длинная заметка. ", 200) // ~3400 знаков
+	short := sampleNote()
+	short.ID, short.Body = n.ID+1, "Коротко."
+	h := openServer(t, &fakeStore{total: 2, notes: []platform.NoteView{n, short}})
+	body := do(h, guest(t, "GET", "/")).Body.String()
+
+	if strings.Count(body, `class="text clip"`) != 1 {
+		t.Error("свёрнута не ровно одна заметка: порог считается не по той строке")
+	}
+	if !strings.Contains(body, "Показать полностью") || !strings.Contains(body, `for="exn`) {
+		t.Error("длинную заметку нечем развернуть")
+	}
+	if strings.Count(body, "длинная заметка") < 200 {
+		t.Error("текст свёрнутой заметки обрезан на сервере")
+	}
+	if strings.Contains(body, `<div class="text clip">Коротко.`) {
+		t.Error("свёрнута короткая заметка")
+	}
+}
+
+// [Ф] А на СВОЕЙ странице заметка не сворачивается никогда: туда пришли читать
+// именно её, и лишнее нажатие там было бы издевательством.
+func TestNotePageShowsWholeNote(t *testing.T) {
 	n := sampleNote()
 	n.Body = strings.Repeat("длинная заметка. ", 200)
-	h := openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}})
-	body := do(h, guest(t, "GET", "/")).Body.String()
-	if strings.Contains(body, "…") || strings.Contains(body, "Читать целиком") {
-		t.Error("заметка в ленте обрезана, а на НГС она показана целиком")
+	h := openServer(t, &fakeStore{note: n})
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	if strings.Contains(body, `class="text clip"`) || strings.Contains(body, "Показать полностью") {
+		t.Error("заметка свёрнута на собственной странице")
 	}
 }
 
