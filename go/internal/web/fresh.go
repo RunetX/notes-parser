@@ -1,0 +1,222 @@
+package web
+
+// Живой добор: страница дописывает себя сама, без перезагрузки и без нажатий.
+//
+// Устроено это в ДВА шага, и разделение принципиальное.
+//
+//	сигнал  — /live говорит «в этом треде новое» и ничего больше (см. live.go);
+//	добор   — страница приходит СЮДА за готовой строкой.
+//
+// Почему не отдать разметку прямо в поток: хаб один на процесс и никого не
+// знает, а строка у каждого своя — модератор видит скрытое и кнопки под ним,
+// автор видит свою реакцию, гость не видит «Ответить». Рисовать её в хабе
+// значило бы рисовать столько раз, сколько открытых окон, и с чужими правами.
+// Здесь же строку рисует обычный запрос обычного человека, со своей сессией.
+//
+// А почему не собирать её скриптом из JSON — это и есть главное: разметку
+// площадки собирает ОДИН шаблон (parts/comment.gohtml, parts/note_item.gohtml),
+// и он же рисует страницу. Второй способ превратить текст в HTML — это вторая
+// поверхность для XSS и второе место, где однажды забудут про эпоху разметки,
+// смайлы, обращение из ребра и маскирование анонима.
+//
+// Курсор для клиента НЕПРОЗРАЧЕН: он получает строку в data-fresh, возвращает
+// её в ?after= и заменяет тем, что придёт в X-Fresh-After. Что внутри — дело
+// сервера: у треда это id реплики, у ленты пара «время, id». Так формат можно
+// менять, не трогая скрипт.
+
+import (
+	"bytes"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"lovegw/internal/platform"
+)
+
+// freshLimit — сколько строк отдаём за один добор. Больше пришло — хвост
+// приедет следующим запросом: курсор сдвинулся, а сигнал придёт снова.
+const freshLimit = platform.FreshLimit
+
+// handleFresh — новые реплики треда. Отвечает КУСКОМ разметки, а не страницей:
+// заголовки и «база» здесь были бы мусором, который клиент выбросит.
+func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
+		return
+	}
+	after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	if err != nil || after < 0 {
+		s.fail(w, r, http.StatusBadRequest, "Неверная граница добора.")
+		return
+	}
+
+	ctx, v := r.Context(), s.viewer(r)
+	note, err := s.st.NoteViewByID(ctx, v, id)
+	if err != nil {
+		// Заметки нет, она скрыта или база отказала — во всех случаях
+		// дописывать нечего. Пустой ответ, а не 500: живой добор — удобство
+		// поверх страницы, и своей поломкой он не имеет права её ронять.
+		s.freshEmpty(w, r, "чтение заметки для добора", err)
+		return
+	}
+	canMod := v.CanModerate() && s.mod != nil
+	if note.Status != platform.StatusVisible && !(canMod && note.Status == platform.StatusHiddenMod) {
+		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
+		return
+	}
+
+	comments, err := s.st.CommentsSince(ctx, v, id, after, freshLimit)
+	if err != nil {
+		s.freshEmpty(w, r, "новые реплики", err)
+		return
+	}
+
+	me, signedIn := s.me(r)
+	// Контекст страницы собирается ЗАНОВО и такой же, как у настоящей: иначе
+	// дописанная реплика отличалась бы от нарисованной обновлением — то есть
+	// ровно тем, чего живой добор и должен избежать.
+	//
+	// Общей части (шапка, тема, колокольчик) здесь нет намеренно: во фрагменте
+	// её некуда девать, а запрос непрочитанного она стоит на каждую реплику.
+	p := notePage{
+		Note:   note,
+		Linear: strings.EqualFold(r.URL.Query().Get("view"), "linear"),
+		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil &&
+			!note.Locked && note.Status == platform.StatusVisible,
+		CanModerate: canMod,
+		// Реакций у только что появившейся реплики нет ни у кого, и спрашивать
+		// их отдельным запросом незачем: первое же нажатие перерисует коробку
+		// обычным переходом.
+		Reactions: map[int64][]platform.Reaction{},
+		ReactOpen: -1,
+		// Ответов у неё тоже нет: «Ответы N» появится при следующем обновлении.
+		Replies: map[int64]int{},
+		PageNum: 1,
+	}
+	if signedIn {
+		p.CSRF = csrfToken(s.session(r))
+	}
+	p.ReplyBase = noteURL(id, p.Linear, 1)
+	// Книга обращений строится по ДОБРАННЫМ репликам, а не по всему треду, и это
+	// честная цена за то, чтобы не читать дерево целиком на каждую реплику.
+	// Свидетельства в трёх строках меньше, чем в девятистах, — но касается это
+	// только текстов, где обращение стоит В ТЕЛЕ, то есть НГС до 2014 года и
+	// переименовавшихся. Свежая реплика ни тем, ни другим не бывает: у своей
+	// обращение это ребро, у зеркальной его срезал приёмник.
+	p.Book = newAddressBook(note, comments)
+
+	var buf bytes.Buffer
+	for _, c := range comments {
+		if err := s.renderPart(&buf, "comment", commentItem(p, c)); err != nil {
+			http.Error(w, "внутренняя ошибка", http.StatusInternalServerError)
+			return
+		}
+	}
+	cursor := strconv.FormatInt(after, 10)
+	if n := len(comments); n > 0 {
+		cursor = strconv.FormatInt(comments[n-1].ID, 10)
+	}
+	s.sendFresh(w, &buf, cursor, note.CommentCount)
+}
+
+// handleFreshFeed — новые заметки ленты. Только первая страница: остальные суть
+// исторический срез, и дописывать их сверху значило бы сдвигать человеку то,
+// что он читает.
+func (s *Server) handleFreshFeed(w http.ResponseWriter, r *http.Request) {
+	at, id, ok := parseFeedCursor(r.URL.Query().Get("after"))
+	if !ok {
+		s.fail(w, r, http.StatusBadRequest, "Неверная граница добора.")
+		return
+	}
+	ctx, v := r.Context(), s.viewer(r)
+	notes, err := s.st.NotesSince(ctx, v, at, id, freshLimit)
+	if err != nil {
+		s.freshEmpty(w, r, "новые заметки", err)
+		return
+	}
+	me, signedIn := s.me(r)
+	p := feedPage{CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil}
+
+	// Запрос отдаёт от НОВЫХ к старым — тем же порядком, что и лента. Клиент
+	// вставляет строки сверху, поэтому идти по ним надо С КОНЦА: иначе три
+	// пришедшие разом заметки встанут в ленту задом наперёд.
+	var buf bytes.Buffer
+	for i := len(notes) - 1; i >= 0; i-- {
+		if err := s.renderPart(&buf, "note_item", noteItem(p, notes[i])); err != nil {
+			http.Error(w, "внутренняя ошибка", http.StatusInternalServerError)
+			return
+		}
+	}
+	cursor := feedCursor(at, id)
+	if len(notes) > 0 {
+		cursor = feedCursor(notes[0].PublishedAt, notes[0].ID)
+	}
+	s.sendFresh(w, &buf, cursor, -1)
+}
+
+// sendFresh отдаёт кусок разметки. Не кэшируется и не индексируется по тем же
+// причинам, что и страницы: он и есть их часть.
+func (s *Server) sendFresh(w http.ResponseWriter, buf *bytes.Buffer, cursor string, count int) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "private, no-store")
+	h.Set("Vary", "Cookie")
+	h.Set("X-Fresh-After", cursor)
+	// Число комментариев считает СЕРВЕР, а не скрипт по числу вставленных строк:
+	// у заголовка над тредом должно стоять то же, что покажет обновление, а
+	// добор мог принести не всё (потолок порции) или ничего (реплику успели
+	// скрыть).
+	if count >= 0 {
+		h.Set("X-Fresh-Count", strconv.Itoa(count))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// freshEmpty — отказ, который не должен выглядеть отказом. Пустой кусок разметки
+// и прежний курсор: страница останется какой была, а человек ничего не заметит.
+func (s *Server) freshEmpty(w http.ResponseWriter, r *http.Request, what string, err error) {
+	if err != nil {
+		s.log.Warn("живой добор", "что", what, "err", err)
+	}
+	s.sendFresh(w, &bytes.Buffer{}, r.URL.Query().Get("after"), -1)
+}
+
+// feedCursor и parseFeedCursor — граница ленты. Пара, а не одно число: лента
+// упорядочена по времени публикации, а id при равном времени лишь доразрешает
+// порядок; по одному id граница разъехалась бы на полосах идентификаторов —
+// зеркальная заметка НГС имеет номер МЕНЬШЕ любой нативной, будучи новее.
+func feedCursor(at time.Time, id int64) string {
+	return strconv.FormatInt(at.UnixNano(), 10) + "," + strconv.FormatInt(id, 10)
+}
+
+func parseFeedCursor(s string) (time.Time, int64, bool) {
+	ns, ids, ok := strings.Cut(s, ",")
+	if !ok {
+		return time.Time{}, 0, false
+	}
+	n, err := strconv.ParseInt(ns, 10, 64)
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	id, err := strconv.ParseInt(ids, 10, 64)
+	if err != nil || id < 0 {
+		return time.Time{}, 0, false
+	}
+	return time.Unix(0, n), id, true
+}
+
+// freshCursorOf — граница для только что нарисованной страницы треда: самая
+// свежая из показанных реплик. Ноль, если их нет вовсе, — тогда добор принесёт
+// первую же.
+func freshCursorOf(comments []platform.CommentView) string {
+	var max int64
+	for _, c := range comments {
+		if c.ID > max {
+			max = c.ID
+		}
+	}
+	return strconv.FormatInt(max, 10)
+}

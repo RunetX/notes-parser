@@ -66,6 +66,8 @@ var funcs = template.FuncMap{
 	"rx":          reactBoxOf,
 	"modn":        modNote,
 	"modc":        modComment,
+	"ci":          commentItem,
+	"ni":          noteItem,
 	"dec":         decisionArg,
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
@@ -215,6 +217,49 @@ func (s *Server) newPage(r *http.Request, title string) page {
 // render собирает страницу В БУФЕР и только потом отдаёт. Иначе ошибка шаблона
 // на середине выдаёт обрубок страницы с кодом 200 — то есть врёт и человеку, и
 // логам.
+// commentItemData и noteItemData — точка для частей «comment» и «note_item».
+//
+// Пара, а не сама строка: реплике нужен контекст страницы (права, реакции,
+// книга обращений), а второго аргумента у {{template}} не бывает. Тот же приём,
+// что у `rx` и `modc`, и заведён он ровно затем, чтобы страница и живой добор
+// рисовали строку ОДНИМ шаблоном.
+type commentItemData struct {
+	Page    notePage
+	Comment platform.CommentView
+}
+
+type noteItemData struct {
+	Page feedPage
+	Note platform.NoteView
+}
+
+func commentItem(p notePage, c platform.CommentView) commentItemData {
+	return commentItemData{Page: p, Comment: c}
+}
+
+func noteItem(p feedPage, n platform.NoteView) noteItemData {
+	return noteItemData{Page: p, Note: n}
+}
+
+// parts — набор ТОЛЬКО из частей, без «базы» и без страниц. Через него живой
+// добор рисует отдельную строку тем же шаблоном, что и страница.
+//
+// Отдельный набор, а не заимствование у страницы, по причине из mustPages:
+// каждая страница разобрана в свою копию, и брать «ту, что под рукой» значило
+// бы привязать фрагмент к случайной из них.
+var parts = template.Must(template.New("parts").Funcs(funcs).
+	ParseFS(templateFS, "templates/parts/*.gohtml"))
+
+// renderPart собирает одну строку списка. Буфер здесь по той же причине, что и
+// у страницы: ошибка шаблона обязана дать честные 500, а не обрубок с кодом 200.
+func (s *Server) renderPart(buf *bytes.Buffer, name string, data any) error {
+	if err := parts.ExecuteTemplate(buf, name, data); err != nil {
+		s.log.Error("отрисовка части", "part", name, "err", err)
+		return err
+	}
+	return nil
+}
+
 func (s *Server) render(w http.ResponseWriter, _ *http.Request, status int, name string, data any) {
 	t, ok := pages[name]
 	if !ok {

@@ -295,11 +295,22 @@ func costOf(r *http.Request) float64 {
 		return costLogin
 	case r.Method == http.MethodPost:
 		return costWrite
+	// Живой добор дешевле страницы треда, и цену ему надо ставить ДО общего
+	// правила «всё под /n/ — это тред»: он отдаёт не дерево до 5000 строк, а
+	// порцию по индексу (note_id, id), и платить за него как за тред значило бы
+	// выбирать корзину читателю, который просто держит вкладку открытой.
+	case isFresh(p):
+		return costPage
 	case strings.HasPrefix(p, "/n/"):
 		return costThread
 	default:
 		return costPage
 	}
+}
+
+// isFresh — живой добор: «/fresh» у ленты и «/n/<id>/fresh» у треда.
+func isFresh(p string) bool {
+	return p == "/fresh" || (strings.HasPrefix(p, "/n/") && strings.HasSuffix(p, "/fresh"))
 }
 
 // goesToNGS — запрос, который тянет за собой ЧУЖОЙ сайт: вход (анкета плюс

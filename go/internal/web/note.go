@@ -67,6 +67,15 @@ type notePage struct {
 	// PageNum — номер страницы линейного вида: с ним нажатие возвращает человека
 	// туда же, где он был.
 	PageNum int
+	// FreshOK и FreshAfter — живой добор: страница дописывает новые реплики сама
+	// (fresh.go). Флаг отдельно от границы, потому что граница бывает нулевой у
+	// пустого треда — а он-то как раз дописываться должен.
+	//
+	// Выключен добор на страницах линейного вида, кроме первой: там срез
+	// истории, и дописывать в него хвост разговора значит врать о том, что
+	// человек читает.
+	FreshOK    bool
+	FreshAfter string
 	// Book — свидетельство этого треда о том, какие слова в нём ники (address.go).
 	// Собирается по показанным репликам и нужно ровно для одного: не дорисовать
 	// второе обращение там, где автор уже назвал адресата сам.
@@ -168,6 +177,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		p.Pager = newPager(num, pages, func(n int) string { return noteURL(id, true, n) })
 		p.ReplyBase = noteURL(id, true, num)
 		p.PageNum = num
+		p.FreshOK = num == 1
 	} else {
 		// Дерево отдаётся ЦЕЛИКОМ. Постранички у него нет и не должно быть:
 		// ветка, обрезанная на середине, перестаёт быть веткой, а «дальше»
@@ -180,7 +190,9 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		p.Comments = comments
 		p.Replies = replyCounts(comments)
 		p.ReplyBase = noteURL(id, false, 1)
+		p.FreshOK = true
 	}
+	p.FreshAfter = freshCursorOf(p.Comments)
 	// Книга обращений строится по ПОКАЗАННЫМ репликам: свидетельство о том, что
 	// такое-то слово в этом треде ник, есть ровно в них (address.go). В линейном
 	// виде свидетельства меньше — там на странице тридцать реплик, — и это
