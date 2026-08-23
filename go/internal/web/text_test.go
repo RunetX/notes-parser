@@ -154,3 +154,34 @@ func TestLocalPath(t *testing.T) {
 		}
 	}
 }
+
+// Простыня показывается началом: реплика длиннее longBodyRunes сворачивается, а
+// разворачивает её галочка с подписью — без единой строчки JS. Решение владельца
+// 23.08.2026 («простыня выглядит не очень») сознательно принято про ПОКАЗ:
+// запрет на длину не тронул бы ни одну из 10,7 млн уже лежащих реплик.
+func TestLongCommentIsCollapsed(t *testing.T) {
+	long := strings.Repeat("Психоаналитическая интерпретация лозунга. ", 60) // ~2500 знаков
+	if !isLongBody(long) || isLongBody("Согласна.") {
+		t.Fatalf("порог простыни считается неверно: %d знаков", len([]rune(long)))
+	}
+	st := &fakeStore{note: sampleNote(), thread: []platform.CommentView{
+		{ID: 1, Author: platform.Author{ID: 1, Nick: "MatVei"}, Body: long, Depth: 1},
+		{ID: 2, Author: platform.Author{ID: 2, Nick: "Пух"}, Body: "Согласна.", Depth: 1},
+	}}
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811")).Body.String()
+
+	if strings.Count(body, `class="text clip"`) != 1 {
+		t.Error("свёрнута не ровно одна реплика: порог считается не по той строке")
+	}
+	if !strings.Contains(body, "Показать полностью") || !strings.Contains(body, `for="ex1"`) {
+		t.Error("простыню нечем развернуть")
+	}
+	// Текст при этом отдан ЦЕЛИКОМ: сворачивание — это показ, а не обрезка. Иначе
+	// поиск по странице и чтение без CSS теряли бы половину реплики.
+	if !strings.Contains(body, "лозунга. Психоаналитическая интерпретация лозунга. Психоаналитическая") {
+		t.Error("текст свёрнутой реплики обрезан на сервере")
+	}
+	if strings.Contains(body, `<div class="text clip">Согласна.`) {
+		t.Error("свёрнута короткая реплика")
+	}
+}

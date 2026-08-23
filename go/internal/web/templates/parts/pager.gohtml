@@ -4,13 +4,16 @@
 {{define "pager"}}
 {{- if .Show -}}
 <div class="pages">
-  {{if .Prev}}<a class="pg arr" href="{{.Prev}}">&laquo; Пред.</a>{{else}}<span class="pg arr off">&laquo; Пред.</span>{{end}}
+  {{/* Слово стрелки — отдельным span'ом: на телефоне оно снимается показом, а
+       смысл кнопки остаётся в aria-label, то есть у экранного диктора она
+       по-прежнему «предыдущая страница», а не «левая кавычка». */}}
+  {{if .Prev}}<a class="pg arr" href="{{.Prev}}" aria-label="Предыдущая страница">&laquo;<span class="wd"> Пред.</span></a>{{else}}<span class="pg arr off">&laquo;<span class="wd"> Пред.</span></span>{{end}}
   {{- range .Pages}}
-  {{- if .Gap}}<span class="pg gap">…</span>
+  {{- if .Gap}}<span class="pg gap{{if .Mob}} mob{{end}}">…</span>
   {{- else if .Current}}<span class="pg cur" aria-current="page">{{.Num}}</span>
-  {{- else}}<a class="pg" href="{{.URL}}">{{.Num}}</a>{{end}}
+  {{- else}}<a class="pg{{if .Far}} far{{end}}" href="{{.URL}}">{{.Num}}</a>{{end}}
   {{- end}}
-  {{if .Next}}<a class="pg arr" href="{{.Next}}">След. &raquo;</a>{{else}}<span class="pg arr off">След. &raquo;</span>{{end}}
+  {{if .Next}}<a class="pg arr" href="{{.Next}}" aria-label="Следующая страница"><span class="wd">След. </span>&raquo;</a>{{else}}<span class="pg arr off"><span class="wd">След. </span>&raquo;</span>{{end}}
 </div>
 {{- end}}
 {{end}}

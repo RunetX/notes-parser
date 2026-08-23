@@ -57,6 +57,7 @@ var funcs = template.FuncMap{
 	"body":        noteBodyHTML,
 	"doc":         docHTML,
 	"commentBody": commentBodyHTML,
+	"long":        isLongBody,
 	"when":        whenHTML,
 	"plural":      plural,
 	"depth":       depthClass,
@@ -82,7 +83,11 @@ var funcs = template.FuncMap{
 // ссылка молча перестаёт работать. Обе половины здесь наши, чужого в адрес
 // попасть неоткуда.
 func replyURL(base string, commentID int64) template.URL {
-	return template.URL(base + "&reply=" + strconv.FormatInt(commentID, 10) + "#reply")
+	id := strconv.FormatInt(commentID, 10)
+	// Якорь — САМА реплика, а не форма: форма теперь стоит под ней, и человек,
+	// нажавший «Ответить», обязан увидеть, КОМУ отвечает. Заодно :target
+	// подсвечивает реплику и разворачивает свёрнутую простыню.
+	return template.URL(base + "&reply=" + id + "#c" + id)
 }
 
 // avatarArg — что показать на месте аватара: адрес картинки и признак того, что

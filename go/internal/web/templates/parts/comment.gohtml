@@ -24,7 +24,18 @@
       <a class="anchor" href="#c{{$c.ID}}" title="Ссылка на этот комментарий">#</a>
       <div class="cdate">{{when $c.PublishedAt true}}</div>
     </div>
+    {{if long $c.Body}}
+    {{/* Простыня показывается началом. Разворачивает её ГАЛОЧКА с подписью, а не
+         скрипт: страница обязана работать без JS, как и меню участника, а
+         details/summary тут не годится — закрытый details прячет содержимое
+         целиком, нам же нужно показать первые строки. Галочка спрятана
+         показом, но остаётся в потоке фокуса: имя ей даёт та же подпись. */}}
+    <input class="expand" type="checkbox" id="ex{{$c.ID}}">
+    <div class="text clip">{{commentBody .Page.Book $c}}</div>
+    <label class="more" for="ex{{$c.ID}}"><span class="mo">Показать полностью</span><span class="mc">Свернуть</span></label>
+    {{else}}
     <div class="text">{{commentBody .Page.Book $c}}</div>
+    {{end}}
     {{template "reactions" (rx .Page $c.ID)}}
     {{if or .Page.CanWrite (index .Page.Replies $c.ID)}}
     <p class="cact">
