@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
@@ -40,6 +41,7 @@ var platformSubcommands = map[string]bool{
 	"reply-scan":      true,
 	"import-restored": true,
 	"invite":          true,
+	"post":            true,
 	"role":            true,
 	"import-archive":  true,
 	"moderation":      true,
@@ -67,6 +69,9 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	out := fs.String("out", "", "export: файл выгрузки (пусто — stdout)")
 	reason := fs.String("reason", "", "ban / unban: причина, её увидит сам человек")
 	yes := fs.Bool("yes", false, "anonymize: подтвердить необратимую операцию")
+	body := fs.String("body", "", "post: файл с текстом заметки («-» — читать stdin)")
+	author := fs.Int64("author", 0, "post: от чьего имени (пусто — администратор площадки)")
+	pin := fs.Bool("pin", false, "post: закрепить заметку наверху ленты")
 	sub, rest := splitSubcommand(reorderArgs(args, fs), platformSubcommands)
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -99,6 +104,8 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformReplyScan(ctx, cfg, *limit, *note)
 	case "invite":
 		return platformInvite(ctx, cfg, *bind, *label, *days)
+	case "post":
+		return platformPost(ctx, cfg, *author, *pin, *body)
 	case "import-archive":
 		if *archivePath == "" {
 			return fmt.Errorf("platform import-archive -archive <путь к archive.db>")
@@ -147,7 +154,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformBan(ctx, cfg, id, sub == "ban", *days, *reason)
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
-			"(migrate, doctor, reconcile, media, avatar, reply-scan, invite, role, " +
+			"(migrate, doctor, reconcile, media, avatar, reply-scan, invite, post, role, " +
 			"moderation, events, ban, unban, anonymize, export, import-archive, import-restored)")
 	}
 }
@@ -432,6 +439,79 @@ func platformInvite(ctx context.Context, cfg *config.Config, bind int64, note st
 	}
 	fmt.Println("код показывается один раз — в базе лежит только его хеш")
 	return nil
+}
+
+// platformPost публикует нативную заметку и, если попросили, закрепляет её
+// наверху ленты.
+//
+// Форма на странице для этого есть, и команда её не заменяет: нужна она ровно
+// для объявлений площадки — их пишет тот, кто её выкатывает, с рабочей машины,
+// где сессии участника нет и заводить её ради одной заметки незачем. Тем же
+// путём объявление можно положить в скрипт выкатки.
+//
+// Текст берётся из файла или со stdin (`-body -`), а не из аргумента: в
+// объявлении есть переносы строк и кавычки, и командная строка их калечит.
+//
+// Идёт всё через ЯДРО, а не в базу напрямую: та же проверка права писать, тот
+// же потолок частоты, та же строка в очередь модерации и то же событие. Заметка
+// после этого ничем не отличается от написанной в форме — включая то, что
+// исходящий обход отнесёт её в каналы мессенджеров.
+func platformPost(ctx context.Context, cfg *config.Config, author int64, pin bool, bodyPath string) error {
+	body, err := readTextArg(bodyPath)
+	if err != nil {
+		return err
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	// Актор нужен и для закрепления (ядро спрашивает права модератора), и как
+	// подпись по умолчанию: объявление площадки подписывает её администратор.
+	actor, err := adminViewer(ctx, p)
+	if err != nil {
+		return err
+	}
+	if author == 0 {
+		author = actor.UserID
+	}
+	id, err := p.CreateNote(ctx, platform.NewNote{AuthorID: author, Body: body})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("заметка %d опубликована: %s/n/%d\n", id, cfg.Platform.BaseURL, id)
+	if !pin {
+		return nil
+	}
+	// Закрепление — отдельным шагом и после публикации, как у выпуска дайджеста:
+	// сорвавшийся закреп не должен ни отменять заметку, ни звать повторить её.
+	if err := p.SetNotePinned(ctx, actor, id, true, "объявление площадки"); err != nil {
+		return fmt.Errorf("заметка опубликована, но не закреплена (мест всего %d): %w",
+			platform.MaxPinned, err)
+	}
+	fmt.Println("закреплена наверху ленты")
+	return nil
+}
+
+// readTextArg читает текст из файла, а «-» означает stdin.
+func readTextArg(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("нужен текст: -body <файл> или -body - (со stdin)")
+	}
+	var (
+		raw []byte
+		err error
+	)
+	if path == "-" {
+		raw, err = io.ReadAll(os.Stdin)
+	} else {
+		raw, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("текст заметки: %w", err)
+	}
+	return string(raw), nil
 }
 
 // platformRole меняет права участника. Руками, потому что первого
