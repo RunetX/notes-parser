@@ -43,6 +43,10 @@ func (s siteAdapter) FetchCommentsPage(ctx context.Context, noteID string) (love
 	return s.c.FetchCommentsPage(ctx, noteID)
 }
 
+func (s siteAdapter) FetchOldestComments(ctx context.Context, noteID string) (love.CommentsPage, error) {
+	return s.c.FetchOldestComments(ctx, noteID)
+}
+
 // TreeComments — тред в древовидном виде: только он проставляет ParentID.
 func (s siteAdapter) TreeComments(ctx context.Context, noteID string) ([]love.Comment, error) {
 	raw, err := s.c.RawCommentsView(ctx, noteID, 1, love.ViewTree)

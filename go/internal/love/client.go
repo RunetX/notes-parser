@@ -20,6 +20,10 @@ import (
 const (
 	notesPath       = "/notes/limit~5/"
 	commentsPathFmt = "/notes/comments/%s/desc/limit~30/?view=linear"
+	// Начало треда, а не конец: нужно тому, кто ищет СВОЮ самую раннюю
+	// реплику (см. FetchOldestComments). Порядок задаётся ЯВНО — без него
+	// сайт отдаёт desc, то есть молча не то.
+	commentsOldestPathFmt = "/notes/comments/%s/asc/limit~30/?view=linear"
 
 	requestTimeout = 15 * time.Second
 	getRetries     = 3
@@ -162,6 +166,25 @@ func (c *Client) RawNotes(ctx context.Context) ([]byte, error) {
 // RawComments возвращает сырой HTML страницы комментариев.
 func (c *Client) RawComments(ctx context.Context, noteID string) ([]byte, error) {
 	return c.get(ctx, fmt.Sprintf(commentsPathFmt, noteID))
+}
+
+// FetchOldestComments — окно САМЫХ РАННИХ реплик треда вместо самых свежих.
+//
+// Обычная страница идёт desc: тридцать последних. Это верно почти для всего —
+// зеркало ловит новое, ответы приходят в конец, — но ровно наоборот для того,
+// кто проверяет СВОЮ первую реплику: она в треде самая старая и в живом
+// обсуждении уезжает за край окна за полчаса. Отсюда вывод «её вычистили» тем
+// вернее, чем удачнее была реплика (амвон, verify.go).
+//
+// Сайт отдаёт начало треда сам и без лишнего хопа: замер 23.08.2026 на боевом
+// треде 313058 (88 реплик) — asc/limit~30 отвечает 200 без единого редиректа, и
+// искомая реплика стоит на первой странице первой строкой.
+func (c *Client) FetchOldestComments(ctx context.Context, noteID string) (CommentsPage, error) {
+	body, err := c.get(ctx, fmt.Sprintf(commentsOldestPathFmt, noteID))
+	if err != nil {
+		return CommentsPage{}, err
+	}
+	return ParseCommentsPage(bytes.NewReader(body), c.baseURL)
 }
 
 // RawCommentsView возвращает сырой HTML страницы комментариев в заданном виде

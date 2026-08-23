@@ -42,6 +42,16 @@ const fuseDeletions = 2
 // попадаются пропуски и исчезнувшие заметки, а они полосу не разрывают.
 const fuseWindow = 30
 
+// fuseHorizon — и сколько последнего ВРЕМЕНИ. Одного счёта строк мало, и это
+// оплачено ложным выключением 23.08.2026: строки копятся медленно (почти все —
+// пропуски холодного старта), поэтому тридцать строк оказались НЕДЕЛЕЙ С
+// ЛИШНИМ, и две вычищенные реплики с разницей в восемь дней сложились в
+// «чистку». Полосу рвёт только подтверждённая реплика, а её между ними не было.
+//
+// Двое суток: чистка — это действие человека, который сидит и разбирает тред,
+// и укладывается она в часы. Что старше — уже не полоса, а совпадение.
+const fuseHorizon = 48 * time.Hour
+
 // outcome — исход одной реплики глазами предохранителя.
 type outcome int
 
@@ -133,6 +143,7 @@ func (s *Service) checkFuse(ctx context.Context) {
 		s.log.Error("амвон: чтение истории для предохранителя", "err", err)
 		return
 	}
+	rows = withinHorizon(rows, time.Now())
 	outcomes := make([]outcome, 0, len(rows))
 	for _, row := range rows {
 		outcomes = append(outcomes, outcomeOf(row))
@@ -155,12 +166,28 @@ func (s *Service) fuseStreak(ctx context.Context) (misses, deleted int, err erro
 	if err != nil {
 		return 0, 0, err
 	}
+	rows = withinHorizon(rows, time.Now())
 	outcomes := make([]outcome, 0, len(rows))
 	for _, row := range rows {
 		outcomes = append(outcomes, outcomeOf(row))
 	}
 	misses, deleted = streakOf(outcomes)
 	return misses, deleted, nil
+}
+
+// withinHorizon отсекает строки старше fuseHorizon. Считаем по времени
+// ОТПРАВКИ: именно тогда случилось то, о чём судит предохранитель. Строки без
+// отправки (пропуски, ошибки генерации) остаются: они нейтральны, но держат
+// порядок, а выбросить их значило бы склеить разнесённые во времени полосы —
+// ровно ту ошибку, ради которой горизонт и заведён.
+func withinHorizon(rows []store.PulpitComment, now time.Time) []store.PulpitComment {
+	edge := now.Add(-fuseHorizon)
+	for i, row := range rows {
+		if !row.PostedAt.IsZero() && row.PostedAt.Before(edge) {
+			return rows[:i]
+		}
+	}
+	return rows
 }
 
 // profileVerdict спрашивает у сайта состояние анкеты — и только при взятом

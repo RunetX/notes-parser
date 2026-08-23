@@ -65,7 +65,35 @@ func (f *fakeSite) FetchCommentsPage(_ context.Context, noteID string) (love.Com
 	}
 	n := love.Note{ID: noteID, AuthorID: "u1", AuthorName: "Автор", Text: "текст заметки",
 		PublishedAt: f.published[noteID]}
-	return love.CommentsPage{Comments: append([]love.Comment(nil), f.threads[noteID]...), Note: &n}, nil
+	return love.CommentsPage{Comments: window(f.threads[noteID], false), Note: &n,
+		Total: len(f.threads[noteID])}, nil
+}
+
+// FetchOldestComments — то же, но НАЧАЛО треда. Оба окна тут по тридцать строк,
+// как у сайта: без этого фейк показывал бы тред целиком, и подмену «не тот край
+// страницы» не поймал бы ни один тест — а именно она выключила амвон 23.08.2026.
+func (f *fakeSite) FetchOldestComments(_ context.Context, noteID string) (love.CommentsPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.pageErr[noteID]; err != nil {
+		return love.CommentsPage{}, err
+	}
+	n := love.Note{ID: noteID, AuthorID: "u1", AuthorName: "Автор", Text: "текст заметки",
+		PublishedAt: f.published[noteID]}
+	return love.CommentsPage{Comments: window(f.threads[noteID], true), Note: &n,
+		Total: len(f.threads[noteID])}, nil
+}
+
+// window — окно страницы сайта: тридцать строк с одного края треда.
+func window(all []love.Comment, oldest bool) []love.Comment {
+	const limit = 30
+	if len(all) <= limit {
+		return append([]love.Comment(nil), all...)
+	}
+	if oldest {
+		return append([]love.Comment(nil), all[:limit]...)
+	}
+	return append([]love.Comment(nil), all[len(all)-limit:]...)
 }
 
 func (f *fakeSite) TreeComments(_ context.Context, noteID string) ([]love.Comment, error) {

@@ -46,6 +46,11 @@ import (
 type Site interface {
 	FetchNotes(ctx context.Context) ([]love.Note, error)
 	FetchCommentsPage(ctx context.Context, noteID string) (love.CommentsPage, error)
+	// FetchOldestComments — НАЧАЛО треда, а не конец. Верификация ищет свою
+	// первую реплику, а она в треде самая старая: обычное окно «тридцать
+	// последних» перестаёт её показывать, как только под заметкой набирается
+	// тридцать чужих — то есть тем скорее, чем живее обсуждение.
+	FetchOldestComments(ctx context.Context, noteID string) (love.CommentsPage, error)
 	// TreeComments — тред в древовидном виде: только он проставляет ParentID,
 	// без которого не найти ответы на нашу реплику.
 	TreeComments(ctx context.Context, noteID string) ([]love.Comment, error)
