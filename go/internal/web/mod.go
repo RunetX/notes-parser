@@ -48,8 +48,18 @@ type Moderator interface {
 
 	BanUser(ctx context.Context, actor platform.Viewer, userID int64, until time.Time, reason string) error
 	UnbanUser(ctx context.Context, actor platform.Viewer, userID int64, reason string) error
-	SetRole(ctx context.Context, actor platform.Viewer, id int64, role platform.Role) error
 	UserByID(ctx context.Context, id int64) (platform.User, error)
+
+	// Ниже — способности АДМИНИСТРАТОРА: раздать права и впустить человека.
+	// Модератору они не достаются (страницы, где они живут, ему не
+	// показываются, а ядро отвечает ErrNotAdmin), но список остаётся один:
+	// заводить второй интерфейс ради четырёх методов значило бы размножить
+	// конструктор морды, а различие «про слова / про людей» держится тем же,
+	// чем в ядре, — проверкой права, а не тем, в какой список записан метод.
+	SetRole(ctx context.Context, actor platform.Viewer, id int64, role platform.Role) error
+	IssueInvite(ctx context.Context, actor platform.Viewer, bindUser int64, note string, ttl time.Duration) (string, error)
+	Invites(ctx context.Context, limit int) ([]platform.Invite, error)
+	RevokeInvite(ctx context.Context, actor platform.Viewer, issuedAt time.Time) error
 
 	// AddReport и Appeal — не модераторские действия, а входы УЧАСТНИКА в
 	// модерацию: жалоба и просьба о пересмотре. Живут здесь, потому что ходят в

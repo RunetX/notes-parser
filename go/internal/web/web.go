@@ -326,6 +326,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /mod/act", s.handleModAct)
 	mux.HandleFunc("GET /mod/u/{id}", s.handleModUser)
 	mux.HandleFunc("POST /mod/u/{id}", s.handleModUserAct)
+	// Администрирование — соседняя дверь, а не часть очереди: модератор решает
+	// про слова, администратор про то, кто их здесь пишет (admin.go). Под /mod,
+	// потому что закрыто от роботов оно тем же списком.
+	mux.HandleFunc("GET /mod/admin", s.handleAdmin)
+	mux.HandleFunc("POST /mod/admin", s.handleAdminAct)
 	mux.HandleFunc("GET /report", s.handleReport)
 	mux.HandleFunc("POST /report", s.handleReportSubmit)
 	mux.HandleFunc("POST /appeal", s.handleAppeal)

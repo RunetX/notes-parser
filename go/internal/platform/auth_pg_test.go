@@ -8,6 +8,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -388,6 +389,84 @@ func TestInviteWithoutBindCreatesNativeUser(t *testing.T) {
 	}
 	if !IsNative(id) {
 		t.Fatalf("участник без анкеты получил id %d вне нативной полосы", id)
+	}
+}
+
+// Со СТРАНИЦЫ приглашение выдаёт администратор, и только он: модератор решает
+// про слова, а инвайт — про людей. Проверяется здесь вся дорога целиком, потому
+// что каждая её часть — это отдельное правило: право, журнал, список и отзыв.
+func TestIssueInviteIsAdminOnly(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	ingestNote(t, p, 312811, 1493279, "Рио")
+	admin := Viewer{UserID: mustUser(t, p, "Гадёныш"), Role: RoleAdmin}
+
+	// Модератору отказывает ЯДРО, а не форма: список того, что позволено,
+	// обязан читаться в одном месте.
+	moder := Viewer{UserID: mustUser(t, p, "Хатуль мадан"), Role: RoleModerator}
+	if _, err := p.IssueInvite(ctx, moder, 1493279, "", InviteTTL); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("модератор выдал приглашение: %v", err)
+	}
+	// Опечатка в номере обязана прозвучать при ВЫДАЧЕ, а не при попытке войти
+	// по уже разосланному коду.
+	if _, err := p.IssueInvite(ctx, admin, 999999999, "", InviteTTL); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("приглашение выдано несуществующему участнику: %v", err)
+	}
+
+	code, err := p.IssueInvite(ctx, admin, 1493279, "Рио потерял анкету", InviteTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := p.Invites(ctx, InviteListLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("в списке %d приглашений, ожидалось одно", len(list))
+	}
+	in := list[0]
+	switch {
+	case in.BindUser != 1493279 || in.BindNick != "Рио":
+		t.Errorf("привязка потеряна: %d %q", in.BindUser, in.BindNick)
+	case in.IssuedBy != admin.UserID:
+		t.Errorf("выдавшим записан %d, а не администратор", in.IssuedBy)
+	case in.Note != "Рио потерял анкету":
+		t.Errorf("пометка потеряна: %q", in.Note)
+	case !in.Live(time.Now()):
+		t.Error("только что выданное приглашение уже не живо")
+	}
+
+	// Журнал: «кого впустили» — такая же часть модерации, как «кого скрыли». А
+	// вот КОДА в журнале быть не должно ни в каком виде.
+	entries, err := p.AuditTail(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged bool
+	for _, e := range entries {
+		if e.Action == ActionInvite && e.Subject.Kind == SubjectInvite && e.Subject.ID == 1493279 {
+			logged = true
+		}
+		if fmt.Sprint(e.Details) != "" && strings.Contains(fmt.Sprint(e.Details), code) {
+			t.Fatal("код приглашения попал в журнал")
+		}
+	}
+	if !logged {
+		t.Error("выдача приглашения не попала в журнал")
+	}
+
+	// Отзыв гасит код, ещё не использованный, и повтор отзыва — не ошибка.
+	if err := p.RevokeInvite(ctx, moder, in.CreatedAt); !errors.Is(err, ErrNotAdmin) {
+		t.Errorf("модератор отозвал приглашение: %v", err)
+	}
+	if err := p.RevokeInvite(ctx, admin, in.CreatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.RedeemInvite(ctx, code, "неважно"); !errors.Is(err, ErrInviteInvalid) {
+		t.Errorf("отозванный код всё ещё работает: %v", err)
+	}
+	if err := p.RevokeInvite(ctx, admin, in.CreatedAt); !errors.Is(err, ErrNothingToDo) {
+		t.Errorf("повторный отзыв ответил %v", err)
 	}
 }
 

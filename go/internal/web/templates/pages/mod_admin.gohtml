@@ -1,0 +1,92 @@
+{{define "content"}}
+<h1 class="ttl">Администрирование</h1>
+
+{{/* Раздел про ЛЮДЕЙ, а не про слова: здесь впускают. Решения о публикациях
+     живут в очереди, и ссылки на неё стоят первой строкой — за день
+     администратор ходит и туда, и сюда, а адреса помнить наизусть не должен. */}}
+<p class="fine">Кого впустить — здесь. Что делать со словами — в
+<a class="mlink" href="/mod">очереди модерации</a>; кто что сделал —
+в <a class="mlink" href="/mod/log">журнале</a>.</p>
+
+{{if .Code}}
+{{/* Код показывается ОДИН раз: в базе лежит только его sha256, и «покажите
+     ещё раз» страница не умеет физически. Поэтому здесь же — кому он выдан и
+     куда его нести: если в номере опечатка, узнать об этом надо ДО того, как
+     код уедет в переписку. */}}
+<section class="issued">
+  <h2 class="sub">Код выдан</h2>
+  <p class="code">{{.Code}}</p>
+  <p>Кому: {{.CodeFor}}. Действует {{.Days}} {{plural .Days "сутки" "суток" "суток"}}.</p>
+  {{if .CodeWarn}}
+  <p class="warn">Этот человек уже входил на площадку — код откроет его учётную
+  запись целиком. Отдавайте только ему самому.</p>
+  {{end}}
+  <p class="fine">Показан один раз: в базе лежит лишь хеш. Вводить его нужно на
+  странице <a href="{{.InviteURL}}">{{.InviteURL}}</a> — «Вход по приглашению»,
+  поле «Код приглашения». Потерялся — отзовите строку в списке ниже и выдайте
+  новый.</p>
+</section>
+{{end}}
+
+{{if .Problem}}<p class="bad">{{.Problem}}</p>{{end}}
+
+<h2 class="sub">Выдать приглашение</h2>
+<form method="post" action="/mod/admin" class="mdec">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <label class="fine" for="bind">Кому</label>
+  <input id="bind" class="mnum" name="bind" inputmode="numeric" autocomplete="off"
+         placeholder="номер">
+  <label class="fine" for="days">Суток</label>
+  <input id="days" class="mdays" name="days" type="number" min="1" max="365" value="{{.Days}}">
+  <input class="mreason" name="label" maxlength="200" placeholder="Пометка себе: кому и зачем">
+  <button type="submit" name="do" value="issue" class="mbtn">Выдать код</button>
+</form>
+
+{{/* Привязка — главное, что тут можно сделать не так, поэтому объяснена под
+     самой формой, а не в справке: у переехавшего с НГС номер участника равен
+     номеру его анкеты, и весь прежний след станет его собственным. */}}
+<p class="fine">«Кому» — номер участника на площадке; у пришедших с НГС он равен
+номеру анкеты (он же стоит в адресе карточки участника, /mod/u/…).
+Тогда пришедший получит СВОЙ прежний след: заметки, реплики и подписи «Ник, » в
+чужих ответах станут его. Пусто — человек заведётся с нуля и сам назовёт ник.</p>
+
+<h2 class="sub">Выданные</h2>
+{{if not .Invites}}
+<p class="empty">Приглашений ещё не выдавали.</p>
+{{end}}
+<ul class="modq">
+{{range .Invites}}
+  <li class="mitem{{if not .Live}} mhid{{end}}">
+    <div class="mhead">
+      {{if .BindUser}}
+        <a class="mlink" href="/mod/u/{{.BindUser}}">{{if .BindNick}}{{.BindNick}}{{else}}№{{.BindUser}}{{end}}</a>
+        <span class="mtag">{{if eq .BindKind 1}}участник{{else}}тень зеркала{{end}}</span>
+      {{else}}
+        <span class="mtag">без привязки</span>
+      {{end}}
+      {{if .UsedAt}}
+        <span class="mtag">использовано {{when .UsedAt true}}</span>
+        {{if .UsedBy}}<a class="mlink" href="/mod/u/{{.UsedBy}}">{{if .UsedNick}}{{.UsedNick}}{{else}}№{{.UsedBy}}{{end}}</a>{{end}}
+      {{else if .Live}}
+        <span class="fine">действует до {{when .ExpiresAt true}}</span>
+      {{else}}
+        <span class="mtag">истекло</span>
+      {{end}}
+      <span class="fine">выдано {{when .CreatedAt true}}{{if .IssuerNick}}, {{.IssuerNick}}{{end}}</span>
+    </div>
+    {{if .Note}}<div class="mwhy">{{.Note}}</div>{{end}}
+    {{if .Live}}
+    {{/* Отзыв без подтверждения, как и решения в очереди: выдать заново стоит
+         одного нажатия, а лишний экран в пересчёте на день дороже ошибки. */}}
+    <form method="post" action="/mod/admin" class="mdec">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <input type="hidden" name="back" value="{{$.Back}}">
+      <input type="hidden" name="issued" value="{{.Key}}">
+      <button type="submit" name="do" value="revoke" class="mbtn danger">Отозвать</button>
+    </form>
+    {{end}}
+  </li>
+{{end}}
+</ul>
+{{end}}

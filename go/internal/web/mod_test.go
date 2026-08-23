@@ -18,6 +18,10 @@ import (
 
 const modUserID = 606064 // «Хатуль мадан»: в архиве это и правда модератор
 
+// testInviteCode — код, который отдаёт дубль. Настоящий выдаёт ядро, морда его
+// только показывает — и вот это показывание тесты и проверяют.
+const testInviteCode = "T3H-TEST-CODE"
+
 // fakeMod — модерация в памяти.
 type fakeMod struct {
 	queue    []platform.ReviewItem
@@ -29,6 +33,7 @@ type fakeMod struct {
 	acts     []string // что позвали, по порядку
 	reported []platform.Subject
 	appealed []platform.Subject
+	invites  []platform.Invite
 	// pinnedFull — закреплённых уже столько, сколько лента выдерживает: ядро в
 	// этом случае отказывает, и морда обязана сказать об этом человеком, а не
 	// пятисоткой.
@@ -94,6 +99,51 @@ func (f *fakeMod) UnbanUser(_ context.Context, _ platform.Viewer, _ int64, _ str
 func (f *fakeMod) SetRole(_ context.Context, _ platform.Viewer, _ int64, r platform.Role) error {
 	return f.note("role " + string(rune('0'+int(r))))
 }
+
+// Приглашения. Дубль повторяет ровно два правила ядра, на которые опирается
+// морда: право администратора и «такого участника нет» — остальное (хеши,
+// журнал) проверяется в platform на живом Postgres.
+func (f *fakeMod) IssueInvite(_ context.Context, actor platform.Viewer, bind int64,
+	note string, ttl time.Duration) (string, error) {
+	if !actor.CanAdmin() {
+		return "", platform.ErrNotAdmin
+	}
+	if f.fail != nil {
+		return "", f.fail
+	}
+	u, known := f.users[bind]
+	if bind != 0 && !known {
+		return "", platform.ErrNotFound
+	}
+	if err := f.note("invite " + strconv.FormatInt(bind, 10)); err != nil {
+		return "", err
+	}
+	now := time.Now()
+	in := platform.Invite{
+		CreatedAt: now, ExpiresAt: now.Add(ttl), Note: note,
+		BindUser: bind, BindNick: u.Nick, BindKind: u.Kind,
+	}
+	f.invites = append([]platform.Invite{in}, f.invites...)
+	return testInviteCode, nil
+}
+
+func (f *fakeMod) Invites(context.Context, int) ([]platform.Invite, error) {
+	return f.invites, f.fail
+}
+
+func (f *fakeMod) RevokeInvite(_ context.Context, actor platform.Viewer, at time.Time) error {
+	if !actor.CanAdmin() {
+		return platform.ErrNotAdmin
+	}
+	for i := range f.invites {
+		if f.invites[i].CreatedAt.Equal(at) && f.invites[i].Live(time.Now()) {
+			f.invites[i].ExpiresAt = time.Now().Add(-time.Second)
+			return f.note("revoke")
+		}
+	}
+	return platform.ErrNothingToDo
+}
+
 func (f *fakeMod) UserByID(_ context.Context, id int64) (platform.User, error) {
 	u, ok := f.users[id]
 	if !ok {

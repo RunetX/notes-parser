@@ -922,7 +922,17 @@ span.rxb { cursor: default; }
   border: 1px solid var(--rule); border-radius: 3px; background: var(--card); color: var(--ink);
 }
 .mdays { flex: 0 0 5rem; }
+.mnum { flex: 0 0 8rem; }
 .mrole { flex: 0 0 12rem; }
+
+/* Выданный код. Показывается ОДИН раз, поэтому отделён рамкой от всего
+   остального на странице: пропустить его глазами нельзя — второго показа не
+   будет. Числа те же, что у экрана входа (.code): его тоже переписывают руками. */
+.issued {
+  margin: 14px 0 22px; padding: 2px 16px 10px;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--card);
+}
+.issued .code { text-align: center; }
 
 .modlog { list-style: none; margin: 0; padding: 0; }
 .lgi {

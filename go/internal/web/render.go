@@ -171,6 +171,11 @@ type page struct {
 	// страницы, а не отдельной: очередь смотрят между делом, из любого места, и
 	// искать вход в неё по памяти адреса модератор не должен.
 	Moderator bool
+	// Admin — показать пункт «Администрирование». Отдельно от Moderator, а не
+	// «Role >= admin» в шаблоне: право это разное по существу (модератор решает
+	// про слова, администратор — про людей и права), и решение о показе обязано
+	// приниматься там же, где остальные, — в Go.
+	Admin bool
 	// Bell и Unread — колокольчик в шапке и число непрочитанного (не больше
 	// platform.UnreadCap, выше показывается «99+»). Bell отдельным полем, а не
 	// «Unread > 0»: значок стоит и пустым — пропадающий элемент шапки дёргает
@@ -215,6 +220,7 @@ func (s *Server) newPage(r *http.Request, title string) page {
 	if u, ok := s.me(r); ok {
 		p.SignedIn, p.Nick, p.CSRF = true, u.Nick, csrfToken(s.session(r))
 		p.Moderator = u.Role >= platform.RoleModerator && s.mod != nil
+		p.Admin = u.Role >= platform.RoleAdmin && s.mod != nil
 		p.Bell = s.events != nil
 		if p.Bell {
 			// Отдельный запрос на страницу, и это осознанная плата. Сложить его

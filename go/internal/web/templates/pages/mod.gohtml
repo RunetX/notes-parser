@@ -12,6 +12,7 @@
   <span>Жалоб: <b>{{.Stats.Reports}}</b></span>
   <span class="fine">не проверено автоматом: {{.Stats.Unchecked}} · за сутки скрыто {{.Stats.HiddenDay}}</span>
   <a class="mlink" href="/mod/log">Журнал</a>
+  {{if .Admin}}<a class="mlink" href="/mod/admin">Приглашения</a>{{end}}
 </p>
 
 <h2 class="sub">Ждут решения</h2>

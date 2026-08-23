@@ -524,18 +524,16 @@ func (p *Platform) AbortLogin(ctx context.Context, userID int64) error {
 // привязывает пришедшего к УЖЕ СУЩЕСТВУЮЩЕЙ тени: если админ знает, кто перед
 // ним, весь зеркальный след этого человека становится его — включая подписи
 // «Ник, » в чужих ответах, которые рисуются из текущего ника.
+//
+// Это путь КОНСОЛИ, и он остаётся ради одного случая — первого приглашения на
+// площадке, где администратора ещё нет вовсе (тогда выдающим записывается сам
+// приглашённый). Со страницы выдаёт IssueInvite: там есть живой актор, и право
+// проверяется по нему. Обе дороги сходятся на createInvite, поэтому в журнал
+// попадают обе.
 func (p *Platform) CreateInvite(ctx context.Context, issuedBy, bindUser int64, note string, ttl time.Duration) (string, error) {
-	code, err := newCode()
-	if err != nil {
-		return "", err
-	}
-	if _, err := p.pool.Exec(ctx, `
-		INSERT INTO invites (code_sha, issued_by, bind_user, note, expires_at)
-		VALUES ($1, $2, $3, $4, $5)`,
-		codeDigest(code), issuedBy, nullID(bindUser), note, time.Now().Add(ttl)); err != nil {
-		return "", fmt.Errorf("выдача приглашения: %w", err)
-	}
-	return code, nil
+	// Актор нулевой: из консоли действие совершается БЕЗ вошедшего человека, и
+	// журнал показывает это честно — ровно как первое назначение администратора.
+	return p.createInvite(ctx, 0, issuedBy, bindUser, note, ttl)
 }
 
 // RedeemInvite обменивает код на участника. nick используется только когда
@@ -597,6 +595,210 @@ func (p *Platform) RedeemInvite(ctx context.Context, code, nick string) (int64, 
 		return 0, fmt.Errorf("приглашение: %w", err)
 	}
 	return userID, nil
+}
+
+// ------------------------------------------------- приглашения администратора
+
+// Выдаются приглашения СО СТРАНИЦЫ, а не только из консоли (24.08.2026, просьба
+// владельца). Довод тот же, по которому в морде вообще появилась модерация:
+// впустить человека администратор должен уметь, не заходя на боевой хост, —
+// лишний повод открыть там консоль дороже любой ошибки в форме, тем более что
+// ошибку эту можно отозвать.
+//
+// Что при этом НЕ переехало: код по-прежнему показывается ОДИН раз, и в базе
+// лежит только его sha256. «Покажите ещё раз» страница не умеет и уметь не
+// должна — потерянное приглашение отзывается и выдаётся заново.
+const (
+	// InviteTTL — сколько живёт приглашение по умолчанию. Месяц: код диктуют в
+	// переписке, а переезжает человек не в тот же вечер.
+	InviteTTL = 30 * 24 * time.Hour
+	// MaxInviteTTL — потолок срока. Год живущий код — это уже не приглашение, а
+	// забытый в чужой переписке ключ от учётной записи.
+	MaxInviteTTL = 365 * 24 * time.Hour
+	// InviteListLimit — сколько строк отдаём списком по умолчанию.
+	InviteListLimit = 50
+)
+
+// Invite — выданное приглашение, каким его видит администратор. САМОГО КОДА
+// здесь нет и быть не может: в базе лежит его sha256, а список отвечает на
+// вопрос «кому и когда выдано», а не «какие коды ходят по рукам».
+type Invite struct {
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+	Note      string
+
+	IssuedBy   int64
+	IssuerNick string
+
+	// BindUser — к кому привязано; 0 означает «ни к кому», и тогда пришедший
+	// заводится с нуля в нативной полосе. BindKind нужен показу: привязка к
+	// УЧАСТНИКУ (а не к тени) отдаёт доступ к учётной записи, в которую кто-то
+	// уже входил, и предупредить об этом обязана страница, а не память.
+	BindUser int64
+	BindNick string
+	BindKind Kind
+
+	UsedBy   int64
+	UsedNick string
+}
+
+// Live — приглашением ещё можно воспользоваться.
+func (i Invite) Live(now time.Time) bool { return i.UsedAt == nil && i.ExpiresAt.After(now) }
+
+// IssueInvite — выдача приглашения тем, кто вошёл администратором.
+//
+// От CreateInvite отличается тремя вещами, и все три — следствие того, что
+// действие совершает ЖИВОЙ человек со страницы: право проверяется здесь, в
+// ядре (форма — не место для этой проверки: список того, что позволено, обязан
+// читаться в одном месте), выдающим записывается он сам, а не приглашённый, и
+// срок ограничен потолком.
+func (p *Platform) IssueInvite(ctx context.Context, actor Viewer, bindUser int64, note string, ttl time.Duration) (string, error) {
+	if !actor.CanAdmin() {
+		return "", ErrNotAdmin
+	}
+	switch {
+	case ttl <= 0:
+		ttl = InviteTTL
+	case ttl > MaxInviteTTL:
+		ttl = MaxInviteTTL
+	}
+	return p.createInvite(ctx, actor.UserID, actor.UserID, bindUser, note, ttl)
+}
+
+// createInvite — общая часть обоих путей: строка приглашения и запись в журнал
+// ОДНОЙ транзакцией. Журнал обязателен: «кого впустили» — такая же часть
+// модерации, как «кого скрыли», и выясняться через месяц перепиской это не
+// должно. Кода в журнале нет — его читают модераторы, а код это ключ.
+func (p *Platform) createInvite(ctx context.Context, actor, issuedBy, bindUser int64, note string, ttl time.Duration) (string, error) {
+	code, err := newCode()
+	if err != nil {
+		return "", err
+	}
+	note = trimReason(note)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("выдача приглашения: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	if bindUser != 0 {
+		// Привязка — самая дорогая ошибка этой формы: пришедший получает ЧУЖОЙ
+		// след целиком. Поэтому человек проверяется здесь, а не отдаётся на
+		// откуп внешнему ключу: «такого участника нет» обязано прозвучать при
+		// выдаче, а не при попытке войти по уже разосланному коду.
+		var anonymized *time.Time
+		err := tx.QueryRow(ctx,
+			`SELECT anonymized_at FROM users WHERE id = $1`, bindUser).Scan(&anonymized)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("участник %d: %w", bindUser, ErrNotFound)
+		}
+		if err != nil {
+			return "", fmt.Errorf("выдача приглашения: %w", err)
+		}
+		if anonymized != nil {
+			return "", ErrAnonymized
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO invites (code_sha, issued_by, bind_user, note, expires_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		codeDigest(code), issuedBy, nullID(bindUser), note, time.Now().Add(ttl)); err != nil {
+		return "", fmt.Errorf("выдача приглашения: %w", err)
+	}
+	if err := audit(ctx, tx, actor, ActionInvite, Subject{Kind: SubjectInvite, ID: bindUser},
+		map[string]any{"days": int(ttl / (24 * time.Hour)), "reason": note}); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("выдача приглашения: %w", err)
+	}
+	return code, nil
+}
+
+// Invites — выданные приглашения, свежие первыми. Показываются ВСЕ, включая
+// использованные и истёкшие: страница отвечает на вопрос «кому я уже выдавал»,
+// а он про прошлое.
+func (p *Platform) Invites(ctx context.Context, limit int) ([]Invite, error) {
+	if limit <= 0 {
+		limit = InviteListLimit
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT i.created_at, i.expires_at, i.used_at, i.note,
+		       i.issued_by, coalesce(iu.nick, ''),
+		       i.bind_user, coalesce(bu.nick, ''), coalesce(bu.kind, 0),
+		       i.used_by, coalesce(su.nick, '')
+		  FROM invites i
+		  LEFT JOIN users iu ON iu.id = i.issued_by
+		  LEFT JOIN users bu ON bu.id = i.bind_user
+		  LEFT JOIN users su ON su.id = i.used_by
+		 ORDER BY i.created_at DESC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("приглашения: %w", err)
+	}
+	defer rows.Close()
+	var out []Invite
+	for rows.Next() {
+		var (
+			in         Invite
+			bind, used *int64
+		)
+		if err := rows.Scan(&in.CreatedAt, &in.ExpiresAt, &in.UsedAt, &in.Note,
+			&in.IssuedBy, &in.IssuerNick,
+			&bind, &in.BindNick, &in.BindKind,
+			&used, &in.UsedNick); err != nil {
+			return nil, fmt.Errorf("приглашения: %w", err)
+		}
+		in.BindUser, in.UsedBy = idOf(bind), idOf(used)
+		out = append(out, in)
+	}
+	return out, rows.Err()
+}
+
+// RevokeInvite гасит ещё не использованное приглашение — «выдал не тому» и «код
+// уехал не в ту переписку». Строка при этом остаётся: выдача уже случилась, и
+// стирать её значило бы править историю.
+//
+// Ключ строки — ВРЕМЯ ВЫДАЧИ, и это не лень. Своего идентификатора у
+// приглашения нет вовсе (первичный ключ — хеш кода), а показать хеш нельзя:
+// кодов в алфавите 31^8, и по хешу код подбирается перебором. Время выдачи на
+// странице и так напечатано, совпасть до микросекунды двум строкам практически
+// неоткуда — вставки идут по одной, — а на случай совпадения гасится РОВНО
+// одна.
+func (p *Platform) RevokeInvite(ctx context.Context, actor Viewer, issuedAt time.Time) error {
+	if !actor.CanAdmin() {
+		return ErrNotAdmin
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("отзыв приглашения: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	var bind *int64
+	err = tx.QueryRow(ctx, `
+		UPDATE invites SET expires_at = now()
+		 WHERE code_sha = (SELECT code_sha FROM invites
+		                    WHERE created_at = $1 AND used_at IS NULL AND expires_at > now()
+		                    ORDER BY code_sha LIMIT 1)
+	 RETURNING bind_user`, issuedAt).Scan(&bind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Использованное или уже погасшее приглашение — не ошибка: два
+		// администратора, нажавших одно и то же, не должны видеть отказ.
+		return ErrNothingToDo
+	}
+	if err != nil {
+		return fmt.Errorf("отзыв приглашения: %w", err)
+	}
+	if err := audit(ctx, tx, actor.UserID, ActionInviteOff,
+		Subject{Kind: SubjectInvite, ID: idOf(bind)}, nil); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("отзыв приглашения: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------- сессии
