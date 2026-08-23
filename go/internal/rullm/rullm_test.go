@@ -71,6 +71,11 @@ func TestRequestShape(t *testing.T) {
 	if req["temperature"] != float64(0) {
 		t.Errorf("температура: %v (триаж обязан быть воспроизводим)", req["temperature"])
 	}
+	// Одной температуры мало — замер 23.08.2026 показал разброс вердиктов при
+	// нуле. Зерно проверяем отдельно: пропав, оно вернёт ту же беду молча.
+	if req["seed"] != float64(seed) {
+		t.Errorf("зерно: %v, ожидалось %d", req["seed"], seed)
+	}
 	f := req["response_format"].(map[string]any)
 	js := f["json_schema"].(map[string]any)
 	if f["type"] != "json_schema" || js["strict"] != true || js["schema"] == nil {
