@@ -84,22 +84,34 @@ func TestVideoURLFormsRecognised(t *testing.T) {
 	}
 }
 
-// Факт: российские площадки опознаются тоже — они и есть главный довод за
-// карточку, потому что не замедлены и вопроса о вывозе данных не задают.
+// Факт: Rutube опознаётся — он и есть главный довод за карточку, потому что не
+// замедлен и вопроса о вывозе данных не задаёт.
 func TestRussianVideoHostsRecognised(t *testing.T) {
-	cases := map[string]string{
-		"https://rutube.ru/video/0123456789abcdef0123456789abcdef/": "Rutube",
-		"https://vkvideo.ru/video-12345_67890":                      "VK Видео",
-		"https://vk.com/video12345_67890":                           "VK Видео",
+	const addr = "https://rutube.ru/video/18673ceba8ab218accfaad74e84ec346/"
+	r, ok := parseVideoURL(addr)
+	if !ok {
+		t.Fatalf("%s: не опознан", addr)
 	}
-	for addr, want := range cases {
-		r, ok := parseVideoURL(addr)
-		if !ok {
-			t.Errorf("%s: не опознан", addr)
-			continue
-		}
-		if r.p.name != want {
-			t.Errorf("%s: площадка %q, ждали %q", addr, r.p.name, want)
+	if r.p.name != "Rutube" {
+		t.Errorf("площадка %q, ждали Rutube", r.p.name)
+	}
+}
+
+// Факт: VK Видео НЕ опознаётся, и это решение по замеру (23.08.2026 с боевого
+// хоста): превью анонимно оттуда не взять — `vk.com/oembed` отдаёт HTML-404, а
+// страница ролика уводит редиректом на login.vk.ru.
+//
+// Тест сторожит не форму адреса, а то, чтобы площадку не вернули в список «на
+// будущее»: ссылок на VK в комментариях больше, чем на все прочие вместе, и
+// каждая заводила бы фоновую закачку, которая гарантированно не удаётся.
+func TestVKIsDeliberatelyAbsent(t *testing.T) {
+	for _, addr := range []string{
+		"https://vk.com/video-104917606_456240565",
+		"https://m.vk.com/video-31097370_456240393",
+		"https://vkvideo.ru/video-12345_67890",
+	} {
+		if _, ok := parseVideoURL(addr); ok {
+			t.Errorf("%s: опознан, хотя превью оттуда взять нечем", addr)
 		}
 	}
 }
@@ -112,7 +124,7 @@ func TestForeignHostIsNotAVideo(t *testing.T) {
 		"https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ",
 		"https://evil.example/youtube.com/watch?v=dQw4w9WgXcQ",
 		"https://notyoutube.com/watch?v=dQw4w9WgXcQ",
-		"https://rutube.ru.evil.example/video/0123456789abcdef0123456789abcdef/",
+		"https://rutube.ru.evil.example/video/18673ceba8ab218accfaad74e84ec346/",
 		"javascript:alert(1)//youtu.be/dQw4w9WgXcQ",
 	} {
 		if _, ok := parseVideoURL(addr); ok {
@@ -131,7 +143,6 @@ func TestMalformedVideoIDRejected(t *testing.T) {
 		"https://www.youtube.com/watch?v=",
 		"https://www.youtube.com/",
 		"https://rutube.ru/video/нехекс/",
-		"https://vk.com/id12345",
 	} {
 		if _, ok := parseVideoURL(addr); ok {
 			t.Errorf("%s: опознан как ролик, а не должен", addr)
