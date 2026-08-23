@@ -276,6 +276,22 @@ func (s *Service) checkBatch(ctx context.Context) error {
 	}
 	s.alert.OK(ctx, alertKey)
 	for i, v := range verdicts {
+		// Мат — не мнение модели, а факт написания, и последнее слово по нему
+		// за кодом. Порядок такой: модель судит первой, и если она нашла
+		// что-то СЕРЬЁЗНЕЕ (угроза, наркотики, чужие данные), её вердикт
+		// остаётся — иначе тред, где выругались в адрес угрозы, ушёл бы в
+		// очередь как брань, и модератор не увидел бы главного. Мат ставится
+		// там, где модель не нашла ничего, — в том числе когда она промолчала
+		// вовсе: решение по нему от неё не зависит.
+		if v == nil || v.Verdict == platform.VerdictClean {
+			if quote := FindMat(items[i].Body); quote != "" {
+				v = &platform.VerdictRecord{
+					Verdict: platform.VerdictHidden, Category: platform.CatProfanity,
+					Reason: "нецензурная брань запрещена правилами площадки (пункт 11)",
+					Quote:  quote, Model: "", PromptSHA: promptSHA,
+				}
+			}
+		}
 		if v == nil {
 			continue // модель промолчала про этот номер — попробуем в следующий раз
 		}
