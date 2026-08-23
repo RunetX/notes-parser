@@ -114,7 +114,13 @@ func ingestComment(t *testing.T, p *platform.Platform, id, noteID, author int64,
 func TestBuildCountsNativeAndMirrored(t *testing.T) {
 	src, p := newSource(t)
 	ctx := t.Context()
-	inWindow := window.Start.Add(24 * time.Hour)
+	// Единственный тест файла, который считает по СКОЛЬЗЯЩЕМУ окну: нативную
+	// половину пишет CreateNote часами базы, то есть «сейчас», и дотянуться до
+	// неё календарным окном нельзя. Значит и зеркальная половина обязана стоять
+	// относительно «сейчас», а не от фиксированного slot: привязанная к
+	// календарю, она выпадала из окна ровно через сутки после написания теста
+	// (и выпала — 23.08.2026, красный прогон CI на дню после зелёного).
+	inWindow := time.Now().Add(-24 * time.Hour)
 
 	ingestNote(t, p, 312811, 175869, "Гадёныш", inWindow)
 	ingestComment(t, p, 63207290, 312811, 1409563, "Клубника", inWindow.Add(time.Minute))
