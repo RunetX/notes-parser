@@ -137,15 +137,28 @@ func enforceRate(ctx context.Context, q querier, query string, authorID int64, n
 // Повторная постановка (правка заметки в окне) СБРАСЫВАЕТ и решение человека:
 // текст стал другим, и прежний вердикт относился не к нему. Обжалование при
 // этом тоже снимается — обжаловать нечего, публикация снова видима.
+//
+// ПУБЛИКАЦИИ АДМИНИСТРАЦИИ в очередь не идут вовсе (решение владельца
+// 23.08.2026). Довод не в доверии, а в том, что автомат над ними бессилен по
+// устройству: единственное его право — скрыть, а модератор снимает скрытие
+// одним нажатием, — значит очередь получала бы шум вместо надзора. Замер это и
+// показал: из пятнадцати автоскрытий на 738 строках пять пришлись на объявления
+// площадки о самой себе, включая реплики со ссылкой на нашу же справку
+// `t3h.ru/help`, названные «ссылкой на сторонний сайт».
+//
+// Условие стоит В ЗАПРОСЕ, а не отдельным походом в users, потому что очередь
+// заводится ТОЙ ЖЕ транзакцией, что и публикация: лишний round-trip здесь — это
+// удлинение самой горячей транзакции площадки.
 func enqueueCheck(ctx context.Context, q querier, kind string, id, noteID, authorID int64) error {
 	_, err := q.Exec(ctx, `
 		INSERT INTO moderation_queue (subject_kind, subject_id, note_id, author_id)
-		VALUES ($1, $2, $3, $4)
+		SELECT $1, $2, $3, $4
+		 WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = $4 AND u.role >= $5)
 		ON CONFLICT (subject_kind, subject_id) DO UPDATE
 		   SET queued_at = now(), checked_at = NULL, verdict = NULL, attempts = 0,
 		       category = '', reason = '', quote = '', model = '', prompt_sha = NULL,
 		       appealed_at = NULL, decided_at = NULL, decided_by = NULL, decision = NULL`,
-		kind, id, nullID(noteID), nullID(authorID))
+		kind, id, nullID(noteID), nullID(authorID), RoleModerator)
 	return wrapf(err, "очередь проверки %s %d", kind, id)
 }
 

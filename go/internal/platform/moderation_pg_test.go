@@ -245,6 +245,35 @@ func TestОчередьБезОтсечкиПоПопыткам(t *testing.T) {
 	}
 }
 
+// Публикации администрации в очередь не идут: автомат над ними бессилен по
+// устройству (его максимум — скрыть, а модератор снимает скрытие нажатием), и
+// очередь получала бы шум. На живом замере пять автоскрытий из пятнадцати
+// пришлись именно на объявления площадки о самой себе.
+func TestАдминистрациюВОчередьНеСтавят(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+
+	author := mustUser(t, p, "участник")
+	mustNote(t, p, author, "обычная заметка участника")
+	if pending, err := p.PendingChecks(ctx, 10, 0); err != nil || len(pending) != 1 {
+		t.Fatalf("заметка участника в очереди: %v (%v)", pending, err)
+	}
+
+	admin := mustUser(t, p, "администратор")
+	if err := p.SetRole(ctx, Viewer{UserID: admin, Role: RoleAdmin}, admin, RoleAdmin); err != nil {
+		t.Fatalf("роль: %v", err)
+	}
+	mustNote(t, p, admin, "Залетайте все, ссылка на справку https://t3h.ru/help")
+
+	pending, err := p.PendingChecks(ctx, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].AuthorID != author {
+		t.Fatalf("объявление администрации попало в очередь: %+v", pending)
+	}
+}
+
 // Жалоба — единственный вход в модерацию для СТАРЫХ строк: классификатор по
 // архиву не гоняется, и без неё 10,7 млн зеркальных реплик не модерируются вовсе.
 func TestЖалобаПоднимаетЗеркальнуюРеплику(t *testing.T) {
