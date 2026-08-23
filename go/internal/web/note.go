@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"lovegw/internal/platform"
@@ -162,6 +163,12 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 	// Счётчик в шапку: она липкая, и из середины треда до заголовка
 	// «Комментарии N» уже не домотать.
 	p.Thread = note.CommentCount
+	// Канонический адрес — ДЕРЕВО без параметров: линейный вид и его страницы
+	// показывают те же реплики, что и оно, только иначе разложенные, а дерево
+	// среди них единственное полное.
+	if base := strings.TrimRight(s.cfg.BaseURL, "/"); base != "" {
+		p.Canonical = base + "/n/" + strconv.FormatInt(id, 10)
+	}
 
 	// Граница живого добора берётся ДО чтения реплик и не по показанным строкам:
 	// в линейном виде на странице окно из тридцати самых свежих, и полоса, в него

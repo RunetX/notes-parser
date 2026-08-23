@@ -1232,3 +1232,25 @@ func TestSitemapRejectsBadPage(t *testing.T) {
 		}
 	}
 }
+
+// У одной заметки адресов несколько — дерево, линейный вид, его страницы,
+// раскрытая коробка реакций, — и показывают они один и тот же разговор.
+// Каноническим объявляется ДЕРЕВО: линейный вид раскладывает те же реплики
+// иначе, а дерево среди них единственное полное. Без этого поисковик выбирает
+// главный адрес сам и выбирает обычно не тот.
+func TestNotePageNamesItsCanonicalAddress(t *testing.T) {
+	st := &fakeStore{note: sampleNote(), thread: sampleThread(), flat: sampleThread()}
+	h := newTestServer(t, st, Config{BaseURL: "https://t3h.ru"})
+
+	want := `<link rel="canonical" href="https://t3h.ru/n/312811">`
+	for _, target := range []string{"/n/312811", "/n/312811?view=linear", "/n/312811?react=3"} {
+		if body := do(h, guest(t, "GET", target)).Body.String(); !strings.Contains(body, want) {
+			t.Errorf("%s не называет канонический адрес:\n%s", target, body)
+		}
+	}
+	// У ленты страницы РАЗНЫЕ по содержанию, и сводить их к первой значило бы
+	// спрятать от поиска весь архив, кроме двадцати свежих записей.
+	if feed := do(h, guest(t, "GET", "/?page=2")).Body.String(); strings.Contains(feed, "rel=\"canonical\"") {
+		t.Error("страница ленты объявлена копией первой")
+	}
+}
