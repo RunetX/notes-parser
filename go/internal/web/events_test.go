@@ -217,3 +217,33 @@ func TestEmptyEventsExplainThemselves(t *testing.T) {
 		t.Error("кнопка отметки показана, когда отмечать нечего")
 	}
 }
+
+// Пары шапки — ОДИН блок, а не кнопки рядом: «Лента / Справка» это один
+// переключатель разделов, колокольчик с меню — один угол «про меня». Порознь
+// они читались как четыре несвязанные плашки (жалоба владельца 23.08.2026).
+func TestHeaderPairsAreOneBlock(t *testing.T) {
+	h, token := busServer(t, &fakeEvents{unread: 2})
+	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
+	head := body[strings.Index(body, `class="wrap topin"`):strings.Index(body, "</header>")]
+
+	tabs := head[strings.Index(head, `class="grp tabs"`):]
+	tabs = tabs[:strings.Index(tabs, "</nav>")]
+	if strings.Count(tabs, `class="tab"`) != 2 {
+		t.Errorf("разделы не в одном блоке:\n%s", tabs)
+	}
+
+	uctl := head[strings.Index(head, `class="grp uctl"`):]
+	bell, acct := strings.Index(uctl, `class="bell`), strings.Index(uctl, `class="acct"`)
+	if bell < 0 || acct < 0 || strings.Contains(uctl[:acct], "</div>") {
+		t.Errorf("колокольчик и меню участника не в одном блоке:\n%s", uctl[:200])
+	}
+
+	// overflow: hidden обрезал бы выпадающее меню — оно висит ПОД блоком.
+	grp := cssRule(t, cssText(t), ".grp {")
+	if strings.Contains(grp, "overflow: hidden") {
+		t.Error("блок шапки обрезает содержимое — меню участника не раскроется")
+	}
+	if !strings.Contains(cssText(t), ".grp > * + * { border-left") {
+		t.Error("между кнопками блока нет перегородки — они снова читаются порознь")
+	}
+}
