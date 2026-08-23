@@ -191,6 +191,32 @@ a:hover { text-decoration: underline; }
   padding: 5px 14px; border-radius: 3px; font-size: 14px;
 }
 
+/* Пары шапки живут ОДНИМ блоком с перегородкой: «Лента / Справка» — один
+   переключатель разделов, колокольчик с меню участника — один угол «про меня».
+   Порознь они читались как четыре несвязанные кнопки (жалоба владельца
+   23.08.2026).
+
+   Фон красит сам блок, а плашки внутри становятся прозрачными, поэтому
+   перегородка — одна линия, а не стык двух прямоугольников. overflow: hidden
+   тут нельзя: под .acct выпадает меню, и блок обрезал бы его. Значит скругление
+   ставится КРАЙНИМ элементам, а красит их та же поверхность, что и hover. */
+.grp {
+  display: flex; align-items: stretch;
+  background: rgba(255, 255, 255, .18); border-radius: 3px;
+}
+.grp > *, .grp > .acct > .acctbtn { background: none; border-radius: 0; }
+.grp > * + * { border-left: 1px solid rgba(255, 255, 255, .22); }
+.grp > :first-child, .grp > :first-child > .acctbtn { border-radius: 3px 0 0 3px; }
+.grp > :last-child, .grp > :last-child > .acctbtn { border-radius: 0 3px 3px 0; }
+.grp > a:hover, .grp > .acct > .acctbtn:hover, .grp > .acct[open] > .acctbtn {
+  background: rgba(255, 255, 255, .2);
+}
+/* Автоматическое поле переезжает на блок целиком: у двух элементов подряд их
+   было бы два, и flex поделил бы свободное место пополам — угол уехал бы в
+   середину шапки. */
+.uctl { margin-left: auto; }
+.grp .acct, .grp .bell { margin-left: 0; }
+
 /* Вход — в правом верхнем углу, как на НГС. margin-left:auto прижимает его к
  * краю без распорок; на узком экране flex перенесёт его строкой ниже, а не
  * выдавит наружу. Ссылка и кнопка выглядят одинаково: выход обязан быть POST

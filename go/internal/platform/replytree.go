@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -238,6 +239,47 @@ func (p *Platform) ReplyScanDue(ctx context.Context, limit int) ([]int64, error)
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("очередь обхода дерева: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ReplyScanFresh — вторая очередь: ЖИВЫЕ треды, у которых появились реплики
+// после последнего обхода. Отдельная от ReplyScanDue, и это не удобство.
+//
+// Та очередь устроена под добор истории: «сперва не смотренные, дальше самые
+// давние». Заметку из неё смотрят ОДИН раз, а дописанные позже реплики остаются
+// с рёбрами, которые зеркало угадало по обращению (love.Addressees), — до
+// второго круга по 117 тысячам заметок дело не дойдёт никогда. Пока НГС не
+// принимал комментариев, это было неважно; с 20.08.2026 принимает.
+//
+// Три условия, и каждое отвечает за своё: fresh — тред ещё живой (мёртвый
+// дообходит историческая очередь), reply_scan_at < last_comment_at — с прошлого
+// раза что-то дописали, gap — не чаще чем раз в столько-то, иначе на бойком
+// треде обход шёл бы на каждую реплику. Вход по индексу notes_fresh_scan
+// (миграция 0013): без него это seq scan по всем заметкам раз в минуту.
+func (p *Platform) ReplyScanFresh(ctx context.Context, limit int, fresh, gap time.Duration) ([]int64, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT n.id
+		  FROM notes n
+		  LEFT JOIN ingest_state s ON s.note_id = n.id
+		 WHERE n.id < $1 AND n.comment_count > 0
+		   AND n.last_comment_at > $2
+		   AND coalesce(s.reply_scan_skip, false) = false
+		   AND (s.reply_scan_at IS NULL
+		        OR (s.reply_scan_at < n.last_comment_at AND s.reply_scan_at < $3))
+		 ORDER BY n.last_comment_at DESC
+		 LIMIT $4`, NativeIDBase, time.Now().Add(-fresh), time.Now().Add(-gap), limit)
+	if err != nil {
+		return nil, fmt.Errorf("очередь свежих тредов: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("очередь свежих тредов: %w", err)
 		}
 		out = append(out, id)
 	}

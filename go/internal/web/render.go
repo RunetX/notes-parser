@@ -399,7 +399,11 @@ func replyName(r *platform.ReplyRef) string {
 }
 
 // noteTitle — заголовок вкладки для страницы заметки: у заметок на НГС своего
-// заголовка нет вовсе, поэтому берём начало текста.
-func noteTitle(body string) string {
-	return textutil.Fit(textutil.OneLine(body), 60)
+// заголовка нет вовсе, поэтому берём начало текста. Знаки разметки и коды
+// смайлов снимаются (stripMarkup) — там, где страница их разбирает: вкладка
+// обязана показывать то же, что карточка, а показать жирное или картинку она
+// не может.
+func noteTitle(n platform.NoteView) string {
+	plain := stripMarkup(n.Body, eraOf(n.ID, n.PublishedAt))
+	return textutil.Fit(textutil.OneLine(plain), 60)
 }

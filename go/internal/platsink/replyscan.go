@@ -59,15 +59,33 @@ func NewReplyScanner(p *platform.Platform, site TreeSource, log *slog.Logger) *R
 	return &ReplyScanner{p: p, site: site, log: log}
 }
 
-// Once обходит до limit заметок из очереди. Отказ сайта на одной заметке обход
-// не рвёт: 403 и 500 приходят волнами, а очередь устроена так, что следующий
-// проход вернётся к той же заметке.
+// Once обходит до limit заметок из очереди ДОБОРА ИСТОРИИ. Отказ сайта на одной
+// заметке обход не рвёт: 403 и 500 приходят волнами, а очередь устроена так, что
+// следующий проход вернётся к той же заметке.
 func (s *ReplyScanner) Once(ctx context.Context, limit int) (ReplyScanStats, error) {
-	var st ReplyScanStats
 	ids, err := s.p.ReplyScanDue(ctx, limit)
 	if err != nil {
-		return st, err
+		return ReplyScanStats{}, err
 	}
+	return s.walk(ctx, ids)
+}
+
+// Fresh обходит ЖИВЫЕ треды — те, где реплики появились после прошлого обхода
+// (platform.ReplyScanFresh). Это и есть работа демона: историю добирает админ
+// командой, а живому треду настоящие рёбра нужны сейчас, пока люди в нём
+// разговаривают.
+func (s *ReplyScanner) Fresh(ctx context.Context, limit int, fresh, gap time.Duration) (ReplyScanStats, error) {
+	ids, err := s.p.ReplyScanFresh(ctx, limit, fresh, gap)
+	if err != nil {
+		return ReplyScanStats{}, err
+	}
+	return s.walk(ctx, ids)
+}
+
+// walk обходит названные заметки. Общий ход обеих очередей: отличаются они
+// только тем, КОГО обходить.
+func (s *ReplyScanner) walk(ctx context.Context, ids []int64) (ReplyScanStats, error) {
+	var st ReplyScanStats
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
 			return st, err
@@ -152,20 +170,45 @@ func convertGenders(in map[int64]string) map[int64]platform.Gender {
 	return out
 }
 
-// Run гоняет обход в фоне. Пауза между кругами большая намеренно: дерево у
-// заметки меняется только вместе с новыми комментариями, а их на НГС сейчас
-// нет вовсе — сегодня это добор истории, а не слежение.
-func (s *ReplyScanner) Run(ctx context.Context, every time.Duration, batch int) error {
-	t := time.NewTicker(every)
+// Такт службы. Числа отвечают за разное, поэтому их три.
+const (
+	// ScanInterval — как часто заглядывать в очередь. Минута: обход стоит двух
+	// запросов к сайту на заметку, и живых тредов там единицы.
+	ScanInterval = time.Minute
+	// ScanBatch — сколько заметок за проход. Больше незачем: очередь всё равно
+	// вернётся через минуту, а сайт делится полосой с зеркалом.
+	ScanBatch = 3
+	// FreshWindow — какой тред считается живым. Сутки: дальше это уже история,
+	// и её добирает своя очередь (Once), которую водит админ.
+	FreshWindow = 24 * time.Hour
+	// RescanGap — не чаще, чем раз в столько, по одной заметке. Иначе бойкий
+	// тред обходился бы на каждую реплику; пять минут — цена того, что чужой
+	// ответ несколько минут повисит в угаданной ветке.
+	RescanGap = 5 * time.Minute
+)
+
+// Run следит за ЖИВЫМИ тредами: раз в такт берёт те, где после прошлого обхода
+// дописали, и переставляет рёбра по мобильной версии.
+//
+// Служба, а не разовая команда, потому что угадывание ошибается заметно: замер
+// по заметке 313000 — 187 переставленных рёбер из 444, а 23.08.2026 ответ и
+// вовсе уехал в чужую ветку. Историю при этом по-прежнему добирает админ
+// (`platform reply-scan`): это тысячи запросов, и решать, когда их тратить,
+// демону не по чину.
+//
+// Отказ прохода демона не роняет: логируется и всё. Дерево — уточнение поверх
+// разговора, а сам разговор несёт зеркало.
+func (s *ReplyScanner) Run(ctx context.Context) error {
+	t := time.NewTicker(ScanInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			st, err := s.Once(ctx, batch)
+			st, err := s.Fresh(ctx, ScanBatch, FreshWindow, RescanGap)
 			if err != nil && ctx.Err() == nil {
-				s.log.Error("обход дерева", "err", err)
+				s.log.Error("обход живых тредов", "err", err)
 			}
 			if st.Edges > 0 || st.Genders > 0 {
 				s.log.Info("дерево уточнено", "заметок", st.Notes,
