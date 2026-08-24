@@ -55,6 +55,9 @@ const (
 	verbPulpit    = "pulp"
 	verbPulpitAsk = "pulpask" // аргумент — argPulpitOn (что подтверждаем)
 	verbPulpitSet = "pulpset" // аргумент — argPulpitOn/argPulpitOff
+
+	verbMorningAsk = "mornask" // аргумент — argMorningOn (что подтверждаем)
+	verbMorningSet = "mornset" // аргумент — argMorningOn/argMorningOff
 	// Подписка по заметке. Первый глагол приезжает с кнопки под постом канала —
 	// он единственный публичный (см. поле public); остальные два уже из ЛС.
 	verbSubscribe   = kbd.VerbSubscribe // аргумент — id заметки
@@ -78,6 +81,9 @@ const (
 	// Тумблер амвона. Payload «1:pulpset:off» — 12 байт при пределе 64.
 	argPulpitOn  = "on"
 	argPulpitOff = "off"
+
+	argMorningOn  = "on"
+	argMorningOff = "off"
 )
 
 const (
@@ -129,6 +135,8 @@ var callbackVerbs = map[string]verbHandler{
 	verbPulpit:      {fn: (*Logic).cbPulpit},
 	verbPulpitAsk:   {fn: (*Logic).cbPulpitAsk},
 	verbPulpitSet:   {ack: "Переключаю…", fn: (*Logic).cbPulpitSet},
+	verbMorningAsk:  {fn: (*Logic).cbMorningAsk},
+	verbMorningSet:  {ack: "Переключаю…", fn: (*Logic).cbMorningSet},
 	verbSubscribe:   {ack: "Открыл выбор в личке", public: true, fn: (*Logic).cbSubscribe},
 	verbSubAuthor:   {ack: "Подписал", fn: (*Logic).cbSubAuthor},
 	verbSubComments: {ack: "Подписал", fn: (*Logic).cbSubComments},
@@ -364,6 +372,17 @@ func (l *Logic) cbPulpitAsk(ctx context.Context, userID int64, cb kbd.Callback, 
 // cbPulpitSet переключает тумблер амвона.
 func (l *Logic) cbPulpitSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
 	l.setPulpit(ctx, userID, cb, arg)
+}
+
+// cbMorningAsk превращает своё же сообщение в вопрос о включении после
+// срабатывания предохранителя.
+func (l *Logic) cbMorningAsk(ctx context.Context, userID int64, cb kbd.Callback, _ string) {
+	l.askMorningOn(ctx, userID, cb)
+}
+
+// cbMorningSet переключает тумблер утренней заметки.
+func (l *Logic) cbMorningSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	l.setMorning(ctx, userID, cb, arg)
 }
 
 func (l *Logic) cbCancel(ctx context.Context, userID int64, cb kbd.Callback, _ string) {

@@ -5,46 +5,6 @@ import (
 	"testing"
 )
 
-func TestNormalizeTypography(t *testing.T) {
-	got := normalize("Он сказал: «люблю» — и ушёл")
-	want := `Он сказал: "люблю" - и ушёл`
-	if got != want {
-		t.Errorf("нормализация тире и ёлочек:\nполучено %q\nожидалось %q", got, want)
-	}
-}
-
-// TestNormalizeIndentIdempotent — NBSP ставит инструмент, и ставит один раз:
-// повторная генерация после брака не должна удваивать отступы.
-func TestNormalizeIndentIdempotent(t *testing.T) {
-	src := "  Отступ в две клетки\nобычный текст\nслово    и ещё"
-	once := normalize(src)
-	twice := normalize(once)
-	if once != twice {
-		t.Fatalf("нормализация не идемпотентна:\n1) %q\n2) %q", once, twice)
-	}
-	if !strings.HasPrefix(once, string(nbsp)+string(nbsp)) {
-		t.Errorf("ведущие пробелы не стали неразрывными: %q", once)
-	}
-	if strings.Contains(once, "  ") {
-		t.Errorf("обычные пробеги пробелов остались (на сайте схлопнутся): %q", once)
-	}
-	// Одиночные пробелы между словами не трогаем: иначе текст станет
-	// неразрывным полотном.
-	if !strings.Contains(once, "Отступ в две") {
-		t.Errorf("одиночные пробелы перебиты: %q", once)
-	}
-}
-
-func TestNormalizeBlankLines(t *testing.T) {
-	got := normalize("абзац\n\n\n\n\nвторой   \n\n")
-	if strings.Count(got, "\n\n\n\n") > 0 {
-		t.Errorf("пустые строки не схлопнуты: %q", got)
-	}
-	if strings.HasSuffix(got, "\n") {
-		t.Errorf("хвостовые переводы строк остались: %q", got)
-	}
-}
-
 func TestValidate(t *testing.T) {
 	cfg := validateConfig{
 		MinRunes: 10, MaxRunes: 200, MaxLines: 12, AllowEmoji: true,

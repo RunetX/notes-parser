@@ -56,7 +56,10 @@ type Logic struct {
 	news *news.Service
 	// pulpit — ручка амвона (/pulpit), тоже админская и тоже не в списке.
 	// Интерфейс объявлен здесь: пакет pulpit диалоговое ядро не импортирует.
-	pulpit  PulpitControl
+	pulpit PulpitControl
+	// morning — ручка утренней заметки (/morning), тоже админская и тоже не в
+	// списке. Интерфейс объявлен здесь по той же причине, что и PulpitControl.
+	morning MorningControl
 	adminID int64
 	log     *slog.Logger
 	// talksOnly — движок бота переписки: из команд живут только /start,
@@ -215,6 +218,8 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.handleNews(ctx, userID)
 	case "/pulpit":
 		l.handlePulpit(ctx, userID, nil)
+	case "/morning":
+		l.handleMorning(ctx, userID, nil)
 	case "/cancel":
 		l.handleCancel(ctx, userID)
 	default:

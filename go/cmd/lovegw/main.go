@@ -16,6 +16,7 @@
 //	run    — основной демон (M3+)
 //	digest — еженедельный дайджест: draft → правка LLM-рубрик → publish
 //	pulpit — амвон: черновик своей реплики под заметкой и состояние службы
+//	morning — утренняя заметка: поводы дня, черновик, ручной догон
 package main
 
 import (
@@ -124,6 +125,8 @@ func main() {
 		err = cmdAccount(ctx, os.Args[2:])
 	case "pulpit":
 		err = cmdPulpit(ctx, os.Args[2:])
+	case "morning":
+		err = cmdMorning(ctx, os.Args[2:])
 	case "secrets":
 		err = cmdSecrets(ctx, os.Args[2:])
 	case "platform":
@@ -206,6 +209,10 @@ func usage() {
   lovegw account [-accounts accounts.db] -name reserve -note <id> [-reply <comment_id>] [-no-prefix] [-yes] say [текст …]   # комментарий на сайт от сервисного аккаунта
   lovegw pulpit [-config config.json] [-db lovegw.db] draft <note_id> [<note_id> ...]            # черновик реплики амвона, на сайт ничего не уходит
   lovegw pulpit [-config config.json] [-db lovegw.db] status                                     # включён ли амвон, что писал последним
+  lovegw morning [-config config.json] [-day 2026-08-24] sources                                # поводы дня из календарей: что прошло фильтр и почему
+  lovegw morning [-config config.json] [-db lovegw.db] [-day 2026-08-24] draft                  # черновик утренней заметки, на сайт ничего не уходит
+  lovegw morning [-config config.json] [-db lovegw.db] [-force] post                            # опубликовать сегодняшнюю утреннюю заметку руками
+  lovegw morning [-config config.json] [-db lovegw.db] status                                   # включена ли утренняя заметка, что выходило
   lovegw secrets keygen                                                                          # новый ключ шифрования сессий
   lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
   lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ
@@ -337,6 +344,9 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		return err
 	}
 	if err := d.setupPulpit(); err != nil {
+		return err
+	}
+	if err := d.setupMorning(); err != nil {
 		return err
 	}
 	return d.run(ctx)
@@ -935,6 +945,40 @@ func (d *daemon) setupPulpit() error {
 	}
 	if d.maxDM != nil && cfg.Messengers.Max.AdminUserID != 0 {
 		d.maxDM.SetPulpit(svc, cfg.Messengers.Max.AdminUserID)
+	}
+	return nil
+}
+
+// setupMorning — утренняя заметка: одна «доброе утро» в сутки на НГС. На
+// площадку и в каналы её приносит зеркало, поэтому приёмники ей не нужны вовсе.
+// Ошибку Run наружу не отдаём — утро не критично для зеркалирования.
+func (d *daemon) setupMorning() error {
+	cfg, log := d.cfg, d.log
+	if !cfg.Morning.Enabled {
+		return nil
+	}
+	gen, err := llmClientFor(cfg, cfg.Morning.Model, cfg.Morning.Effort,
+		time.Duration(cfg.Morning.GenerateTimeoutS)*time.Second)
+	if err != nil {
+		return fmt.Errorf("утренняя заметка: %w", err)
+	}
+	svc, err := newMorning(cfg, d.st, gen, fanOutAlerts(d.alerters), log)
+	if err != nil {
+		return err
+	}
+	d.starts = append(d.starts, func(ctx context.Context) error {
+		if err := svc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("утренняя заметка остановлена", "err", err)
+		}
+		return nil
+	})
+	// Ручка /morning — админам тех мессенджеров, где есть ЛС-бот команд.
+	// Как и все Set*, ставится до стартов поллеров (фаза wire).
+	if d.dm != nil && cfg.Messengers.Telegram.AdminUserID != 0 {
+		d.dm.SetMorning(svc, cfg.Messengers.Telegram.AdminUserID)
+	}
+	if d.maxDM != nil && cfg.Messengers.Max.AdminUserID != 0 {
+		d.maxDM.SetMorning(svc, cfg.Messengers.Max.AdminUserID)
 	}
 	return nil
 }

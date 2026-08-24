@@ -292,6 +292,38 @@ UPDATE sessions SET talks_scan = 'on' WHERE talks_delivery = 'on';
 UPDATE sessions SET talks_asked_at = NULL WHERE talks_delivery <> 'on';
 `
 
+// migrateV11SQL — утренняя заметка (пакет morning): одна заметка «доброе утро»
+// в сутки, публикуется на НГС от анкеты владельца.
+//
+// Ключ — ДЕНЬ, и в этом вся однократность: строка заводится одним
+// INSERT OR IGNORE, поэтому ни второй прогон планировщика, ни ручной догон, ни
+// рестарт демона второй заметки не дадут. Отдельной проверки «а не публиковали
+// ли уже» не нужно вовсе — за неё отвечает первичный ключ.
+//
+// FK на notes нет по той же причине, что у pulpit_comments: свою заметку мы
+// видим в ленте раньше, чем её вставит зеркало.
+//
+// facts — поводы дня в том виде, в каком их увидел прогон (JSON). Нужны не
+// заметке, а разбору: «почему сегодня вышло так» через неделю отвечается
+// строкой из базы, а не догадкой — календари к тому времени уже другие.
+//
+// Аддитивна: откат бинарника на той же БД безопасен.
+const migrateV11SQL = `
+CREATE TABLE morning_notes (
+    day        TEXT PRIMARY KEY,                 -- YYYY-MM-DD в поясе слота
+    state      TEXT NOT NULL,                    -- posting|posted|confirmed|missing|skipped|failed
+    reason     TEXT NOT NULL DEFAULT '',         -- почему пропустили/не вышло
+    text       TEXT NOT NULL DEFAULT '',         -- отправленный текст
+    facts      TEXT NOT NULL DEFAULT '',         -- поводы дня, как их видел прогон (JSON)
+    note_id    TEXT NOT NULL DEFAULT '',         -- id заметки на сайте (после верификации)
+    posted_at  TEXT,
+    checked_at TEXT,
+    checks     INTEGER NOT NULL DEFAULT 0,       -- сколько раз искали свою заметку в ленте
+    created_at TEXT NOT NULL
+);
+CREATE INDEX idx_morning_notes_state ON morning_notes(state, day);
+`
+
 // migrations — вся история схемы: migrations[i] переводит её на версию i+1 и
 // применяется по возрастанию. Версия схемы — PRAGMA user_version.
 var migrations = []string{
@@ -305,6 +337,7 @@ var migrations = []string{
 	migrateV8SQL,  // v8 — выбор мессенджера доставки ЛС
 	migrateV9SQL,  // v9 — амвон: свои реплики под заметками и рантайм-флаги
 	migrateV10SQL, // v10 — согласие на чтение личной переписки
+	migrateV11SQL, // v11 — утренняя заметка: одна «доброе утро» в сутки
 }
 
 // schemaVersion — версия схемы, на которую рассчитан этот бинарник.

@@ -177,6 +177,39 @@ type Pulpit struct {
 	FuseMisses       int     `json:"fuse_misses"` // столько «страница есть, реплики нет» подряд = выключаемся
 }
 
+// Morning — утренняя заметка (пакет morning): одна заметка «доброе утро» в
+// сутки, публикуется на love.ngs.ru от анкеты владельца, а на площадку и в
+// каналы её приносит зеркало.
+//
+// Дефолт выключен; рантайм-тумблер живёт не здесь, а в БД
+// (settings['morning.enabled']) — по образцу амвона и по той же причине:
+// выключает предохранитель, включает админ кнопкой, и переключение обязано
+// пережить рестарт. enabled здесь — гейт СБОРКИ службы: false значит «службы
+// нет вовсе».
+type Morning struct {
+	Enabled bool `json:"enabled"`
+	// AuthorProfileID — от чьего имени выходит заметка. Пусто — анкета
+	// владельца из секции pulpit: это тот же человек и та же сессия.
+	AuthorProfileID string `json:"author_profile_id"`
+	Hour            int    `json:"hour"` // час слота (0–23) в поясе tz
+	TZ              string `json:"tz"`
+	// GraceH — сколько часов после слота ещё можно догонять. Трое суток, как у
+	// дайджеста, здесь бессмысленны: доброе утро в полдень — уже не доброе
+	// утро, а догон перекрыл бы следующий слот.
+	GraceH           int      `json:"grace_h"`
+	Model            string   `json:"model"`  // пусто — llm.DefaultModel
+	Effort           string   `json:"effort"` // low — гасим скрытую задержку размышления
+	GenerateTimeoutS int      `json:"generate_timeout_s"`
+	MinRunes         int      `json:"min_runes"`
+	MaxRunes         int      `json:"max_runes"`
+	MaxLines         int      `json:"max_lines"`
+	HistorySize      int      `json:"history_size"` // сколько своих прошлых заметок показывать модели
+	MaxFacts         int      `json:"max_facts"`    // сколько поводов дня подавать модели
+	Sources          []string `json:"sources"`      // календари; пусто — holidays.DefaultNames
+	SourceTimeoutS   int      `json:"source_timeout_s"`
+	FuseMisses       int      `json:"fuse_misses"` // столько «заметки нет в ленте» подряд = выключаемся
+}
+
 // Platform — собственная площадка «Зазеркалье» (эпик E): Postgres, SSR и API.
 // Секция гейтит саму службу; «работает ли она сейчас» решается не здесь.
 //
@@ -305,6 +338,7 @@ type Config struct {
 	LLM           LLM         `json:"llm"`
 	ASR           ASR         `json:"asr"`
 	Pulpit        Pulpit      `json:"pulpit"`
+	Morning       Morning     `json:"morning"`
 	Platform      Platform    `json:"platform"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
@@ -352,7 +386,8 @@ func (c *Config) AccountsDB() string {
 //	             LOVEGW_MAX_TOKEN, LOVEGW_MAX_DM_TOKEN, LOVEGW_MAX_TALKS_TOKEN
 //	пути и сеть  LOVEGW_DB_PATH, LOVEGW_ACCOUNTS_DB, LOVEGW_TG_PROXY
 //	ключи        LOVEGW_LLM_KEY, LOVEGW_SECRET_KEY, LOVEGW_SECRET_KEY_FILE
-//	секции       LOVEGW_ASR_* (см. applyASREnv), LOVEGW_PULPIT_* (applyPulpitEnv)
+//	секции       LOVEGW_ASR_* (см. applyASREnv), LOVEGW_PULPIT_* (applyPulpitEnv),
+//	             LOVEGW_MORNING_* (applyMorningEnv)
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Site: Site{
@@ -413,6 +448,38 @@ func Load(path string) (*Config, error) {
 			ReplyWindowH:     24,
 			FuseMisses:       3,
 		},
+		// Утренняя заметка по умолчанию выключена. Слот 06:00 Нск — решение
+		// владельца 24.08.2026, и оно снято ЗАМЕРОМ, а не вкусом: за год
+		// (17.08.2025–24.08.2026) чужое «доброе утро» появлялось в 136 днях из
+		// 372, а первое приветствие дня приходится на 04:00–06:00 (пик — час
+		// 06:00, 41 заметка; 05:00 — 31). ПЕРВОЕ приветствие дня приходилось
+		// раньше 06:00 в 51 из этих дней, на час 06 — в 41, на 07 и позже — в
+		// 44: перенос слота с семи на шесть вдвое сокращает дни, когда правило
+		// «чужое утро сильнее нашего» оставляет бота молчать (92 дня в году
+		// против 51), и во столько же раз увеличивает дни, когда после нашей
+		// заметки утро откроет ещё и человек. Размен сделан владельцем. До
+		// субботнего слота дайджеста (09:00) слот не дотягивается по-прежнему. Длина снята не с потолка:
+		// в ленте площадки текст длиннее 1500 знаков сворачивается показом, и
+		// утро, упирающееся в кнопку «показать целиком», перестаёт быть утром.
+		// Потолок вдвое ниже этого рубежа: живая утренняя заметка соседа
+		// (24.08.2026, t3h.ru/n/313059) идёт на 1900 знаков и кончается тремя
+		// абзацами пожеланий — владелец, показав её как образец формата,
+		// оговорил «лаконичнее». Строк больше, чем знаков: поводы идут каждый
+		// со своей строки и отбиты пустой, а это по две строки на повод.
+		Morning: Morning{
+			Hour:             6,
+			TZ:               "Asia/Novosibirsk",
+			GraceH:           3,
+			Effort:           "low",
+			GenerateTimeoutS: 90,
+			MinRunes:         200,
+			MaxRunes:         900,
+			MaxLines:         18,
+			HistorySize:      7,
+			MaxFacts:         12,
+			SourceTimeoutS:   20,
+			FuseMisses:       2,
+		},
 		// Площадка по умолчанию выключена. Слушает только петлю контейнера:
 		// наружу её выпускает реверс-прокси, у самого приложения портов быть
 		// не должно.
@@ -471,6 +538,9 @@ func Load(path string) (*Config, error) {
 	if err := cfg.applyPulpitEnv(); err != nil {
 		return nil, err
 	}
+	if err := cfg.applyMorningEnv(); err != nil {
+		return nil, err
+	}
 	if err := cfg.applyPlatformEnv(); err != nil {
 		return nil, err
 	}
@@ -505,6 +575,9 @@ func (c *Config) validate() error {
 	}
 	if c.Digest.Hour < 0 || c.Digest.Hour > 23 {
 		return fmt.Errorf("digest.hour: ожидалось 0–23, получено %d", c.Digest.Hour)
+	}
+	if c.Morning.Hour < 0 || c.Morning.Hour > 23 {
+		return fmt.Errorf("morning.hour: ожидалось 0–23, получено %d", c.Morning.Hour)
 	}
 	if p := c.Pulpit.ReplyProbability; p < 0 || p > 1 {
 		return fmt.Errorf("pulpit.reply_probability: ожидалась вероятность 0–1, получено %v", p)
@@ -574,6 +647,18 @@ func (c *Config) applyPulpitEnv() error {
 	}
 	envString(&c.Pulpit.Model, "LOVEGW_PULPIT_MODEL")
 	return envFloat(&c.Pulpit.ReplyProbability, "LOVEGW_PULPIT_REPLY_PROBABILITY")
+}
+
+// applyMorningEnv накладывает env-переопределения секции morning. Их три, как у
+// амвона, и по той же причине: выключить фичу на хосте, сменить модель и
+// сдвинуть слот. Остальное правится конфигом, а тумблер «работает сейчас»
+// живёт в БД.
+func (c *Config) applyMorningEnv() error {
+	if err := envBool(&c.Morning.Enabled, "LOVEGW_MORNING_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.Morning.Model, "LOVEGW_MORNING_MODEL")
+	return envInt(&c.Morning.Hour, "LOVEGW_MORNING_HOUR")
 }
 
 // applyPlatformEnv — переопределения секции platform. DSN держит пароль к

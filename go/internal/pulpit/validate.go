@@ -1,15 +1,21 @@
 package pulpit
 
-// Нормализация и проверка того, что вернула модель. Обе функции чистые: текст
-// уходит на сайт необратимо, и единственный способ проверить эти правила —
-// таблица случаев, а не боевая реплика.
+// Проверка того, что вернула модель. Функция чистая: текст уходит на сайт
+// необратимо, и единственный способ проверить эти правила — таблица случаев, а
+// не боевая реплика.
 //
 // Разделение труда такое: механическое и однозначное чиним подстановкой
-// (normalize), спорное — бракуем и переспрашиваем (validate). Лишний круг к
-// модели стоит 10–30 секунд, то есть ровно той валюты, ради которой всё
+// (`sitetext.Normalize`), спорное — бракуем и переспрашиваем (validate). Лишний
+// круг к модели стоит 10–30 секунд, то есть ровно той валюты, ради которой всё
 // затевалось, поэтому тире и кавычки не повод для переспроса. Валидатор их всё
 // равно проверяет — как страховку от дырки в нормализации, а не как рабочую
 // дорогу.
+//
+// Правила, которые задаёт САЙТ (типографика, NBSP, BB-коды, HTML, обломки
+// генерации), живут в общем `internal/sitetext`: с 24.08.2026 их же соблюдает
+// утренняя заметка, а две копии одних правил разошлись бы молча. Здесь остаётся
+// то, что про саму РЕПЛИКУ: афоризм вместо шутки, рисунок из знаков, пересказ
+// заметки, обращение «Ник,».
 
 import (
 	"fmt"
@@ -20,18 +26,8 @@ import (
 	"unicode/utf8"
 
 	"lovegw/internal/love"
+	"lovegw/internal/sitetext"
 )
-
-// nbsp — неразрывный пробел. Единственный способ показать на площадке отступ:
-// обычные пробелы схлопываются (контейнер не pre-wrap), и так сделаны все 44
-// живых комментария с видимым отступом. Подставляет его ИНСТРУМЕНТ, а не
-// модель: узнав про этот трюк, она начнёт вставлять NBSP в середину фраз, и
-// текст станет неразрывным полотном.
-const nbsp = ' '
-
-// maxBlankLines — сколько пустых строк подряд оставляем. Абзац отбивается
-// одной; больше двух — уже не форма, а дыра в реплике.
-const maxBlankLines = 2
 
 // Ширина и высота рисунка из знаков. Шрифт на площадке пропорциональный:
 // широкая картинка развалится, поэтому годятся разделители и силуэты, а не
@@ -45,32 +41,12 @@ const (
 // пересказ, а не отклик.
 const maxOverlapShare = 0.2
 
-// tabWidth — во что разворачиваем табуляцию перед подстановкой NBSP.
-const tabWidth = 4
-
 var (
-	reBBCode   = regexp.MustCompile(`(?i)\[/?(b|i|u|s|url|quote|img|color|size|code)\b[^\]]*\]`)
-	reHTMLTag  = regexp.MustCompile(`(?i)<\s*/?\s*[a-z][a-z0-9]*(\s[^>\n]*)?>`)
-	reThinking = regexp.MustCompile(`(?i)<\s*/?\s*thinking`)
-	reWordSep  = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 	// reJokeTag — метка собственной шутки. Смешному она не нужна, несмешное не
 	// спасает, а в реплике выдаёт того, кто боится, что его не поймут. Правило
 	// узкое намеренно: каждый переспрос стоит 10–30 секунд, то есть ровно той
 	// валюты, ради которой амвон и спешит быть первым.
 	reJokeTag = regexp.MustCompile(`(?i)\((шутка|сарказм|ирония)\)|/сарказм|\b(lol|лол)\b|ахах|бугага`)
-	// reReasoning — размышление, протёкшее в сам текст. Тег <thinking> ловится
-	// отдельно, но с включённым усилием (effort) модель роняет в поле text и
-	// голые обрывки хода мысли: «Wait, no.», «Hmm», «Let me». Замечено на живых
-	// черновиках 16.08.2026, два случая из трёх. Площадка русская, английских
-	// вставок в комментариях практически нет, так что правило дешёвое.
-	reReasoning = regexp.MustCompile(`(?i)\b(wait|hmm+|okay|let me|i should|hold on|actually)\b`)
-	// reMixedWord — слово из букв двух алфавитов («uправила»): такое не пишут
-	// ни люди, ни опечатка раскладки — это склейка при генерации.
-	reMixedWord = regexp.MustCompile(`[\p{Cyrillic}]+[a-zA-Z]|[a-zA-Z]+[\p{Cyrillic}]`)
-	// reBrace — фигурная скобка: в живом комментарии её не пишут, а в разваленном
-	// ответе модели это обломок самого JSON (замер 16.08.2026: реплика кончалась
-	// на «фильтр работает.}»).
-	reBrace = regexp.MustCompile(`[{}]`)
 	// reAphorism — симметричная конструкция, в которую модель сползает, когда
 	// шутки не нашлось: «дело не в X, а в Y», «это уже не A, а B», «тревожит не
 	// то, что…». Читается как остроумие, а смеха не даёт — именно из-за них
@@ -82,95 +58,27 @@ var (
 		`(тревожит|беспокоит|пугает|смущает|интересно) не то, что )`)
 )
 
-// textTells — приметы генерации, которые ловятся регуляркой. Таблицей, а не
-// цепочкой if-ов: правил стало больше, чем читается за раз, а порядок в списке
-// и есть порядок проверки. %s — попавшийся кусок, он уезжает в переспрос.
-var textTells = []struct {
+// replyTells — приметы, которые касаются именно реплики амвона. Общие приметы
+// генерации спрашиваются раньше, у sitetext: порядок остался прежним.
+var replyTells = []struct {
 	re     *regexp.Regexp
 	reason string
 }{
-	{reThinking, "служебный тег %s в тексте"},
-	{reReasoning, "обрывок размышления «%s» в тексте: в реплику едет только сама реплика"},
-	{reMixedWord, "слово из двух алфавитов («%s»): склейка при генерации"},
-	{reBrace, "фигурная скобка «%s»: обломок JSON в тексте реплики"},
-	{reBBCode, "BB-код %s: на сайте он напечатается буквально"},
-	{reHTMLTag, "HTML-тег %s: сайт его экранирует, и он вылезет текстом"},
 	{reJokeTag, "метка шутки «%s»: если смешно, она не нужна, если не смешно — не спасёт"},
 	{reAphorism, "афоризм «%s»: это наблюдение сверху, а не шутка — влезь внутрь ситуации"},
 }
 
 // tellHit — первая сработавшая примета ("" — чисто).
 func tellHit(text string) string {
-	for _, t := range textTells {
+	if m := sitetext.MachineTell(text); m != "" {
+		return m
+	}
+	for _, t := range replyTells {
 		if m := t.re.FindString(text); m != "" {
 			return fmt.Sprintf(t.reason, m)
 		}
 	}
 	return ""
-}
-
-// dashes / quotes — что чиним подстановкой. Замер площадки: длинное тире у
-// 0,52 % комментариев, ёлочки у 0,65 % — так пишет типографика, а не люди.
-var typography = strings.NewReplacer(
-	"—", "-", "–", "-", "―", "-", "‒", "-", "−", "-",
-	"«", `"`, "»", `"`, "„", `"`, "“", `"`, "”", `"`, "‟", `"`,
-	"‘", "'", "’", "'", "‚", "'", "‛", "'",
-	"…", "...",
-)
-
-// normalize приводит текст к тому виду, в котором он поедет на сайт.
-// Идемпотентна: второй прогон ничего не меняет и NBSP не плодит — иначе
-// повторная генерация после брака удвоила бы отступы.
-func normalize(text string) string {
-	text = typography.Replace(text)
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
-	text = strings.ReplaceAll(text, "\t", strings.Repeat(" ", tabWidth))
-
-	lines := strings.Split(text, "\n")
-	out := make([]string, 0, len(lines))
-	blanks := 0
-	for _, line := range lines {
-		line = strings.TrimRight(line, " 	"+string(nbsp))
-		if line == "" {
-			blanks++
-			if blanks > maxBlankLines {
-				continue
-			}
-			out = append(out, "")
-			continue
-		}
-		blanks = 0
-		out = append(out, spacesToNBSP(line))
-	}
-	return strings.Trim(strings.Join(out, "\n"), "\n")
-}
-
-// spacesToNBSP заменяет ведущие пробелы строки и любой пробег из двух и более
-// на неразрывные. Одиночные пробелы между словами не трогаются никогда — это и
-// делает функцию идемпотентной.
-func spacesToNBSP(line string) string {
-	var b strings.Builder
-	b.Grow(len(line))
-	runes := []rune(line)
-	for i := 0; i < len(runes); i++ {
-		if runes[i] != ' ' {
-			b.WriteRune(runes[i])
-			continue
-		}
-		run := 1
-		for i+run < len(runes) && runes[i+run] == ' ' {
-			run++
-		}
-		// Ведущий отступ или пробег из двух и более: на сайте они схлопнутся.
-		if b.Len() == 0 || run >= 2 {
-			b.WriteString(strings.Repeat(string(nbsp), run))
-		} else {
-			b.WriteByte(' ')
-		}
-		i += run - 1
-	}
-	return b.String()
 }
 
 // hookPrefix — сколько первых рун слова сравниваем, проверяя, что деталь взята
@@ -190,7 +98,7 @@ func hookInNote(hook, note string) bool {
 	}
 	lower := strings.ToLower(note)
 	judged := false
-	for _, w := range words(hook) {
+	for _, w := range sitetext.Words(hook) {
 		r := []rune(w)
 		if len(r) < hookPrefix {
 			continue // короткие слова («и», «под», «куст») ничего не доказывают
@@ -235,10 +143,10 @@ func validate(q quip, cfg validateConfig) string {
 		// разметка, которая на сайте напечаталась бы буквально.
 		return tell
 	}
-	if md := markdownHit(text); md != "" {
+	if md := sitetext.MarkdownHit(text); md != "" {
 		return "markdown (" + md + "): на сайте он напечатается буквально"
 	}
-	if bad := typographyHit(text); bad != "" {
+	if bad := sitetext.TypographyHit(text); bad != "" {
 		return "знак " + bad + " на площадке почти не встречается — только дефис и обычная кавычка"
 	}
 	lines := strings.Split(text, "\n")
@@ -251,10 +159,10 @@ func validate(q quip, cfg validateConfig) string {
 	if frag := tailFragment(text); frag != "" {
 		return "обрывок «" + frag + "» в конце: после панча не остаётся ничего"
 	}
-	if frag := latinFragment(text); frag != "" {
+	if frag := sitetext.LatinFragment(text); frag != "" {
 		return "латинский огрызок «" + frag + "» в русском тексте: мусор генерации"
 	}
-	if !cfg.AllowEmoji && hasEmoji(text) {
+	if !cfg.AllowEmoji && sitetext.HasEmoji(text) {
 		return "эмодзи, а в этот раз без них"
 	}
 	if p := love.AddressPrefix(text); p != "" && knownNick(p, cfg.Nicks) {
@@ -279,29 +187,6 @@ func validate(q quip, cfg validateConfig) string {
 	return ""
 }
 
-// maxStrayLatin — до скольки букв латинский огрызок в русском тексте считается
-// мусором генерации. Живые слова латиницей на площадке длиннее (WhatsApp,
-// Instagram), а «pt», «ru», «th» — это хвост, отвалившийся от модели.
-const maxStrayLatin = 3
-
-var reLatinRun = regexp.MustCompile(`[a-zA-Z]+`)
-
-// latinFragment — латинский огрызок в русской реплике ("" — чисто). Родня
-// reMixedWord, но ловит несклеенный случай: «Календарь справился бы быстрее.pt»
-// (живой черновик 16.08.2026) — точка между ними, и проверка на смешанное слово
-// молчит. Реплика целиком на латинице (её у нас не бывает) не судится.
-func latinFragment(text string) string {
-	if !strings.ContainsFunc(text, func(r rune) bool { return unicode.Is(unicode.Cyrillic, r) }) {
-		return ""
-	}
-	for _, m := range reLatinRun.FindAllString(text, -1) {
-		if utf8.RuneCountInString(m) <= maxStrayLatin {
-			return m
-		}
-	}
-	return ""
-}
-
 // tailFragment — обрывок в конце ("" — чисто). Последняя строка из одного-двух
 // слов, и все они уже были выше: так выглядит хвост, оставшийся от правки
 // («…Папа не уточнил, с какой.\nгрядки.» — живой черновик 16.08.2026), а не
@@ -316,11 +201,11 @@ func tailFragment(text string) string {
 	if last <= 0 {
 		return "" // одна строка: обрывку неоткуда взяться
 	}
-	tail := words(lines[last])
+	tail := sitetext.Words(lines[last])
 	if len(tail) == 0 || len(tail) > 2 {
 		return ""
 	}
-	before := words(strings.Join(lines[:last], " "))
+	before := sitetext.Words(strings.Join(lines[:last], " "))
 	for _, w := range tail {
 		if !contains(before, w) {
 			return "" // своё слово — значит добивка, а не хвост
@@ -338,33 +223,6 @@ func knownNick(prefix string, nicks []string) bool {
 		}
 	}
 	return false
-}
-
-// markdownHit — копия правила из archive/voice_gen.go: markdown на сайте
-// печатается буквально, и это самый частый прокол генерации.
-func markdownHit(text string) string {
-	for _, m := range []string{"**", "##", "```", "~~"} {
-		if strings.Contains(text, m) {
-			return m
-		}
-	}
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- ") {
-			return "список дефисом"
-		}
-	}
-	return ""
-}
-
-// typographyHit — страховка от дырки в normalize: если типографский знак дожил
-// до валидации, значит подстановка его не поймала.
-func typographyHit(text string) string {
-	for _, r := range []string{"—", "–", "―", "«", "»", "“", "”", "„"} {
-		if strings.Contains(text, r) {
-			return r
-		}
-	}
-	return ""
 }
 
 // checkArt проверяет рисунок из знаков: он не должен быть шире 30 знаков и
@@ -389,7 +247,7 @@ func checkArt(lines []string) string {
 
 // artLike — строка из знаков, а не из слов: в ней почти нет букв и цифр.
 func artLike(line string) bool {
-	trimmed := strings.TrimSpace(strings.ReplaceAll(line, string(nbsp), " "))
+	trimmed := strings.TrimSpace(strings.ReplaceAll(line, string(sitetext.NBSP), " "))
 	if utf8.RuneCountInString(trimmed) < 3 {
 		return false
 	}
@@ -409,31 +267,16 @@ func artLike(line string) bool {
 	return float64(letters)/float64(total) < 0.2
 }
 
-// hasEmoji — есть ли в тексте эмодзи. Диапазоны грубые намеренно: нам нужен
-// сам факт, а не классификация.
-func hasEmoji(text string) bool {
-	for _, r := range text {
-		switch {
-		case r >= 0x1F000 && r <= 0x1FAFF,
-			r >= 0x2600 && r <= 0x27BF,
-			r >= 0x2B00 && r <= 0x2BFF,
-			r == 0x2764, r == 0xFE0F, r == 0x203C, r == 0x2049:
-			return true
-		}
-	}
-	return false
-}
-
 // overlapShare — доля пятёрок слов реплики, дословно встречающихся в заметке.
 // Пятёрка (а не тройка) выбрана как порог узнавания: три общих слова бывают
 // случайно, пять подряд — это уже цитата.
 func overlapShare(text, note string) float64 {
 	const n = 5
-	reply := words(text)
+	reply := sitetext.Words(text)
 	if len(reply) < n {
 		return 0
 	}
-	src := words(note)
+	src := sitetext.Words(note)
 	if len(src) < n {
 		return 0
 	}
@@ -452,17 +295,6 @@ func overlapShare(text, note string) float64 {
 		return 0
 	}
 	return float64(shared) / float64(total)
-}
-
-func words(s string) []string {
-	fields := reWordSep.Split(strings.ToLower(s), -1)
-	out := fields[:0]
-	for _, f := range fields {
-		if f != "" {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 // hasForm — назвала ли модель одну из предложенных форм. Сравнение через

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lovegw/internal/love"
+	"lovegw/internal/sitetext"
 	"lovegw/internal/store"
 )
 
@@ -295,7 +296,7 @@ func (s *Service) askOnce(ctx context.Context, system, prompt string, schema map
 		// тут был бы уговором — а красная линия на то и красная.
 		return quip{Skip: true, Idea: sm.Idea}, false, nil
 	}
-	sm.Text = normalize(sm.Text)
+	sm.Text = sitetext.Normalize(sm.Text)
 	if reason := validate(sm, cfg); reason != "" {
 		return quip{}, true, fmt.Errorf("%s", reason)
 	}
