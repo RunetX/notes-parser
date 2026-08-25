@@ -44,8 +44,13 @@ const composePageName = "compose.gohtml"
 // composePage — форма заметки: новой или правки.
 type composePage struct {
 	page
-	Note      platform.NoteView // при правке; нулевая у новой
-	Editing   bool
+	Note    platform.NoteView // при правке; нулевая у новой
+	Editing bool
+	// Admin — правит АДМИНИСТРАТОР, а не автор в своём окне. Экран от этого
+	// меняется: условий авторского окна тут нет вовсе, зато появляется поле
+	// «зачем» — оно уходит в журнал, и без него правка чужого текста осталась бы
+	// записью «кто-то что-то поправил».
+	Admin     bool
 	Body      string
 	Anonymous bool
 	Problem   string
@@ -93,11 +98,7 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------- правка заметки
 
 func (s *Server) handleEditNote(w http.ResponseWriter, r *http.Request) {
-	u, ok := s.writer(w, r)
-	if !ok {
-		return
-	}
-	note, ok := s.ownNote(w, r, u.ID)
+	_, note, asAdmin, ok := s.editTarget(w, r)
 	if !ok {
 		return
 	}
@@ -105,6 +106,7 @@ func (s *Server) handleEditNote(w http.ResponseWriter, r *http.Request) {
 		page:      s.newPage(r, "Правка заметки"),
 		Note:      note,
 		Editing:   true,
+		Admin:     asAdmin,
 		Body:      note.Body,
 		Anonymous: note.Anonymous,
 	})
@@ -114,59 +116,105 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 	if !s.postWrite(w, r) {
 		return
 	}
-	u, ok := s.writer(w, r)
-	if !ok {
-		return
-	}
-	note, ok := s.ownNote(w, r, u.ID)
+	u, note, asAdmin, ok := s.editTarget(w, r)
 	if !ok {
 		return
 	}
 	body := r.FormValue("body")
-	err := s.wr.EditNote(r.Context(), u.ID, note.ID, body)
-	if err != nil {
+	var err error
+	if asAdmin {
+		err = s.mod.EditNoteAsAdmin(r.Context(), platform.Viewer{UserID: u.ID, Role: u.Role},
+			note.ID, body, r.FormValue("reason"))
+	} else {
+		err = s.wr.EditNote(r.Context(), u.ID, note.ID, body)
+	}
+	// «Текст и так такой» отказом не считается: администратор мог открыть форму
+	// и закрыть её, ничего не изменив, — то же правило, что у кнопок модерации.
+	if err != nil && !errors.Is(err, platform.ErrNothingToDo) {
 		status, problem := writeProblem(err)
 		if problem == "" {
 			s.oops(w, r, "правка заметки", err)
 			return
 		}
 		s.render(w, r, status, composePageName, composePage{
-			page: s.newPage(r, "Правка заметки"), Note: note, Editing: true,
+			page: s.newPage(r, "Правка заметки"), Note: note, Editing: true, Admin: asAdmin,
 			Body: body, Anonymous: note.Anonymous, Problem: problem,
 		})
 		return
 	}
+	// Ролик, названный в новом тексте, показывается карточкой — но только когда
+	// превью уже лежит рядом. Правка подталкивает закачку ровно так же, как
+	// публикация: иначе карточку увидел бы не тот, кто пришёл читать первым.
+	videoWarm(note.ID, body)
 	http.Redirect(w, r, "/n/"+strconv.FormatInt(note.ID, 10), http.StatusSeeOther)
 }
 
-// ownNote достаёт заметку и проверяет, что её ещё можно править. Отказ здесь
-// говорит то же, что ответило бы ядро, — правило одно и живёт в Editable.
-func (s *Server) ownNote(w http.ResponseWriter, r *http.Request, userID int64) (platform.NoteView, bool) {
+// editTarget — заметка, которую этому человеку сейчас можно править, и КЕМ он
+// её правит: автором в своём окне или администратором. Пустой последний
+// результат означает «ответ уже отправлен».
+//
+// Одна дорога на оба случая, потому что различаются они только правом и текстом
+// на экране: форма, адрес и разбор ответа общие, а две копии разошлись бы на
+// первой же правке — ровно как разошлись бы правило страницы и правило ядра,
+// если бы Editable считался в двух местах.
+func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.User, platform.NoteView, bool, bool) {
+	var none platform.NoteView
+	u, ok := s.me(r)
+	if !ok {
+		if r.Method == http.MethodGet {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+		} else {
+			s.fail(w, r, http.StatusUnauthorized, "Чтобы писать, нужно войти.")
+		}
+		return platform.User{}, none, false, false
+	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
-		return platform.NoteView{}, false
+		return u, none, false, false
 	}
-	note, err := s.st.NoteViewByID(r.Context(), platform.Viewer{UserID: userID}, id)
-	if errors.Is(err, platform.ErrNotFound) || (err == nil && note.Status != platform.StatusVisible) {
+	admin := u.Role >= platform.RoleAdmin && s.mod != nil
+	note, err := s.st.NoteViewByID(r.Context(), platform.Viewer{UserID: u.ID, Role: u.Role}, id)
+	if errors.Is(err, platform.ErrNotFound) {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
-		return platform.NoteView{}, false
+		return u, none, false, false
 	}
 	if err != nil {
 		s.oops(w, r, "чтение заметки", err)
-		return platform.NoteView{}, false
+		return u, none, false, false
 	}
-	if !note.Own {
+	// Скрытая заметка для читателя отсутствует — как и на её собственной
+	// странице. Администратору скрытое модерацией видно: снять из текста лишнее
+	// и вернуть его людям — это одно действие в два нажатия.
+	if note.Status != platform.StatusVisible &&
+		!(admin && note.Status == platform.StatusHiddenMod) {
+		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
+		return u, none, false, false
+	}
+
+	switch {
+	case note.Editable(time.Now()):
+		// Своё окно. Условие считает Editable — то же самое, что проверит ядро,
+		// чтобы кнопка не отвечала отказом.
+		if s.wr == nil {
+			s.fail(w, r, http.StatusServiceUnavailable, "Запись сейчас недоступна.")
+			return u, none, false, false
+		}
+		return u, note, false, true
+	case admin && platform.IsNative(note.ID):
+		return u, note, true, true
+	case admin:
+		s.fail(w, r, http.StatusForbidden,
+			"Эта заметка пришла с НГС — здесь её копия, и текст копии не правится. "+
+				"Иначе страница молча разошлась бы с оригиналом.")
+	case !note.Own:
 		s.fail(w, r, http.StatusForbidden, "Это не ваша заметка.")
-		return platform.NoteView{}, false
-	}
-	if !note.Editable(time.Now()) {
+	default:
 		s.fail(w, r, http.StatusForbidden,
 			"Править заметку можно только первые десять минут и только пока под ней нет ответов. "+
 				"Дальше текст остаётся как есть: под ним уже отвечают вам.")
-		return platform.NoteView{}, false
 	}
-	return note, true
+	return u, none, false, false
 }
 
 // ---------------------------------------------------------------- ответ в тред
@@ -302,6 +350,11 @@ func writeProblem(err error) (int, string) {
 		return http.StatusBadRequest, "Такой реакции нет."
 	case errors.Is(err, platform.ErrNotYours):
 		return http.StatusForbidden, "Это не ваша запись."
+	case errors.Is(err, platform.ErrNotAdmin):
+		return http.StatusForbidden, "Нужны права администратора."
+	case errors.Is(err, platform.ErrNotNative):
+		return http.StatusForbidden,
+			"Эта заметка пришла с НГС — здесь её копия, и текст копии не правится."
 	case errors.Is(err, platform.ErrEditWindowClosed):
 		return http.StatusForbidden,
 			"Окно правки закрыто: заметку можно поправить один раз, первые десять минут и только пока под ней нет ответов."

@@ -420,6 +420,107 @@ func TestEditSendsNewText(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------- правка администратора
+
+// foreignNativeNote — заготовка с ЧУЖОЙ нативной заметкой, старой и с ответами: ровно
+// та, которую авторское окно править уже не даёт.
+func foreignNativeNote() *fakeStore {
+	st := noteStore()
+	st.note.Own = false
+	st.note.CommentCount = 3
+	st.note.PublishedAt = time.Now().Add(-48 * time.Hour)
+	return st
+}
+
+// Единственное место площадки, где чужой текст меняется, а не скрывается, — и
+// дверь у него выше модераторской. Модератор решает про слова: убрать их из
+// разговора; переписать сказанное ближе к тому, чем ведает администратор.
+func TestПравитьЧужуюЗаметкуМожетТолькоАдминистратор(t *testing.T) {
+	native := "/n/" + strconv.FormatInt(platform.NativeIDBase+7, 10)
+	for _, c := range []struct {
+		name string
+		role platform.Role
+		want bool
+	}{
+		{"участник", platform.RoleUser, false},
+		{"модератор", platform.RoleModerator, false},
+		{"администратор", platform.RoleAdmin, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _, token := modServerOn(t, foreignNativeNote(), c.role)
+
+			page := do(h, as(guest(t, "GET", native), token)).Body.String()
+			if got := strings.Contains(page, native+"/edit"); got != c.want {
+				t.Errorf("ссылка на правку: %v, ожидалось %v", got, c.want)
+			}
+			w := do(h, as(guest(t, "GET", native+"/edit"), token))
+			if got := w.Code == http.StatusOK; got != c.want {
+				t.Errorf("экран правки: код %d, ожидалось разрешено=%v", w.Code, c.want)
+			}
+		})
+	}
+}
+
+// Текст и «зачем» доходят до ядра, а автор и анонимность в правку не попадают
+// вовсе: кто сказал — вопрос не редакторский.
+func TestПравкаАдминистратораДоходитДоЯдра(t *testing.T) {
+	h, mod, token := modServerOn(t, foreignNativeNote(), platform.RoleAdmin)
+	target := "/n/" + strconv.FormatInt(platform.NativeIDBase+7, 10) + "/edit"
+
+	w := do(h, postAs(t, target, url.Values{
+		"body":   {"объявление без опечатки"},
+		"reason": {"опечатка в дате"},
+	}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d", w.Code)
+	}
+	if mod.edited != "объявление без опечатки" || mod.editReason != "опечатка в дате" {
+		t.Errorf("до ядра дошло %q / %q", mod.edited, mod.editReason)
+	}
+	// Правка идёт СВОЕЙ дорогой, а не авторской: у той свои правила, и ядро
+	// ответило бы на чужую заметку отказом.
+	if len(mod.acts) != 1 || !strings.HasPrefix(mod.acts[0], "edit ") {
+		t.Errorf("ядро позвали как %v", mod.acts)
+	}
+}
+
+// Зеркальную заметку не правит никто: здесь её копия, и молча разойтись с
+// оригиналом значило бы соврать читателю о том, что он читает копию.
+func TestЗеркальнуюЗаметкуНеПравитИАдминистратор(t *testing.T) {
+	h, mod, token := modServerOn(t, foreignNativeNote(), platform.RoleAdmin)
+
+	page := do(h, as(guest(t, "GET", "/n/312811"), token)).Body.String()
+	if strings.Contains(page, "/n/312811/edit") {
+		t.Error("под зеркальной заметкой предложена правка")
+	}
+	if got := do(h, as(guest(t, "GET", "/n/312811/edit"), token)).Code; got != http.StatusForbidden {
+		t.Errorf("экран правки зеркальной: код %d, ожидался 403", got)
+	}
+	if w := do(h, postAs(t, "/n/312811/edit", url.Values{"body": {"переписал"}}, token)); w.Code != http.StatusForbidden {
+		t.Errorf("правка зеркальной: код %d, ожидался 403", w.Code)
+	}
+	if mod.edited != "" {
+		t.Errorf("до ядра дошёл текст %q", mod.edited)
+	}
+}
+
+// Правку видно на странице: текст под уже написанными ответами изменился, и
+// узнать об этом читатель обязан со страницы, а не из сравнения с памятью.
+func TestИсправленнаяЗаметкаПомечена(t *testing.T) {
+	st := foreignNativeNote()
+	h, _, token := modServerOn(t, st, platform.RoleUser)
+	if strings.Contains(do(h, as(guest(t, "GET", "/n/312811"), token)).Body.String(), "исправлено") {
+		t.Error("метка стоит у заметки, которую не правили")
+	}
+
+	edited := time.Now()
+	st.note.EditedAt = &edited
+	h, _, token = modServerOn(t, st, platform.RoleUser)
+	if !strings.Contains(do(h, as(guest(t, "GET", "/n/312811"), token)).Body.String(), "исправлено") {
+		t.Error("исправленная заметка не помечена")
+	}
+}
+
 // ---------------------------------------------------------------- ник
 
 // Смена ника под запрет «участник только пишет» не попадает: это не публикация,

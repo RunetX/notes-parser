@@ -170,6 +170,10 @@ const (
 	ActionDismiss  = "dismiss" // жалоба или подозрение отклонены
 	ActionAnonym   = "anonymize"
 	ActionExport   = "export"
+	// ActionEdit — администратор поправил текст нативной заметки. Прежнего
+	// текста в журнале нет намеренно (см. EditNoteAsAdmin): правят обычно
+	// затем, чтобы чего-то в тексте НЕ осталось.
+	ActionEdit = "edit"
 	// Приглашения. Действие администратора, а не модератора, но журнал у
 	// площадки один: «кого впустили» — такая же часть истории, как «кого
 	// скрыли», и разводить её по двум местам значило бы читать в двух.
@@ -198,6 +202,10 @@ var (
 	// ErrNotAdmin — действие требует прав администратора: раздать права или
 	// впустить человека модератор не может.
 	ErrNotAdmin = errors.New("нужны права администратора")
+	// ErrNotNative — заметку писали не у нас. Текст зеркальной строки — копия
+	// того, что стоит на НГС, и молча разойтись с оригиналом значило бы соврать
+	// читателю о том, что он читает копию.
+	ErrNotNative = errors.New("заметка пришла с НГС: её текст здесь не правится")
 	// ErrBadSubject — вид объекта не «заметка» и не «комментарий».
 	ErrBadSubject = errors.New("неизвестный вид объекта")
 	// ErrNothingToDo — объект уже в нужном состоянии.
@@ -483,6 +491,94 @@ func moveStatus(ctx context.Context, q querier, s Subject, noteID int64, from, t
 	_, err = q.Exec(ctx, `
 		UPDATE notes SET comment_count = greatest(0, comment_count + $2) WHERE id = $1`, noteID, delta)
 	return wrapf(err, "счётчик комментариев заметки %d", noteID)
+}
+
+// ---------------------------------------------------------------- правка текста
+
+// EditNoteAsAdmin правит НАТИВНУЮ заметку решением администратора.
+//
+// Это единственное место площадки, где чужой текст МЕНЯЕТСЯ, а не скрывается, —
+// и потому дверь у него выше модераторской. Скрытие ничего не подменяет и
+// отменяется одним нажатием: реплика на месте, модератор её видит, автор знает
+// причину. Правка подменяет слова, оставленные под чужим именем, и со стороны
+// заметить её нечем. Модератор решает про СЛОВА — убрать их из разговора;
+// переписать сказанное ближе к тому, чем ведает администратор.
+//
+// Зачем она понадобилась: у площадки есть СВОИ заметки — объявления
+// (`platform post`), выпуск дайджеста, — и до сих пор опечатка в них чинилась
+// только новой публикацией поверх старой. Авторское окно (десять минут, один
+// раз, до первого ответа) их не спасает: выпуск читают и обсуждают часами.
+//
+// Прежний текст НЕ сохраняется нигде, и это решение, а не упущение: правят
+// чужую заметку чаще всего затем, чтобы убрать из неё лишнее — чей-то телефон,
+// адрес, имя, — а копия убранного в append-only журнале, открытом всем
+// модераторам, сделала бы это удаление ненастоящим. В журнале остаётся факт и
+// причина; на странице — отметка «исправлено».
+//
+// Чего правка не делает и делать не должна:
+//   - зеркальную заметку (её писали на НГС, и расхождение с оригиналом молча
+//     соврало бы читателю о том, что он читает копию) — ErrNotNative;
+//   - автора и анонимность: кто сказал — вопрос не редакторский;
+//   - копию в каналах мессенджеров: platout уносит заметку один раз и догонять
+//     её правкой не умеет. Цена названа честно — в канале останется прежний
+//     текст, и оттуда человек придёт по ссылке к исправленному.
+func (p *Platform) EditNoteAsAdmin(ctx context.Context, actor Viewer, noteID int64, body, reason string) error {
+	if !actor.CanAdmin() {
+		return ErrNotAdmin
+	}
+	body, err := cleanBody(body)
+	if err != nil {
+		return err
+	}
+	if !IsNative(noteID) {
+		return ErrNotNative
+	}
+	reason = trimReason(reason)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return wrapf(err, "правка заметки %d", noteID)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	var (
+		author *int64
+		status Status
+		was    string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT author_id, status, body FROM notes WHERE id = $1 FOR UPDATE`, noteID).
+		Scan(&author, &status, &was)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
+	}
+	if err != nil {
+		return wrapf(err, "правка заметки %d", noteID)
+	}
+	// Скрытую модерацией править МОЖНО: снять из текста лишнее и вернуть его
+	// людям — это одно действие в два нажатия, и запрещать здесь первое значило
+	// бы оставлять выбор между «скрыто навсегда» и «видно как есть».
+	if status != StatusVisible && status != StatusHiddenMod {
+		return fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
+	}
+	if was == body {
+		return ErrNothingToDo
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE notes SET body = $2, edited_at = now() WHERE id = $1`, noteID, body); err != nil {
+		return wrapf(err, "правка заметки %d", noteID)
+	}
+	// Текст стал другим — прежняя проверка к нему больше не относится, ровно как
+	// при авторской правке. Заметку АДМИНИСТРАЦИИ enqueueCheck в очередь не
+	// поставит сам (условие про роль автора стоит в запросе), поэтому объявления
+	// и выпуск дайджеста от правки в очереди не всплывают.
+	if err := enqueueCheck(ctx, tx, SubjectNote, noteID, noteID, idOf(author)); err != nil {
+		return err
+	}
+	if err := audit(ctx, tx, actor.UserID, ActionEdit, NoteSubject(noteID),
+		map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	return wrapf(tx.Commit(ctx), "правка заметки %d", noteID)
 }
 
 // SetThreadLocked закрывает и открывает обсуждение. Наше решение, а не перенос

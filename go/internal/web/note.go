@@ -55,7 +55,12 @@ type notePage struct {
 	CanModerate bool
 	// Editable — своя заметка ещё в окне правки.
 	Editable bool
-	Compose  compose
+	// AdminEdit — заметку вправе поправить администратор, и авторское окно тут
+	// ни при чём: у площадки есть свои заметки (объявления, выпуск дайджеста),
+	// а опечатку в них видно и через сутки. Только НАТИВНАЯ: зеркальную писали
+	// на НГС, и текст копии не правится.
+	AdminEdit bool
+	Compose   compose
 	// ReplyTo — адресат готовящегося ответа, если он выбран и ещё жив.
 	ReplyTo *platform.CommentView
 	// Reactions — реакции заметки (ключ 0) и её комментариев: один запрос на
@@ -154,7 +159,9 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 			!note.Locked && note.Status == platform.StatusVisible,
 		CanModerate: canMod,
 		Editable:    note.Editable(time.Now()),
-		Compose:     form,
+		AdminEdit: me.Role >= platform.RoleAdmin && s.mod != nil &&
+			platform.IsNative(note.ID),
+		Compose: form,
 
 		Reactions: reactions,
 		ReactOpen: reactTarget(r),

@@ -34,6 +34,9 @@ type fakeMod struct {
 	reported []platform.Subject
 	appealed []platform.Subject
 	invites  []platform.Invite
+	// edited — что дошло до ядра при правке чужой заметки: текст и «зачем».
+	edited     string
+	editReason string
 	// pinnedFull — закреплённых уже столько, сколько лента выдерживает: ядро в
 	// этом случае отказывает, и морда обязана сказать об этом человеком, а не
 	// пятисоткой.
@@ -98,6 +101,21 @@ func (f *fakeMod) UnbanUser(_ context.Context, _ platform.Viewer, _ int64, _ str
 }
 func (f *fakeMod) SetRole(_ context.Context, _ platform.Viewer, _ int64, r platform.Role) error {
 	return f.note("role " + string(rune('0'+int(r))))
+}
+
+// Правка чужой заметки. Дубль повторяет два правила ядра, на которые опирается
+// морда: право администратора и «только нативная». Остальное (журнал, очередь,
+// «текст и так такой») проверяется в platform на живом Postgres.
+func (f *fakeMod) EditNoteAsAdmin(_ context.Context, actor platform.Viewer,
+	id int64, body, reason string) error {
+	if !actor.CanAdmin() {
+		return platform.ErrNotAdmin
+	}
+	if !platform.IsNative(id) {
+		return platform.ErrNotNative
+	}
+	f.edited, f.editReason = body, reason
+	return f.note("edit " + strconv.FormatInt(id, 10))
 }
 
 // Приглашения. Дубль повторяет ровно два правила ядра, на которые опирается
@@ -166,11 +184,19 @@ func (f *fakeMod) MyHidden(context.Context, int64, int) ([]platform.MyCheck, err
 // modServer — площадка с вошедшим человеком заданной роли и живой модерацией.
 func modServer(t *testing.T, role platform.Role) (http.Handler, *fakeMod, string) {
 	t.Helper()
+	return modServerOn(t, noteStore(), role)
+}
+
+// modServerOn — то же самое, но на своей заготовке базы: правка администратора
+// смотрит на саму заметку (нативная или зеркальная, чья, в каком статусе), и
+// одной общей заготовкой её не проверить.
+func modServerOn(t *testing.T, st *fakeStore, role platform.Role) (http.Handler, *fakeMod, string) {
+	t.Helper()
 	auth, token := signedInAs(t, platform.User{
 		ID: modUserID, Nick: "Хатуль мадан", Kind: platform.KindMember, Role: role,
 	})
 	mod := newFakeMod()
-	return newFullServer(t, noteStore(), auth, &fakeWriter{}, mod, nil, Config{}), mod, token
+	return newFullServer(t, st, auth, &fakeWriter{}, mod, nil, Config{}), mod, token
 }
 
 // signedInAs — вошедший человек с ОБОИМИ подписанными согласиями. Без них любая

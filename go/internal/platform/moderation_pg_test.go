@@ -492,6 +492,110 @@ func TestЖурналПишетсяВсегда(t *testing.T) {
 	}
 }
 
+// Правка чужой заметки — единственное действие, которое МЕНЯЕТ чужой текст, и
+// поэтому она администраторская: у модератора её нет. Авторского окна здесь не
+// существует вовсе — правят объявление площадки и выпуск дайджеста, а опечатку
+// в них видно и через сутки, под ответами.
+func TestПравкаЗаметкиАдминистратором(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := Viewer{UserID: mustUser(t, p, "админ"), Role: RoleAdmin}
+	author := mustUser(t, p, "Рио")
+	id := mustNote(t, p, author, "объявление с опечаткай")
+
+	// Окно автора закрыто со всех сторон: заметка старая и под ней отвечают.
+	if _, err := p.CreateComment(ctx, NewComment{NoteID: id, AuthorID: author, Body: "ответ"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE notes SET published_at = now() - interval '2 days' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EditNote(ctx, author, id, "сам поправлю"); !errors.Is(err, ErrEditWindowClosed) {
+		t.Fatalf("авторская правка: %v, ожидался ErrEditWindowClosed", err)
+	}
+
+	// Модератор решает про слова: убрать их из разговора. Переписать сказанное
+	// ему нельзя — это уже подмена чужих слов под чужим именем.
+	mod := Viewer{UserID: mustUser(t, p, "Хатуль мадан"), Role: RoleModerator}
+	if err := p.EditNoteAsAdmin(ctx, mod, id, "поправил модератор", ""); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("правка модератором: %v, ожидался ErrNotAdmin", err)
+	}
+
+	if err := p.EditNoteAsAdmin(ctx, admin, id, "объявление без опечатки", "опечатка"); err != nil {
+		t.Fatalf("правка администратором: %v", err)
+	}
+	n, err := p.NoteRow(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Body != "объявление без опечатки" || n.EditedAt == nil {
+		t.Fatalf("правка не записалась: body=%q edited_at=%v", n.Body, n.EditedAt)
+	}
+	// Автор и анонимность правкой не трогаются: кто сказал — вопрос не
+	// редакторский.
+	if n.AuthorID != author {
+		t.Fatalf("правка сменила автора на %d", n.AuthorID)
+	}
+	// Тот же текст второй раз — не действие, и путать его с ошибкой нельзя (то
+	// же правило, что у замка и закрепления).
+	if err := p.EditNoteAsAdmin(ctx, admin, id, "объявление без опечатки", ""); !errors.Is(err, ErrNothingToDo) {
+		t.Fatalf("правка тем же текстом: %v, ожидался ErrNothingToDo", err)
+	}
+
+	// Текст стал другим — прежнее мнение проверки к нему больше не относится, и
+	// карточка возвращается в очередь ровно так же, как при авторской правке.
+	var checked *time.Time
+	if err := p.pool.QueryRow(ctx, `
+		SELECT checked_at FROM moderation_queue
+		 WHERE subject_kind = $1 AND subject_id = $2`, SubjectNote, id).Scan(&checked); err != nil {
+		t.Fatal(err)
+	}
+	if checked != nil {
+		t.Fatalf("после правки карточка осталась проверенной: %v", checked)
+	}
+
+	// В журнале — факт и причина. Прежнего текста там нет намеренно: правят
+	// обычно затем, чтобы чего-то в тексте НЕ осталось, и копия убранного в
+	// append-only журнале сделала бы это удаление ненастоящим.
+	entries, err := p.SubjectAudit(ctx, NoteSubject(id), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Action != ActionEdit || entries[0].Actor != admin.UserID {
+		t.Fatalf("журнал правки: %+v", entries)
+	}
+	if entries[0].Details["reason"] != "опечатка" {
+		t.Fatalf("причина не записана: %+v", entries[0].Details)
+	}
+	for _, v := range entries[0].Details {
+		if s, ok := v.(string); ok && strings.Contains(s, "опечаткай") {
+			t.Fatalf("прежний текст сохранён в журнале: %+v", entries[0].Details)
+		}
+	}
+}
+
+// Зеркальную заметку не правит никто, включая администратора: её текст — копия
+// того, что стоит на НГС, и молча разойтись с оригиналом значило бы соврать
+// читателю о том, что он читает копию.
+func TestЗеркальнуюЗаметкуАдминистраторНеПравит(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := Viewer{UserID: mustUser(t, p, "админ"), Role: RoleAdmin}
+	ingestNote(t, p, 312811, 1493279, "Рио")
+
+	if err := p.EditNoteAsAdmin(ctx, admin, 312811, "переписал", ""); !errors.Is(err, ErrNotNative) {
+		t.Fatalf("правка зеркальной: %v, ожидался ErrNotNative", err)
+	}
+	n, err := p.NoteRow(ctx, 312811)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Body != "заметка 312811" || n.EditedAt != nil {
+		t.Fatalf("зеркальную заметку всё-таки тронули: body=%q edited_at=%v", n.Body, n.EditedAt)
+	}
+}
+
 // Обезличивание: тексты остаются на месте (иначе рушатся чужие разговоры), а
 // личность уходит — вместе со связью с анкетой НГС.
 func TestОбезличиваниеУноситЛичностьНоНеТексты(t *testing.T) {
