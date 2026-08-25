@@ -260,3 +260,28 @@ func TestRejectReasons(t *testing.T) {
 		}
 	}
 }
+
+// TestParseOmens — приметы лежат внутри абзаца статьи народного календаря, а не
+// списком: берём их предложениями и по признакам самой приметы. Жирным календарь
+// метит одни, а не другие, поэтому опираться на вёрстку нельзя.
+func TestParseOmens(t *testing.T) {
+	got := parseOmens(fixture(t, "calend_narod_6705.html"))
+	if len(got) == 0 {
+		t.Fatal("приметы не разобраны")
+	}
+	if len(got) > maxOmens {
+		t.Errorf("примет %d, потолок %d", len(got), maxOmens)
+	}
+	for _, o := range got {
+		if o.Kind != KindOmen {
+			t.Errorf("%q: вид %v", o.Title, o.Kind)
+		}
+		if strings.Contains(strings.ToLower(o.Title), "примечали") {
+			t.Errorf("зачин не срезан: %q", o.Title)
+		}
+		t.Logf("примета: %s", o.Title)
+	}
+	if !strings.Contains(got[0].Title, "иней") {
+		t.Errorf("первая примета не про иней: %q", got[0].Title)
+	}
+}

@@ -96,3 +96,28 @@ func TestLatinFragment(t *testing.T) {
 		t.Errorf("живое слово латиницей забраковано: %q", got)
 	}
 }
+
+// TestForeignScript — иероглиф посреди русской фразы. Поймано живым прогоном
+// утренней заметки 25.08.2026: «улетел на край系 и прислал домой фотографии».
+// Проверка «слово из двух алфавитов» его не видела — она про латиницу.
+func TestForeignScript(t *testing.T) {
+	cases := []struct {
+		text string
+		bad  bool
+	}{
+		{"улетел на край系 и прислал фотографии", true},
+		{"обычная русская фраза про утро", false},
+		{"Linux и Вояджер - латиница законна", false},
+		{"кафе «Père» с диакритикой тоже", false},
+		{"эмодзи ☀️ и цифры 1989 не буквы", false},
+		{"иврит שלום в тексте", true},
+	}
+	for _, c := range cases {
+		if got := ForeignScript(c.text) != ""; got != c.bad {
+			t.Errorf("ForeignScript(%q) = %v, ожидалось %v", c.text, got, c.bad)
+		}
+		if c.bad && MachineTell(c.text) == "" {
+			t.Errorf("MachineTell пропустил чужую письменность: %q", c.text)
+		}
+	}
+}

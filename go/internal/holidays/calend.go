@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -33,6 +35,8 @@ const (
 	selCalendFolk     = "div.block.homiesCal ul.itemsNet > li"
 	selCalendHistory  = "div.block.knownDates ul.itemsNet > li"
 	selCalendNames    = "div.block.nameDay ul.itemsNet > li"
+	selCalendFolkLink = "a"
+	selCalendArticle  = "div.maintext p"
 	selCalendTitle    = ".title"
 	selCalendType     = ".caption .link a"
 	selCalendYear     = ".caption .year"
@@ -73,7 +77,42 @@ func (c Calend) Fetch(ctx context.Context, day time.Time) ([]Occasion, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseCalend(doc)
+	out, err := parseCalend(doc)
+	if err != nil {
+		return nil, err
+	}
+	// Приметы лежат не на странице дня, а в СТАТЬЕ народного календаря — это
+	// второй запрос в сутки, и он оправдан: примета в утренней заметке
+	// каноничная рубрика жанра (замер 24.08.2026 по живой заметке соседа
+	// t3h.ru/n/313059), а выдумывать её нельзя ни в коем случае — это
+	// непроверяемый факт ровно того сорта, ради которого и заведён пакет.
+	// Отказ статьи заметку не отменяет: приметы просто не будет.
+	if href := folkArticle(doc); href != "" {
+		omens, err := c.fetchOmens(ctx, base, href)
+		if err != nil {
+			return out, nil
+		}
+		out = append(out, omens...)
+	}
+	return out, nil
+}
+
+// folkArticle — адрес статьи народного календаря с сегодняшней страницы дня.
+func folkArticle(doc *goquery.Document) string {
+	href, _ := doc.Find(selCalendFolk).First().Find(selCalendFolkLink).First().Attr("href")
+	return href
+}
+
+func (c Calend) fetchOmens(ctx context.Context, base, href string) ([]Occasion, error) {
+	url := href
+	if strings.HasPrefix(href, "/") {
+		url = strings.TrimSuffix(base, "/") + href
+	}
+	doc, err := fetchDoc(ctx, c.Client, url)
+	if err != nil {
+		return nil, err
+	}
+	return parseOmens(doc), nil
 }
 
 func parseCalend(doc *goquery.Document) ([]Occasion, error) {
@@ -156,4 +195,93 @@ func calendScope(li *goquery.Selection) Scope {
 		}
 	}
 	return ScopeForeign
+}
+
+// Приметы народного календаря. Лежат они не списком, а внутри абзаца статьи
+// («На Фотю с утра примечали: если выпал иней, значит…»), поэтому берутся
+// ПРЕДЛОЖЕНИЯМИ и по признакам самой приметы, а не по вёрстке: жирным календарь
+// метит одни, а не другие, и опираться на это нельзя.
+//
+// Берём КОРОТКИЕ приметы и не больше трёх: в промпт идёт факт, который модель
+// перескажет своими словами, — тот же порядок, что у событий истории.
+const (
+	maxOmens     = 3
+	maxOmenRunes = 160
+	minOmenRunes = 20
+)
+
+// omenPara — по этим словам абзац признаётся «про приметы».
+var omenPara = []string{"примечал", "примет", "верили", "считалось"}
+
+// omenSentence — по этим словам предложение признаётся самой приметой, а не
+// рассказом вокруг неё.
+var omenSentence = []string{"если ", "предвещал", "сулил", "значит", "к дожд", "к ветр", "к морозу"}
+
+func parseOmens(doc *goquery.Document) []Occasion {
+	var out []Occasion
+	doc.Find(selCalendArticle).EachWithBreak(func(_ int, p *goquery.Selection) bool {
+		text := clean(p.Text())
+		if !containsAny(strings.ToLower(text), omenPara) {
+			return true
+		}
+		for _, sent := range splitSentences(text) {
+			if len(out) >= maxOmens {
+				return false
+			}
+			if o, ok := omenFrom(sent); ok {
+				out = append(out, o)
+			}
+		}
+		return len(out) < maxOmens
+	})
+	return out
+}
+
+// omenFrom — примета из предложения ("" — не примета). Зачин «На Фотю с утра
+// примечали:» срезается: в заметку он не пойдёт, а модели мешает.
+func omenFrom(sent string) (Occasion, bool) {
+	if i := strings.Index(sent, ":"); i > 0 && i < len(sent)-1 {
+		sent = strings.TrimSpace(sent[i+1:])
+	}
+	sent = strings.TrimSpace(strings.Trim(sent, "«»\""))
+	lower := strings.ToLower(sent)
+	if !containsAny(lower, omenSentence) {
+		return Occasion{}, false
+	}
+	n := utf8.RuneCountInString(sent)
+	if n < minOmenRunes || n > maxOmenRunes {
+		return Occasion{}, false
+	}
+	sent = strings.ToUpper(string([]rune(sent)[:1])) + string([]rune(sent)[1:])
+	return Occasion{Title: sent, Kind: KindOmen, Scope: ScopeWorld, Sources: []string{SourceCalend}}, true
+}
+
+// splitSentences — грубое деление на предложения: сокращений вида «т. д.» в
+// приметах не бывает, а точка с большой буквы после неё — надёжная граница.
+func splitSentences(text string) []string {
+	var out []string
+	start := 0
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] != '.' && runes[i] != '!' && runes[i] != '?' {
+			continue
+		}
+		if i+2 < len(runes) && runes[i+1] == ' ' && unicode.IsUpper(runes[i+2]) {
+			out = append(out, strings.TrimSpace(string(runes[start:i+1])))
+			start = i + 1
+		}
+	}
+	if s := strings.TrimSpace(string(runes[start:])); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+func containsAny(lower string, subs []string) bool {
+	for _, s := range subs {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
 }

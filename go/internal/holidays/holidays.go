@@ -38,6 +38,8 @@ const (
 	KindHoliday Kind = iota // праздник или памятный день
 	KindFolk                // народный календарь
 	KindName                // именины: чьё сегодня имя
+	KindBorn                // «в этот день родился»
+	KindOmen                // народная примета
 	KindHistory             // событие из истории
 )
 
@@ -49,6 +51,10 @@ func (k Kind) String() string {
 		return "народный календарь"
 	case KindName:
 		return "именины"
+	case KindBorn:
+		return "родились"
+	case KindOmen:
+		return "примета"
 	case KindHistory:
 		return "событие"
 	default:

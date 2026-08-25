@@ -30,12 +30,21 @@ import (
 // SourceWiki — имя источника в Occasion.Sources и в конфиге.
 const SourceWiki = "wikipedia"
 
-// Идентификаторы разделов страницы дня. Разделы «Родились» и «Скончались» не
-// берутся вовсе: чей-то день рождения — не повод дня, а «скончались» тем более.
+// Идентификаторы разделов страницы дня. «Скончались» не берётся вовсе — это не
+// повод для утреннего приветствия. А вот «Родились» берётся (24.08.2026, по
+// просьбе владельца «объёма и деталей»): «в этот день родился…» — рубрика
+// каноничная для жанра, и она ФАКТ из источника, а не выдумка модели.
 const (
 	headHolidays = "Праздники_и_памятные_дни"
 	headEvents   = "События"
+	headBorn     = "Родились"
 )
+
+// wikiBornLimit — сколько именинников-по-рождению берём в промпт. Список на
+// странице дня — это десятки строк, а в жанре их называют одну-две («в этот
+// день родился Чарли Чаплин»). Берём немного и от НОВЫХ к старым, как события:
+// XVII век в утреннем приветствии никому не сосед.
+const wikiBornLimit = 5
 
 // wikiScopes — подзаголовок раздела праздников, и список ЗАКРЫТЫЙ: незнакомый
 // подзаголовок пропускается целиком. Так из поводов ушли «Именины» — под ними
@@ -88,7 +97,7 @@ func (w Wiki) Fetch(ctx context.Context, day time.Time) ([]Occasion, error) {
 }
 
 func parseWiki(doc *goquery.Document) ([]Occasion, error) {
-	var out []Occasion
+	var out, born []Occasion
 	var h2, h3 string
 	doc.Find("h2, h3, ul").Each(func(_ int, s *goquery.Selection) {
 		switch goquery.NodeName(s) {
@@ -117,12 +126,22 @@ func parseWiki(doc *goquery.Document) ([]Occasion, error) {
 					out = append(out, o)
 				}
 			})
+		case headBorn:
+			s.ChildrenFiltered("li").Each(func(_ int, li *goquery.Selection) {
+				if o, ok := wikiBorn(liText(li)); ok {
+					born = append(born, o)
+				}
+			})
 		}
 	})
 	if len(out) == 0 {
 		return nil, &MarkupError{Source: SourceWiki, Selector: headHolidays}
 	}
-	return out, nil
+	// Родившиеся идут на странице от старых к новым — берём хвост, он ближе.
+	if len(born) > wikiBornLimit {
+		born = born[len(born)-wikiBornLimit:]
+	}
+	return append(out, born...), nil
 }
 
 // headingID — идентификатор заголовка: сперва свой (нынешняя разметка), потом
@@ -194,6 +213,25 @@ const maxPrefixBytes = 60
 func isRussia(prefix string) bool {
 	p := strings.ToLower(prefix)
 	return p == "россия" || p == "российская федерация" || p == "рф"
+}
+
+// reWikiDeath — «(ум. 1977)» и «(ум. 1977 )» в строке родившегося. Дата смерти в
+// утреннем приветствии не нужна, а сама конструкция превращает поздравление в
+// некролог, поэтому снимается ещё в разборе.
+var reWikiDeath = regexp.MustCompile(`\s*\((ум\.|род\.)[^)]*\)`)
+
+// wikiBorn разбирает «1889 — Чарли Чаплин (ум. 1977), английский актёр».
+func wikiBorn(text string) (Occasion, bool) {
+	o, ok := wikiEvent(text)
+	if !ok {
+		return Occasion{}, false
+	}
+	title := strings.TrimSpace(reWikiDeath.ReplaceAllString(o.Title, ""))
+	if title == "" {
+		return Occasion{}, false
+	}
+	o.Title, o.Kind = title, KindBorn
+	return o, true
 }
 
 // wikiEvent разбирает «1853 — изобретены картофельные чипсы».
