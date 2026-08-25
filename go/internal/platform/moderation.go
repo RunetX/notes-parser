@@ -370,9 +370,9 @@ func (p *Platform) HideSubject(ctx context.Context, actor Viewer, s Subject, cat
 
 // RestoreSubject возвращает скрытое модерацией.
 //
-// Скрытое АВТОРОМ (отзыв согласия, StatusHiddenOwner) и обезличенное не
-// трогается: первое — исполнение права субъекта, отменять его модератор не
-// вправе; второе необратимо по смыслу.
+// Обезличенное не трогается: оно необратимо по смыслу. Своего скрытия у автора
+// больше нет вовсе — отзыв согласия с 25.08.2026 обезличивает заметки, а не
+// прячет их (см. anonymizeOwnNotes), и StatusHiddenOwner никем не ставится.
 func (p *Platform) RestoreSubject(ctx context.Context, actor Viewer, s Subject, reason string) error {
 	if !actor.CanModerate() {
 		return ErrNotModerator

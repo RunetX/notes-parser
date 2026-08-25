@@ -395,11 +395,6 @@ func (s *Server) handleReportSubmit(w http.ResponseWriter, r *http.Request) {
 		problem = "У вас уже слишком много нерассмотренных жалоб. Дождитесь ответа по прежним."
 	case errors.Is(err, platform.ErrBanned):
 		problem = "Вам сейчас запрещены публикации."
-	case errors.Is(err, platform.ErrHiddenAll):
-		// Жалоба заводит работу живому человеку, поэтому цена входа у неё та же,
-		// что у собственных слов, — и отказ здесь ровно тот же, что при
-		// публикации, а не наша поломка.
-		problem = "Вы отозвали согласие на распространение. Верните его на своей странице."
 	case errors.Is(err, platform.ErrNotMember):
 		problem = "Жаловаться может только участник площадки."
 	default:

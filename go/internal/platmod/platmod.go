@@ -43,8 +43,6 @@ type Store interface {
 	BumpAttempts(ctx context.Context, subs []platform.Subject) error
 	RecordVerdict(ctx context.Context, s platform.Subject, v platform.VerdictRecord) error
 	SameBodyCount(ctx context.Context, authorID int64, body string, window time.Duration) (int, error)
-	DirtyVisibility(ctx context.Context, limit int) ([]int64, error)
-	SettleVisibility(ctx context.Context, userID int64) (bool, error)
 }
 
 // JSONGenerator — онлайн-LLM, отвечающий строго по JSON-схеме (тот же контракт,
@@ -81,10 +79,6 @@ const (
 	// пишущий одно и то же, а поток.
 	defaultFloodWindow = time.Hour
 	defaultFloodMax    = 3
-	// visibilityEvery — как часто доводим отложенные проходы по авторам. Реже
-	// очереди: расхождение появляется только при отзыве согласия, то есть раз
-	// в недели, и высматривать его каждые полминуты незачем.
-	visibilityEvery = 5 * time.Minute
 	// alertThreshold — сколько подряд неудачных обращений к модели терпим,
 	// прежде чем сказать админу.
 	alertThreshold = 3
@@ -150,8 +144,6 @@ type Service struct {
 	// незачем — рестарт как раз тот момент, когда счёт стоит начать заново.
 	spent int
 	day   string
-	// settled — когда в последний раз доводили отложенные проходы.
-	settled time.Time
 }
 
 // New собирает службу. gen = nil означает «классификатора нет»: очередь при
@@ -187,40 +179,10 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-// tick — один такт: сперва отложенные проходы (это исполнение закона, и оно
-// важнее очереди), потом сама проверка.
+// tick — один такт: проверка очереди.
 func (s *Service) tick(ctx context.Context) {
-	s.settleVisibility(ctx)
 	if err := s.checkBatch(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.log.Warn("проверка публикаций", "err", err)
-	}
-}
-
-// settleVisibility доводит проходы, не уложившиеся в срок веб-запроса.
-//
-// Стоит первым и в той же горутине, что и проверка: отзыв согласия исполняется
-// «немедленно» (ч. 2 ст. 9), и очередь модерации не повод его задерживать. Оба
-// дела редкие, так что делить их по горутинам незачем.
-func (s *Service) settleVisibility(ctx context.Context) {
-	if time.Since(s.settled) < visibilityEvery {
-		return
-	}
-	s.settled = time.Now()
-	ids, err := s.st.DirtyVisibility(ctx, 20)
-	if err != nil {
-		s.log.Warn("незавершённые проходы по авторам", "err", err)
-		return
-	}
-	for _, id := range ids {
-		done, err := s.st.SettleVisibility(ctx, id)
-		if err != nil {
-			s.log.Warn("доводка видимости", "user", id, "err", err)
-			return // сеть или база: следующий такт попробует снова
-		}
-		s.log.Info("видимость публикаций доведена", "user", id, "завершено", done)
-		if !done {
-			return // очень большой автор: продолжим на следующем такте
-		}
 	}
 }
 

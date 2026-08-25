@@ -20,7 +20,7 @@ type querier interface {
 }
 
 const userColumns = `id, nick, avatar_sha, ngs_avatar_url, kind, role,
-	hide_all, anonymized_at, banned_until, ban_reason, created_at, last_seen_at`
+	anonymized_at, banned_until, ban_reason, created_at, last_seen_at`
 
 // userDest — куда ложатся колонки userColumns, ровно в их порядке. Список живёт
 // ОДНИМ значением, а не повторяется у каждого запроса, и оплачено это входом:
@@ -33,7 +33,7 @@ const userColumns = `id, nick, avatar_sha, ngs_avatar_url, kind, role,
 // сравнивает длины, а не память.
 func userDest(u *User) []any {
 	return []any{&u.ID, &u.Nick, &u.AvatarSHA, &u.NGSAvatarURL, &u.Kind, &u.Role,
-		&u.HideAll, &u.AnonymizedAt, &u.BannedUntil, &u.BanReason, &u.CreatedAt, &u.LastSeenAt}
+		&u.AnonymizedAt, &u.BannedUntil, &u.BanReason, &u.CreatedAt, &u.LastSeenAt}
 }
 
 func scanUser(row pgx.Row) (User, error) {

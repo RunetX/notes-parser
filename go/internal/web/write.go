@@ -288,10 +288,10 @@ func writeProblem(err error) (int, string) {
 		return http.StatusForbidden, "Обсуждение закрыто модератором."
 	case errors.Is(err, platform.ErrBanned):
 		return http.StatusForbidden, "Публикации вам сейчас запрещены."
-	case errors.Is(err, platform.ErrHiddenAll):
+	case errors.Is(err, platform.ErrConsentRevoked):
 		return http.StatusForbidden,
-			"Ваши публикации скрыты: вы отозвали согласие на распространение. " +
-				"Верните его на своей странице, и можно будет писать снова."
+			"Вы отозвали согласие. Верните его на своей странице, и можно будет писать снова — " +
+				"но прежние заметки останутся без подписи: обезличивание необратимо."
 	case errors.Is(err, platform.ErrConsentOutdated):
 		return http.StatusForbidden,
 			"Соглашения обновились: страницы площадки теперь открыты поисковым системам. " +

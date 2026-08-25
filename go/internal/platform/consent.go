@@ -269,62 +269,40 @@ func (p *Platform) MissingConsent(ctx context.Context, userID int64, op Operator
 
 // GrantConsent записывает согласие. Отдельной строкой на каждое нажатие:
 // история согласий и отзывов — это и есть доказательство.
+//
+// Возвращённое согласие возвращает право писать (consentGuard), но не прежние
+// публикации: отзыв не спрятал их, а обезличил, и обратной дороги у этого нет
+// по построению. До 25.08.2026 здесь опускался рубильник hide_all и шёл проход
+// по всем репликам человека — 18.08.2026 трое участников не смогли из-за него
+// пройти экран согласий вовсе (у одного 138 тыс. реплик, запрос не укладывался
+// в срок морды). Теперь запись согласия не трогает публикации вовсе.
 func (p *Platform) GrantConsent(ctx context.Context, userID int64, kind string, version int, ua string) error {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("согласие %s: %w", kind, err)
-	}
-	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
-
-	if _, err := tx.Exec(ctx, `
+	_, err := p.pool.Exec(ctx, `
 		INSERT INTO consents (user_id, kind, version, ua) VALUES ($1, $2, $3, $4)`,
-		userID, kind, version, trimUA(ua)); err != nil {
-		return fmt.Errorf("согласие %s: %w", kind, err)
-	}
-	// Согласие на распространение снимает рубильник «скрыть всё моё»: иначе
-	// человек, отозвавший и вернувший согласие, остался бы невидимым молча.
-	//
-	// Сначала спрашиваем, был ли он поднят, и только потом идём по публикациям:
-	// у входящего ВПЕРВЫЕ прятать нечего, а обход стоит перебора всех его
-	// реплик. Разница не косметическая — 18.08.2026 трое участников не смогли
-	// пройти экран согласий вовсе: у одного 138 тыс. реплик, и запрос не
-	// укладывался в срок веб-морды (5 с). FOR UPDATE держит строку до конца
-	// транзакции: между «был ли поднят» и «опускаем» не должен влезть отзыв.
-	unhide := false
-	if kind == ConsentDistribution {
-		var hidden bool
-		if err := tx.QueryRow(ctx,
-			`SELECT hide_all FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&hidden); err != nil {
-			return fmt.Errorf("согласие %s: %w", kind, err)
-		}
-		if hidden {
-			if _, err := tx.Exec(ctx, `
-				UPDATE users SET hide_all = false, visibility_dirty = true
-				 WHERE id = $1`, userID); err != nil {
-				return fmt.Errorf("согласие %s: %w", kind, err)
-			}
-			unhide = true
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("согласие %s: %w", kind, err)
-	}
-	if unhide {
-		p.settleOwnVisibility(ctx, userID, StatusVisible)
-	}
-	return nil
+		userID, kind, version, trimUA(ua))
+	return wrapf(err, "согласие %s", kind)
 }
 
 // RevokeConsent отзывает согласие, и отзыв ИСПОЛНЯЕТСЯ сразу, а не ставится в
 // очередь к модератору:
 //
-//   - распространение → hide_all, и публикации исчезают со страниц в тот же
-//     момент;
+//   - распространение → ЗАМЕТКИ человека обезличиваются: имя уходит отовсюду,
+//     включая обращения к нему в чужих ответах, а сами заметки и обсуждение под
+//     ними остаются на месте;
 //   - обработка вообще → плюс к тому человек перестаёт быть участником (kind
 //     возвращается в тень) и все его сессии гасятся: обрабатывать больше нечего.
 //
-// Тексты при этом остаются в базе скрытыми — стереть их целиком, не разрушив
-// чужие разговоры, нельзя, и это делает обезличивание (Ш7), а не отзыв.
+// Обезличивает, а не прячет, с 25.08.2026. Прежде отзыв уводил ВСЕ публикации в
+// StatusHiddenOwner — и скрытая заметка уносила со страниц весь тред, то есть
+// чужие ответы на чужие слова. Что при этом уходит, что остаётся и почему
+// комментарии не трогаются вовсе — у anonymizeOwnNotes (rights.go).
+//
+// Учётная запись остаётся жива: вернувший согласие пишет дальше. Прежние
+// заметки не возвращаются никогда — соответствие с могилой не хранится нигде.
+//
+// Одной транзакцией с самим отзывом: «согласие отозвано, а заметки не
+// обезличены» — состояние, которого существовать не должно. Позволяет это цена
+// прохода: заметок у автора тысячи, а не сотни тысяч.
 func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -343,11 +321,7 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 		 WHERE user_id = $1 AND kind = ANY($2) AND revoked_at IS NULL`, userID, kinds); err != nil {
 		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 	}
-	// Рубильник и флаг «проход не доведён» поднимаются ОДНОЙ транзакцией с
-	// самим отзывом: дальше, что бы ни случилось с процессом, база знает, что
-	// публикации ещё не приведены в соответствие, и служба доведёт это сама.
-	if _, err := tx.Exec(ctx, `
-		UPDATE users SET hide_all = true, visibility_dirty = true WHERE id = $1`, userID); err != nil {
+	if _, err := anonymizeOwnNotes(ctx, tx, userID); err != nil {
 		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 	}
 	if kind == ConsentProcessing {
@@ -361,29 +335,5 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 			return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
-	}
-	p.settleOwnVisibility(ctx, userID, StatusHiddenOwner)
-	return nil
-}
-
-// settleOwnVisibility доводит публикации человека до состояния рубильника,
-// сколько успеет в бюджет формы, а хвост оставляет фоновой службе.
-//
-// Отдельным шагом ПОСЛЕ транзакции согласия, а не внутри неё, и это не мелочь:
-// проход по автору с 138 тыс. реплик стоит десятки секунд (см. visibility.go), и
-// одна транзакция на всё это время держала бы под замком строки заметок ровно в
-// тех тредах, где сейчас разговаривают. Само согласие при этом уже записано —
-// оно и есть юридический факт, а статусы это его исполнение.
-//
-// Ошибка прохода наверх не идёт: рубильник поднят, флаг стоит, и служба доведёт
-// дело сама. Сказать человеку «сломалось» после того, как согласие записано, —
-// значит соврать ему о том, что произошло.
-func (p *Platform) settleOwnVisibility(ctx context.Context, userID int64, to Status) {
-	done, err := setOwnVisibility(ctx, p.pool, userID, to, webVisibilityBudget)
-	if err != nil || !done {
-		return
-	}
-	_ = markVisibilityDirty(ctx, p.pool, userID, false) //nolint:errcheck // флаг снимет служба
+	return wrapf(tx.Commit(ctx), "отзыв согласия %s", kind)
 }

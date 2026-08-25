@@ -1104,3 +1104,9 @@ span.rxb { cursor: default; }
 @media (min-width: 900px) {
   :root { --step: 40px; }
 }
+
+/* Согласие отзывается необратимо, и кнопка обязана выглядеть иначе
+   остальных: та же краска, что у «Отозвать» в списке согласий. */
+.wact button.danger { border-color: var(--female); color: var(--female); }
+.revlist { margin: 14px 0 0; padding-left: 20px; line-height: 1.5; }
+.revlist li { margin-bottom: 8px; }

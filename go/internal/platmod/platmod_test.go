@@ -32,8 +32,6 @@ type fakeStore struct {
 	attempts []platform.Subject
 	same     int
 	sameErr  error
-	dirty    []int64
-	settled  []int64
 }
 
 func newFakeStore(items ...platform.Pending) *fakeStore {
@@ -65,17 +63,6 @@ func (f *fakeStore) RecordVerdict(_ context.Context, s platform.Subject, v platf
 
 func (f *fakeStore) SameBodyCount(_ context.Context, _ int64, _ string, _ time.Duration) (int, error) {
 	return f.same, f.sameErr
-}
-
-func (f *fakeStore) DirtyVisibility(_ context.Context, _ int) ([]int64, error) {
-	return f.dirty, nil
-}
-
-func (f *fakeStore) SettleVisibility(_ context.Context, id int64) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.settled = append(f.settled, id)
-	return true, nil
 }
 
 // fakeGen — модель, отвечающая заранее заготовленным JSON.
@@ -398,26 +385,6 @@ func TestБезКлассификатораОчередьЖива(t *testing.T) 
 	}
 	if len(st.attempts) != 0 {
 		t.Fatal("попытки без запроса к модели не считаются")
-	}
-}
-
-// Отложенные проходы по авторам доводятся независимо от классификатора: это
-// исполнение отзыва согласия (ч. 2 ст. 9), а не работа модерации.
-func TestОтложенныеПроходыДоводятся(t *testing.T) {
-	st := newFakeStore()
-	st.dirty = []int64{101, 102}
-	s := New(Config{}, st, nil, quiet())
-
-	s.tick(context.Background())
-	if len(st.settled) != 2 {
-		t.Fatalf("доведено проходов %d, ожидалось 2", len(st.settled))
-	}
-	// Второй такт подряд их не повторяет: расхождение появляется раз в недели,
-	// и высматривать его каждые полминуты незачем.
-	st.settled = nil
-	s.tick(context.Background())
-	if len(st.settled) != 0 {
-		t.Fatalf("проходы повторены на соседнем такте: %v", st.settled)
 	}
 }
 

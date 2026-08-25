@@ -130,9 +130,11 @@ func TestFailedAttemptsAreCounted(t *testing.T) {
 	}
 }
 
-// Отзыв согласия на распространение обязан ИСПОЛНЯТЬСЯ, а не отмечаться:
-// публикации исчезают со страниц в тот же момент, и счётчик под заметкой тоже.
-func TestRevokingDistributionHidesEverythingAtOnce(t *testing.T) {
+// Отзыв согласия на распространение обязан ИСПОЛНЯТЬСЯ, а не отмечаться. С
+// 25.08.2026 исполнение выглядит так: заметка остаётся в ленте, но подписана
+// «Удалённым участником», а комментарий в чужом треде не меняется вовсе — по
+// нему человека по-прежнему узнают, и документ обещает ровно это.
+func TestRevokingDistributionAnonymizesNotesOnly(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
 	if err := p.EnsureConsentDocs(ctx, Operator{}); err != nil {
@@ -163,51 +165,56 @@ func TestRevokingDistributionHidesEverythingAtOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range feed {
+	var own *NoteView
+	for i, n := range feed {
 		if n.ID == 312811 {
-			t.Error("заметка отозвавшего согласие всё ещё в ленте")
+			own = &feed[i]
 		}
 	}
+	if own == nil {
+		t.Fatal("заметка пропала из ленты: отзыв не должен ничего прятать")
+	}
+	if own.Author.Nick != GraveNick {
+		t.Errorf("заметка подписана %q, ожидался %q", own.Author.Nick, GraveNick)
+	}
+	// Комментарий в ЧУЖОМ треде не тронут ни автором, ни видимостью: цена
+	// решения владельца названа в тексте согласия — по репликам узнают.
 	thread, err := p.Thread(ctx, Viewer{}, 312812)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(thread) != 0 {
-		t.Errorf("в треде осталось %d комментариев отозвавшего", len(thread))
+	if len(thread) != 1 {
+		t.Fatalf("в треде %d комментариев, ожидался один", len(thread))
 	}
-	// Счётчик денормализован, и без пересчёта под заметкой висело бы
-	// «Комментарии 1» при пустом треде.
+	if thread[0].Author.ID != id || thread[0].Author.Nick != "Рио" {
+		t.Errorf("реплика подписана %q (%d): отзыв обезличил не только заметки",
+			thread[0].Author.Nick, thread[0].Author.ID)
+	}
+	// Счётчик денормализован, и статусов отзыв не двигает — значит и его тоже.
 	host, err := p.NoteViewByID(ctx, Viewer{}, 312812)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if host.CommentCount != 0 {
-		t.Errorf("счётчик комментариев %d, ожидался 0", host.CommentCount)
+	if host.CommentCount != 1 {
+		t.Errorf("счётчик комментариев %d, ожидалась единица", host.CommentCount)
 	}
 
-	// Возврат согласия возвращает всё обратно: тексты не удалялись.
-	if err := p.GrantConsent(ctx, id, ConsentDistribution, 1, "тест"); err != nil {
-		t.Fatal(err)
-	}
-	back, err := p.Thread(ctx, Viewer{}, 312812)
-	if err != nil || len(back) != 1 {
-		t.Errorf("после возврата согласия в треде %d комментариев, err %v", len(back), err)
-	}
-	// И счётчик возвращается тем же числом, каким уходил: он правится разницей,
-	// а знак у разницы один на оба направления.
-	again, err := p.NoteViewByID(ctx, Viewer{}, 312812)
+	// Возврат согласия подписи не возвращает: связь с могилой не хранится нигде.
+	mustConsent(t, p, id)
+	after, err := p.NoteViewByID(ctx, Viewer{}, 312811)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.CommentCount != 1 {
-		t.Errorf("после возврата согласия счётчик %d, ожидалась единица", again.CommentCount)
+	if after.Author.Nick != GraveNick {
+		t.Errorf("возврат согласия вернул подпись %q", after.Author.Nick)
 	}
 }
 
-// Первое согласие на распространение публикаций НЕ трогает: у входящего впервые
-// ничего не спрятано, и обходить его реплики незачем. Стоил такой обход дорого —
-// 18.08.2026 трое не смогли пройти этот экран вовсе, тяжелее всех участнику со
-// 138 тыс. реплик в 14 тыс. тредов.
+// Согласие на распространение публикаций НЕ трогает — ни первое, ни возвращённое
+// после отзыва. Раньше это была оговорка («у входящего впервые прятать нечего»),
+// и стоила она дорого: 18.08.2026 трое не смогли пройти этот экран вовсе,
+// тяжелее всех участнику со 138 тыс. реплик в 14 тыс. тредов. С 25.08.2026 это
+// правило: возвращать нечего, потому что отзыв ничего не прятал.
 //
 // Проверяется тем, что заведомо РАЗОШЕДШИЙСЯ счётчик остаётся разошедшимся:
 // чинит его RecountComments, а не чей-то вход.

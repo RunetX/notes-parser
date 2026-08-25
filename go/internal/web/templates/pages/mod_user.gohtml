@@ -5,7 +5,6 @@
   {{if lt $m.ID 100000000000}}анкета НГС №{{$m.ID}}{{else}}участник №{{$m.ID}}{{end}}
   · {{if eq $m.Kind 1}}вошёл{{else if eq $m.Kind 2}}служебный{{else}}тень зеркала{{end}}
   {{if eq $m.Role 1}} · модератор{{else if eq $m.Role 2}} · администратор{{end}}
-  {{if $m.HideAll}} · публикации скрыты по его требованию{{end}}
   {{if $m.AnonymizedAt}} · обезличен{{end}}
   · <a class="mlink" href="/mod">к очереди</a>
 </p>

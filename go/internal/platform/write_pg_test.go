@@ -129,7 +129,7 @@ func TestRateLimitCountsHiddenToo(t *testing.T) {
 	if _, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "вторая"}); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("вторая заметка подряд: %v, ожидался ErrRateLimited", err)
 	}
-	if _, err := p.pool.Exec(ctx, `UPDATE notes SET status = $2 WHERE id = $1`, id, StatusHiddenOwner); err != nil {
+	if _, err := p.pool.Exec(ctx, `UPDATE notes SET status = $2 WHERE id = $1`, id, StatusHiddenMod); err != nil {
 		t.Fatalf("скрытие: %v", err)
 	}
 	if _, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "третья"}); !errors.Is(err, ErrRateLimited) {
@@ -162,11 +162,13 @@ func TestWhoMayNotWrite(t *testing.T) {
 		t.Errorf("забаненный опубликовал заметку: %v", err)
 	}
 
-	hidden := mustUser(t, p, "Тихая")
-	if _, err := p.pool.Exec(ctx, `UPDATE users SET hide_all = true WHERE id = $1`, hidden); err != nil {
-		t.Fatalf("рубильник: %v", err)
+	// Отозвавший согласие. Отвечать ему надо «согласие отозвано», а не
+	// «подпишите новую редакцию»: нажал он сам и знает, что нажал.
+	quit := mustUser(t, p, "Тихая")
+	if err := p.RevokeConsent(ctx, quit, ConsentDistribution); err != nil {
+		t.Fatalf("отзыв: %v", err)
 	}
-	if _, err := p.CreateNote(ctx, NewNote{AuthorID: hidden, Body: "а меня не видно"}); !errors.Is(err, ErrHiddenAll) {
+	if _, err := p.CreateNote(ctx, NewNote{AuthorID: quit, Body: "а меня не видно"}); !errors.Is(err, ErrConsentRevoked) {
 		t.Errorf("отозвавший согласие опубликовал заметку: %v", err)
 	}
 }

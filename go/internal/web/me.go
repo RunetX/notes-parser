@@ -22,7 +22,6 @@ type mePage struct {
 	Member  platform.Author
 	Docs    []platform.ConsentDoc
 	Have    platform.Consents
-	HideAll bool // все публикации скрыты рубильником отзыва согласия
 	Shadow  bool // вход не завершён: согласий нет
 	Admin   bool
 	// Avatar — показывать ли кнопку «Обновить аватар». Её нет у вошедшего по
@@ -102,7 +101,6 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		Member:  card,
 		Docs:    docs,
 		Have:    have,
-		HideAll: u.HideAll,
 		Shadow:  u.Kind == platform.KindShadow,
 		Admin:   u.Role >= platform.RoleAdmin,
 		Avatar:  s.site != nil && platform.IsNGS(u.ID),
@@ -179,12 +177,28 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/me", http.StatusSeeOther)
 }
 
+// revokePage — экран «что произойдёт, если отозвать».
+type revokePage struct {
+	page
+	Kind string
+	// Title — заголовок отзываемого документа, ровно тот, что человек подписывал.
+	Title string
+	// Processing — отзывается ОБЩЕЕ согласие: оно вдобавок закрывает вход.
+	Processing bool
+}
+
 // handleMeConsent — отзыв и возврат согласия.
 //
-// Отзыв распространения прячет все публикации в тот же момент, без очереди к
-// модератору: ч. 2 ст. 9 не оставляет места для «рассмотрим в течение недели».
-// Отзыв общего согласия делает то же и вдобавок перестаёт считать человека
-// участником — обрабатывать становится нечего.
+// Отзыв исполняется в тот же момент, без очереди к модератору: ч. 2 ст. 9 не
+// оставляет места для «рассмотрим в течение недели». Распространение — это
+// обезличивание заметок (имя уходит, тексты остаются), общее согласие — то же
+// плюс закрытый вход: обрабатывать становится нечего.
+//
+// Но СПЕРВА экран подтверждения, и это не вежливость. Пока отзыв прятал
+// публикации, он был обратим — «вернёте согласие, и они появятся снова», — и
+// одной кнопки хватало. Обезличивание необратимо по построению: соответствие
+// «кто → какая могила» не хранится нигде, и вернуть подпись не может уже никто,
+// включая администратора. Необратимое действие в одно нажатие — это ловушка.
 func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 	if !s.postWrite(w, r) {
 		return
@@ -214,6 +228,26 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		http.Redirect(w, r, "/me", http.StatusSeeOther)
+		return
+	}
+	if r.FormValue("confirm") != "1" {
+		docs, err := platform.CurrentConsentDocs(s.cfg.Operator)
+		if err != nil {
+			s.oops(w, r, "тексты согласий", err)
+			return
+		}
+		title := kind
+		for _, d := range docs {
+			if d.Kind == kind {
+				title = d.Title
+			}
+		}
+		s.render(w, r, http.StatusOK, "revoke.gohtml", revokePage{
+			page:       s.newPage(r, "Отзыв согласия"),
+			Kind:       kind,
+			Title:      title,
+			Processing: kind == platform.ConsentProcessing,
+		})
 		return
 	}
 	if err := s.auth.RevokeConsent(r.Context(), u.ID, kind); err != nil {

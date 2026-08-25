@@ -595,7 +595,7 @@ func TestMeRedirectsToConsentWhenIncomplete(t *testing.T) {
 	}
 }
 
-// Отзыв согласия на распространение доходит до ядра: обещание «исчезает
+// Отзыв согласия на распространение доходит до ядра: обещание «исполняется
 // немедленно» обязано быть исполнимым, а не написанным в документе.
 func TestMeRevokesDistribution(t *testing.T) {
 	h, auth, token := signedInServer(t)
@@ -604,12 +604,40 @@ func TestMeRevokesDistribution(t *testing.T) {
 
 	w := do(h, postAs(t, "/me/consent", url.Values{
 		"kind": {platform.ConsentDistribution}, "action": {"revoke"},
+		"confirm": {"1"},
 	}, token))
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("код %d", w.Code)
 	}
 	if len(auth.revoked[testProfileID]) != 1 {
 		t.Fatal("отзыв не дошёл до ядра")
+	}
+}
+
+// Но БЕЗ подтверждения не отзывается ничего: обезличивание необратимо, и
+// нажатие мимо кнопки не должно стоить человеку подписи под всеми заметками.
+func TestMeRevokeAsksFirst(t *testing.T) {
+	h, auth, token := signedInServer(t)
+	grantBoth(t, auth, context.Background())
+
+	w := do(h, postAs(t, "/me/consent", url.Values{
+		"kind": {platform.ConsentDistribution}, "action": {"revoke"},
+	}, token))
+	if w.Code != http.StatusOK {
+		t.Fatalf("код %d, ожидался экран подтверждения", w.Code)
+	}
+	if len(auth.revoked[testProfileID]) != 0 {
+		t.Fatal("согласие отозвано до подтверждения")
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `name="confirm"`) {
+		t.Error("на экране подтверждения нет формы с подтверждением")
+	}
+	// Экран обязан назвать цену целиком, включая то, чего отзыв НЕ делает.
+	for _, want := range []string{"Удалённый участник", "комментарии", "необратимо"} {
+		if !strings.Contains(strings.ToLower(body), strings.ToLower(want)) {
+			t.Errorf("на экране подтверждения не сказано про %q", want)
+		}
 	}
 }
 

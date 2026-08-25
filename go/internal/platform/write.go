@@ -38,10 +38,10 @@ var (
 	ErrNotMember = errors.New("публиковать может только участник")
 	// ErrBanned — срок запрета ещё идёт.
 	ErrBanned = errors.New("публикации запрещены до конца срока")
-	// ErrHiddenAll — человек отозвал согласие на распространение. Публиковать
-	// при отозванном согласии значило бы распространять то, на что согласия нет,
-	// а спрятать новое сразу после публикации — издевательство над обоими.
-	ErrHiddenAll = errors.New("ваши публикации скрыты: сначала верните согласие на распространение")
+	// ErrConsentRevoked — человек сам отозвал согласие. Отличается от
+	// ErrConsentOutdated намеренно: «подпишите новую редакцию» тому, кто нажал
+	// «Отозвать» пять минут назад, звучит как поломка, а не как ответ.
+	ErrConsentRevoked = errors.New("согласие отозвано: верните его, чтобы писать снова")
 	// ErrConsentOutdated — согласия человека остались в прежней редакции. Не
 	// «нет согласия», а «согласие не на те условия»: редакция меняется, когда
 	// меняется обещание (23.08.2026 — открытие страниц поисковикам), и
@@ -96,13 +96,12 @@ const (
 func writeGuard(ctx context.Context, q querier, userID int64) error {
 	var (
 		kind       Kind
-		hideAll    bool
 		banned     *time.Time
 		anonymized *time.Time
 	)
 	err := q.QueryRow(ctx,
-		`SELECT kind, hide_all, banned_until, anonymized_at FROM users WHERE id = $1`, userID).
-		Scan(&kind, &hideAll, &banned, &anonymized)
+		`SELECT kind, banned_until, anonymized_at FROM users WHERE id = $1`, userID).
+		Scan(&kind, &banned, &anonymized)
 	if err != nil {
 		return fmt.Errorf("проверка автора %d: %w", userID, err)
 	}
@@ -111,8 +110,6 @@ func writeGuard(ctx context.Context, q querier, userID int64) error {
 		return ErrNotMember
 	case banned != nil && banned.After(time.Now()):
 		return ErrBanned
-	case hideAll:
-		return ErrHiddenAll
 	}
 	return nil
 }
@@ -143,34 +140,52 @@ func publishGuard(ctx context.Context, q querier, userID int64) error {
 // однажды разошёлся бы с этим.
 //
 // Читается той же транзакцией и тем же приёмом, что и остальной writeGuard:
-// последняя запись по каждому виду, отозванное не считается.
+// последняя запись по каждому виду.
+//
+// Отозванное и устаревшее различаются, и это не косметика. Отзыв согласия
+// человек нажимает САМ и знает, что нажал, — а раньше про него отвечал
+// writeGuard («ваши публикации скрыты»), потому что отзыв поднимал рубильник
+// hide_all. Рубильника с 25.08.2026 нет вовсе (отзыв обезличивает заметки, а не
+// прячет их), и различать эти два случая стало некому, кроме как здесь.
 func consentGuard(ctx context.Context, q querier, userID int64) error {
 	want, err := currentConsentVersions()
 	if err != nil {
 		return err
 	}
 	rows, err := q.Query(ctx, `
-		SELECT kind, version FROM (
-		    SELECT DISTINCT ON (kind) kind, version, revoked_at
-		      FROM consents WHERE user_id = $1
-		     ORDER BY kind, granted_at DESC
-		) last WHERE revoked_at IS NULL`, userID)
+		SELECT DISTINCT ON (kind) kind, version, revoked_at IS NOT NULL
+		  FROM consents WHERE user_id = $1
+		 ORDER BY kind, granted_at DESC`, userID)
 	if err != nil {
 		return fmt.Errorf("согласия автора %d: %w", userID, err)
 	}
 	have := make(map[string]int, 2)
+	revoked := make(map[string]bool, 2)
 	for rows.Next() {
 		var kind string
 		var version int
-		if err := rows.Scan(&kind, &version); err != nil {
+		var isRevoked bool
+		if err := rows.Scan(&kind, &version, &isRevoked); err != nil {
 			rows.Close()
 			return fmt.Errorf("согласия автора %d: %w", userID, err)
+		}
+		if isRevoked {
+			revoked[kind] = true
+			continue
 		}
 		have[kind] = version
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("согласия автора %d: %w", userID, err)
+	}
+	// Отзыв спрашивается первым проходом по ВСЕМУ списку, а не по ходу дела:
+	// порядок обхода map случаен, и человек с отозванным одним согласием и
+	// устаревшим другим получал бы то один ответ, то другой.
+	for kind := range want {
+		if revoked[kind] {
+			return ErrConsentRevoked
+		}
 	}
 	for kind, version := range want {
 		if have[kind] < version {

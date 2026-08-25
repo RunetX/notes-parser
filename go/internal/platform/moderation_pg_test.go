@@ -103,10 +103,11 @@ func TestБезПравНичегоНеПроисходит(t *testing.T) {
 	}
 }
 
-// Отзыв согласия и решение модератора — РАЗНЫЕ рычаги, и путать их нельзя:
-// возврат согласия не отменяет решения модератора, а его отзыв не должен
-// присваивать модераторскому скрытию чужую причину.
-func TestРубильникАвтораИРешениеМодератораНеПересекаются(t *testing.T) {
+// Отзыв согласия и решение модератора — РАЗНЫЕ рычаги, и путать их нельзя.
+// Отзыв обезличивает заметки, а видимости не касается вовсе: ни своей, ни
+// модераторской, — то есть решение модератора он не отменяет и чужой причины
+// ему не присваивает.
+func TestОтзывСогласияОбезличиваетИНеТрогаетВидимость(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
 	mod := moderator(t, p)
@@ -117,29 +118,130 @@ func TestРубильникАвтораИРешениеМодератораНе�
 	if err := p.HideSubject(ctx, mod, NoteSubject(hidden), CatSpam, "реклама"); err != nil {
 		t.Fatalf("скрытие: %v", err)
 	}
-	// Отзыв согласия прячет ВСЁ остальное, но модераторского решения не трогает.
-	if err := p.GrantConsent(ctx, author, ConsentDistribution, 1, ""); err != nil {
-		t.Fatalf("согласие: %v", err)
+	if err := p.RevokeConsent(ctx, author, ConsentDistribution); err != nil {
+		t.Fatalf("отзыв: %v", err)
+	}
+	n, err := p.NoteRow(ctx, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Status != StatusVisible {
+		t.Fatalf("своя заметка после отзыва в состоянии %d, а прятать её больше нечем", n.Status)
+	}
+	if n.AuthorID == author {
+		t.Fatal("своя заметка осталась за автором: отзыв не обезличил")
+	}
+	grave := n.AuthorID
+	if g, err := p.UserByID(ctx, grave); err != nil || g.Nick != GraveNick || g.AnonymizedAt == nil {
+		t.Fatalf("могила: ник %q, обезличена %v (%v)", g.Nick, g.AnonymizedAt, err)
+	}
+	// Скрытая модератором уезжает на ТУ ЖЕ могилу и остаётся скрытой: имя ушло,
+	// решение осталось.
+	h, err := p.NoteRow(ctx, hidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Status != StatusHiddenMod {
+		t.Fatalf("скрытая модератором стала %d", h.Status)
+	}
+	if h.AuthorID != grave {
+		t.Fatalf("скрытая модератором уехала на %d, а своя на %d — могила должна быть одна", h.AuthorID, grave)
+	}
+	// Возврат согласия возвращает право писать, но не подпись: соответствие с
+	// могилой не хранится нигде, и возвращать её некому.
+	mustConsent(t, p, author)
+	if n, err := p.NoteRow(ctx, own); err != nil || n.AuthorID != grave {
+		t.Fatalf("возврат согласия вернул подпись: автор %d (%v)", n.AuthorID, err)
+	}
+}
+
+// Комментарии отзыв не трогает ВОВСЕ: ни автора, ни видимости. Решение
+// владельца 25.08.2026, и цена его названа в тексте согласия — по подписанным
+// репликам человека по-прежнему узнают, в том числе в его же обезличенных
+// темах.
+func TestОтзывСогласияНеТрогаетКомментарии(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Пух")
+	noteID := mustNote(t, p, author, "тема")
+	cid, err := p.CreateComment(ctx, NewComment{NoteID: noteID, AuthorID: author, Body: "своя реплика"})
+	if err != nil {
+		t.Fatalf("реплика: %v", err)
 	}
 	if err := p.RevokeConsent(ctx, author, ConsentDistribution); err != nil {
 		t.Fatalf("отзыв: %v", err)
 	}
-	if n, err := p.NoteRow(ctx, own); err != nil || n.Status != StatusHiddenOwner {
-		t.Fatalf("своя заметка в состоянии %d (%v)", n.Status, err)
+	c, err := p.CommentRow(ctx, cid)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n, err := p.NoteRow(ctx, hidden); err != nil || n.Status != StatusHiddenMod {
-		t.Fatalf("скрытая модератором стала %d (%v)", n.Status, err)
+	if c.AuthorID != author {
+		t.Fatalf("комментарий уехал на %d: отзыв обезличил не только заметки", c.AuthorID)
 	}
-	// И обратно: возврат согласия поднимает своё, но не модераторское.
-	if err := p.GrantConsent(ctx, author, ConsentDistribution, 1, ""); err != nil {
-		t.Fatalf("возврат согласия: %v", err)
+	if c.Status != StatusVisible {
+		t.Fatalf("комментарий в состоянии %d: отзыв его спрятал", c.Status)
 	}
-	if n, err := p.NoteRow(ctx, own); err != nil || n.Status != StatusVisible {
-		t.Fatalf("своя заметка после возврата %d (%v)", n.Status, err)
+	// А счётчик треда обязан остаться прежним: статусы не двигались, значит не
+	// двигался и он.
+	if n, err := p.NoteRow(ctx, noteID); err != nil || n.CommentCount != 1 {
+		t.Fatalf("счётчик треда %d (%v)", n.CommentCount, err)
 	}
-	if n, err := p.NoteRow(ctx, hidden); err != nil || n.Status != StatusHiddenMod {
-		t.Fatalf("модераторское скрытие снялось возвратом согласия: %d (%v)", n.Status, err)
+}
+
+// Отозвал, вернул, отозвал снова — могилы РАЗНЫЕ. Одна на человека потребовала
+// бы помнить, какая именно его, то есть хранить ровно то соответствие, ради
+// отсутствия которого всё и затевалось.
+func TestПовторныйОтзывЗаводитНовуюМогилу(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Пух")
+	first := mustNote(t, p, author, "до отзыва")
+	if err := p.RevokeConsent(ctx, author, ConsentDistribution); err != nil {
+		t.Fatalf("отзыв: %v", err)
 	}
+	mustConsent(t, p, author)
+	second := mustNote(t, p, author, "после возврата")
+	if err := p.RevokeConsent(ctx, author, ConsentDistribution); err != nil {
+		t.Fatalf("второй отзыв: %v", err)
+	}
+	a, err := p.NoteRow(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := p.NoteRow(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.AuthorID == b.AuthorID {
+		t.Fatalf("обе заметки на одной могиле %d: второй отзыв нашёл первую", a.AuthorID)
+	}
+	if b.AuthorID == author {
+		t.Fatal("вторая заметка осталась за автором")
+	}
+}
+
+// Отзывать нечего — могилы не заводим. Иначе у каждого, кто вошёл и передумал,
+// в users оставалась бы пустая строка.
+func TestОтзывБезЗаметокНеЗаводитМогилу(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Пух")
+	before := countUsers(t, p)
+	if err := p.RevokeConsent(ctx, author, ConsentDistribution); err != nil {
+		t.Fatalf("отзыв: %v", err)
+	}
+	if after := countUsers(t, p); after != before {
+		t.Fatalf("строк users было %d, стало %d: завелась пустая могила", before, after)
+	}
+}
+
+func countUsers(t *testing.T, p *Platform) int {
+	t.Helper()
+	var n int
+	if err := p.pool.QueryRow(context.Background(), `SELECT count(*) FROM users`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // Очередь: публикация заводит карточку, автомат выносит мнение, скрытое
@@ -479,51 +581,6 @@ func TestВыгрузкаДанных(t *testing.T) {
 		t.Error("в выгрузку попали внутренние поля сессии")
 	}
 	_ = noteID
-}
-
-// Проход по автору идёт ПОРЦИЯМИ и доводится до конца фоновой службой: у
-// участника с 138 тыс. реплик один проход стоит 53 с, и в срок веб-запроса он не
-// влезает.
-func TestОтложенныйПроходДоводится(t *testing.T) {
-	p := testPlatform(t)
-	ctx := context.Background()
-	author := mustUser(t, p, "Пух")
-	noteID := mustNote(t, p, author, "заметка")
-	for i := range 5 {
-		ingestComment(t, p, int64(910000+i), noteID, 0, 0)
-	}
-	// Комментарии зеркала принадлежат тени, поэтому переписываем автора руками:
-	// проверяется механика прохода, а не приём.
-	if _, err := p.pool.Exec(ctx, `UPDATE comments SET author_id = $1 WHERE note_id = $2`,
-		author, noteID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.pool.Exec(ctx,
-		`UPDATE users SET hide_all = true, visibility_dirty = true WHERE id = $1`, author); err != nil {
-		t.Fatal(err)
-	}
-
-	dirty, err := p.DirtyVisibility(ctx, 10)
-	if err != nil || len(dirty) != 1 || dirty[0] != author {
-		t.Fatalf("незавершённые проходы: %v (%v)", dirty, err)
-	}
-	done, err := p.SettleVisibility(ctx, author)
-	if err != nil || !done {
-		t.Fatalf("доводка: %v (%v)", done, err)
-	}
-	if left, err := p.DirtyVisibility(ctx, 10); err != nil || len(left) != 0 {
-		t.Fatalf("флаг не снят: %v (%v)", left, err)
-	}
-	n, err := p.NoteRow(ctx, noteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n.Status != StatusHiddenOwner || n.CommentCount != 0 {
-		t.Fatalf("после прохода заметка %d, счётчик %d", n.Status, n.CommentCount)
-	}
-	if cs, err := p.Thread(ctx, Viewer{}, noteID); err != nil || len(cs) != 0 {
-		t.Fatalf("видно %d реплик (%v)", len(cs), err)
-	}
 }
 
 // Планы запросов — часть контракта: страница треда у МОДЕРАТОРА обязана идти по
