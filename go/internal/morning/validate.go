@@ -80,6 +80,15 @@ func validate(d draft, cfg validateConfig) string {
 	if tell := sitetext.MachineTell(text); tell != "" {
 		return tell
 	}
+	// Приметы несмешного — те же, что у амвона, и живут они в одном месте:
+	// сползает в них любой текст, который пишет модель. Формулировка причины
+	// своя — она едет в промпт переспроса, а говорить надо про утреннюю строку.
+	if m := sitetext.Aphorism(text); m != "" {
+		return "афоризм «" + m + "»: это наблюдение сверху, а не панч — влезь внутрь положения"
+	}
+	if m := sitetext.JokeTag(text); m != "" {
+		return "метка шутки «" + m + "»: если смешно, она не нужна, если не смешно — не спасёт"
+	}
 	if md := sitetext.MarkdownHit(text); md != "" {
 		return "markdown (" + md + "): на сайте он напечатается буквально"
 	}
@@ -112,24 +121,71 @@ func validate(d draft, cfg validateConfig) string {
 // тут самая обидная из возможных: заметка выйдет вовремя и будет врать о том,
 // какой сегодня день.
 func checkDate(text string, cfg validateConfig) string {
-	for _, m := range reDate.FindAllStringSubmatch(text, -1) {
-		day, _ := strconv.Atoi(m[1])
-		month := monthIndex(m[2])
-		if day != cfg.Day || month != cfg.Month {
-			return "дата «" + m[0] + "» не сегодняшняя: сегодня " +
+	head, rest := splitGreeting(text)
+	lowerHead := strings.ToLower(head)
+
+	// Приветствие: дата и день недели обязаны быть сегодняшними. Ошибка тут
+	// самая обидная из возможных — заметка выйдет вовремя и соврёт о том, какой
+	// сегодня день.
+	for _, m := range reDate.FindAllStringSubmatch(head, -1) {
+		if day, _ := strconv.Atoi(m[1]); day != cfg.Day || monthIndex(m[2]) != cfg.Month {
+			return "в приветствии дата «" + m[0] + "» не сегодняшняя: сегодня " +
 				strconv.Itoa(cfg.Day) + " " + months[cfg.Month-1]
 		}
 	}
-	lower := strings.ToLower(text)
+	if w := otherWeekday(lowerHead, cfg.Weekday); w != "" {
+		return "в приветствии другой день недели («" + w + "»), а сегодня " + cfg.Weekday
+	}
+
+	// Дальше по тексту чужой день и чужая дата РАЗРЕШЕНЫ: «до субботы далеко» и
+	// «до первого сентября неделя» — шутка про календарь, а не ложь про
+	// сегодня. Запрет на них стоил живого прогона 24.08.2026: три попытки
+	// подряд забракованы, заметка не вышла бы вовсе. Ложью такое становится
+	// рядом со словом «сегодня» — вот это и проверяем.
+	lowerRest := strings.ToLower(rest)
+	for _, m := range reToday.FindAllStringIndex(lowerRest, -1) {
+		window := lowerRest[m[1]:min(len(lowerRest), m[1]+todayWindow)]
+		if w := otherWeekday(window, cfg.Weekday); w != "" {
+			return "«сегодня " + w + "» — а сегодня " + cfg.Weekday
+		}
+		for _, d := range reDate.FindAllStringSubmatch(window, -1) {
+			if day, _ := strconv.Atoi(d[1]); day != cfg.Day || monthIndex(d[2]) != cfg.Month {
+				return "«сегодня " + d[0] + "» — а сегодня " +
+					strconv.Itoa(cfg.Day) + " " + months[cfg.Month-1]
+			}
+		}
+	}
+	return ""
+}
+
+// reToday — слова, после которых названная дата перестаёт быть шуткой про
+// календарь и становится утверждением о нынешнем дне.
+var reToday = regexp.MustCompile(`(сегодня|нынче|в этот день)`)
+
+// todayWindow — сколько байт после «сегодня» считаем утверждением о нём. Тридцать
+// с небольшим — это два-три слова: «сегодня, во вторник, …», «сегодня 25 августа».
+const todayWindow = 40
+
+// splitGreeting — первая строка (приветствие с днём и числом) и всё остальное.
+// Ритуал живёт в первой строке, там и проверяется строго.
+func splitGreeting(text string) (head, rest string) {
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		return text[:i], text[i:]
+	}
+	return text, ""
+}
+
+// otherWeekday — назван ли в куске текста день недели, отличный от сегодняшнего.
+// Сравнение по корню: «среда» без огласовки совпала бы со «средой», а
+// морфологии у нас нет.
+func otherWeekday(lower, today string) string {
 	for _, w := range weekdays {
-		if w == cfg.Weekday {
+		if w == today {
 			continue
 		}
-		// «среда» без огласовки совпала бы со «средой» — сравниваем по корню,
-		// как везде в проекте.
 		root := []rune(w)
 		if strings.Contains(lower, string(root[:len(root)-1])) {
-			return "в тексте другой день недели («" + w + "»), а сегодня " + cfg.Weekday
+			return w
 		}
 	}
 	return ""

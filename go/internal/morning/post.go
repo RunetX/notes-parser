@@ -48,8 +48,38 @@ func (s *Service) Draft(ctx context.Context, slot time.Time) (draft, []holidays.
 		Day: slot.Day(), Month: int(slot.Month()), Weekday: weekdays[int(slot.Weekday())],
 		Facts: facts,
 	}
-	d, err := s.ask(genCtx, buildPrompt(in), cfg)
-	return d, facts, err
+	d, err := s.ask(genCtx, morningSystem, buildPrompt(in), cfg)
+	if err != nil || d.Skip {
+		return d, facts, err
+	}
+	return s.punchUp(genCtx, d, in, cfg), facts, nil
+}
+
+// punchUp — второй проход по своему же черновику: убрать пояснение после удара,
+// переставить ударное слово в конец, срезать разгон. Первый заход ищет угол,
+// второй его затачивает — в один заход модель этого не делает, она бережёт уже
+// написанное. Приём и его цена перенесены из амвона (`pulpit.punchUp`).
+//
+// Правка идёт ТЕМ ЖЕ циклом `ask`, то есть проверяется тем же валидатором:
+// редактор, потерявший приветствие, эмодзи или дату, до сайта не доедет.
+// Провал правки заметку НЕ отменяет — уходит черновик: он уже прошёл проверку,
+// а правка была улучшением, а не условием.
+func (s *Service) punchUp(ctx context.Context, d draft, in promptInput, cfg validateConfig) draft {
+	sharp, err := s.ask(ctx, morningPunchSystem, buildPunchPrompt(d.Text, in), cfg)
+	if err != nil {
+		s.log.Info("утренняя заметка: правка не удалась, берём черновик", "err", err)
+		return d
+	}
+	if sharp.Skip || strings.TrimSpace(sharp.Text) == "" {
+		return d
+	}
+	if sharp.Text != d.Text {
+		s.log.Debug("утренняя заметка поправлена", "было", d.Text, "стало", sharp.Text)
+	}
+	if sharp.Idea == "" {
+		sharp.Idea = d.Idea
+	}
+	return sharp
 }
 
 // facts — поводы дня после слияния календарей и фильтра. Ошибка ВСЕХ источников
@@ -97,15 +127,17 @@ func hasKind(list []holidays.Occasion, k holidays.Kind) bool {
 	return false
 }
 
-// ask — цикл «спросить → починить → проверить → переспросить».
-func (s *Service) ask(ctx context.Context, base string, cfg validateConfig) (draft, error) {
+// ask — цикл «спросить → починить → проверить → переспросить». Системный
+// промпт приходит параметром: черновик и правку пишет одна и та же модель, но
+// работы у неё разные (`morningSystem` против `morningPunchSystem`).
+func (s *Service) ask(ctx context.Context, system, base string, cfg validateConfig) (draft, error) {
 	var lastErr error
 	for attempt := 0; attempt < generateRetries; attempt++ {
 		prompt := base
 		if lastErr != nil {
 			prompt += fmt.Sprintf(retryNote, lastErr)
 		}
-		d, retriable, err := s.askOnce(ctx, prompt, cfg)
+		d, retriable, err := s.askOnce(ctx, system, prompt, cfg)
 		if err == nil {
 			return d, nil
 		}
@@ -120,8 +152,8 @@ func (s *Service) ask(ctx context.Context, base string, cfg validateConfig) (dra
 // askOnce — одна попытка: запрос, разбор, отказ, нормализация, проверка.
 // retriable отделяет брак ответа (пришёл, но не годится) от ошибки самого
 // запроса — её повторять незачем, сеть и 429/5xx SDK уже отретраил сам.
-func (s *Service) askOnce(ctx context.Context, prompt string, cfg validateConfig) (_ draft, retriable bool, err error) {
-	raw, err := s.gen.GenerateJSON(ctx, morningSystem, prompt, morningSchema)
+func (s *Service) askOnce(ctx context.Context, system, prompt string, cfg validateConfig) (_ draft, retriable bool, err error) {
+	raw, err := s.gen.GenerateJSON(ctx, system, prompt, morningSchema)
 	if err != nil {
 		return draft{}, false, err
 	}

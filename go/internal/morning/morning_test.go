@@ -1,6 +1,11 @@
 package morning
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -272,14 +277,20 @@ func validCfg() validateConfig {
 	}
 }
 
-func TestValidate(t *testing.T) {
-	ok := `Доброе утро! ☀️ Сегодня понедельник, 24 августа.
+// okNote — образец годной заметки: приветствие со значком, поводы строками с
+// эмодзи, именины, вопрос в конце. Один на все проверки формата.
+func okNote() string {
+	return `Доброе утро! ☀️ Сегодня понедельник, 24 августа.
 
 🎶 День странной музыки: пора признаться, что у вас в наушниках.
 
 🎂 Именины у Марии и Ульяны.
 
 А ещё в 1853 году придумали чипсы. Что у вас сегодня?`
+}
+
+func TestValidate(t *testing.T) {
+	ok := okNote()
 	used := []int{1, 3, 4}
 	cases := []struct {
 		name string
@@ -294,6 +305,13 @@ func TestValidate(t *testing.T) {
 		{"длинное тире", draft{
 			Text: strings.ReplaceAll(ok, "музыки: пора", "музыки — пора"), Used: used}, true},
 		{"обломок размышления", draft{Text: "Wait, no. " + ok, Used: used}, true},
+		// Приметы несмешного: модель сползает в них, когда панча не нашлось.
+		{"афоризм вместо панча", draft{
+			Text: strings.ReplaceAll(ok, "пора признаться, что у вас в наушниках",
+				"дело не в музыке, а в том, что мы боимся тишины"), Used: used}, true},
+		{"метка шутки", draft{
+			Text: strings.ReplaceAll(ok, "что у вас в наушниках", "что у вас в наушниках (шутка)"),
+			Used: used}, true},
 		// Эмодзи здесь вместо интонации, которой у текста нет: без них заметка
 		// читается сводкой календаря (замечание владельца 24.08.2026).
 		{"без эмодзи", draft{Text: stripEmoji(ok), Used: used}, true},
@@ -301,8 +319,20 @@ func TestValidate(t *testing.T) {
 		// враньё ловится механически.
 		{"чужая дата", draft{
 			Text: strings.ReplaceAll(ok, "24 августа", "25 августа"), Used: used}, true},
-		{"чужой день недели", draft{
+		{"чужой день недели в приветствии", draft{
 			Text: strings.ReplaceAll(ok, "понедельник", "вторник"), Used: used}, true},
+		// Шутка про календарь — не ложь про сегодня. Запрет на неё стоил живого
+		// прогона 24.08.2026: три попытки подряд забракованы фразой «до субботы
+		// далеко», и заметка не вышла бы вовсе.
+		{"чужой день недели в шутке", draft{
+			Text: strings.ReplaceAll(ok, "Что у вас сегодня?", "До субботы ещё далеко. Ну как вы?"),
+			Used: used}, false},
+		{"чужой день недели рядом с «сегодня»", draft{
+			Text: strings.ReplaceAll(ok, "Что у вас сегодня?", "А сегодня, между прочим, суббота."),
+			Used: used}, true},
+		{"чужая дата в шутке", draft{
+			Text: strings.ReplaceAll(ok, "Что у вас сегодня?", "До 1 сентября неделя. Что успеете?"),
+			Used: used}, false},
 		{"выдуманный год", draft{
 			Text: strings.ReplaceAll(ok, "1853", "1854"), Used: used}, true},
 		{"повода нет в списке", draft{Text: ok, Used: []int{1, 19}}, true},
@@ -376,4 +406,76 @@ func TestBuildPromptWithoutFacts(t *testing.T) {
 	if !strings.Contains(p, "поводов нет") {
 		t.Errorf("пустой список поводов не объяснён модели:\n%s", p)
 	}
+}
+
+// stubGen — модель на верёвочке: отдаёт заготовленные ответы по очереди и
+// запоминает, каким системным промптом её звали.
+type stubGen struct {
+	answers []string
+	systems []string
+}
+
+func (g *stubGen) GenerateJSON(_ context.Context, system, _ string, _ map[string]any) ([]byte, error) {
+	g.systems = append(g.systems, system)
+	if len(g.answers) == 0 {
+		return nil, errors.New("ответов больше нет")
+	}
+	a := g.answers[0]
+	g.answers = g.answers[1:]
+	if a == "" {
+		return nil, errors.New("модель отказала")
+	}
+	return []byte(a), nil
+}
+
+func punchService(answers ...string) (*Service, *stubGen) {
+	g := &stubGen{answers: answers}
+	return &Service{gen: g, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, g
+}
+
+func punchInput() promptInput {
+	return promptInput{Weekday: "понедельник", DateWord: "24 августа 2026 года", Facts: factsFixture()}
+}
+
+// TestPunchUpFallsBackToDraft — провал правки заметку НЕ отменяет: черновик уже
+// прошёл проверку, а правка была улучшением, а не условием.
+func TestPunchUpFallsBackToDraft(t *testing.T) {
+	d := draft{Text: okNote(), Used: []int{1, 3, 4}, Idea: "музыка и именины"}
+	// Редактор отвечает браком трижды (потерял приветствие) — цикл ask сдаётся.
+	bad := `{"skip":false,"text":"Здравствуйте. Сегодня понедельник.","used":[1],"idea":"x"}`
+	s, g := punchService(bad, bad, bad)
+	got := s.punchUp(context.Background(), d, punchInput(), validCfg())
+	if got.Text != d.Text {
+		t.Errorf("после провала правки взят не черновик:\n%s", got.Text)
+	}
+	for _, sys := range g.systems {
+		if sys != morningPunchSystem {
+			t.Error("редактора позвали не тем системным промптом")
+		}
+	}
+}
+
+// TestPunchUpTakesEditedText — удачная правка заменяет черновик, а потерянную
+// строку дневника берём от него: редактор правит текст, а не журнал.
+func TestPunchUpTakesEditedText(t *testing.T) {
+	d := draft{Text: okNote(), Used: []int{1, 3, 4}, Idea: "музыка и именины"}
+	sharp := strings.ReplaceAll(okNote(), "пора признаться, что у вас в наушниках",
+		"признавайтесь, что у вас в наушниках")
+	ans := `{"skip":false,"text":` + mustJSON(sharp) + `,"used":[1,3,4],"idea":""}`
+	s, _ := punchService(ans)
+	got := s.punchUp(context.Background(), d, punchInput(), validCfg())
+	if got.Text != sharp {
+		t.Errorf("правка не взята:\n%s", got.Text)
+	}
+	if got.Idea != d.Idea {
+		t.Errorf("мысль дневника потеряна: %q", got.Idea)
+	}
+}
+
+func mustJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
