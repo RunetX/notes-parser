@@ -24,9 +24,18 @@ import (
 // список здесь — исчерпывающий ответ на вопрос «что площадка позволяет
 // участнику». Правки и удаления чужого в нём нет, и это видно с одного взгляда.
 type Writer interface {
-	CreateNote(ctx context.Context, in platform.NewNote) (int64, error)
+	// CreateNote публикует заметку. shot — уже ПЕРЕКОДИРОВАННЫЕ байты картинки
+	// (nil, если её нет). Морда отдаёт байты, а не путь к файлу: класть их в
+	// хранилище обязан тот же код, что у зеркала и у аватара, иначе три места
+	// начнут по-разному решать, что считать картинкой. Тот же довод, что у
+	// SetOwnAvatar, и та же дорога.
+	CreateNote(ctx context.Context, in platform.NewNote, shot *Shot) (int64, error)
+	// MayPublishNote — можно ли этому человеку сейчас публиковать. Спрашивается
+	// ДО перекодирования: отказ не должен стоить ни процессора, ни файла,
+	// который после отката транзакции убрать будет некому (см. shot.go).
+	MayPublishNote(ctx context.Context, userID int64) error
 	CreateComment(ctx context.Context, in platform.NewComment) (int64, error)
-	EditNote(ctx context.Context, userID, noteID int64, body string) error
+	EditNote(ctx context.Context, userID int64, in platform.NoteEdit) error
 	SetOwnNick(ctx context.Context, userID int64, nick string) error
 	// SetOwnAvatar — поставить себе фото, забранное из анкеты НГС: url, откуда
 	// оно взято, и сами байты. Своего файла площадка не принимает вовсе, поэтому
@@ -54,6 +63,15 @@ type composePage struct {
 	Body      string
 	Anonymous bool
 	Problem   string
+	// CanShot — площадка сейчас принимает файлы (есть перекодировщик). Нет —
+	// поля файла в форме нет вовсе.
+	CanShot bool
+	// HasShot — у правимой заметки есть картинка, значит есть и «снять».
+	HasShot bool
+	// LostShot — отказ случился, когда файл уже был приложен. Браузер его не
+	// возвращает, и человеку надо сказать об этом прямо, а не оставить гадать,
+	// почему поле опустело.
+	LostShot bool
 }
 
 // ---------------------------------------------------------------- новая заметка
@@ -63,36 +81,94 @@ func (s *Server) handleNewNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, http.StatusOK, composePageName, composePage{
-		page: s.newPage(r, "Новая заметка"),
+		page: s.newPage(r, "Новая заметка"), CanShot: s.takesShots(),
 	})
 }
 
+// handleCreateNote — публикация заметки, с картинкой или без.
+//
+// Порядок проверок здесь — это порядок их ЦЕНЫ, а не порядок важности.
+// Происхождение читается из заголовков и не стоит ничего; вошедший уже лежит в
+// контексте; право публиковать — один дешёвый запрос. И только потом слот
+// очереди, чтение десяти мегабайт тела и запуск ffmpeg.
+//
+// Так сделано ради файла: байты ложатся на диск ДО транзакции, а уборки каталога
+// у площадки нет вовсе, поэтому каждый отказ, случившийся ПОСЛЕ перекодирования,
+// оставлял бы файл навсегда.
 func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
-	if !s.postWrite(w, r) {
+	multipart := isMultipart(r)
+	if !multipart {
+		// Форма без файла ходит прежней дорогой: она работает и из старой
+		// вкладки, и когда картинки площадка не принимает вовсе.
+		if !s.postWrite(w, r) {
+			return
+		}
+	} else if !sameOrigin(r) {
+		s.fail(w, r, http.StatusForbidden, "Запрос пришёл не с нашей страницы.")
 		return
 	}
 	u, ok := s.writer(w, r)
 	if !ok {
 		return
 	}
-	body := r.FormValue("body")
-	anon := r.FormValue("anonymous") != ""
-	id, err := s.wr.CreateNote(r.Context(), platform.NewNote{
-		AuthorID: u.ID, Anonymous: anon, Body: body,
-	})
-	if err != nil {
-		status, problem := writeProblem(err)
-		if problem == "" {
-			s.oops(w, r, "публикация заметки", err)
+	// Дешёвый отказ до всякой работы. Настоящая проверка всё равно стоит внутри
+	// транзакции и остаётся единственной, которой можно верить.
+	if multipart {
+		if err := s.wr.MayPublishNote(r.Context(), u.ID); err != nil {
+			s.composeProblem(w, r, err, "", false, true)
 			return
 		}
-		s.render(w, r, status, composePageName, composePage{
-			page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon, Problem: problem,
+		release, ok := s.takeShotSlot(w, r)
+		if !ok {
+			return
+		}
+		defer release()
+		if !s.postUpload(w, r) {
+			return
+		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
+	}
+
+	body := r.FormValue("body")
+	anon := r.FormValue("anonymous") != ""
+
+	shot, problem := s.takeShot(r.Context(), r)
+	if problem != "" {
+		// Заметка НЕ публикуется. Опубликовать текст молча, без картинки, значит
+		// решить за человека, который её осознанно прикладывал.
+		s.render(w, r, http.StatusBadRequest, composePageName, composePage{
+			page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon,
+			Problem: problem, LostShot: true, CanShot: s.takesShots(),
 		})
+		return
+	}
+
+	id, err := s.wr.CreateNote(r.Context(), platform.NewNote{
+		AuthorID: u.ID, Anonymous: anon, Body: body,
+	}, shot)
+	if err != nil {
+		s.composeProblem(w, r, err, body, anon, shot != nil)
 		return
 	}
 	videoWarm(id, body)
 	http.Redirect(w, r, "/n/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// composeProblem перерисовывает форму с отказом, не теряя набранного текста.
+func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err error, body string, anon, hadShot bool) {
+	status, problem := writeProblem(err)
+	if problem == "" {
+		s.oops(w, r, "публикация заметки", err)
+		return
+	}
+	s.render(w, r, status, composePageName, composePage{
+		page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon,
+		Problem: problem, LostShot: hadShot, CanShot: s.takesShots(),
+	})
 }
 
 // ---------------------------------------------------------------- правка заметки
@@ -109,7 +185,17 @@ func (s *Server) handleEditNote(w http.ResponseWriter, r *http.Request) {
 		Admin:     asAdmin,
 		Body:      note.Body,
 		Anonymous: note.Anonymous,
+		HasShot:   !asAdmin && s.noteHasImage(r.Context(), note.ID),
 	})
+}
+
+// noteHasImage — есть ли у заметки картинка. Спрашивается только формой правки:
+// «снять картинку» нельзя предлагать там, где снимать нечего, а отказ на кнопку
+// хуже её отсутствия. Ошибку чтения считаем за «нет»: показать лишнюю галочку
+// хуже, чем не показать её на странице, которая иначе откроется.
+func (s *Server) noteHasImage(ctx context.Context, id int64) bool {
+	imgs, err := s.st.NoteImages(ctx, id)
+	return err == nil && len(imgs) > 0
 }
 
 func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
@@ -121,12 +207,18 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := r.FormValue("body")
+	// Снятие картинки — часть той же правки, а не отдельное действие: разведи их
+	// на две транзакции, и отказ второй оставит человека с закрытым навсегда
+	// окном и с картинкой, которую он снимал.
+	dropShot := r.FormValue("drop_shot") != ""
 	var err error
 	if asAdmin {
 		err = s.mod.EditNoteAsAdmin(r.Context(), platform.Viewer{UserID: u.ID, Role: u.Role},
 			note.ID, body, r.FormValue("reason"))
 	} else {
-		err = s.wr.EditNote(r.Context(), u.ID, note.ID, body)
+		err = s.wr.EditNote(r.Context(), u.ID, platform.NoteEdit{
+			NoteID: note.ID, Body: body, DropImage: dropShot,
+		})
 	}
 	// «Текст и так такой» отказом не считается: администратор мог открыть форму
 	// и закрыть её, ничего не изменив, — то же правило, что у кнопок модерации.
@@ -139,6 +231,7 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, status, composePageName, composePage{
 			page: s.newPage(r, "Правка заметки"), Note: note, Editing: true, Admin: asAdmin,
 			Body: body, Anonymous: note.Anonymous, Problem: problem,
+			HasShot: !asAdmin && s.noteHasImage(r.Context(), note.ID),
 		})
 		return
 	}
@@ -341,9 +434,13 @@ func writeProblem(err error) (int, string) {
 			"Вы отозвали согласие. Верните его на своей странице, и можно будет писать снова — " +
 				"но прежние заметки останутся без подписи: обезличивание необратимо."
 	case errors.Is(err, platform.ErrConsentOutdated):
+		// Что именно изменилось, говорит сам документ на экране подписи, и
+		// здесь это не повторяется дословно: редакция меняется, а текст отказа
+		// иначе устаревает молча — так уже вышло с прошлой формулировкой про
+		// поисковые системы.
 		return http.StatusForbidden,
-			"Соглашения обновились: страницы площадки теперь открыты поисковым системам. " +
-				"Откройте «Мою страницу» и подпишите новую редакцию — после этого можно писать дальше."
+			"Соглашения обновились. Откройте «Мою страницу» и подпишите новую редакцию — " +
+				"после этого можно писать дальше."
 	case errors.Is(err, platform.ErrNotMember):
 		return http.StatusForbidden, "Писать может только участник площадки."
 	case errors.Is(err, platform.ErrBadReaction):

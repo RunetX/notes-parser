@@ -28,6 +28,14 @@ type fakeWriter struct {
 	avatar   fakeAvatar
 	nextID   int64
 	fail     error
+	// shot — что дошло до ядра вместе с заметкой; nil означает «картинки не
+	// было». Половина тестов приёма проверяет именно это: перекодировщик не
+	// должен звать ядро там, где файл негоден.
+	shot *Shot
+	// mayFail — чем отвечает предварительная проверка права публиковать.
+	mayFail error
+	// dropShot — просили ли снять картинку той же правкой.
+	dropShot bool
 }
 
 // fakeAvatar — что дошло до ядра при обновлении фото: откуда взято и сами байты.
@@ -38,13 +46,16 @@ type fakeAvatar struct {
 	data []byte
 }
 
-func (f *fakeWriter) CreateNote(_ context.Context, in platform.NewNote) (int64, error) {
+func (f *fakeWriter) CreateNote(_ context.Context, in platform.NewNote, shot *Shot) (int64, error) {
 	f.note = in
+	f.shot = shot
 	if f.fail != nil {
 		return 0, f.fail
 	}
 	return f.id(), nil
 }
+
+func (f *fakeWriter) MayPublishNote(context.Context, int64) error { return f.mayFail }
 
 func (f *fakeWriter) CreateComment(_ context.Context, in platform.NewComment) (int64, error) {
 	f.comment = in
@@ -59,8 +70,9 @@ func (f *fakeWriter) React(_ context.Context, in platform.NewReaction) error {
 	return f.fail
 }
 
-func (f *fakeWriter) EditNote(_ context.Context, _, _ int64, body string) error {
-	f.edited = body
+func (f *fakeWriter) EditNote(_ context.Context, _ int64, in platform.NoteEdit) error {
+	f.edited = in.Body
+	f.dropShot = in.DropImage
 	return f.fail
 }
 

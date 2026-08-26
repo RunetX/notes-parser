@@ -53,6 +53,7 @@
       {{template "reactions" (rx $ 0)}}
       <div class="nfoot">
         {{when $n.PublishedAt $n.PublishedExact}}
+        {{with origin $n.ID}}{{if .URL}}<a class="orig" href="{{.URL}}" title="{{.Title}}" rel="noopener nofollow">{{.Label}}</a>{{else}}<span class="orig" title="{{.Title}}">{{.Label}}</span>{{end}}{{end}}
         {{/* «Исправлено» стоит рядом с датой, а не вместо неё: текст под уже
              написанными ответами изменился, и читатель обязан узнать об этом со
              страницы, а не из сравнения с памятью. Метки этой на НГС не было —

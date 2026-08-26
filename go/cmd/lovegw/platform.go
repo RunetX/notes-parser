@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"lovegw/internal/config"
+	"lovegw/internal/imgconv"
 	"lovegw/internal/love"
 	"lovegw/internal/platform"
 	"lovegw/internal/platimport"
@@ -622,6 +623,37 @@ func platformDoctor(ctx context.Context, cfg *config.Config) error {
 			fmt.Fprintf(w, "медиа\tНЕ КАТАЛОГ\t%s\n", cfg.Platform.MediaDir)
 		} else {
 			fmt.Fprintf(w, "медиа\tok\t%s\n", cfg.Platform.MediaDir)
+		}
+		// Сколько принесли участники. Считается по source_url = '': у своего
+		// файла его нет вовсе (качать было неоткуда), у зеркального там адрес
+		// hsmedia.ru. Уборки каталога у площадки нет, поэтому это единственное
+		// место, где виден рост, — а du по каталогу с миллионом файлов стоил бы
+		// дороже всего остального doctor вместе взятого.
+		var shots, shotBytes int64
+		if err := p.Pool().QueryRow(ctx,
+			`SELECT count(*), coalesce(sum(bytes), 0) FROM media WHERE source_url = ''`).
+			Scan(&shots, &shotBytes); err == nil && shots > 0 {
+			fmt.Fprintf(w, "принесено\t%d файлов, %d МБ\tкартинки участников (уборки нет)\n",
+				shots, shotBytes/1024/1024)
+		}
+	}
+
+	// Перекодировщик картинок. Спрашиваем не «задан ли путь», а что он УМЕЕТ:
+	// сборка ffmpeg без libwebp поднимется и будет работать, просто файлы лягут
+	// на треть толще, и знать об этом надо до того, как вырастет каталог.
+	if !cfg.Platform.Shots.Enabled {
+		fmt.Fprintf(w, "картинки\tВЫКЛЮЧЕНЫ\tplatform.shots.enabled = false\n")
+	} else {
+		conv := &imgconv.FFmpeg{Path: ffmpegPath(cfg)}
+		switch err := conv.Probe(ctx); {
+		case err != nil:
+			fmt.Fprintf(w, "картинки\tНЕ РАБОТАЮТ\t%v\n", err)
+		case conv.Codec() == "jpeg":
+			ver, _ := conv.Version(ctx)
+			fmt.Fprintf(w, "картинки\tТОЛЬКО JPEG\tв сборке ffmpeg нет libwebp: %s\n", ver)
+		default:
+			ver, _ := conv.Version(ctx)
+			fmt.Fprintf(w, "картинки\tok\twebp, %s\n", ver)
 		}
 	}
 	if cfg.Platform.BaseURL == "" {

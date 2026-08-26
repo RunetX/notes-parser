@@ -42,6 +42,7 @@ type fakeStore struct {
 	note    platform.NoteView
 	noteErr error
 	images  []platform.Media
+	thumbs  map[int64]platform.Media
 
 	thread []platform.CommentView
 
@@ -106,6 +107,16 @@ func (f *fakeStore) NoteViewByID(_ context.Context, _ platform.Viewer, id int64)
 
 func (f *fakeStore) NoteImages(context.Context, int64) ([]platform.Media, error) {
 	return f.images, nil
+}
+
+func (f *fakeStore) NoteThumbs(_ context.Context, ids []int64) (map[int64]platform.Media, error) {
+	out := map[int64]platform.Media{}
+	for _, id := range ids {
+		if m, ok := f.thumbs[id]; ok {
+			out[id] = m
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) Thread(context.Context, platform.Viewer, int64) ([]platform.CommentView, error) {

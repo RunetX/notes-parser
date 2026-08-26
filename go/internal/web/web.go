@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"lovegw/internal/imgconv"
 	"lovegw/internal/platform"
 )
 
@@ -49,6 +50,11 @@ type Config struct {
 	// MediaDir — каталог CAS. В бою файлы отдаёт Caddy, минуя Go; наш обработчик
 	// нужен разработке и на случай запроса мимо прокси.
 	MediaDir string
+	// SiteBaseURL — адрес love.ngs.ru. Нужен ровно одному месту: метке
+	// происхождения у зеркальной заметки, которая ведёт на оригинал (origin.go).
+	// Пусто — метка остаётся, ссылки нет; адрес чужого сайта в морде не
+	// прописывается литералом.
+	SiteBaseURL string
 	// Operator — реквизиты того, кто обрабатывает данные. Подставляются в
 	// тексты согласий ДО публикации: доказательством служит финальный текст, а
 	// не шаблон, поэтому смена реквизитов — это новая версия документа.
@@ -77,6 +83,10 @@ type Store interface {
 	PinnedNotes(ctx context.Context, v platform.Viewer) ([]platform.NoteView, error)
 	NoteViewByID(ctx context.Context, v platform.Viewer, id int64) (platform.NoteView, error)
 	NoteImages(ctx context.Context, noteID int64) ([]platform.Media, error)
+	// NoteThumbs — первые иллюстрации сразу многих заметок: лента показывает
+	// картинку прямо в карточке, а двадцать отдельных запросов на страницу —
+	// это ровно тот расход, из-за которого лента и получила свой индекс.
+	NoteThumbs(ctx context.Context, ids []int64) (map[int64]platform.Media, error)
 	// CommentViewByID — одна реплика. Нужна форме ответа, которая открывается
 	// на месте, без перезагрузки (replyform.go): страница просит у сервера
 	// готовую строку с формой, а строке нужен адресат — его ник, тень он или
@@ -210,6 +220,14 @@ type Server struct {
 	guard *guard
 	// notes — длина ленты, посчитанная недавно (feed.go).
 	notes feedCount
+	// shots — перекодировщик картинок (shot.go): nil ⇒ файлов площадка не
+	// принимает, и поля файла на форме нет вовсе. Подключается SetShots, а не
+	// конструктором, по той же причине, что и events: способность
+	// необязательная — ffmpeg может не отвечать, и это не повод не подняться.
+	shots imgconv.Converter
+	// shotSem — очередь перекодирования. Отдельно от общего семафора морды:
+	// тот считает запросы, а этот — память (см. shotsInFlight).
+	shotSem chan struct{}
 	// secure — куки помечаются Secure и получают префикс __Host-. Выводится из
 	// BaseURL: по http браузер такие куки просто отбросит, и разработка встала
 	// бы на ровном месте.
@@ -236,6 +254,9 @@ func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *
 	// (см. linkMode). Ставится здесь и только читается: сервер в процессе
 	// один, а шаблоны с их FuncMap разбираются один раз на процесс.
 	setOwnLinkPrefix(cfg.BaseURL)
+	// Адрес НГС — для метки происхождения (origin.go). Ставится здесь и только
+	// читается, по той же причине и с той же оговоркой, что и строкой выше.
+	setNGSBase(cfg.SiteBaseURL)
 	// Превью роликов лежат в том же каталоге медиа (video.go, preview.go).
 	// Ставится тут по той же причине и с той же оговоркой: пустой каталог значит
 	// «карточек не бывает», и ссылки остаются текстом.

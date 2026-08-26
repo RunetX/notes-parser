@@ -209,6 +209,7 @@ func (s *Server) handleFreshFeed(w http.ResponseWriter, r *http.Request) {
 		CanWrite:    signedIn && me.Kind == platform.KindMember && s.wr != nil,
 		CanModerate: v.CanModerate() && s.mod != nil,
 		CanEdit:     me.Role >= platform.RoleAdmin && s.mod != nil,
+		Shots:       s.thumbs(ctx, notes),
 	}
 	if signedIn {
 		p.CSRF = csrfToken(s.session(r))

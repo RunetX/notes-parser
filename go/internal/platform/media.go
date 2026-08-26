@@ -9,6 +9,13 @@ package platform
 //
 // Байты отдаёт Caddy напрямую из /srv/media, мимо Go: это самый жирный по
 // трафику путь, а ядро на сервере одно.
+//
+// С 26.08.2026 у колонок два разных смысла, и их стоит держать в голове.
+// note_images.url у ЗЕРКАЛЬНОЙ строки — чужой адрес на hsmedia.ru, откуда файл
+// был взят; у строки, принесённой участником, — наш собственный путь /media/…,
+// потому что колонка NOT NULL, а взять картинку больше неоткуда: её принесли.
+// Отличаются они по media.source_url: у принесённой он пуст. По этой пустоте
+// «своё» и отделяется от «привезённого», а не по виду адреса.
 
 import (
 	"bytes"
@@ -67,6 +74,18 @@ func (s *MediaStore) Dir() string { return s.dir }
 // геоблок DDoS-Guard отдаёт на запрос картинки HTML-страницу с кодом 200, и
 // такой «аватар» осел бы в хранилище молча, а на страницах появился битым.
 func (s *MediaStore) Put(ctx context.Context, data []byte, sourceURL string) (Media, error) {
+	return s.PutSized(ctx, data, sourceURL, 0, 0)
+}
+
+// PutSized — то же самое, но с ЯВНЫМИ размерами.
+//
+// Нужен там, где формат выхода stdlib прочитать не умеет (webp), а размеры и так
+// известны: их задавал тот, кто перекодировал. Декодировать файл ради двух
+// чисел, лежащих в переменной, — работа ни за чем, а тянуть ради этого первую в
+// проекте картиночную зависимость тем более.
+//
+// Нулевые w/h означают «посчитай сам» — этим и стал прежний Put.
+func (s *MediaStore) PutSized(ctx context.Context, data []byte, sourceURL string, w, h int) (Media, error) {
 	if len(data) == 0 {
 		return Media{}, fmt.Errorf("пустой файл (%s)", sourceURL)
 	}
@@ -87,8 +106,11 @@ func (s *MediaStore) Put(ctx context.Context, data []byte, sourceURL string) (Me
 	// Размеры — «по возможности»: webp и прочие форматы вне stdlib просто не
 	// дадут их, и это не повод отказывать в приёме. Нужны они разметке, чтобы
 	// страница не прыгала при загрузке картинок.
-	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-		m.Width, m.Height = cfg.Width, cfg.Height
+	m.Width, m.Height = w, h
+	if m.Width <= 0 || m.Height <= 0 {
+		if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+			m.Width, m.Height = cfg.Width, cfg.Height
+		}
 	}
 
 	if err := s.write(sha, mime, data); err != nil {
@@ -229,6 +251,46 @@ func (p *Platform) missingMedia(ctx context.Context, what, sql string, limit int
 			return nil, fmt.Errorf("%s: %w", what, err)
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// NoteThumbs — ПЕРВАЯ иллюстрация каждой из названных заметок.
+//
+// Отдельный метод, а не NoteImages в цикле: лента показывает двадцать заметок, и
+// двадцать запросов вместо одного — это ровно тот расход, из-за которого лента
+// когда-то и получила свой индекс. Первая, а не все: в ленте карточка одна, и
+// вторая картинка в ней означала бы галерею, которой у заметки нет.
+//
+// Строки без байтов (sha256 IS NULL — знаем ссылку, файла ещё нет) пропускаются:
+// показывать в ленте нечего, а гонять читателя на hsmedia.ru мы не станем.
+func (p *Platform) NoteThumbs(ctx context.Context, ids []int64) (map[int64]Media, error) {
+	out := make(map[int64]Media, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT DISTINCT ON (i.note_id)
+		       i.note_id, i.sha256, coalesce(m.mime, ''),
+		       coalesce(m.width, 0), coalesce(m.height, 0)
+		  FROM note_images i
+		  JOIN media m ON m.sha256 = i.sha256
+		 WHERE i.note_id = ANY($1)
+		 ORDER BY i.note_id, i.position`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("иллюстрации ленты: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var m Media
+		if err := rows.Scan(&id, &m.SHA256, &m.MIME, &m.Width, &m.Height); err != nil {
+			return nil, fmt.Errorf("иллюстрации ленты: %w", err)
+		}
+		m.URL = MediaURL(m.SHA256, m.MIME)
+		if m.URL != "" {
+			out[id] = m
+		}
 	}
 	return out, rows.Err()
 }

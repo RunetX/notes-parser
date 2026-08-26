@@ -198,6 +198,33 @@ func consentGuard(ctx context.Context, q querier, userID int64) error {
 	return nil
 }
 
+// MayPublishNote — можно ли этому человеку сейчас опубликовать заметку.
+//
+// Тот же набор правил, что и внутри CreateNote, но ЧТЕНИЕМ и ЗАРАНЕЕ. Заводится
+// не ради экономии запросов: настоящая проверка всё равно стоит в транзакции и
+// остаётся единственной, которой можно верить.
+//
+// Нужна она из-за картинок. Байты ложатся на диск ДО транзакции (иначе строка
+// note_images ссылалась бы на файл, которого нет), а уборки каталога у площадки
+// нет вовсе — значит каждая ОТКЛОНЁННАЯ публикация оставляла бы файл навсегда.
+// Порог частоты у заметки — одна в пять минут, то есть отклонённых попыток может
+// быть сколько угодно: потолок морды пропускает примерно одну в десять секунд, и
+// это до двух с половиной гигабайт мусора в сутки с одного адреса. Не
+// теоретическая дыра, а способ забить диск.
+//
+// Гонка с настоящей проверкой остаётся: человека могли забанить в те сто
+// миллисекунд, что идут между ними. Один осиротевший файл — приемлемая цена,
+// две с половиной тысячи в сутки — нет.
+func (p *Platform) MayPublishNote(ctx context.Context, userID int64) error {
+	if userID == 0 {
+		return ErrNotMember
+	}
+	if err := publishGuard(ctx, p.pool, userID); err != nil {
+		return err
+	}
+	return enforceRate(ctx, p.pool, notesRecentQuery, userID, time.Now(), noteRates)
+}
+
 // enforceRate проверяет пороги частоты по нативным публикациям автора.
 func enforceRate(ctx context.Context, q querier, query string, authorID int64, now time.Time, rules []rateRule) error {
 	for _, r := range rules {
@@ -260,8 +287,9 @@ func enqueueCheck(ctx context.Context, q querier, kind string, id, noteID, autho
 // Правило целиком выражено состоянием строки, поэтому пережить рестарт и гонку
 // ему нечем не помочь: edited_at и comment_count лежат в той же таблице и берутся
 // под FOR UPDATE.
-func (p *Platform) EditNote(ctx context.Context, userID, noteID int64, body string) error {
-	body, err := cleanBody(body)
+func (p *Platform) EditNote(ctx context.Context, userID int64, in NoteEdit) error {
+	noteID := in.NoteID
+	body, err := cleanBody(in.Body)
 	if err != nil {
 		return err
 	}
@@ -306,6 +334,15 @@ func (p *Platform) EditNote(ctx context.Context, userID, noteID int64, body stri
 	if _, err := tx.Exec(ctx,
 		`UPDATE notes SET body = $2, edited_at = now() WHERE id = $1`, noteID, body); err != nil {
 		return fmt.Errorf("правка заметки %d: %w", noteID, err)
+	}
+	// Снятие картинки — то же одно действие, что и правка текста, поэтому та же
+	// транзакция. Строка media и файл на диске при этом остаются: хранилище
+	// адресуемо содержимым, тот же файл может быть привязан к другой заметке
+	// или стоять у кого-то аватаром, и «убрать своё» означало бы сломать чужое.
+	if in.DropImage {
+		if _, err := tx.Exec(ctx, `DELETE FROM note_images WHERE note_id = $1`, noteID); err != nil {
+			return fmt.Errorf("снятие иллюстрации заметки %d: %w", noteID, err)
+		}
 	}
 	// Текст стал другим — прежняя проверка к нему больше не относится.
 	if err := enqueueCheck(ctx, tx, SubjectNote, noteID, noteID, userID); err != nil {

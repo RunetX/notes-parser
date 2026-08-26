@@ -31,6 +31,10 @@ type OutNote struct {
 	AvatarMIME  string
 	Body        string
 	PublishedAt time.Time
+	// ImageSHA и ImageMIME — иллюстрация заметки, если она есть. Анонимность на
+	// картинку не влияет: маскируется автор, а не содержимое.
+	ImageSHA  []byte
+	ImageMIME string
 }
 
 // OutComment — нативный комментарий, готовый к отправке в тред.
@@ -62,10 +66,19 @@ const outNoteQuery = `
 	       CASE WHEN n.anonymous THEN NULL ELSE n.author_id  END,
 	       CASE WHEN n.anonymous THEN NULL ELSE u.nick       END,
 	       CASE WHEN n.anonymous THEN NULL ELSE u.avatar_sha END,
-	       CASE WHEN n.anonymous THEN NULL ELSE m.mime       END
+	       CASE WHEN n.anonymous THEN NULL ELSE m.mime       END,
+	       img.sha256, coalesce(img.mime, '')
 	  FROM notes n
 	  LEFT JOIN users u ON u.id = n.author_id
 	  LEFT JOIN media m ON m.sha256 = u.avatar_sha
+	  LEFT JOIN LATERAL (
+	      SELECT i.sha256, mi.mime
+	        FROM note_images i
+	        JOIN media mi ON mi.sha256 = i.sha256
+	       WHERE i.note_id = n.id
+	       ORDER BY i.position
+	       LIMIT 1
+	  ) img ON true
 	 WHERE n.id > $1 AND n.id < $3 AND n.status = 0
 	 ORDER BY n.id
 	 LIMIT $2`
@@ -92,7 +105,7 @@ func (p *Platform) OutboundNotes(ctx context.Context, afterID int64, limit int) 
 			mime   *string
 		)
 		if err := rows.Scan(&n.ID, &n.Anonymous, &n.Body, &n.PublishedAt,
-			&author, &nick, &n.AvatarSHA, &mime); err != nil {
+			&author, &nick, &n.AvatarSHA, &mime, &n.ImageSHA, &n.ImageMIME); err != nil {
 			return nil, fmt.Errorf("исходящие заметки: %w", err)
 		}
 		n.AuthorID, n.AuthorNick, n.AvatarMIME = ngsIDOf(author), strOf(nick), strOf(mime)

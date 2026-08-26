@@ -37,6 +37,10 @@
     </div>
     {{end}}
     {{if .Quote}}<blockquote class="mquote">{{.Quote}}</blockquote>{{end}}
+    {{/* Картинка заметки. Автомат её не смотрит вовсе (он читает текст), а
+         премодерации у картинок нет, — значит человек здесь единственный, кто
+         её увидит. Миниатюрой: очередь обязана читаться за минуту. */}}
+    {{if .ImageURL}}<a class="mshot" href="{{.ImageURL}}"><img src="{{.ImageURL}}" alt="Картинка заметки" loading="lazy"></a>{{end}}
     {{range .Reports}}
     <div class="mrep">Жалоба{{if .Nick}} от {{.Nick}}{{end}}: {{if .Reason}}{{.Reason}}{{else}}без объяснения{{end}}</div>
     {{end}}
@@ -68,6 +72,10 @@
       <span class="fine">{{.Model}}</span>
     </div>
     {{if .Quote}}<blockquote class="mquote">{{.Quote}}</blockquote>{{end}}
+    {{/* Картинка заметки. Автомат её не смотрит вовсе (он читает текст), а
+         премодерации у картинок нет, — значит человек здесь единственный, кто
+         её увидит. Миниатюрой: очередь обязана читаться за минуту. */}}
+    {{if .ImageURL}}<a class="mshot" href="{{.ImageURL}}"><img src="{{.ImageURL}}" alt="Картинка заметки" loading="lazy"></a>{{end}}
     <div class="mtext">{{.Body}}</div>
     {{template "moddec" (dec $ .)}}
   </li>

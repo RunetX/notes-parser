@@ -414,6 +414,21 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 		RETURNING id`, in.AuthorID, in.Anonymous, body).Scan(&id); err != nil {
 		return 0, fmt.Errorf("публикация заметки: %w", err)
 	}
+	// Иллюстрация — той же транзакцией: «заметка вышла, а картинка к ней не
+	// привязалась» это состояние, которого не должно быть вовсе, ровно как
+	// «опубликовано, но в очередь не попало».
+	//
+	// position литеральным нулём, а не coalesce(max + 1, 0) из AttachNoteImage:
+	// заметка только что создана, конкурента у неё нет, и подзапрос удлинял бы
+	// самую горячую транзакцию площадки ни за чем. Картинка у нативной заметки
+	// одна — так решено, и это же держит ключ (note_id, position).
+	if in.Image != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO note_images (note_id, position, sha256, url)
+			VALUES ($1, 0, $2, $3)`, id, in.Image.SHA256, in.Image.URL); err != nil {
+			return 0, fmt.Errorf("иллюстрация заметки: %w", err)
+		}
+	}
 	if err := enqueueCheck(ctx, tx, SubjectNote, id, id, in.AuthorID); err != nil {
 		return 0, err
 	}

@@ -993,6 +993,14 @@ type ReviewItem struct {
 	Model      string
 	AppealedAt *time.Time
 	Reports    []Report
+	// ImageURL — иллюстрация заметки, если она есть. Пусто у комментария
+	// (картинок у него не бывает) и у заметки без картинки.
+	//
+	// Модератор обязан видеть её ЗДЕСЬ, а не только на странице заметки:
+	// премодерации у картинок нет (решение владельца 26.08.2026), а автомат их
+	// не смотрит вовсе — он читает текст. Значит человек в очереди и есть
+	// единственный, кто картинку увидит.
+	ImageURL string
 }
 
 // Hidden — публикация сейчас скрыта модерацией.
@@ -1027,8 +1035,22 @@ const reviewColumns = `
 // строк в сутки, а если очередь растёт быстрее, чем её читают, поднимать надо
 // порог автомата, а не сортировку.
 func (p *Platform) ReviewQueue(ctx context.Context, limit int) ([]ReviewItem, error) {
+	// Заметка С КАРТИНКОЙ попадает к человеку ВСЕГДА, даже когда автомат
+	// промолчал. Это не премодерация — она уже опубликована и видна всем; это
+	// гарантия, что на неё кто-то посмотрит: текст читает машина, картинку не
+	// читает никто. Зеркальные сюда не приедут — очередь заводится только для
+	// нативных публикаций (enqueueCheck зовётся из CreateNote/EditNote).
+	//
+	// Цена названа честно: третье условие в OR выводит запрос из-под частичного
+	// индекса moderation_review, и очередь читается перебором непросмотренных
+	// строк. Терпимо потому, что строка тут заводится только на НАТИВНУЮ
+	// публикацию (а их у площадки сотни, не миллионы) и потому что страницу эту
+	// открывает модератор, а не читатель. Вырастет — лечится своим индексом, а
+	// не возвратом бокового соединения в список колонок.
 	rows, err := p.pool.Query(ctx, `SELECT `+reviewColumns+`
-		 WHERE q.decided_at IS NULL AND (q.verdict = 1 OR q.appealed_at IS NOT NULL)
+		 WHERE q.decided_at IS NULL
+		   AND (q.verdict = 1 OR q.appealed_at IS NOT NULL
+		        OR EXISTS (SELECT 1 FROM note_images i WHERE i.note_id = q.subject_id))
 		 ORDER BY q.queued_at
 		 LIMIT $1`, clampLimit(limit))
 	if err != nil {
@@ -1102,6 +1124,34 @@ func (p *Platform) attachReports(ctx context.Context, items []ReviewItem) ([]Rev
 	}
 	for i := range items {
 		items[i].Reports = reports[items[i].Subject]
+	}
+	return p.attachShots(ctx, items)
+}
+
+// attachShots подвешивает к строкам очереди иллюстрации заметок.
+//
+// ВТОРЫМ запросом, а не боковым соединением в самом списке колонок, и это не
+// вкус: соединение считалось бы для КАЖДОЙ строки, которую перебирает очередь,
+// то есть для всех непросмотренных публикаций, а не для тех сорока, что уедут
+// на страницу. Тот же приём и тот же довод, что у жалоб строкой выше.
+func (p *Platform) attachShots(ctx context.Context, items []ReviewItem) ([]ReviewItem, error) {
+	ids := make([]int64, 0, len(items))
+	for _, it := range items {
+		if it.Subject.Kind == SubjectNote {
+			ids = append(ids, it.Subject.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return items, nil
+	}
+	shots, err := p.NoteThumbs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if m, ok := shots[items[i].Subject.ID]; ok {
+			items[i].ImageURL = m.URL
+		}
 	}
 	return items, nil
 }

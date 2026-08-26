@@ -211,22 +211,90 @@ func (s *Service) sendNotes(ctx context.Context) (int, error) {
 			continue
 		}
 		for i, n := range notes {
-			if already[refs[i]] {
-				continue
+			if !already[refs[i]] {
+				if err := s.postNote(ctx, sink, n); err != nil {
+					// Порядок важен так же, как у зеркала: не перескакиваем через
+					// неотправленное, иначе в канале заметки поменяются местами.
+					s.log.Warn("заметка площадки не отправлена", "note", n.ID, "sink", sink.Name(), "err", err)
+					markFrom(done, i)
+					break
+				}
+				s.log.Info("заметка площадки отправлена", "note", n.ID, "sink", sink.Name())
+				sent++
 			}
-			if err := s.postNote(ctx, sink, n); err != nil {
-				// Порядок важен так же, как у зеркала: не перескакиваем через
-				// неотправленное, иначе в канале заметки поменяются местами.
-				s.log.Warn("заметка площадки не отправлена", "note", n.ID, "sink", sink.Name(), "err", err)
+			// Картинка идёт В ТРЕД, а тред в Telegram приносит автофорвард через
+			// секунды после поста — то есть на такте публикации его ещё нет.
+			// Поэтому заметка, у которой картинка не ушла, ДЕРЖИТ курсор, а не
+			// теряется: следующий такт прочитает её снова, SentTargets скажет,
+			// что пост уже сделан, и повторится только картинка. Ровно та же
+			// механика, которой ждут треда комментарии.
+			switch s.sendNoteImage(ctx, sink, n) {
+			case imageSent, imageSkipped:
+			case imageWaiting:
+				done[i] = false
+			case imageFailed:
 				markFrom(done, i)
-				break
 			}
-			s.log.Info("заметка площадки отправлена", "note", n.ID, "sink", sink.Name())
-			sent++
 		}
 	}
 	s.noteAt = advance(s.noteAt, done, func(i int) int64 { return notes[i].ID })
 	return sent, nil
+}
+
+// imageResult — чем кончилась попытка отнести картинку заметки в её тред.
+type imageResult int
+
+const (
+	imageSkipped imageResult = iota // нечего нести, уже отнесли, либо ждать больше нечего
+	imageSent                       // отнесли сейчас
+	imageWaiting                    // треда ещё нет: подождём, курсор держим
+	imageFailed                     // приёмник отказал: дальше по этому приёмнику не идём
+)
+
+// sendNoteImage относит иллюстрацию заметки в её тред и фиксирует посланное.
+//
+// ref в message_targets — id ЗАМЕТКИ, а не строки картинки: у нативной заметки
+// картинка одна, а нативная полоса начинается со ста миллиардов, так что с
+// ref'ами зеркала (там это номер строки note_images в SQLite, число в тысячах)
+// она не столкнётся никогда.
+func (s *Service) sendNoteImage(ctx context.Context, sink mirror.Sink, n platform.OutNote) imageResult {
+	if len(n.ImageSHA) == 0 {
+		return imageSkipped
+	}
+	ref := strconv.FormatInt(n.ID, 10)
+	if _, _, found, err := s.st.Target(ctx, sink.Name(), store.TargetNoteImage, ref); err != nil {
+		s.log.Error("чтение отправленной иллюстрации", "note", n.ID, "sink", sink.Name(), "err", err)
+		return imageFailed
+	} else if found {
+		return imageSkipped
+	}
+	thread := s.lookupThread(ctx, sink, n.ID)
+	if thread == "" {
+		// Треда пока нет. Ждём — но не дольше срока: у заметки, которой в этом
+		// канале нет вовсе, тред не появится никогда.
+		if time.Since(n.PublishedAt) < threadGrace {
+			return imageWaiting
+		}
+		s.warnOnce(sink.Name(), n.ID, "иллюстрацию площадки некуда отнести: треда заметки в этом канале нет")
+		return imageSkipped
+	}
+	data := s.mediaBytes(n.ImageSHA, n.ImageMIME)
+	if data == nil {
+		// Файла на диске нет — нести нечего, и ждать его неоткуда: хранилище
+		// наполняем мы сами, а не чужой сайт.
+		s.warnOnce(sink.Name(), n.ID, "иллюстрация площадки не найдена на диске")
+		return imageSkipped
+	}
+	msgID, err := sink.PostNoteImage(ctx, thread, s.mediaURL(n.ImageSHA, n.ImageMIME), data)
+	if err != nil {
+		s.log.Warn("иллюстрация площадки не отправлена", "note", n.ID, "sink", sink.Name(), "err", err)
+		return imageFailed
+	}
+	if err := s.st.SetTarget(ctx, sink.Name(), store.TargetNoteImage, ref, msgID, ""); err != nil {
+		s.log.Error("фиксация иллюстрации площадки", "note", n.ID, "sink", sink.Name(), "err", err)
+		return imageFailed
+	}
+	return imageSent
 }
 
 // postNote постит заметку в канал приёмника и фиксирует пост.
@@ -237,7 +305,7 @@ func (s *Service) postNote(ctx context.Context, sink mirror.Sink, n platform.Out
 	// треда приносит автофорвард, и делать здесь нечего.
 	s.openThread(ctx, sink, sn, "")
 
-	msgID, err := sink.PostNote(ctx, sn, s.avatar(n.AvatarSHA, n.AvatarMIME))
+	msgID, err := sink.PostNote(ctx, sn, s.mediaBytes(n.AvatarSHA, n.AvatarMIME))
 	if err != nil {
 		return err
 	}
@@ -282,7 +350,7 @@ func (s *Service) sendComments(ctx context.Context) (int, error) {
 				continue
 			}
 			msgID, err := sink.PostComment(ctx, s.noteStub(c.NoteID), thread,
-				s.replyTarget(ctx, sink, c.ReplyToID), s.commentRow(c), s.avatar(c.AvatarSHA, c.AvatarMIME))
+				s.replyTarget(ctx, sink, c.ReplyToID), s.commentRow(c), s.mediaBytes(c.AvatarSHA, c.AvatarMIME))
 			if err != nil {
 				s.log.Warn("комментарий площадки не отправлен", "comment", c.ID, "sink", sink.Name(), "err", err)
 				markFrom(done, i)
@@ -447,9 +515,13 @@ func (s *Service) mediaURL(sha []byte, mime string) string {
 	return s.baseURL + path
 }
 
-// avatar — байты аватара с диска. Нет хранилища, нет файла — nil: заметка уйдёт
-// текстом, комментарий без картинки. Это штатный путь, а не отказ.
-func (s *Service) avatar(sha []byte, mime string) []byte {
+// mediaBytes — байты файла из нашего хранилища. Нет хранилища, нет файла — nil:
+// заметка уйдёт текстом, комментарий без аватара. Это штатный путь, а не отказ.
+//
+// Звали её раньше avatar, и переименована она тогда, когда в каналы поехала
+// вторая картинка — иллюстрация заметки: имя, называющее одного из двух
+// вызывающих, читается как ошибка у второго.
+func (s *Service) mediaBytes(sha []byte, mime string) []byte {
 	if s.media == nil || len(sha) == 0 {
 		return nil
 	}

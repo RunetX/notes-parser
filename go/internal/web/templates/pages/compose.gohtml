@@ -2,7 +2,11 @@
 <section class="compose">
   <h1 class="ttl">{{if .Editing}}Правка заметки{{else}}Новая заметка{{end}}</h1>
 
-  {{if .Problem}}<p class="bad">{{.Problem}}</p>{{end}}
+  {{if .Problem}}<p class="bad">{{.Problem}}</p>
+  {{/* Файл браузер обратно не отдаёт, и молчать об этом нельзя: человек видит
+       пустое поле и решает, что картинка ушла вместе с заметкой. */}}
+  {{if .LostShot}}<p class="fine">Текст сохранён, а файл браузер не возвращает — выберите его заново.</p>{{end}}
+  {{end}}
 
   {{if .Admin}}
   {{/* Правка администратора. Экран называет вслух и цену действия: прежнего
@@ -18,12 +22,39 @@
   Дальше текст остаётся как есть — под ним уже отвечают вам.</p>
   {{end}}
 
-  <form method="post" action="{{if .Editing}}/n/{{.Note.ID}}/edit{{else}}/new{{end}}" class="wform">
+  {{/* CSRF идёт ПЕРВЫМ полем не для красоты: порядок частей multipart — это
+       порядок в разметке, и когда форма однажды поедет потоком, токен окажется
+       проверен до чтения десяти мегабайт. */}}
+  <form method="post" action="{{if .Editing}}/n/{{.Note.ID}}/edit{{else}}/new{{end}}" class="wform"
+    {{- if and (not .Editing) .CanShot}} enctype="multipart/form-data"{{end}}>
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <textarea name="body" rows="12" required autofocus
       placeholder="О чём заметка?">{{.Body}}</textarea>
     {{template "smilepick"}}
     {{template "markpick"}}
+
+    {{if and (not .Editing) .CanShot}}
+    {{/* Одна картинка — потому что заметка это текст, а не галерея, и потому
+         что лежит она на том же диске, где вся переписка площадки. Цена
+         названа тут же: данные съёмки снимаются, и это ХОРОШО, но знать об
+         этом человек должен до отправки, а не после. */}}
+    <label class="shotpick">
+      <span>Картинка к заметке (необязательно)</span>
+      <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp">
+    </label>
+    <p class="fine">Одна картинка, не больше 10 МБ. Длинная сторона будет уменьшена до 1600 точек,
+    а данные съёмки — место, время, камера — снимаются: их видно всем, кто скачает файл.
+    Из анимации останется первый кадр. Картинку видно сразу, как текст, — снять её потом сможет
+    только модератор.</p>
+    {{end}}
+
+    {{if .HasShot}}
+    <label class="chk">
+      <input type="checkbox" name="drop_shot" value="1">
+      Снять картинку
+    </label>
+    <p class="fine">Заменить картинку нельзя — только снять. Другая — новой заметкой.</p>
+    {{end}}
 
     {{if .Admin}}
     {{/* «Зачем» уходит в журнал модерации. Поле необязательное: правка без

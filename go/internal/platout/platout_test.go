@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -103,7 +104,12 @@ func (s *sink) PostComment(_ context.Context, n store.Note, threadID, replyToID 
 	return s.id(), nil
 }
 
-func (s *sink) PostNoteImage(context.Context, string, string, []byte) (string, error) {
+func (s *sink) PostNoteImage(_ context.Context, threadID, imageURL string, image []byte) (string, error) {
+	if s.fail != nil {
+		return "", s.fail
+	}
+	s.calls = append(s.calls, call{kind: "image", thread: threadID, source: imageURL,
+		hasImage: len(image) > 0})
 	return s.id(), nil
 }
 
@@ -469,5 +475,175 @@ func TestCursorStartsAtNativeBand(t *testing.T) {
 	svc := New(&source{}, newStore(t), nil, nil, "", quiet())
 	if svc.noteAt != platform.NativeIDBase-1 || svc.commentAt != platform.NativeIDBase-1 {
 		t.Errorf("курсоры: %d/%d, ждали %d", svc.noteAt, svc.commentAt, platform.NativeIDBase-1)
+	}
+}
+
+// ---------------------------------------------------------------- иллюстрация
+
+// fakeMedia — хранилище на диске: один файл под любой sha.
+type fakeMedia struct{ path string }
+
+func (m fakeMedia) FilePath([]byte, string) string { return m.path }
+
+func mediaWithFile(t *testing.T) fakeMedia {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "shot.webp")
+	if err := os.WriteFile(p, []byte("байты картинки"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fakeMedia{path: p}
+}
+
+func noteWithShot(published time.Time) platform.OutNote {
+	return platform.OutNote{
+		ID: platform.NativeIDBase, AuthorID: 1443311, AuthorNick: "Рио",
+		Body: "с картинкой", PublishedAt: published,
+		ImageSHA: []byte{0xab, 0xcd}, ImageMIME: "image/webp",
+	}
+}
+
+// Картинка идёт В ТРЕД и ПОСЛЕ поста: тред заводится постом, и до него нести
+// иллюстрацию некуда.
+func TestNoteImageGoesToThreadAfterThePost(t *testing.T) {
+	st := newStore(t)
+	src := &source{notes: []platform.OutNote{noteWithShot(time.Now())}}
+	sk := &threadSink{}
+	svc := New(src, st, mediaWithFile(t), []mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, c := range sk.calls {
+		order = append(order, c.kind)
+	}
+	want := []string{"thread", "note", "image"}
+	if len(order) != len(want) {
+		t.Fatalf("вызовы: %v, ожидались %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("вызовы: %v, ожидались %v", order, want)
+		}
+	}
+	img := sk.calls[2]
+	if !img.hasImage {
+		t.Error("байты картинки до приёмника не дошли")
+	}
+	if img.thread == "" {
+		t.Error("картинка ушла не в тред")
+	}
+	if img.source != "https://t3h.ru/media/ab/abcd.webp" {
+		t.Errorf("ссылка на картинку %q", img.source)
+	}
+}
+
+// Треда ещё нет (в Telegram его приносит автофорвард через секунды): заметка
+// ДЕРЖИТ курсор, а следующий такт не повторяет пост, но доносит картинку.
+func TestNoteImageWaitsForTheThread(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	src := &source{notes: []platform.OutNote{noteWithShot(time.Now())}}
+	sk := &sink{}
+	svc := New(src, st, mediaWithFile(t), []mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "note"); got != 1 {
+		t.Fatalf("постов заметки %d, ждали 1", got)
+	}
+	if got := counts(sk.calls, "image"); got != 0 {
+		t.Fatalf("картинка ушла без треда: %d", got)
+	}
+
+	// Тред появился — картинка доезжает, а пост не повторяется.
+	ref := strconv.FormatInt(platform.NativeIDBase, 10)
+	// Тред записывается ТРЕТЬИМ полем, а не идентификатором сообщения: так его
+	// кладёт openThread, и так его читает lookupThread.
+	if err := st.SetTarget(ctx, sk.Name(), store.TargetNoteThread, ref, "", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "note"); got != 1 {
+		t.Errorf("заметка запощена %d раз — курсор не удержал повтор", got)
+	}
+	if got := counts(sk.calls, "image"); got != 1 {
+		t.Errorf("картинок отправлено %d, ждали 1", got)
+	}
+
+	// И третий такт ничего не повторяет: отправленное записано в
+	// message_targets, а не в память процесса.
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 1 {
+		t.Errorf("картинка отправлена повторно: %d", got)
+	}
+}
+
+// У заметки, которой в этом канале нет вовсе, треда не будет никогда — после
+// срока ждать перестаём, иначе она держала бы курсор вечно.
+func TestNoteImageGivesUpAfterGrace(t *testing.T) {
+	st := newStore(t)
+	src := &source{notes: []platform.OutNote{noteWithShot(time.Now().Add(-2 * threadGrace))}}
+	sk := &sink{}
+	svc := New(src, st, mediaWithFile(t), []mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 0 {
+		t.Fatalf("картинка ушла без треда: %d", got)
+	}
+	if svc.noteAt != platform.NativeIDBase {
+		t.Fatalf("курсор на %d: заметку без треда ждать больше нечего", svc.noteAt)
+	}
+}
+
+// Заметка без картинки ведёт себя ровно как прежде.
+func TestNoteWithoutImageIsUnchanged(t *testing.T) {
+	st := newStore(t)
+	src := &source{notes: []platform.OutNote{{
+		ID: platform.NativeIDBase, AuthorID: 1443311, AuthorNick: "Рио",
+		Body: "без картинки", PublishedAt: time.Now(),
+	}}}
+	sk := &sink{}
+	svc := New(src, st, mediaWithFile(t), []mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 0 {
+		t.Errorf("отправлено картинок: %d", got)
+	}
+	if svc.noteAt != platform.NativeIDBase {
+		t.Errorf("курсор на %d", svc.noteAt)
+	}
+}
+
+// Нет файла на диске — нести нечего, и ждать его неоткуда: хранилище наполняем
+// мы сами. Заметка при этом уходит и курсор двигается.
+func TestNoteImageWithoutFileIsSkipped(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	src := &source{notes: []platform.OutNote{noteWithShot(time.Now())}}
+	sk := &threadSink{}
+	svc := New(src, st, fakeMedia{path: filepath.Join(t.TempDir(), "нет-такого")},
+		[]mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 0 {
+		t.Errorf("отправлено картинок: %d", got)
+	}
+	if got := counts(sk.calls, "note"); got != 1 {
+		t.Errorf("заметка не ушла: %d", got)
+	}
+	if svc.noteAt != platform.NativeIDBase {
+		t.Errorf("курсор на %d", svc.noteAt)
 	}
 }

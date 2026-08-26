@@ -81,6 +81,33 @@ type feedPage struct {
 	// для страницы: она её только печатает, а разбирает и двигает сервер.
 	FreshOK    bool
 	FreshAfter string
+	// Shots — иллюстрация заметки, по её номеру. Картой, а не полем у NoteView:
+	// картинки живут в своей таблице и спрашиваются ОДНИМ запросом на всю
+	// страницу, а тащить их в общий запрос ленты значило бы утяжелять самый
+	// частый запрос площадки ради двух процентов заметок, у которых они есть.
+	//
+	// Показываются они и у зеркальных, и у своих: разделять тут — значит
+	// завести в одном списке ровно ту разницу между чужим и своим, которой у
+	// картинки нет вовсе.
+	Shots map[int64]platform.Media
+}
+
+// thumbs — иллюстрации показанных заметок. Отказ чтения не роняет ленту: без
+// картинок она остаётся лентой, а без ленты картинки не нужны.
+func (s *Server) thumbs(ctx context.Context, notes []platform.NoteView) map[int64]platform.Media {
+	if len(notes) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(notes))
+	for _, n := range notes {
+		ids = append(ids, n.ID)
+	}
+	shots, err := s.st.NoteThumbs(ctx, ids)
+	if err != nil {
+		s.log.Error("иллюстрации ленты", "err", err)
+		return nil
+	}
+	return shots
 }
 
 func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +167,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		// новая заметка сверху сдвинула бы человеку то, что он читает.
 		FreshOK:    num == 1,
 		FreshAfter: fresh,
+		Shots:      s.thumbs(ctx, notes),
 	})
 }
 

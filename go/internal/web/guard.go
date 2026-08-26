@@ -55,10 +55,19 @@ const (
 	// оно ходит туда же (см. goesToNGS).
 	loginBudget = 25 * time.Second
 
-	// maxFormBytes — потолок тела формы. Формы у нас текстовые, файлов площадка
-	// не принимает вовсе, поэтому 64 КиБ — это с запасом на самую длинную
-	// заметку. Без потолка net/http принял бы по 10 МиБ на каждый POST.
+	// maxFormBytes — потолок тела формы. Формы у нас текстовые, поэтому
+	// 64 КиБ — это с запасом на самую длинную заметку. Без потолка net/http
+	// принял бы по 10 МиБ на каждый POST.
 	maxFormBytes = 64 << 10
+
+	// uploadMaxBytes — потолок тела ЕДИНСТВЕННОГО маршрута, принимающего файл:
+	// десять мегабайт картинки плюс запас на текст заметки, границы multipart и
+	// заголовки частей.
+	uploadMaxBytes = 11 << 20
+
+	// uploadBudget — десять мегабайт с телефона по мобильной сети ползут минуту,
+	// и восемь секунд общего бюджета отрезали бы честную закачку на середине.
+	uploadBudget = 90 * time.Second
 
 	// bucketBurst / bucketRefill — размер корзины и скорость наполнения. 120
 	// токенов при цене треда в 4 — это три десятка страниц подряд, больше, чем
@@ -74,6 +83,11 @@ const (
 	costThread = 4.0
 	costWrite  = 4.0
 	costLogin  = 20.0
+	// costUpload — как у входа, и по той же логике: там мы ждём чужой сайт, тут
+	// держим процессор, которого у морды шесть десятых ядра. Двадцать токенов
+	// при корзине в 120 — это шесть картинок залпом и дальше по одной в десять
+	// секунд, то есть вдвое щедрее правила ядра (одна заметка в пять минут).
+	costUpload = 20.0
 
 	// bucketIdle — через сколько корзина забывается. Больше времени полного
 	// восстановления (минута), так что забываем только тех, кто ушёл.
@@ -163,7 +177,18 @@ func (s *Server) withGuard(next http.Handler) http.Handler {
 			return
 		}
 		if r.Method == http.MethodPost {
-			r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
+			r.Body = http.MaxBytesReader(w, r.Body, maxBodyOf(r))
+		}
+		if isNoteUpload(r) {
+			// Дедлайны ставятся ПОРУЧНО, потому что ReadTimeout и WriteTimeout —
+			// поля http.Server, общие на все маршруты разом. Двадцать секунд
+			// чтения стоят там против slowloris, и снимать их ради одной формы
+			// нельзя; ResponseController — единственный инструмент, который
+			// умеет различать маршруты. Работает он благодаря Unwrap у обёртки
+			// лога: без него настоящий писатель не виден.
+			rc := http.NewResponseController(w)
+			_ = rc.SetReadDeadline(time.Now().Add(uploadBudget))
+			_ = rc.SetWriteDeadline(time.Now().Add(uploadBudget + 30*time.Second))
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), budgetOf(r))
 		defer cancel()
@@ -298,6 +323,10 @@ func costOf(r *http.Request) float64 {
 		return costThread
 	case goesToNGS(r):
 		return costLogin
+	// Публикация с картинкой стоит дороже всякой другой записи и потому стоит
+	// ПЕРЕД общим правилом «любой POST — это запись».
+	case isNoteUpload(r):
+		return costUpload
 	case r.Method == http.MethodPost:
 		return costWrite
 	// Живой добор дешевле страницы треда, и цену ему надо ставить ДО общего
@@ -346,10 +375,32 @@ func longLived(r *http.Request) bool {
 	return r.URL.Path == "/live"
 }
 
+// isNoteUpload — единственный путь площадки, принимающий файл.
+//
+// Список отдельной функцией, как longLived и goesToNGS, и ровно по той же
+// причине: с него сняты три общих потолка сразу — размер тела, срок запроса и
+// цена, — и каждый новый маршрут в этом списке обязан объяснить, чем он их
+// заменяет. Здесь заменяют: свой потолок тела, свой семафор перекодирования и
+// проверка права публиковать ДО чтения тела.
+func isNoteUpload(r *http.Request) bool {
+	return r.Method == http.MethodPost && r.URL.Path == "/new"
+}
+
+// maxBodyOf — потолок тела запроса.
+func maxBodyOf(r *http.Request) int64 {
+	if isNoteUpload(r) {
+		return uploadMaxBytes
+	}
+	return maxFormBytes
+}
+
 // budgetOf — сколько запросу отпущено.
 func budgetOf(r *http.Request) time.Duration {
-	if goesToNGS(r) {
+	switch {
+	case goesToNGS(r):
 		return loginBudget
+	case isNoteUpload(r):
+		return uploadBudget
 	}
 	return requestBudget
 }

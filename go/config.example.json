@@ -131,6 +131,10 @@
     "bus": {
       "interval_s": 5,
       "batch": 100
+    },
+    "shots": {
+      "enabled": false,
+      "ffmpeg_path": ""
     }
   },
   "notes_limit": 5,

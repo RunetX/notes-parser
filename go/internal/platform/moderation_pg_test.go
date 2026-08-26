@@ -511,7 +511,7 @@ func TestПравкаЗаметкиАдминистратором(t *testing.T) 
 		`UPDATE notes SET published_at = now() - interval '2 days' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.EditNote(ctx, author, id, "сам поправлю"); !errors.Is(err, ErrEditWindowClosed) {
+	if err := p.EditNote(ctx, author, NoteEdit{NoteID: id, Body: "сам поправлю"}); !errors.Is(err, ErrEditWindowClosed) {
 		t.Fatalf("авторская правка: %v, ожидался ErrEditWindowClosed", err)
 	}
 

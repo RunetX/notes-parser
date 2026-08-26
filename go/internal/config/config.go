@@ -242,6 +242,27 @@ type Platform struct {
 	Moderation Moderation `json:"moderation"`
 	// Bus — шина событий (эпик F, пакет platbus).
 	Bus Bus `json:"bus"`
+	// Shots — приём картинки к своей заметке (пакет imgconv).
+	Shots Shots `json:"shots"`
+}
+
+// Shots — картинка, приложенная участником к своей заметке.
+//
+// Настроек здесь ровно две, и это не скупость. Потолки площадки живут
+// КОНСТАНТАМИ с доводом в комментарии (maxFormBytes, previewMaxBytes,
+// maxInFlight) именно потому, что число без довода назавтра меняют наугад;
+// сторона, качество и число одновременных перекодировок — такие же числа, и
+// место им в imgconv, а не в JSON.
+//
+// Выключатель нужен по другой причине: приём чужих файлов — единственное место,
+// где посторонний кладёт что-то на наш диск, и погасить его надо уметь без
+// пересборки.
+type Shots struct {
+	Enabled bool `json:"enabled"`
+	// FFmpegPath — путь к бинарнику. Пусто — берётся asr.ffmpeg_path: бинарник
+	// в образе один и тот же, и держать для него две настройки значило бы
+	// однажды поправить не ту.
+	FFmpegPath string `json:"ffmpeg_path,omitempty"`
 }
 
 // Bus — шина событий площадки: раздача поводов, разбор реакций, уборка
@@ -688,6 +709,13 @@ func (c *Config) applyPlatformEnv() error {
 	envString(&c.Platform.Operator, "LOVEGW_PLATFORM_OPERATOR")
 	envString(&c.Platform.Contact, "LOVEGW_PLATFORM_CONTACT")
 	envString(&c.Platform.SiteAccount, "LOVEGW_PLATFORM_SITE_ACCOUNT")
+	// Приём картинок гасится с хоста по той же причине, что и автомат
+	// модерации: это единственный путь, которым посторонний кладёт файл на наш
+	// диск, и закрыть его надо уметь, не трогая смонтированный конфиг.
+	if err := envBool(&c.Platform.Shots.Enabled, "LOVEGW_PLATFORM_SHOTS_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.Platform.Shots.FFmpegPath, "LOVEGW_FFMPEG")
 	// Автомат модерации гасится с хоста тем же рычагом, что и амвон: остановить
 	// расходы должно быть можно, не пересобирая конфиг, который смонтирован в
 	// контейнер файлом.

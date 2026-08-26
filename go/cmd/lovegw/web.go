@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"lovegw/internal/config"
+	"lovegw/internal/imgconv"
 	"lovegw/internal/love"
 	"lovegw/internal/platform"
 	"lovegw/internal/web"
@@ -86,14 +88,51 @@ func cmdWeb(ctx context.Context, args []string) error {
 		Listen:   cfg.Platform.Listen,
 		BaseURL:  cfg.Platform.BaseURL,
 		MediaDir: cfg.Platform.MediaDir,
-		Operator: operatorOf(cfg),
-		Log:      log,
+		// Адрес НГС — для метки происхождения у зеркальной заметки: она ведёт
+		// на оригинал, и брать его надо из конфига, а не из литерала в морде.
+		SiteBaseURL: cfg.Site.BaseURL,
+		Operator:    operatorOf(cfg),
+		Log:         log,
 	}, pf, pf, webWriter{Platform: pf, media: media}, pf, site)
 	// Шина событий: страница «События», колокольчик и живой канал. Морда только
 	// ЧИТАЕТ поводы и отмечает их прочитанными — раздаёт их демон (platbus),
 	// потому что горутина, поднятая и здесь, и там, делала бы одну работу вдвоём.
 	srv.SetEvents(pf)
+	// Приём картинок к заметкам. Не поднялся перекодировщик — морда живёт
+	// дальше, просто без поля файла на форме: чужой бинарник, который не
+	// отвечает, это не повод не открыть площадку.
+	if conv := noteShots(ctx, cfg, log); conv != nil {
+		srv.SetShots(conv)
+	}
 	return srv.Run(ctx)
+}
+
+// noteShots поднимает перекодировщик картинок. nil — картинок площадка не
+// принимает, и это рабочее состояние, а не авария.
+func noteShots(ctx context.Context, cfg *config.Config, log *slog.Logger) *imgconv.FFmpeg {
+	if !cfg.Platform.Shots.Enabled {
+		return nil
+	}
+	conv := &imgconv.FFmpeg{Path: ffmpegPath(cfg)}
+	if err := conv.Probe(ctx); err != nil {
+		log.Warn("картинки к заметкам выключены: ffmpeg не отвечает", "err", err)
+		return nil
+	}
+	if conv.Codec() == "jpeg" {
+		// Не отказ: JPEG это тот же вид на странице, только файл на треть
+		// толще. Но знать об этом владельцу надо — иначе расход диска окажется
+		// сюрпризом.
+		log.Warn("в сборке ffmpeg нет libwebp — картинки будут в JPEG")
+	}
+	log.Info("картинки к заметкам приняты", "codec", conv.Codec(), "ffmpeg", ffmpegPath(cfg))
+	return conv
+}
+
+// ffmpegPath — бинарник один на весь образ, поэтому и путь один: своё значение у
+// картинок только затем, чтобы его можно было подменить, не трогая расшифровку
+// голосовых.
+func ffmpegPath(cfg *config.Config) string {
+	return cmp.Or(cfg.Platform.Shots.FFmpegPath, cfg.ASR.FFmpegPath)
 }
 
 // webWriter — запись площадки плюс хранилище медиа.
@@ -110,6 +149,30 @@ type webWriter struct {
 func (w webWriter) SetOwnAvatar(ctx context.Context, userID int64, url string, data []byte) error {
 	_, err := putNGSAvatar(ctx, w.Platform, w.media, userID, url, data)
 	return err
+}
+
+// CreateNote — заметка вместе с приложенной картинкой.
+//
+// Байты ложатся на диск ДО транзакции, и иначе нельзя: note_images ссылается на
+// media, а строка без файла — это битая картинка на странице, то есть поломка
+// ВИДИМАЯ. Файл без строки не виден никому.
+//
+// Цена этого порядка названа прямо: откатилась транзакция (бан, отзыв согласия,
+// частота) — файл остался, а уборки каталога у площадки нет вовсе. Ради этого
+// морда и спрашивает MayPublishNote ДО перекодирования: гонка в сто
+// миллисекунд оставит один осиротевший файл, отсутствие проверки — тысячи.
+//
+// sourceURL пуст намеренно: качать было неоткуда, картинку принесли. По этой
+// пустоте своё и отличается от привезённого с НГС (см. шапку platform/media.go).
+func (w webWriter) CreateNote(ctx context.Context, in platform.NewNote, shot *web.Shot) (int64, error) {
+	if shot != nil {
+		m, err := w.media.PutSized(ctx, shot.Data, "", shot.Width, shot.Height)
+		if err != nil {
+			return 0, err
+		}
+		in.Image = &m
+	}
+	return w.Platform.CreateNote(ctx, in)
 }
 
 // operatorOf — реквизиты оператора персональных данных для текстов согласий.

@@ -63,6 +63,7 @@ var funcs = template.FuncMap{
 	"depth":       depthClass,
 	"themes":      themeList,
 	"site":        func() string { return SiteName },
+	"origin":      originOf,
 	"replyURL":    replyURL,
 	"rx":          reactBoxOf,
 	"modn":        modNote,

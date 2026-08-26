@@ -54,7 +54,7 @@ func TestEditNoteWindow(t *testing.T) {
 
 	// Свежая и без ответов — правится.
 	id := mustNote(t, p, author, "первый вариант")
-	if err := p.EditNote(ctx, author, id, "второй вариант"); err != nil {
+	if err := p.EditNote(ctx, author, NoteEdit{NoteID: id, Body: "второй вариант"}); err != nil {
 		t.Fatalf("правка в окне: %v", err)
 	}
 	n, _ := p.NoteRow(ctx, id)
@@ -63,7 +63,7 @@ func TestEditNoteWindow(t *testing.T) {
 	}
 	// Второй раз — уже нет: «поправить опечатку» это одно действие, а серия
 	// правок в окне есть та же смена позиции, только мелкими шагами.
-	if err := p.EditNote(ctx, author, id, "третий вариант"); !errors.Is(err, ErrEditWindowClosed) {
+	if err := p.EditNote(ctx, author, NoteEdit{NoteID: id, Body: "третий вариант"}); !errors.Is(err, ErrEditWindowClosed) {
 		t.Errorf("повторная правка: %v, ожидался ErrEditWindowClosed", err)
 	}
 
@@ -73,7 +73,7 @@ func TestEditNoteWindow(t *testing.T) {
 	if _, err := p.CreateComment(ctx, NewComment{NoteID: id, AuthorID: author, Body: "ответ"}); err != nil {
 		t.Fatalf("комментарий: %v", err)
 	}
-	if err := p.EditNote(ctx, author, id, "поздно"); !errors.Is(err, ErrEditWindowClosed) {
+	if err := p.EditNote(ctx, author, NoteEdit{NoteID: id, Body: "поздно"}); !errors.Is(err, ErrEditWindowClosed) {
 		t.Errorf("правка под ответом: %v, ожидался ErrEditWindowClosed", err)
 	}
 
@@ -83,14 +83,14 @@ func TestEditNoteWindow(t *testing.T) {
 		`UPDATE notes SET published_at = now() - interval '11 minutes' WHERE id = $1`, id); err != nil {
 		t.Fatalf("сдвиг времени: %v", err)
 	}
-	if err := p.EditNote(ctx, author, id, "поздно"); !errors.Is(err, ErrEditWindowClosed) {
+	if err := p.EditNote(ctx, author, NoteEdit{NoteID: id, Body: "поздно"}); !errors.Is(err, ErrEditWindowClosed) {
 		t.Errorf("правка после окна: %v, ожидался ErrEditWindowClosed", err)
 	}
 
 	// Чужую — никогда.
 	other := mustUser(t, p, "Мавр")
 	id = mustNote(t, p, author, "моя заметка")
-	if err := p.EditNote(ctx, other, id, "не твоя"); !errors.Is(err, ErrNotYours) {
+	if err := p.EditNote(ctx, other, NoteEdit{NoteID: id, Body: "не твоя"}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("правка чужой: %v, ожидался ErrNotYours", err)
 	}
 }
@@ -105,7 +105,7 @@ func TestOwnAnonymousNoteIsEditable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("заметка: %v", err)
 	}
-	if err := p.EditNote(ctx, author, id, "анонимно, но иначе"); err != nil {
+	if err := p.EditNote(ctx, author, NoteEdit{NoteID: id, Body: "анонимно, но иначе"}); err != nil {
 		t.Fatalf("правка своей анонимки: %v", err)
 	}
 	// А на странице автор всё равно не показывается.
