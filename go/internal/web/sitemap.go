@@ -39,7 +39,7 @@ func sitemapPages(total int) int {
 
 // handleSitemapIndex — оглавление карты.
 func (s *Server) handleSitemapIndex(w http.ResponseWriter, r *http.Request) {
-	total, err := s.st.CountNotes(r.Context())
+	total, err := s.st.CountNotes(r.Context(), platform.Viewer{})
 	if err != nil {
 		s.oops(w, r, "карта сайта", err)
 		return

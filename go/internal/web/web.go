@@ -65,7 +65,10 @@ type Config struct {
 // минут — гонять их ради вёрстки незачем.
 type Store interface {
 	Ping(ctx context.Context) error
-	CountNotes(ctx context.Context) (int, error)
+	// CountNotes — длина ленты ДЛЯ ЭТОГО смотрящего: у модератора в ленте есть
+	// и скрытое, и постраничка обязана считать по тем же строкам, которые он
+	// увидит.
+	CountNotes(ctx context.Context, v platform.Viewer) (int, error)
 	Feed(ctx context.Context, v platform.Viewer, offset, limit int) ([]platform.NoteView, error)
 	// PinnedNotes — закреплённые заметки, которые лента показывает поверх
 	// хронологии. Отдельным методом, а не флагом у Feed: своего порядка,

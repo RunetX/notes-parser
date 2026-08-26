@@ -99,6 +99,23 @@ const feedQuery = `
 	 ORDER BY n.published_at DESC, n.id DESC
 	 LIMIT $2 OFFSET $3`
 
+// feedModQuery — та же лента глазами МОДЕРАТОРА: к видимому добавляется
+// скрытое модерацией (статус 2). Отдельной константой, а не условием `OR $n` в
+// общей, по тем же двум причинам, что у треда (см. threadModQuery): планировщик
+// не сводит OR к частичному индексу, и лента ЧИТАТЕЛЯ — самый горячий запрос
+// площадки, платить ему за редкую роль нельзя. Обезличенное и скрытое автором
+// сюда не попадают: это исполнение права субъекта, а не спрятанный текст,
+// который модератор вправе пересмотреть.
+//
+// Свой индекс notes_feed_mod (миграция 0017). Без него запрос уходит в перебор
+// 117 тысяч строк — молча, потому что ни один тест на поведение этого не видит;
+// стережёт TestПланыЗапросовМодератора.
+const feedModQuery = `
+	SELECT ` + noteViewColumns + noteViewFrom + `
+	 WHERE n.status IN (0, 2) AND n.pinned_at IS NULL
+	 ORDER BY n.published_at DESC, n.id DESC
+	 LIMIT $2 OFFSET $3`
+
 // notesSinceQuery — заметки, опубликованные ПОСЛЕ того, как лента была
 // нарисована: живой добор первой страницы (web/fresh.go).
 //
@@ -149,6 +166,16 @@ const pinnedQuery = `
 	 ORDER BY n.pinned_at DESC, n.id DESC
 	 LIMIT $2`
 
+// pinnedModQuery — закреплённые глазами модератора. Заведён не для полноты:
+// лента отсекает закреплённые по pinned_at, поэтому скрытая закреплённая
+// заметка без этого запроса не показывалась бы ему НИГДЕ — ни наверху, ни на
+// своём хронологическом месте.
+const pinnedModQuery = `
+	SELECT ` + noteViewColumns + noteViewFrom + `
+	 WHERE n.status IN (0, 2) AND n.pinned_at IS NOT NULL
+	 ORDER BY n.pinned_at DESC, n.id DESC
+	 LIMIT $2`
+
 // Feed — страница ленты от новых к старым.
 //
 // Скрытые публикации отсекаются по notes.status, а не соединением с users:
@@ -161,7 +188,11 @@ func (p *Platform) Feed(ctx context.Context, v Viewer, offset, limit int) ([]Not
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := p.pool.Query(ctx, feedQuery, v.UserID, limit, offset)
+	q := feedQuery
+	if v.CanModerate() {
+		q = feedModQuery
+	}
+	rows, err := p.pool.Query(ctx, q, v.UserID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("лента: %w", err)
 	}
@@ -195,13 +226,21 @@ const MaxPinned = 5
 // страница ленты короче на число закреплённых. Обратное — «показывать и там, и
 // там» — читается как ошибка показа, а не как решение.
 func (p *Platform) PinnedNotes(ctx context.Context, v Viewer) ([]NoteView, error) {
-	rows, err := p.pool.Query(ctx, pinnedQuery, v.UserID, MaxPinned)
+	q, limit := pinnedQuery, MaxPinned
+	if v.CanModerate() {
+		// Потолок MaxPinned считается по ВИДИМЫМ закреплённым (см.
+		// SetNotePinned), поэтому скрытые к ним прибавляются сверху — и запас
+		// нужен ровно затем, чтобы скрытая закреплённая заметка не вытолкнула из
+		// показа живую, которую модератор и пришёл читать.
+		q, limit = pinnedModQuery, 2*MaxPinned
+	}
+	rows, err := p.pool.Query(ctx, q, v.UserID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("закреплённые: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]NoteView, 0, MaxPinned)
+	out := make([]NoteView, 0, limit)
 	for rows.Next() {
 		n, err := scanNoteView(rows)
 		if err != nil {
@@ -222,9 +261,17 @@ func (p *Platform) PinnedNotes(ctx context.Context, v Viewer) ([]NoteView, error
 // нынешних 300 строках он бесплатен; когда приедет архив (10,7 млн), его
 // придётся заменить оценкой из pg_class — считать точное число заметок 2011
 // года на каждый показ ленты незачем.
-func (p *Platform) CountNotes(ctx context.Context) (int, error) {
+//
+// Считается ПО ТОЙ ЖЕ ленте, которую человек увидит: у модератора в ней есть и
+// скрытое (feedModQuery), и постраничка обязана это учитывать — иначе номера
+// страниц врут, а последние заметки уезжают за край последней страницы.
+func (p *Platform) CountNotes(ctx context.Context, v Viewer) (int, error) {
+	q := `SELECT count(*) FROM notes WHERE status = 0`
+	if v.CanModerate() {
+		q = `SELECT count(*) FROM notes WHERE status IN (0, 2)`
+	}
 	var n int
-	err := p.pool.QueryRow(ctx, `SELECT count(*) FROM notes WHERE status = 0`).Scan(&n)
+	err := p.pool.QueryRow(ctx, q).Scan(&n)
 	return n, wrapf(err, "счётчик ленты")
 }
 

@@ -181,6 +181,86 @@ func (f *fakeMod) MyHidden(context.Context, int64, int) ([]platform.MyCheck, err
 	return f.mine, f.fail
 }
 
+// ------------------------------------------------ модерация из ленты
+
+// hiddenFeed — лента, в которой одна заметка скрыта модерацией. Ядро отдаёт её
+// только модератору (platform.feedModQuery), дубль это лишь повторяет: здесь
+// проверяется, ЧТО МОРДА С НЕЙ ДЕЛАЕТ.
+func hiddenFeed() *fakeStore {
+	live := sampleNote()
+	gone := sampleNote()
+	gone.ID, gone.Status, gone.Body = 312812, platform.StatusHiddenMod, "за это скрыли"
+	return &fakeStore{total: 2, hidden: 1, notes: []platform.NoteView{live, gone}, note: live}
+}
+
+// Модератор работает ТАМ, ГДЕ ЧИТАЕТ, а читает он ленту: до 26.08.2026 за каждым
+// решением надо было открывать страницу заметки.
+func TestКнопкиМодерацииВЛенте(t *testing.T) {
+	h, _, token := modServerOn(t, hiddenFeed(), platform.RoleModerator)
+
+	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
+	for _, want := range []string{
+		`value="hide"`,    // скрыть — под живой
+		`value="restore"`, // вернуть — под скрытой
+		`value="pin"`,     // закрепление это решение о МЕСТЕ В ЛЕНТЕ
+		`value="lock"`,
+		"/mod/u/", // и дорога к автору
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("в ленте модератора нет %q", want)
+		}
+	}
+	// Скрытая заметка не пропала, а затенена — и видно, почему.
+	if !strings.Contains(body, "nhid") || !strings.Contains(body, "скрыто модерацией") {
+		t.Error("скрытая заметка в ленте не помечена скрытой")
+	}
+	if !strings.Contains(body, "за это скрыли") {
+		t.Error("скрытая заметка пропала из ленты у модератора")
+	}
+}
+
+// У читателя лента прежняя: ни кнопок, ни жалобы под каждой из двадцати строк.
+// Скрытого ядро ему и не отдаёт, но проверяется здесь другое — что морда не
+// зовёт его туда, где ему откажут.
+func TestЛентаЧитателяБезКнопок(t *testing.T) {
+	h, _, token := modServerOn(t, hiddenFeed(), platform.RoleUser)
+
+	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
+	for _, no := range []string{`value="hide"`, `value="pin"`, `value="lock"`, "/mod/u/", "Пожаловаться"} {
+		if strings.Contains(body, no) {
+			t.Errorf("в ленте участника есть %q", no)
+		}
+	}
+	if body := do(h, guest(t, "GET", "/")).Body.String(); strings.Contains(body, "modbar") {
+		t.Error("гостю в ленте показана полоска модерации")
+	}
+}
+
+// «Поправить» под чужой заметкой — право администратора, и в ленте оно тоже
+// администраторское: модератору его быть не должно.
+func TestПравкаВЛентеТолькоАдминистратору(t *testing.T) {
+	native := sampleNote()
+	native.ID = platform.NativeIDBase + 7
+	store := func() *fakeStore {
+		return &fakeStore{total: 1, notes: []platform.NoteView{native}, note: native}
+	}
+	link := "/n/" + itoa64(native.ID) + "/edit"
+
+	h, _, token := modServerOn(t, store(), platform.RoleModerator)
+	if strings.Contains(do(h, as(guest(t, "GET", "/"), token)).Body.String(), link) {
+		t.Error("модератору в ленте предложена правка чужого текста")
+	}
+	h, _, token = modServerOn(t, store(), platform.RoleAdmin)
+	if !strings.Contains(do(h, as(guest(t, "GET", "/"), token)).Body.String(), link) {
+		t.Error("администратору в ленте не предложена правка")
+	}
+	// А под ЗЕРКАЛЬНОЙ её нет ни у кого: здесь копия страницы НГС.
+	h, _, token = modServerOn(t, hiddenFeed(), platform.RoleAdmin)
+	if strings.Contains(do(h, as(guest(t, "GET", "/"), token)).Body.String(), "/n/312811/edit") {
+		t.Error("в ленте предложена правка зеркальной заметки")
+	}
+}
+
 // modServer — площадка с вошедшим человеком заданной роли и живой модерацией.
 func modServer(t *testing.T, role platform.Role) (http.Handler, *fakeMod, string) {
 	t.Helper()

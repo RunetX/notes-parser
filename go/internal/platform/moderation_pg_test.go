@@ -687,6 +687,103 @@ func TestВыгрузкаДанных(t *testing.T) {
 	_ = noteID
 }
 
+// Скрытая заметка ЗАТЕНЯЕТСЯ модератору, а читателю не показывается вовсе.
+//
+// Жалоба владельца 26.08.2026: скрыв заметку, он терял её из виду — вернуть её
+// можно было только из очереди, по цитате, не видя разговора вокруг. Правило
+// «модератор работает там, где читает» до ленты не доходило.
+func TestЛентаМодератораПоказываетСкрытое(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	mod := moderator(t, p)
+	reader := Viewer{}
+	author := mustUser(t, p, "Рио")
+
+	live := mustNote(t, p, author, "живая заметка")
+	gone := mustNote(t, p, author, "скрытая заметка")
+	if err := p.HideSubject(ctx, mod, NoteSubject(gone), CatInsult, "перешёл на личности"); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := func(v Viewer) map[int64]Status {
+		t.Helper()
+		notes, err := p.Feed(ctx, v, 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[int64]Status{}
+		for _, n := range notes {
+			out[n.ID] = n.Status
+		}
+		return out
+	}
+	if got := seen(reader); len(got) != 1 || got[live] != StatusVisible {
+		t.Fatalf("лента читателя: %v, ожидалась одна живая заметка", got)
+	}
+	got := seen(mod)
+	if got[live] != StatusVisible {
+		t.Fatalf("лента модератора потеряла живую заметку: %v", got)
+	}
+	if st, ok := got[gone]; !ok || st != StatusHiddenMod {
+		t.Fatalf("лента модератора не показала скрытую: %v", got)
+	}
+
+	// Постраничка обязана считаться по ТОЙ ЖЕ ленте, иначе последние заметки
+	// уезжают за край последней страницы.
+	nReader, err := p.CountNotes(ctx, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nMod, err := p.CountNotes(ctx, mod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nReader != 1 || nMod != 2 {
+		t.Fatalf("длина ленты: читатель %d, модератор %d, ожидались 1 и 2", nReader, nMod)
+	}
+
+	// Вернули — и она снова общая.
+	if err := p.RestoreSubject(ctx, mod, NoteSubject(gone), "погорячился"); err != nil {
+		t.Fatal(err)
+	}
+	if got := seen(reader); len(got) != 2 {
+		t.Fatalf("после возврата лента читателя: %v, ожидались две заметки", got)
+	}
+}
+
+// Скрытая ЗАКРЕПЛЁННАЯ заметка — дыра, которую легко не заметить: лента отсекает
+// закреплённые по pinned_at, а закреплённые отбирались по status = 0, — значит
+// без своего запроса такая заметка не показалась бы модератору нигде.
+func TestСкрытаяЗакреплённаяВиднаМодератору(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	mod := moderator(t, p)
+	author := mustUser(t, p, "Рио")
+	id := mustNote(t, p, author, "объявление")
+
+	if err := p.SetNotePinned(ctx, mod, id, true, "наверх"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.HideSubject(ctx, mod, NoteSubject(id), CatOther, "разберусь"); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned, err := p.PinnedNotes(ctx, Viewer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinned) != 0 {
+		t.Fatalf("читателю видно скрытое закреплённое: %+v", pinned)
+	}
+	pinned, err = p.PinnedNotes(ctx, mod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pinned) != 1 || pinned[0].ID != id || pinned[0].Status != StatusHiddenMod {
+		t.Fatalf("модератор не видит скрытую закреплённую: %+v", pinned)
+	}
+}
+
 // Планы запросов — часть контракта: страница треда у МОДЕРАТОРА обязана идти по
 // тем же индексам, что у читателя. Иначе она однажды станет полным перебором на
 // таблице в 10,7 млн строк, и не провалит ни одного теста на поведение.
@@ -702,6 +799,11 @@ func TestПланыЗапросовМодератора(t *testing.T) {
 	}{
 		{"тред модератора", threadModQuery, []any{int64(0), int64(200001), 100}, "comments_tree"},
 		{"линейный вид модератора", flatModQuery, []any{int64(0), int64(200001), 30, 0}, "comments_flat"},
+		// Лента модератора ходит по СВОЕМУ индексу (миграция 0017): частичный
+		// notes_feed построен по status = 0 и двух статусов не берёт, а без
+		// замены это полный перебор 117 тысяч строк на каждый её показ.
+		{"лента модератора", feedModQuery, []any{int64(0), 20, 0}, "notes_feed_mod"},
+		{"закреплённые у модератора", pinnedModQuery, []any{int64(0), 2 * MaxPinned}, "notes_pinned_mod"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -709,7 +811,7 @@ func TestПланыЗапросовМодератора(t *testing.T) {
 			if !strings.Contains(plan, c.index) {
 				t.Fatalf("план не берёт индекс %s:\n%s", c.index, plan)
 			}
-			if strings.Contains(plan, "Seq Scan on comments") {
+			if strings.Contains(plan, "Seq Scan on comments") || strings.Contains(plan, "Seq Scan on notes") {
 				t.Fatalf("полный перебор в плане:\n%s", plan)
 			}
 		})

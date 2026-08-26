@@ -496,7 +496,7 @@ func TestFeedPagesCoverEverythingOnce(t *testing.T) {
 	for i := int64(1); i <= 5; i++ {
 		ingestNote(t, p, 1000+i, 175869, "Гадёныш")
 	}
-	total, err := p.CountNotes(ctx)
+	total, err := p.CountNotes(ctx, Viewer{})
 	if err != nil || total != 5 {
 		t.Fatalf("счётчик ленты: %d, %v", total, err)
 	}

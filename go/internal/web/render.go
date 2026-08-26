@@ -66,6 +66,7 @@ var funcs = template.FuncMap{
 	"replyURL":    replyURL,
 	"rx":          reactBoxOf,
 	"modn":        modNote,
+	"modf":        modFeedNote,
 	"modc":        modComment,
 	"ci":          commentItem,
 	"ni":          noteItem,

@@ -25,24 +25,34 @@ const countTTL = 30 * time.Second
 
 // feedCount — тот самый счётчик. Живёт в памяти процесса: пережить рестарт ему
 // незачем, а делить его между мордой и демоном нечем и не нужно.
+//
+// Слотов ДВА, потому что и лент две: у читателя в ней только видимое, у
+// модератора ещё и скрытое (platform.feedModQuery). Один счётчик на обоих врал
+// бы номерами страниц тому, у кого строк больше, — и последние заметки ленты
+// уезжали бы за край последней страницы. Слот выбирается тем же вопросом, что и
+// запрос: «видит ли этот человек скрытое».
 type feedCount struct {
 	mu sync.Mutex
-	n  int
-	at time.Time
+	n  [2]int
+	at [2]time.Time
 }
 
-// countNotes — сколько заметок в ленте, не чаще раза в countTTL.
-func (s *Server) countNotes(ctx context.Context) (int, error) {
+// countNotes — сколько заметок в ленте этого человека, не чаще раза в countTTL.
+func (s *Server) countNotes(ctx context.Context, v platform.Viewer) (int, error) {
+	i := 0
+	if v.CanModerate() {
+		i = 1
+	}
 	s.notes.mu.Lock()
 	defer s.notes.mu.Unlock()
-	if now := time.Now(); now.Sub(s.notes.at) < countTTL {
-		return s.notes.n, nil
+	if now := time.Now(); now.Sub(s.notes.at[i]) < countTTL {
+		return s.notes.n[i], nil
 	}
-	n, err := s.st.CountNotes(ctx)
+	n, err := s.st.CountNotes(ctx, v)
 	if err != nil {
 		return 0, err
 	}
-	s.notes.n, s.notes.at = n, time.Now()
+	s.notes.n[i], s.notes.at[i] = n, time.Now()
 	return n, nil
 }
 
@@ -57,6 +67,16 @@ type feedPage struct {
 	// можно всем, писать — только вошедшим, и кнопка, ведущая к отказу, хуже её
 	// отсутствия.
 	CanWrite bool
+	// CanModerate — под каждой заметкой ленты видны кнопки: скрыть и вернуть,
+	// закрепить и открепить, замок треда, ссылка на автора. Модератор работает
+	// ТАМ, ГДЕ ЧИТАЕТ, а читают ленту: до 26.08.2026 за каждым решением
+	// приходилось открывать страницу заметки, а скрытая заметка пропадала у него
+	// вместе со всеми — вернуть её можно было только из очереди.
+	CanModerate bool
+	// CanEdit — смотрящий администратор, и под НАТИВНЫМИ заметками ленты стоит
+	// «Поправить». Отдельно от CanModerate: правка чужого текста выше
+	// модераторской двери (см. platform.EditNoteAsAdmin).
+	CanEdit bool
 	// FreshOK и FreshAfter — живой добор ленты (fresh.go). Граница непрозрачна
 	// для страницы: она её только печатает, а разбирает и двигает сервер.
 	FreshOK    bool
@@ -71,7 +91,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, v := r.Context(), s.viewer(r)
 
-	total, err := s.countNotes(ctx)
+	total, err := s.countNotes(ctx, v)
 	if err != nil {
 		s.oops(w, r, "счётчик ленты", err)
 		return
@@ -110,6 +130,12 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		Notes:    notes,
 		Pager:    newPager(num, pages, feedURL),
 		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil,
+		// Скрытое ядро отдало по роли смотрящего (platform.Feed), а кнопки под
+		// ним показываются, только если модерация к морде вообще подключена:
+		// нарисовать «Вернуть» там, где звать некого, — это кнопка, отвечающая
+		// отказом.
+		CanModerate: v.CanModerate() && s.mod != nil,
+		CanEdit:     me.Role >= platform.RoleAdmin && s.mod != nil,
 		// Дописывается только первая страница: остальные — срез истории, и
 		// новая заметка сверху сдвинула бы человеку то, что он читает.
 		FreshOK:    num == 1,

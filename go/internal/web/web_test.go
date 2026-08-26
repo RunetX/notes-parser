@@ -32,9 +32,12 @@ type fakeStore struct {
 	notes       []platform.NoteView
 	pinned      []platform.NoteView
 	pinnedCalls int // спрашивают ли закреплённые на страницах, кроме первой
-	total       int
-	countCalls  int // сколько раз спросили длину ленты (она кэшируется)
-	feedOffset  int // что пришло в последний вызов
+	// hidden — сколько строк ленты скрыто модерацией: их видит только
+	// модератор, и на его постраничку они влияют (см. CountNotes).
+	hidden     int
+	total      int
+	countCalls int // сколько раз спросили длину ленты (она кэшируется)
+	feedOffset int // что пришло в последний вызов
 
 	note    platform.NoteView
 	noteErr error
@@ -72,8 +75,13 @@ type fakeStore struct {
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 
-func (f *fakeStore) CountNotes(context.Context) (int, error) {
+func (f *fakeStore) CountNotes(_ context.Context, v platform.Viewer) (int, error) {
 	f.countCalls++
+	// Дубль повторяет то, что делает ядро: у модератора лента длиннее на
+	// скрытое. Без этого постраничка в тестах считалась бы по чужим строкам.
+	if v.CanModerate() {
+		return f.total + f.hidden, nil
+	}
 	return f.total, nil
 }
 

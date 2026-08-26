@@ -477,17 +477,35 @@ type modAct struct {
 	Hidden      bool
 	CanModerate bool
 	CanReport   bool
-	CSRF        string
-	Back        string
+	// Ниже — только для ЗАМЕТКИ, и у комментария они всегда пусты: замок треда,
+	// закрепление в ленте и правка текста администратором. Полоска одна на оба
+	// вида не ради экономии разметки, а потому что решение «что кому показать»
+	// обязано считаться в одном месте: разъехавшись, две ветки дали бы кнопку
+	// под заметкой и ничего под репликой — то, ради чего эта функция и заведена.
+	IsNote bool
+	Pinned bool
+	Locked bool
+	// AdminEdit — «Поправить» под ЧУЖОЙ нативной заметкой. Право
+	// администраторское, поэтому и стоит оно в полоске модерации, а не в подвале
+	// заметки рядом с авторским окном правки.
+	AdminEdit bool
+	CSRF      string
+	Back      string
 }
 
-// modNote — полоска под самой заметкой.
+// modNote — полоска под самой заметкой на её странице.
 func modNote(p notePage) modAct {
 	return modAct{
-		Subject:     platform.NoteSubject(p.Note.ID),
-		NoteID:      p.Note.ID,
-		AuthorID:    p.Note.Author.ID,
-		Hidden:      p.Note.Status == platform.StatusHiddenMod,
+		Subject:  platform.NoteSubject(p.Note.ID),
+		NoteID:   p.Note.ID,
+		AuthorID: p.Note.Author.ID,
+		Hidden:   p.Note.Status == platform.StatusHiddenMod,
+		IsNote:   true,
+		Pinned:   p.Note.Pinned,
+		Locked:   p.Note.Locked,
+		// Авторское «Поправить» стоит в подвале заметки, и второй такой же
+		// ссылкой рядом администратор-автор ничего нового не узнает.
+		AdminEdit:   p.AdminEdit && !p.Editable,
 		CanModerate: p.CanModerate,
 		// Пожаловаться на СВОЮ публикацию нельзя, и «пожаловаться» под чужой
 		// показываем только тому, кто вправе писать: жалоба заводит работу
@@ -495,6 +513,30 @@ func modNote(p notePage) modAct {
 		CanReport: p.CanWrite && !p.CanModerate && !p.Note.Own,
 		CSRF:      p.CSRF,
 		Back:      p.Back,
+	}
+}
+
+// modFeedNote — та же полоска, но под заметкой ЛЕНТЫ. Своя функция, потому что
+// страница другая (feedPage), а не потому, что правила другие: правила те же,
+// и живут они по-прежнему в одном месте — в полях modAct.
+//
+// «Пожаловаться» здесь нет намеренно. Жалоба — обращение к модератору по поводу
+// КОНКРЕТНЫХ слов, а лента показывает начало текста; вешать её на каждую из
+// двадцати строк значило бы то же самое, чего мы избежали у реакций, — кнопку
+// на всё подряд. Она остаётся на странице заметки, где видно, на что жалуются.
+func modFeedNote(d noteItemData) modAct {
+	return modAct{
+		Subject:     platform.NoteSubject(d.Note.ID),
+		NoteID:      d.Note.ID,
+		AuthorID:    d.Note.Author.ID,
+		Hidden:      d.Note.Status == platform.StatusHiddenMod,
+		IsNote:      true,
+		Pinned:      d.Note.Pinned,
+		Locked:      d.Note.Locked,
+		AdminEdit:   d.Page.CanEdit && platform.IsNative(d.Note.ID),
+		CanModerate: d.Page.CanModerate,
+		CSRF:        d.Page.CSRF,
+		Back:        d.Page.Back,
 	}
 }
 

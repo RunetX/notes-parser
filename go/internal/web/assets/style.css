@@ -899,11 +899,16 @@ span.rxb { cursor: default; }
 }
 .mtag.warnbadge { border-color: var(--accent); color: var(--accent); }
 
-/* Скрытая модерацией реплика видна ТОЛЬКО модератору (запрос отдаёт её лишь
-   ему), и в дереве она обязана отличаться с одного взгляда — иначе он вернёт
-   её, приняв за живую, или скроет дважды. */
+/* Скрытое модерацией видно ТОЛЬКО модератору (запрос отдаёт его лишь ему), и
+   отличаться оно обязано с одного взгляда — иначе он вернёт скрытое, приняв за
+   живое, или скроет дважды. Отсюда ЗАТЕНЕНИЕ: не убрано, но и не в разговоре.
+   У ЗАМЕТКИ гасится содержимое, а не строка целиком, и это не придирка к виду:
+   opacity заводит свой слой, и вернуть полоске действий полную силу изнутри
+   потом нечем, — а ею скрытое и возвращают. У реплики полоска короче и правило
+   осталось прежним, на всю строку. */
 .chid { opacity: .55; }
-.chid .text { text-decoration-line: line-through; text-decoration-color: var(--rule); }
+.nhid .author, .nhid .nbody > :not(.modbar) { opacity: .55; }
+.chid .text, .nhid .text { text-decoration-line: line-through; text-decoration-color: var(--rule); }
 
 .modsum { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; margin: 12px 0 18px; }
 .modq, .myhid { list-style: none; margin: 0; padding: 0; }

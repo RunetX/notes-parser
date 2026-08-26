@@ -201,7 +201,19 @@ func (s *Server) handleFreshFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	me, signedIn := s.me(r)
-	p := feedPage{CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil}
+	// Контекст страницы собирается заново и такой же, как у настоящей ленты:
+	// дописанная заметка обязана прийти с теми же кнопками, что нарисовало бы
+	// обновление, — иначе у модератора первая же дописанная строка окажется без
+	// полоски действий, и он решит, что кнопки пропали.
+	p := feedPage{
+		CanWrite:    signedIn && me.Kind == platform.KindMember && s.wr != nil,
+		CanModerate: v.CanModerate() && s.mod != nil,
+		CanEdit:     me.Role >= platform.RoleAdmin && s.mod != nil,
+	}
+	if signedIn {
+		p.CSRF = csrfToken(s.session(r))
+		p.Back = "/"
+	}
 
 	// Запрос отдаёт от НОВЫХ к старым — тем же порядком, что и лента. Клиент
 	// вставляет строки сверху, поэтому идти по ним надо С КОНЦА: иначе три

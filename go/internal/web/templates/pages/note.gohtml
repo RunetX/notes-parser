@@ -29,7 +29,10 @@
       </svg>
     </a>
   </nav>
-  <div class="note notebox">
+  {{/* Скрытая заметка ЗАТЕНЯЕТСЯ, а не исчезает, — но видит её только модератор
+       (страница отвечает всем остальным «такой заметки нет»). Класс тот же по
+       смыслу, что у скрытой реплики: nhid к chid, и правило в CSS у них общее. */}}
+  <div class="note notebox{{if ne $n.Status 0}} nhid{{end}}">
     <div class="author">
       {{template "avatar" (av $n.Author.AvatarURL $n.Author.Gender $n.Anonymous)}}
       <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
@@ -60,36 +63,15 @@
              одна правка и до первого ответа. Условие считает Editable — то же
              самое, что проверит ядро, чтобы кнопка не отвечала отказом.
 
-             У администратора окна нет: он правит СВОИ заметки площадки —
-             объявление, выпуск дайджеста — и чужие, когда из текста надо убрать
-             лишнее. Дорога та же самая, поэтому и ссылка одна. */}}
-        {{if .Editable}}<a class="editlink" href="/n/{{$n.ID}}/edit">Поправить</a>
-        {{else if .AdminEdit}}<a class="editlink" href="/n/{{$n.ID}}/edit"
-           title="Правка администратора: текст заметки, без автора и анонимности">Поправить</a>{{end}}
+             У администратора окна нет, и его «Поправить» стоит не здесь, а в
+             полоске модерации: это право не авторское, и место ему рядом с
+             остальными решениями о чужом тексте. */}}
+        {{if .Editable}}<a class="editlink" href="/n/{{$n.ID}}/edit">Поправить</a>{{end}}
       </div>
+      {{/* Замок, закрепление и правка администратора стоят ВНУТРИ этой полоски
+           (parts/modbar.gohtml): один шаблон и на странице, и в ленте — иначе
+           набор кнопок в двух местах разъехался бы на первой же правке. */}}
       {{template "modbar" (modn $)}}
-      {{if .CanModerate}}
-      {{/* Замок треда — наш, а не перенос отметки НГС «не актуальна»: та стоит у
-           62 % зеркальных заметок и появляется через минуты после публикации,
-           то есть запирать ею разговор значило бы открыть площадку в режиме
-           чтения ровно там, где он идёт. */}}
-      <form method="post" action="/mod/act" class="minline">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="back" value="{{.Back}}">
-        <input type="hidden" name="note" value="{{$n.ID}}">
-        <button type="submit" name="do" value="{{if $n.Locked}}unlock{{else}}lock{{end}}" class="mbtn">
-          {{if $n.Locked}}Открыть обсуждение{{else}}Закрыть обсуждение{{end}}</button>
-      </form>
-      {{/* Закрепление — соседняя кнопка, потому что решение того же рода: оба
-           меняют не текст, а место заметки в общем разговоре. */}}
-      <form method="post" action="/mod/act" class="minline">
-        <input type="hidden" name="csrf" value="{{.CSRF}}">
-        <input type="hidden" name="back" value="{{.Back}}">
-        <input type="hidden" name="note" value="{{$n.ID}}">
-        <button type="submit" name="do" value="{{if $n.Pinned}}unpin{{else}}pin{{end}}" class="mbtn">
-          {{if $n.Pinned}}Открепить{{else}}Закрепить наверху{{end}}</button>
-      </form>
-      {{end}}
     </div>
   </div>
 </div>
