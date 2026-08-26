@@ -87,7 +87,7 @@ func TestOriginBadgeDoesNotSplitTheCommentLink(t *testing.T) {
 	t.Cleanup(func() { setNGSBase("") })
 
 	feed := do(h, guest(t, "GET", "/")).Body.String()
-	if !strings.Contains(feed, `Комментарии <span class="cnt">3</span>`) {
+	if !strings.Contains(feed, `<span class="lbl">Комментарии</span> <span class="cnt">3</span>`) {
 		t.Error("метка разорвала надпись «Комментарии N»")
 	}
 	// И не должна называться так, чтобы её принял за себя тест липкой шапки.

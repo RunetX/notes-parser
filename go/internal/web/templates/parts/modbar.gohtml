@@ -16,11 +16,34 @@
      адресу нельзя — такую ссылку однажды откроет предзагрузчик браузера.
      Скрытый csrf стоит в каждой: то же правило, что у всех пишущих форм.
 
+     У КАЖДОГО управления здесь три части: значок, подпись и title. На десктопе
+     видна подпись, на телефоне — значок, а title стоит всегда. Это не
+     украшение и не дубль: подпись прячется .sr-only, то есть остаётся именем
+     кнопки для читалки, — а на телефоне пять подписей не помещались в строку и
+     сваливались в кучку (жалоба владельца 26.08.2026). Набор значков и довод,
+     почему они обведённые, — в parts/icons.gohtml.
+
+     «Пожаловаться» значка НЕ получает, и это не забывчивость. Значками
+     заменяют то, чем пользуются часто и немногие: у модератора это несколько
+     решений в день, и знак он выучит за первый же. Жалоба — наоборот: её
+     нажимают раз в год и все подряд, стоит она в полоске ОДНА (места хватает),
+     и неопознанный флажок под чужой репликой был бы ровно тем, от чего
+     предостерегает правило Ш5з.
+
+     Обёртка — div, и это не вкусовщина. Здесь стоял <p>, а <p> браузер
+     ЗАКРЫВАЕТ САМ перед блочным элементом — то есть перед первым же <form>:
+     формы оказывались СНАРУЖИ полоски, селектор «.modbar что-то-внутри» не
+     совпадал ни с чем, а флексом выкладывался пустой абзац. Пока полоска была
+     набором самостоятельных кнопок, это ничего не стоило и потому не всплывало;
+     первое же правило, которому понадобилось ВНУТРИ (подпись, прячущаяся на
+     телефоне), встало намертво. Нашлось снимком headless-браузера, а не
+     чтением: разметка выглядит правильной, ломает её разбор.
+
      Аргумент — modAct (см. render.go): пара «объект + куда вернуться». */}}
 {{define "modbar"}}
 {{- $m := . -}}
 {{- if or $m.CanModerate $m.CanReport -}}
-<p class="modbar">
+<div class="modbar">
   {{if $m.CanModerate}}
     {{if $m.Hidden}}
     <span class="mtag">скрыто модерацией</span>
@@ -30,7 +53,8 @@
       <input type="hidden" name="kind" value="{{$m.Subject.Kind}}">
       <input type="hidden" name="id" value="{{$m.Subject.ID}}">
       <input type="hidden" name="do" value="restore">
-      <button type="submit" class="mbtn">Вернуть</button>
+      <button type="submit" class="mbtn" title="Вернуть на виду читателям"
+        >{{template "ico" "show"}}<span class="lbl">Вернуть</span></button>
     </form>
     {{else}}
     <form method="post" action="/mod/act" class="minline">
@@ -39,7 +63,8 @@
       <input type="hidden" name="kind" value="{{$m.Subject.Kind}}">
       <input type="hidden" name="id" value="{{$m.Subject.ID}}">
       <input type="hidden" name="do" value="hide">
-      <button type="submit" class="mbtn">Скрыть</button>
+      <button type="submit" class="mbtn" title="Скрыть от читателей (текст остаётся, ветка не рвётся)"
+        >{{template "ico" "hide"}}<span class="lbl">Скрыть</span></button>
     </form>
     {{end}}
     {{if $m.IsNote}}
@@ -51,8 +76,10 @@
       <input type="hidden" name="csrf" value="{{$m.CSRF}}">
       <input type="hidden" name="back" value="{{$m.Back}}">
       <input type="hidden" name="note" value="{{$m.NoteID}}">
-      <button type="submit" name="do" value="{{if $m.Locked}}unlock{{else}}lock{{end}}" class="mbtn">
-        {{if $m.Locked}}Открыть обсуждение{{else}}Закрыть обсуждение{{end}}</button>
+      <button type="submit" name="do" value="{{if $m.Locked}}unlock{{else}}lock{{end}}" class="mbtn"
+        title="{{if $m.Locked}}Открыть обсуждение: снова можно отвечать{{else}}Закрыть обсуждение: читать можно, отвечать нельзя{{end}}"
+        >{{if $m.Locked}}{{template "ico" "unlock"}}<span class="lbl">Открыть обсуждение</span>
+         {{- else}}{{template "ico" "lock"}}<span class="lbl">Закрыть обсуждение</span>{{end}}</button>
     </form>
     {{/* Закрепление — соседняя кнопка, потому что решение того же рода: оба
          меняют не текст, а место заметки в общем разговоре. В ЛЕНТЕ она к тому
@@ -62,18 +89,23 @@
       <input type="hidden" name="csrf" value="{{$m.CSRF}}">
       <input type="hidden" name="back" value="{{$m.Back}}">
       <input type="hidden" name="note" value="{{$m.NoteID}}">
-      <button type="submit" name="do" value="{{if $m.Pinned}}unpin{{else}}pin{{end}}" class="mbtn">
-        {{if $m.Pinned}}Открепить{{else}}Закрепить наверху{{end}}</button>
+      <button type="submit" name="do" value="{{if $m.Pinned}}unpin{{else}}pin{{end}}" class="mbtn"
+        title="{{if $m.Pinned}}Открепить: заметка вернётся на своё место в ленте{{else}}Закрепить наверху ленты{{end}}"
+        >{{if $m.Pinned}}{{template "ico" "untop"}}<span class="lbl">Открепить</span>
+         {{- else}}{{template "ico" "top"}}<span class="lbl">Закрепить наверху</span>{{end}}</button>
     </form>
     {{end}}
     {{if $m.AdminEdit}}<a class="mlink" href="/n/{{$m.NoteID}}/edit"
-       title="Правка администратора: текст заметки, без автора и анонимности">Поправить</a>{{end}}
-    {{if $m.AuthorID}}<a class="mlink" href="/mod/u/{{$m.AuthorID}}">Автор</a>{{end}}
+       title="Правка администратора: текст заметки, без автора и анонимности"
+       >{{template "ico" "edit"}}<span class="lbl">Поправить</span></a>{{end}}
+    {{if $m.AuthorID}}<a class="mlink" href="/mod/u/{{$m.AuthorID}}"
+       title="Карточка автора: решения, запреты, жалобы"
+       >{{template "ico" "user"}}<span class="lbl">Автор</span></a>{{end}}
   {{else if $m.CanReport}}
     {{/* Ссылка, а не форма: жалоба — это текст, и поле ввода под каждой из
          девятисот реплик было бы ровно тем, чего мы избежали у реакций. */}}
     <a class="mlink" href="/report?kind={{$m.Subject.Kind}}&amp;id={{$m.Subject.ID}}&amp;note={{$m.NoteID}}">Пожаловаться</a>
   {{end}}
-</p>
+</div>
 {{- end -}}
 {{end}}

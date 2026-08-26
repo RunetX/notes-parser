@@ -186,7 +186,10 @@ func TestFeedCommentLinkWording(t *testing.T) {
 
 	h := openServer(t, &fakeStore{total: 2, notes: []platform.NoteView{open, closed}})
 	body := do(h, guest(t, "GET", "/")).Body.String()
-	if !strings.Contains(body, "Комментарии <span class=\"cnt\">3</span>") {
+	// Слово стоит в своей обёртке: на телефоне его заменяет значок, и разметка
+	// обязана НАЗВАТЬ, что прятать (тот же приём, что у постранички). Порядок и
+	// сами слова на десктопе от этого не изменились.
+	if !strings.Contains(body, "<span class=\"lbl\">Комментарии</span> <span class=\"cnt\">3</span>") {
 		t.Error("нет ссылки «Комментарии N»")
 	}
 	if !strings.Contains(body, "не актуальна") {
@@ -459,7 +462,7 @@ func TestMobileFreesNoteTextWidth(t *testing.T) {
 		t.Error("переключатель на телефоне остался в углу поверх текста")
 	}
 	// Ник шире своей колонки наезжал на текст: 100px при колонке в 64.
-	if !strings.Contains(mobile, ".author .nick { max-width: 100%; }") {
+	if !strings.Contains(mobile, ".author .nick { max-width: 100%;") {
 		t.Error("ник автора на телефоне шире своей колонки")
 	}
 }
@@ -570,6 +573,60 @@ func TestMobileTextIsBiggerAndControlsFitOneLine(t *testing.T) {
 	// переносятся сами, когда не помещаются.
 	if !strings.Contains(mobile, ".rx, .cact, .modbar { display: inline-flex;") {
 		t.Error("на телефоне служебное под репликой снова занимает три строки")
+	}
+}
+
+// [Ж] Карточка заметки на телефоне сделана под ПАЛЕЦ (жалоба владельца
+// 26.08.2026 по снимку вертикального экрана: «некоторые элементы слишком
+// мелкие, какие-то съехали в асимметричную кучку»).
+//
+// Кучка была из двух разных мест. Служебная строка шла ТРЕМЯ этажами по 12px —
+// «Комментарии N» и «Добавить комментарий» стояли display:block каждый со своей
+// строки. А полоска модератора несла пять подписей словами, которые не
+// помещались в ряд и переносились как придётся: две кнопки, потом кнопка и два
+// серых слова.
+//
+// Лечится это по-разному, и тест держит оба лечения сразу, потому что порознь
+// они бессмысленны: одна строка из мелких ссылок ничем не лучше трёх.
+func TestMobileNoteCardIsForFingers(t *testing.T) {
+	mobile := cssRule(t, cssText(t), "@media (max-width: 700px)")
+
+	// Служебное — ОДИН ряд, а не три этажа.
+	if !strings.Contains(mobile, ".nfoot { display: flex;") {
+		t.Error("служебная строка под заметкой снова идёт этажами")
+	}
+	if strings.Contains(mobile, ".clink { margin-left: 0; display: block;") {
+		t.Error("«Комментарии N» снова занимает свою строку")
+	}
+	// Нажимаемое — не меньше 40px: палец накрывает около 9 мм.
+	if !strings.Contains(mobile, "min-width: 40px; min-height: 40px;") {
+		t.Error("кнопки полоски действий на телефоне меньше пальца")
+	}
+	// Значки показываются только здесь; на десктопе их не видно вовсе.
+	if !strings.Contains(mobile, ".modbar .ico, .clink .ico { display: inline-block; }") {
+		t.Error("на телефоне значки не показываются — полоска снова словами")
+	}
+}
+
+// [Ж] Подпись у кнопки со значком НЕ УДАЛЯЕТСЯ, а прячется показом.
+//
+// Разница не косметическая: display:none убирает текст и из дерева
+// доступности, то есть у кнопки пропадает ИМЯ — читалка объявит её «кнопка».
+// Поэтому подпись уводится тем же приёмом, что и .sr-only, а объяснение для
+// глаза даёт title (правило Ш5з о собственных метках).
+func TestMobileLabelsAreHiddenNotRemoved(t *testing.T) {
+	mobile := cssRule(t, cssText(t), "@media (max-width: 700px)")
+	lbl := ".modbar .lbl, .clink .lbl {"
+	i := strings.Index(mobile, lbl)
+	if i < 0 {
+		t.Fatal("подписи кнопок на телефоне не прячутся вовсе")
+	}
+	rule := mobile[i : i+strings.Index(mobile[i:], "}")]
+	if !strings.Contains(rule, "clip-path") {
+		t.Error("подпись прячется не отводом за край — читалка её не прочтёт")
+	}
+	if strings.Contains(rule, "display: none") {
+		t.Error("подпись удалена из дерева доступности: у кнопки пропало имя")
 	}
 }
 
