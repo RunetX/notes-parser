@@ -260,3 +260,53 @@ func mentions(title, lowerText string) bool {
 	// Значимых слов в названии не нашлось — судить не по чему.
 	return !judged
 }
+
+// Плотность рубрик.
+//
+// Сайт делает nl2br, поэтому одиночный перенос работает — а модель, которой
+// сказано «отбивай строки пустой строкой», отбивала ею КАЖДУЮ, и заметка на НГС
+// вышла растянутой на два экрана (правил владелец руками 27.08.2026). Форма,
+// которую он оставил: пустая строка ПЕРЕД заголовком рубрики, а внутри рубрики —
+// обычные переносы.
+//
+// Правило механическое, а не просьба в промпте: промпт про это уже просили, и
+// одной строкой он не держится — модель отбивает пустой строкой всё, что
+// считает абзацем.
+func tightenRubrics(text string) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+			continue
+		}
+		// Пустая строка выживает, только если СЛЕДУЮЩАЯ непустая — не пункт
+		// рубрики: перед заголовком, перед вводным абзацем и перед финалом
+		// воздух нужен, внутри рубрики он и есть та самая растяжка.
+		if !startsItem(nextNonEmpty(lines, i+1)) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func nextNonEmpty(lines []string, from int) string {
+	for ; from < len(lines); from++ {
+		if strings.TrimSpace(lines[from]) != "" {
+			return lines[from]
+		}
+	}
+	return ""
+}
+
+// startsItem — строка начинается со значка, то есть это пункт рубрики. Значок в
+// начале строки ставит сама заметка (правило формата), поэтому признак надёжнее
+// любых догадок по смыслу.
+func startsItem(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	r := []rune(line)[0]
+	return sitetext.CountEmoji(string(r)) > 0
+}

@@ -167,7 +167,7 @@ func (s *Service) askOnce(ctx context.Context, system, prompt string, cfg valida
 		// шутку про чью-то беду.
 		return draft{Skip: true, Idea: d.Idea}, false, nil
 	}
-	d.Text = sitetext.Normalize(d.Text)
+	d.Text = tightenRubrics(sitetext.Normalize(d.Text))
 	if reason := validate(d, cfg); reason != "" {
 		return draft{}, true, fmt.Errorf("%s", reason)
 	}
