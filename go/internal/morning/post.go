@@ -239,7 +239,20 @@ func (s *Service) publish(ctx context.Context, day string, slot time.Time) {
 // «не сказал ли утро кто-то другой» спрашивается всегда: ради этой проверки
 // фича и заведена. Снять её может только явное force.
 func (s *Service) PublishToday(ctx context.Context, force bool) (string, error) {
-	day, slot := SlotFor(s.now(), s.cfg.Loc, s.cfg.Hour)
+	_, slot := SlotFor(s.now(), s.cfg.Loc, s.cfg.Hour)
+	return s.PublishSlot(ctx, slot, force)
+}
+
+// PublishSlot — то же для НАЗВАННОГО дня (`morning post -day`). Нужен там, где
+// сутки в поясе площадки уже наступили, а слот ещё не пришёл: в три часа ночи
+// по Новосибирску «сегодня» для SlotFor — это ВЧЕРАШНИЙ слот, и догон
+// сегодняшнего дня был невозможен вовсе. Просьба владельца 26.08.2026:
+// «опубликуй уже сейчас».
+//
+// Проверки те же, что у слота демона: день не закрыт, чужого утра нет. Строка
+// заводится по дню, поэтому наступивший слот второй заметки не даст.
+func (s *Service) PublishSlot(ctx context.Context, slot time.Time, force bool) (string, error) {
+	day := slot.Format(DayLayout)
 	if done, err := s.dayDone(ctx, day); err != nil {
 		return "", err
 	} else if done {

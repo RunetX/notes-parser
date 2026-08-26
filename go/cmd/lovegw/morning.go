@@ -67,7 +67,11 @@ func cmdMorning(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		summary, err := svc.PublishToday(ctx, *force)
+		slot, err := morningDay(cfg, *day)
+		if err != nil {
+			return err
+		}
+		summary, err := svc.PublishSlot(ctx, slot, *force)
 		if err != nil {
 			return err
 		}
