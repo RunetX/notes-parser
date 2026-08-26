@@ -264,6 +264,61 @@ func TestReviewQueueAlwaysShowsNotesWithImages(t *testing.T) {
 	}
 }
 
+// Номер субъекта в очереди сам по себе не значит НИЧЕГО: у заметок и
+// комментариев внутри нативной полосы свои последовательности, и номера у них
+// пересекаются. Правило «заметка с картинкой видна модератору всегда» обязано
+// спрашивать ВИД субъекта — иначе комментарий, которому достался номер заметки с
+// картинкой, приезжает в очередь без причины и с чужой миниатюрой.
+func TestQueueDoesNotConfuseACommentWithANoteOfTheSameNumber(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Рио")
+	shot := mustShot(t, p, 800, 600)
+
+	note, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "с картинкой", Image: &shot})
+	if err != nil {
+		t.Fatalf("заметка с картинкой: %v", err)
+	}
+	// Следующий комментарий получит РОВНО номер этой заметки — то самое
+	// совпадение, которое в бою случается само собой.
+	// is_called = false, а не «номер минус один»: у последовательности есть
+	// MINVALUE, и первая же нативная заметка стоит ровно на нём.
+	if _, err := p.pool.Exec(ctx,
+		`SELECT setval('comments_native_seq', $1, false)`, note); err != nil {
+		t.Fatalf("сдвиг последовательности: %v", err)
+	}
+	cid, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: author, Body: "реплика"})
+	if err != nil {
+		t.Fatalf("комментарий: %v", err)
+	}
+	if cid != note {
+		t.Fatalf("совпадения номеров не вышло: заметка %d, комментарий %d", note, cid)
+	}
+
+	items, err := p.ReviewQueue(ctx, 50)
+	if err != nil {
+		t.Fatalf("очередь: %v", err)
+	}
+	var sawNote bool
+	for _, it := range items {
+		switch it.Subject.Kind {
+		case SubjectNote:
+			sawNote = true
+			if it.ImageURL != shot.URL {
+				t.Errorf("у заметки в очереди адрес картинки %q, ожидался %q", it.ImageURL, shot.URL)
+			}
+		case SubjectComment:
+			t.Errorf("комментарий %d приехал в очередь по чужой картинке", it.Subject.ID)
+			if it.ImageURL != "" {
+				t.Errorf("и получил чужую миниатюру %q", it.ImageURL)
+			}
+		}
+	}
+	if !sawNote {
+		t.Fatal("заметка с картинкой из очереди пропала")
+	}
+}
+
 // Исходящий обход несёт картинку в каналы: заметка с фотографией, пришедшая в
 // Telegram без фотографии, — это заметка о чём-то другом.
 func TestOutboundNotesCarryTheImage(t *testing.T) {

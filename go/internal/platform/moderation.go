@@ -1050,7 +1050,8 @@ func (p *Platform) ReviewQueue(ctx context.Context, limit int) ([]ReviewItem, er
 	rows, err := p.pool.Query(ctx, `SELECT `+reviewColumns+`
 		 WHERE q.decided_at IS NULL
 		   AND (q.verdict = 1 OR q.appealed_at IS NOT NULL
-		        OR EXISTS (SELECT 1 FROM note_images i WHERE i.note_id = q.subject_id))
+		        OR (q.subject_kind = 'note'
+		            AND EXISTS (SELECT 1 FROM note_images i WHERE i.note_id = q.subject_id)))
 		 ORDER BY q.queued_at
 		 LIMIT $1`, clampLimit(limit))
 	if err != nil {
@@ -1148,7 +1149,15 @@ func (p *Platform) attachShots(ctx context.Context, items []ReviewItem) ([]Revie
 	if err != nil {
 		return nil, err
 	}
+	// Вид субъекта спрашивается и здесь, а не только при сборе ключей: у заметок
+	// и комментариев СВОИ последовательности внутри нативной полосы, поэтому
+	// номера у них пересекаются сплошь и рядом (на 26.08.2026 заметки дошли до
+	// …021, а комментарии до …808 — то есть комментарий с номером следующей
+	// заметки уже существует). Карта же ключуется голым числом.
 	for i := range items {
+		if items[i].Subject.Kind != SubjectNote {
+			continue
+		}
 		if m, ok := shots[items[i].Subject.ID]; ok {
 			items[i].ImageURL = m.URL
 		}
