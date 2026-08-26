@@ -42,6 +42,9 @@ type mePage struct {
 	// прочитал.
 	Ban    *time.Time
 	Reason string
+	// Jump — стоит ли «проматывать к новым» (jump.go). Предпочтение экрана, а не
+	// человека, поэтому приезжает из куки, а не из карточки участника.
+	Jump bool
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +111,7 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		Hidden:  hidden,
 		Ban:     ban,
 		Reason:  u.BanReason,
+		Jump:    s.jumpFresh(r),
 	})
 }
 

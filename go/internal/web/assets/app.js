@@ -320,6 +320,10 @@ smilePanel(document);
   var url = list && list.getAttribute('data-fresh-url');
   var cursor = list && list.getAttribute('data-fresh');
   var linear = !!list && list.classList.contains('linear');
+  // «Проматывать к новым» — настройка человека с /me (jump.go). Атрибут стоит
+  // внутри того же if, что и граница добора: прыгать некуда там, где ничего не
+  // дописывается.
+  var jump = !!list && list.getAttribute('data-jump') === '1';
   var src = null, busy = false, again = false, timer = null;
 
   // Счётчик у колокольчика подкручивается на месте, а не перечитывается с
@@ -403,11 +407,23 @@ smilePanel(document);
     return s;
   };
 
+  // Возвращает ПЕРВУЮ по порядку страницы из дописанных строк — ту, на которую
+  // встаёт «Проматывать к новым».
+  //
+  // Именно первую, а не последнюю, хотя просьба владельца звучала как «самый
+  // свежий комментарий». В ЛИНЕЙНОМ виде это одно и то же: новое кладётся
+  // сверху, и первое по странице оно же и самое свежее. В ДЕРЕВЕ «самый свежий»
+  // из пришедшей пачки неопределим здесь вовсе — порядок веток не порядок
+  // времени, а сравнивать по номеру нельзя: полосы идентификаторов не
+  // упорядочиваются между собой, нативная реплика позапрошлой недели имеет
+  // номер больше пришедшей с НГС сегодня. Первая же по странице — единственный
+  // выбор, после которого НИ ОДНА новая строка не осталась ЗА СПИНОЙ: дальше
+  // они идут вниз, туда, куда и читают.
   var insert = function (html, moved) {
-    if (!html) return 0;
+    if (!html) return null;
     var box = document.createElement('template');
     box.innerHTML = html;
-    var items = Array.prototype.slice.call(box.content.children), added = 0;
+    var items = Array.prototype.slice.call(box.content.children), first = null;
     for (var i = 0; i < items.length; i++) {
       var li = items[i];
       if (!li.id) continue;
@@ -439,13 +455,37 @@ smilePanel(document);
       // таймером незачем, свою работу он к тому времени уже сделал. Переезду её
       // не ставят: строка не новая, человек её уже читал.
       li.className += ' fresh';
-      added++;
+      // Порядок страницы, а не порядок пачки: в дереве строка садится в свою
+      // ветку, то есть куда угодно, в том числе выше уже вставленной.
+      if (!first || (li.compareDocumentPosition(first) & 4)) first = li;
     }
-    if (added) {
+    if (first) {
       var empty = document.querySelector('.empty');
       if (empty && empty.parentNode) empty.parentNode.removeChild(empty);
     }
-    return added;
+    return first;
+  };
+
+  // Страница не прыгает из-под рук. Два случая, и оба узнаются дёшево: человек
+  // НАБИРАЕТ (курсор в поле — форма ответа стоит прямо в треде) и человек
+  // ВЫДЕЛИЛ текст (читает или копирует). Прокрутка в эти секунды — это потеря
+  // работы и потеря места, а новая реплика подсвечена и никуда не денется.
+  var handsBusy = function () {
+    var a = document.activeElement;
+    if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) return true;
+    var sel = window.getSelection && window.getSelection();
+    return !!(sel && !sel.isCollapsed && String(sel).replace(/\s+/g, ''));
+  };
+
+  // Плавно — но не тому, кто попросил систему не двигать картинку: для него
+  // прокрутка мгновенная. Отступ под липкую шапку приезжает даром — он стоит
+  // у самой реплики (scroll-margin-top в style.css), и scrollIntoView его
+  // соблюдает, иначе строка встала бы ПОД шапкой.
+  var jumpTo = function (el) {
+    if (!jump || !el || handsBusy()) return;
+    var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    try { el.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' }); }
+    catch (e) { el.scrollIntoView(true); }
   };
 
   // Число над тредом ставит СЕРВЕР, а не счёт вставленных строк: порция добора
@@ -477,7 +517,7 @@ smilePanel(document);
       })
       .then(function (html) {
         if (next) cursor = next;
-        insert(html, moved);
+        jumpTo(insert(html, moved));
         setCount(count);
       })
       .catch(function () {

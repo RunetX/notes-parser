@@ -82,6 +82,10 @@ type notePage struct {
 	// человек читает.
 	FreshOK    bool
 	FreshAfter string
+	// Jump — «проматывать к новым»: страница встаёт на пришедшую реплику
+	// (jump.go). Поле рядом с добором намеренно — работают они парой, и без
+	// добора прыгать не к чему.
+	Jump bool
 	// FreshKnown — границу удалось спросить у ядра. Её отказ выключает добор, а
 	// не страницу: дописываться она перестанет, читаться — нет.
 	FreshKnown bool
@@ -187,6 +191,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		p.FreshAfter = threadCursor(after)
 		p.FreshKnown = true
 	}
+	p.Jump = s.jumpFresh(r)
 
 	if linear {
 		num := pageParam(r.URL.Query().Get("page"))
