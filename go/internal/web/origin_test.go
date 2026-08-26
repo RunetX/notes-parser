@@ -81,6 +81,38 @@ func TestOriginBadgeIsOnTheFeedAndOnThePage(t *testing.T) {
 
 // Метка не должна вставать между словом «Комментарии» и числом: этот кусок
 // разметки сверяется с оригиналом НГС в fidelity_test.
+// Метка показывается ЗНАЧКОМ, а не словом (решение владельца 26.08.2026): имя
+// чужого сайта не печатается на каждой карточке ленты. Но и не пропадает совсем
+// — уходит в .sr-only, оставаясь именем ссылки для читалки, — и объясняется
+// заголовком, как велит Ш5з.
+func TestOriginBadgeIsASignNotAWord(t *testing.T) {
+	st := noteStore()
+	h := newTestServer(t, st, Config{SiteBaseURL: "https://love.ngs.ru"})
+	t.Cleanup(func() { setNGSBase("") })
+
+	feed := do(h, guest(t, "GET", "/")).Body.String()
+	i := strings.Index(feed, `class="orig"`)
+	if i < 0 {
+		t.Fatal("метки происхождения в ленте нет вовсе")
+	}
+	badge := feed[i:strings.Index(feed[i:], "</a>")+i]
+	if !strings.Contains(badge, "<svg") {
+		t.Error("метка нарисована не значком")
+	}
+	if !strings.Contains(badge, `<span class="sr-only">НГС</span>`) {
+		t.Error("у метки пропало имя источника для читалки")
+	}
+	if !strings.Contains(badge, "title=") {
+		t.Error("значок не объясняет себя заголовком (правило Ш5з)")
+	}
+	// А ВИДИМЫМ текстом источник больше не назван: вычёркиваем спрятанную
+	// подпись и смотрим, что от метки осталось для глаза.
+	visible := strings.Replace(badge, `<span class="sr-only">НГС</span>`, "", 1)
+	if strings.Contains(visible, "НГС") {
+		t.Error("имя источника снова напечатано словом на карточке")
+	}
+}
+
 func TestOriginBadgeDoesNotSplitTheCommentLink(t *testing.T) {
 	st := noteStore()
 	h := newTestServer(t, st, Config{SiteBaseURL: "https://love.ngs.ru"})
