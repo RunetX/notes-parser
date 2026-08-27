@@ -74,7 +74,7 @@
   "morning": {
     "enabled": false,
     "author_profile_id": "",
-    "hour": 6,
+    "hour": 5,
     "tz": "Asia/Novosibirsk",
     "grace_h": 3,
     "model": "claude-opus-5",
