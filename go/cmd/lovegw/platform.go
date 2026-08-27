@@ -39,6 +39,7 @@ var platformSubcommands = map[string]bool{
 	"reconcile":       true,
 	"media":           true,
 	"avatar":          true,
+	"gender":          true,
 	"reply-scan":      true,
 	"import-restored": true,
 	"invite":          true,
@@ -103,6 +104,12 @@ func cmdPlatform(ctx context.Context, args []string) error {
 			return err
 		}
 		return platformAvatar(ctx, cfg, ids)
+	case "gender":
+		ids, err := parseUserIDs(tail)
+		if err != nil {
+			return err
+		}
+		return platformGenderPull(ctx, cfg, ids)
 	case "reply-scan":
 		return platformReplyScan(ctx, cfg, *limit, *note)
 	case "invite":
@@ -159,7 +166,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformBan(ctx, cfg, id, sub == "ban", *days, *reason)
 	default:
 		return fmt.Errorf("platform: укажите подкоманду " +
-			"(migrate, doctor, reconcile, media, avatar, reply-scan, invite, post, role, " +
+			"(migrate, doctor, reconcile, media, avatar, gender, reply-scan, invite, post, role, " +
 			"moderation, events, ban, unban, anonymize, export, import-archive, import-restored)")
 	}
 }
@@ -286,6 +293,99 @@ func platformAvatarOne(ctx context.Context, p *platform.Platform, media *platfor
 	return nil
 }
 
+// platformGenderPull затягивает пол из анкеты НГС людям, названным по номеру.
+//
+// Зачем руками: путей у пола ровно два, и оба заперты. Обычно он приезжает
+// ДАРОМ — со страницы комментариев, по которой и так идёт обход дерева
+// (platform.SetGenders), — либо проставляется входом по коду. У кого нет ни
+// реплик на НГС, ни входа, пол остаётся неизвестным навсегда: служебная анкета,
+// заведённая ради отправки кодов, — ровно такой случай. А неизвестный пол виден
+// на каждой странице: нейтральный силуэт вместо сайтового и неокрашенный ник.
+//
+// Сестра `platform avatar` и по поводу, и по устройству: прочитать чужую анкету
+// анонимно и перенести к себе то, что человек и так показывает на НГС.
+func platformGenderPull(ctx context.Context, cfg *config.Config, ids []int64) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	log := newLogger(cfg.LogLevel)
+	site, err := mobileProfileClient(cfg, log)
+	if err != nil {
+		return err
+	}
+
+	var bad int
+	for _, id := range ids {
+		if err := platformGenderOne(ctx, p, site, id); err != nil {
+			// Один отказ не отменяет остальных: команда идёт по списку людей.
+			bad++
+			fmt.Printf("%d: %v\n", id, err)
+		}
+	}
+	if bad > 0 {
+		return fmt.Errorf("пол не перенесён у %d из %d", bad, len(ids))
+	}
+	return nil
+}
+
+// platformGenderOne — один человек: прочитать анкету, перевести пол, записать.
+//
+// Строка на площадке спрашивается ПЕРВОЙ, как и у фото: нет такого номера —
+// ходить на чужой сайт незачем, и ошибка выйдет про нас, а не про НГС.
+func platformGenderOne(ctx context.Context, p *platform.Platform, site *love.Client, id int64) error {
+	u, err := p.UserByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.AnonymizedAt != nil {
+		// Ядро такую строку и само не тронет, но сказать надо вслух: молчаливое
+		// «уже стоял» читалось бы тут как успех, а это исполненное требование
+		// субъекта.
+		return fmt.Errorf("данные обезличены — пол не возвращается")
+	}
+	prof, err := site.FetchProfile(ctx, strconv.FormatInt(id, 10))
+	if errors.Is(err, love.ErrProfileMissing) {
+		return fmt.Errorf("анкеты нет на НГС: снесена или скрыта целиком")
+	}
+	if err != nil {
+		return err
+	}
+	g := platformGender(prof.Gender)
+	if g == platform.GenderUnknown {
+		// Известный пол при этом НЕ снимаем. «Не размечен» у сайта означает и
+		// дрейф вёрстки, и скрытую анкету — то есть отсутствие здесь не
+		// свидетельство, а молчание.
+		fmt.Printf("%d %q: пол в анкете не размечен — оставляю как было\n", id, u.Nick)
+		return nil
+	}
+	changed, err := p.SetGenders(ctx, map[int64]platform.Gender{id: g})
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		fmt.Printf("%d %q (в анкете %q): пол уже стоял — %s\n", id, u.Nick, prof.Nick, genderWord(g))
+		return nil
+	}
+	fmt.Printf("%d %q (в анкете %q): пол → %s\n", id, u.Nick, prof.Nick, genderWord(g))
+	return nil
+}
+
+// genderWord — как назвать пол в отчёте человеку: числа платформы (1/2) глазами
+// не читаются, а команда для того и есть, чтобы проверить глазами.
+func genderWord(g platform.Gender) string {
+	switch g {
+	case platform.GenderMale:
+		return "мужской"
+	case platform.GenderFemale:
+		return "женский"
+	default:
+		return "неизвестен"
+	}
+}
+
 // shortSHA — как называть файл хранилища в отчёте человеку: восьми знаков хватает,
 // чтобы найти его на диске и в media.
 func shortSHA(sha []byte) string {
@@ -314,7 +414,7 @@ func putNGSAvatar(ctx context.Context, p *platform.Platform, media *platform.Med
 // parseUserIDs разбирает список номеров анкет из хвоста командной строки.
 func parseUserIDs(args []string) ([]int64, error) {
 	if len(args) == 0 {
-		return nil, fmt.Errorf("укажите номера анкет: platform avatar <id> [<id>…]")
+		return nil, fmt.Errorf("укажите номера анкет: platform avatar|gender <id> [<id>…]")
 	}
 	ids := make([]int64, 0, len(args))
 	for _, a := range args {
