@@ -419,12 +419,108 @@ smilePanel(document);
   // номер больше пришедшей с НГС сегодня. Первая же по странице — единственный
   // выбор, после которого НИ ОДНА новая строка не осталась ЗА СПИНОЙ: дальше
   // они идут вниз, туда, куда и читают.
+  // Строку, которую человек, возможно, ЧИТАЕТ ПРЯМО СЕЙЧАС, переезд снимает со
+  // страницы и ставит в другую ветку — и до 27.08.2026 она просто исчезала
+  // из-под глаз: подсветки переезду не ставят (строка не новая), целью прыжка он
+  // не считается, — искать её заново приходилось глазами по всему треду.
+  //
+  // Чинится это не «переводом фокуса»: прокрутка к новому месту — тот же рывок
+  // страницы, от которого бережёт handsBusy. Сохраняется МЕСТО ЧТЕНИЯ — высота,
+  // на которой строка стояла на экране: после перестановки она туда и
+  // возвращается. Двигается окружение, а не читатель.
+  var visibleTop = function (el) {
+    var r = el.getBoundingClientRect();
+    var h = window.innerHeight || document.documentElement.clientHeight;
+    return (r.bottom > 0 && r.top < h) ? r.top : null;
+  };
+
+  // Вернуть строку на прежнюю высоту. Считается ПОСЛЕ всей порции: строка,
+  // вставленная выше, сдвинула бы её ещё раз. Мгновенно и без анимации — это не
+  // переход к новому, а отмена чужого движения; сдвиг меньше пикселя не трогаем
+  // вовсе, его уже разобрал сам браузер (overflow-anchor).
+  var keepPlace = function (el, top) {
+    if (!el) return;
+    var d = el.getBoundingClientRect().top - top;
+    if (Math.abs(d) > 1) window.scrollBy(0, d);
+  };
+
+  // Занята ли ЭТА строка. handsBusy() спрашивает про страницу целиком и сторожит
+  // прокрутку; вопрос здесь другой — не отнимаем ли мы работу, снимая узел со
+  // страницы: выделение и курсор живут В УЗЛЕ и умирают вместе с ним.
+  // Список полей тот же, что у handsBusy, и это не совпадение: держать строку
+  // из-за нажатой внутри неё ссылки нельзя — фокус с неё может не уйти вовсе, и
+  // переезд не случился бы никогда.
+  var busyIn = function (el) {
+    var a = document.activeElement;
+    if (a && el.contains(a) &&
+        (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) return true;
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed || !String(sel).replace(/\s+/g, '')) return false;
+    return el.contains(sel.anchorNode) || el.contains(sel.focusNode);
+  };
+
+  // Отложенные переезды. Держим их у себя, потому что второй раз они не придут:
+  // курсор добора ушёл вперёд, а отметка moved_at прочитана.
+  var held = {};
+
+  // Перестановка одной строки. Возвращает высоту, на которой она стояла (null —
+  // её не было видно, и место чтения не про неё).
+  var relocate = function (li, old) {
+    var top = visibleTop(old);
+    old.parentNode.removeChild(old);
+    placeInTree(li);
+    // Метка переезда — не подсветка нового: текст прежний, и отвечает она на
+    // другой вопрос, «почему вокруг всё поменялось». Живёт в CSS, гаснет сама.
+    li.className += ' moved';
+    return top;
+  };
+
+  // Порция переездов применяется ЦЕЛИКОМ или не применяется вовсе. Дерево —
+  // связная структура (тем же доводом ApplyReplyTree на сервере кладёт заметку
+  // одной транзакцией): переставив родителя и оставив на месте потомка, страница
+  // нарисует ветку глубиной МЕНЬШЕ родительской — ровно ту картинку, из-за
+  // которой переезды и заведены.
+  var applyMoves = function (moves) {
+    var i, k;
+    for (i = 0; i < moves.length; i++) {
+      // Хоть одну строку держат — ждём все: отпустят, и flushHeld переставит.
+      if (busyIn(moves[i][1])) {
+        for (k = 0; k < moves.length; k++) held[moves[k][0].id] = moves[k][0];
+        return;
+      }
+    }
+    var anchor = null, top = 0;
+    for (i = 0; i < moves.length; i++) {
+      var li = moves[i][0], old = moves[i][1];
+      // В линейном виде и в ленте место не менялось (там порядок по времени), и
+      // строка просто заменяет себя на месте.
+      if (!m || linear) { old.replaceWith(li); continue; }
+      var was = relocate(li, old);
+      if (was !== null && anchor === null) { anchor = li; top = was; }
+    }
+    keepPlace(anchor, top);
+  };
+
+  // Отпустили — переезжаем. selectionchange ловит и снятие выделения, и клик
+  // мимо, focusout — уход курсора из формы; пустой набор стоит одной проверки.
+  var flushHeld = function () {
+    var ids = Object.keys(held), moves = [];
+    if (!ids.length) return;
+    for (var i = 0; i < ids.length; i++) {
+      var li = held[ids[i]], old = document.getElementById(li.id);
+      delete held[ids[i]];
+      if (old) moves.push([li, old]); // строку могло унести обновлением страницы
+    }
+    applyMoves(moves); // всё ещё держат — вернётся в held
+  };
+
   var insert = function (html, moved) {
     if (!html) return null;
     var box = document.createElement('template');
     box.innerHTML = html;
-    var items = Array.prototype.slice.call(box.content.children), first = null;
-    for (var i = 0; i < items.length; i++) {
+    var items = Array.prototype.slice.call(box.content.children);
+    var fresh = [], moves = [], first = null, i;
+    for (i = 0; i < items.length; i++) {
       var li = items[i];
       if (!li.id) continue;
       var old = document.getElementById(li.id);
@@ -435,11 +531,8 @@ smilePanel(document);
         if (!moved[li.id]) continue;
         // Переезд. В дереве строку надо ПЕРЕСТАВИТЬ, поэтому старую снимаем и
         // ищем ей место заново; потомки приедут той же порцией и встанут следом
-        // — переезд ветки родитель открывает, у него меньший id. В линейном
-        // виде и в ленте место не менялось (там порядок по времени), и строка
-        // просто заменяет себя на месте.
-        if (m && !linear) { old.parentNode.removeChild(old); placeInTree(li); }
-        else { old.replaceWith(li); }
+        // — переезд ветки родитель открывает, у него меньший id.
+        moves.push([li, old]);
         continue;
       }
       // Переезд строки, которой на странице нет вовсе (линейный вид показывает
@@ -447,17 +540,24 @@ smilePanel(document);
       // виде значило бы поднять старую реплику наверх. Если она и правда новая,
       // её принесёт обычный добор — граница по id её ещё не прошла.
       if (moved[li.id]) continue;
-      if (!m) { placeOnTop(li); }
-      else if (linear) { list.insertBefore(li, list.firstChild); }
-      else { placeInTree(li); }
+      fresh.push(li);
+    }
+    // Переезды ПЕРВЫМИ: новая реплика приезжает с глубиной, посчитанной уже
+    // после перестановки, и встать ей надо к родителю на новом месте.
+    applyMoves(moves);
+    for (i = 0; i < fresh.length; i++) {
+      var f = fresh[i];
+      if (!m) { placeOnTop(f); }
+      else if (linear) { list.insertBefore(f, list.firstChild); }
+      else { placeInTree(f); }
       // Подсветка — единственное, чем новое отличается от старого, и живёт она
-      // в CSS: класс ставится навсегда, а гаснет анимацией. Снимать его
-      // таймером незачем, свою работу он к тому времени уже сделал. Переезду её
-      // не ставят: строка не новая, человек её уже читал.
-      li.className += ' fresh';
+      // в CSS: класс ставится навсегда, а гаснет анимацией. Снимать его таймером
+      // незачем, свою работу он к тому времени уже сделал. У переезда метка своя
+      // (relocate): строка не новая, и вопрос у читателя другой.
+      f.className += ' fresh';
       // Порядок страницы, а не порядок пачки: в дереве строка садится в свою
       // ветку, то есть куда угодно, в том числе выше уже вставленной.
-      if (!first || (li.compareDocumentPosition(first) & 4)) first = li;
+      if (!first || (f.compareDocumentPosition(first) & 4)) first = f;
     }
     if (first) {
       var empty = document.querySelector('.empty');
@@ -575,6 +675,10 @@ smilePanel(document);
   // Вкладка в фоне слот не занимает: соединений у площадки шестьдесят четыре
   // на всех, и держать их за свёрнутыми окнами незачем. Возвращаясь, страница
   // добирает пропущенное сразу: сигналов за время сна она не слышала.
+  // Отложенный переезд ждёт, пока строку отпустят: выделение снято, курсор ушёл.
+  document.addEventListener('selectionchange', flushHeld);
+  document.addEventListener('focusout', flushHeld);
+
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) { close(); } else { open(); schedule(); }
   });

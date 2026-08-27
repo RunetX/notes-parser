@@ -733,7 +733,8 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 	// обходу нужны именно они. Приёмник, которому отдали бы его же запись,
 	// замкнул бы петлю.
 	msgSinks := slices.Clone(d.sinks)
-	d.sinks = append(d.sinks, platsink.New(p, media, log))
+	sink := platsink.New(p, media, log)
+	d.sinks = append(d.sinks, sink)
 	// Подписок у площадки нет и быть не может: ЛС она никому не пишет, читатель
 	// приходит сам. Пустой уведомитель стоит здесь, чтобы зеркало не
 	// предупреждало на старте про «мессенджер без ЛС-бота» — площадка не
@@ -765,6 +766,11 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 		log.Error("обход живых тредов не поднят", "err", err)
 	} else {
 		scan := platsink.NewReplyScanner(p, scanSite, log)
+		// Приёмник называет обходчику заметку в тот самый момент, когда положил
+		// в неё реплику с угаданным ребром: очередь свежих тредов дошла бы до
+		// неё через пять минут, и всё это время ответ висит в чужой ветке — а на
+		// открытой странице потом ещё и переезжает на глазах у читателя.
+		sink.SetTreeNudge(scan.Nudge)
 		d.starts = append(d.starts, scan.Run)
 	}
 

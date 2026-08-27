@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"lovegw/internal/love"
@@ -50,13 +51,120 @@ type ReplyScanner struct {
 	p    *platform.Platform
 	site TreeSource
 	log  *slog.Logger
+
+	// Подсказки приёмника: в какие заметки только что пришла реплика с
+	// угаданным ребром. Живут в памяти и рестарт переживать не обязаны — после
+	// него та же работа найдётся в общей очереди свежих тредов, просто минутами
+	// позже.
+	mu    sync.Mutex
+	want  map[int64]bool      // названные, ещё не обойдённые
+	last  map[int64]time.Time // когда по подсказке ходили в прошлый раз
+	fails map[int64]int       // сколько раз подряд подсказка кончилась отказом
 }
 
 func NewReplyScanner(p *platform.Platform, site TreeSource, log *slog.Logger) *ReplyScanner {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &ReplyScanner{p: p, site: site, log: log}
+	return &ReplyScanner{
+		p: p, site: site, log: log,
+		want:  map[int64]bool{},
+		last:  map[int64]time.Time{},
+		fails: map[int64]int{},
+	}
+}
+
+// Nudge — приёмник говорит: в эту заметку пришла реплика, и ребро у неё
+// УГАДАНО по обращению «Ник, …» (Sink.addressee). Настоящее знает только
+// мобильная страница треда, а момент, когда догадка появилась, известен ТОЧНО —
+// и ждать ради него общей очереди (RescanGap, пять минут) незачем: всё это
+// время ответ висит в чужой ветке у каждого, кто читает страницу, а под
+// открытой страницей он потом ещё и переезжает на глазах.
+//
+// Ничего не обещает и не блокирует: подсказки схлопываются по заметке, ходят
+// своим тактом и не чаще NudgeGap по одной. Заметка, дважды подряд отказавшая,
+// замолкает совсем — её судьбу решает общая очередь, где счётчик неудач живёт
+// в базе и гасит заметку насовсем (MarkReplyScan). Это не осторожность: сайт
+// отвечает 500 как раз на самых длинных тредах, то есть на самых людных, — там
+// подсказки идут чаще всего.
+func (s *ReplyScanner) Nudge(noteID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fails[noteID] >= NudgeFails {
+		return
+	}
+	s.want[noteID] = true
+}
+
+// dueNudged — какие подсказки пора обойти. Названную слишком рано заметку из
+// набора НЕ выбрасываем: она дождётся своего срока, иначе бойкий тред,
+// назвавший себя сразу после обхода, потерял бы подсказку вовсе.
+func (s *ReplyScanner) dueNudged(now time.Time, limit int) []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []int64
+	for id := range s.want {
+		if len(out) >= limit {
+			break
+		}
+		if t, ok := s.last[id]; ok && now.Sub(t) < NudgeGap {
+			continue
+		}
+		out = append(out, id)
+	}
+	for _, id := range out {
+		delete(s.want, id)
+		s.last[id] = now
+	}
+	// Заметка, о которой сутки не вспоминали, — уже история: помнить про неё
+	// нечего, и общая очередь свежих тредов её тоже не видит.
+	for id, t := range s.last {
+		if now.Sub(t) > FreshWindow {
+			delete(s.last, id)
+			delete(s.fails, id)
+		}
+	}
+	return out
+}
+
+func (s *ReplyScanner) nudgeFailed(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fails[id]++
+}
+
+func (s *ReplyScanner) nudgeDone(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.fails, id)
+}
+
+// nudged обходит названные приёмником заметки: ТОЛЬКО дерево, без пола.
+//
+// Пола здесь нет намеренно. Он меняется раз в жизни и приезжает общей очередью,
+// а подсказка приходит на каждую реплику — второй запрос к сайту стоил бы ровно
+// вдвое и не давал бы ничего.
+//
+// Отметку обхода в базе подсказка тоже НЕ ставит: общая очередь ходит своим
+// ритмом и полным проходом, и сбив ей отсчёт, мы отложили бы пол ровно на то
+// время, пока тред горячий, — то есть на всё то время, когда он и нужен.
+func (s *ReplyScanner) nudged(ctx context.Context) {
+	for _, id := range s.dueNudged(time.Now(), NudgeBatch) {
+		if ctx.Err() != nil {
+			return
+		}
+		st, err := s.tree(ctx, id)
+		if err != nil {
+			s.nudgeFailed(id)
+			s.log.Warn("обход по подсказке не удался", "note", id, "err", err)
+			continue
+		}
+		s.nudgeDone(id)
+		if st.Edges > 0 {
+			s.log.Info("ветка встала на место", "note", id,
+				"рёбер", st.Edges, "обращений снято", st.Trimmed)
+		}
+	}
 }
 
 // Once обходит до limit заметок из очереди ДОБОРА ИСТОРИИ. Отказ сайта на одной
@@ -126,13 +234,11 @@ func (s *ReplyScanner) Note(ctx context.Context, id int64) (ReplyScanStats, erro
 	return st, s.p.MarkReplyScan(ctx, id, true)
 }
 
-// note обходит одну заметку. Пол — вторым запросом и «по возможности»: его
-// отказ не должен отменять уже снятое дерево, ради которого всё и затевалось.
-func (s *ReplyScanner) note(ctx context.Context, id int64) (ReplyScanStats, error) {
+// tree — только дерево заметки. Половина note(), выделенная ради подсказок:
+// им нужно ребро и как можно скорее, а пол подождёт общей очереди.
+func (s *ReplyScanner) tree(ctx context.Context, id int64) (ReplyScanStats, error) {
 	var st ReplyScanStats
-	sid := strconv.FormatInt(id, 10)
-
-	tree, err := s.site.FetchNoteReplyTree(ctx, sid)
+	tree, err := s.site.FetchNoteReplyTree(ctx, strconv.FormatInt(id, 10))
 	if err != nil {
 		return st, fmt.Errorf("дерево заметки %d: %w", id, err)
 	}
@@ -141,8 +247,18 @@ func (s *ReplyScanner) note(ctx context.Context, id int64) (ReplyScanStats, erro
 		return st, err
 	}
 	st.Comments, st.Edges, st.Trimmed = applied.Total, applied.Edges, applied.Trimmed
+	return st, nil
+}
 
-	genders, err := s.site.FetchGenders(ctx, sid)
+// note обходит одну заметку. Пол — вторым запросом и «по возможности»: его
+// отказ не должен отменять уже снятое дерево, ради которого всё и затевалось.
+func (s *ReplyScanner) note(ctx context.Context, id int64) (ReplyScanStats, error) {
+	st, err := s.tree(ctx, id)
+	if err != nil {
+		return st, err
+	}
+
+	genders, err := s.site.FetchGenders(ctx, strconv.FormatInt(id, 10))
 	if err != nil {
 		s.log.Warn("пол участников не снят", "note", id, "err", err)
 		return st, nil
@@ -185,6 +301,26 @@ const (
 	// тред обходился бы на каждую реплику; пять минут — цена того, что чужой
 	// ответ несколько минут повисит в угаданной ветке.
 	RescanGap = 5 * time.Minute
+
+	// Подсказки приёмника (Nudge). Очередь выше ходит по следам — «в заметке
+	// дописали», — а подсказка приходит в тот самый момент, когда появилась
+	// догадка, и потому стоит дешевле: обойти надо одну названную заметку, а не
+	// перебирать живые.
+	//
+	// NudgeInterval — как часто смотреть на названные. Пять секунд: подсказка
+	// затем и заведена, чтобы догадка не стояла минутами.
+	NudgeInterval = 5 * time.Second
+	// NudgeGap — не чаще, чем раз в столько, по одной заметке. Полминуты — это
+	// такт самого зеркала (mirror.PollInterval у живой заметки), то есть в тред
+	// мы заглядываем не чаще, чем оно само туда ходит.
+	NudgeGap = 30 * time.Second
+	// NudgeBatch — сколько названных заметок за такт. Больше двух незачем:
+	// живых тредов единицы, а очередь никуда не девается.
+	NudgeBatch = 2
+	// NudgeFails — после скольких отказов подряд заметка перестаёт слушаться
+	// подсказок. Двух хватает: 500 сайт отдаёт на длинных тредах устойчиво, а
+	// повторять его каждые полминуты — это 45 секунд ожидания на каждую реплику.
+	NudgeFails = 2
 )
 
 // Run следит за ЖИВЫМИ тредами: раз в такт берёт те, где после прошлого обхода
@@ -201,10 +337,17 @@ const (
 func (s *ReplyScanner) Run(ctx context.Context) error {
 	t := time.NewTicker(ScanInterval)
 	defer t.Stop()
+	// Второй такт — подсказки приёмника. Тикера два, а не один частый, потому
+	// что работы у них разные: очередь свежих тредов это запрос к базе и до трёх
+	// полных обходов, подсказка — одна названная заметка и только дерево.
+	n := time.NewTicker(NudgeInterval)
+	defer n.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-n.C:
+			s.nudged(ctx)
 		case <-t.C:
 			st, err := s.Fresh(ctx, ScanBatch, FreshWindow, RescanGap)
 			if err != nil && ctx.Err() == nil {
