@@ -123,7 +123,7 @@ func TestLockedNoteReadsAsNotActual(t *testing.T) {
 	n.Locked = true
 	body := do(openServer(t, &fakeStore{total: 1, notes: []platform.NoteView{n}}), guest(t, "GET", "/")).Body.String()
 
-	if !strings.Contains(body, "Заметка не актуальна, но вы можете ознакомиться с её обсуждением") {
+	if !strings.Contains(body, "Заметка неактуальна, но вы можете ознакомиться с её обсуждением") {
 		t.Error("у закрытого обсуждения в ленте нет надписи, которая была на НГС")
 	}
 	if strings.Contains(body, `>Комментарии <span`) {

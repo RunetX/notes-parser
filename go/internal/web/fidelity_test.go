@@ -196,7 +196,7 @@ func TestDateLooksLikeOriginal(t *testing.T) {
 }
 
 // [Ф] В ленте под заметкой стоит ссылка «Комментарии N», а у неактуальной —
-// «Заметка не актуальна, но вы можете ознакомиться с её обсуждением N».
+// «Заметка неактуальна, но вы можете ознакомиться с её обсуждением N».
 func TestFeedCommentLinkWording(t *testing.T) {
 	open := sampleNote()
 	closed := sampleNote()
@@ -210,7 +210,7 @@ func TestFeedCommentLinkWording(t *testing.T) {
 	if !strings.Contains(body, "<span class=\"lbl\">Комментарии</span> <span class=\"cnt\">3</span>") {
 		t.Error("нет ссылки «Комментарии N»")
 	}
-	if !strings.Contains(body, "не актуальна") {
+	if !strings.Contains(body, "неактуальна") {
 		t.Error("у закрытой заметки не та подпись")
 	}
 }
