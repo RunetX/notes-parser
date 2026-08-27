@@ -127,6 +127,8 @@ func main() {
 		err = cmdPulpit(ctx, os.Args[2:])
 	case "morning":
 		err = cmdMorning(ctx, os.Args[2:])
+	case "narod":
+		err = cmdNarod(ctx, os.Args[2:])
 	case "secrets":
 		err = cmdSecrets(ctx, os.Args[2:])
 	case "platform":
@@ -213,7 +215,10 @@ func usage() {
   lovegw morning [-config config.json] [-db lovegw.db] [-day 2026-08-24] draft                  # черновик утренней заметки, на сайт ничего не уходит
   lovegw morning [-config config.json] [-db lovegw.db] [-force] post                            # опубликовать сегодняшнюю утреннюю заметку руками
   lovegw morning [-config config.json] [-db lovegw.db] status                                   # включена ли утренняя заметка, что выходило
-  lovegw secrets keygen                                                                          # новый ключ шифрования сессий
+  lovegw narod  [-db archive.db] [-cards dir] [-recent N] [-norm-sample N] card <p<id>|u<id>>   # слепок донора: манера, ритм, задержки, ошибки
+  lovegw narod  [-cards data/narod/cards] show [файл …]                                         # карточка так, как её увидит модель
+  lovegw narod  [-world data/narod.db] world                                                    # состояние мира: акторы и версия схемы
+  lovegw secrets keygen                                                                        # новый ключ шифрования сессий
   lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
   lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ
   lovegw alert  [-config config.json] [текст …]                                                  # сообщение владельцу в ЛС (без текста — со stdin)

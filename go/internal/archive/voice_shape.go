@@ -348,6 +348,39 @@ func measureShape(texts []voiceText, kind string, nicks map[string]bool) VoiceSh
 	return sh
 }
 
+// SiteNickTokens — СЛОВА, из которых состоят ники сайта, нынешние и прежние.
+//
+// Понадобилось замером под карточку персонажа (эпик «народ»): у собеседницы,
+// обращающейся по имени в 72 % реплик, характерными словами оказались ники
+// соседей по треду. Для отчёта это мелочь, а для карточки — двойная беда:
+// список уходит в промпт как «привычные слова», и персонаж начинает звать
+// соседей настоящими никами живых людей.
+//
+// Именно СЛОВА, а не ники целиком: «Хатуль мадан» встречается в тексте двумя
+// токенами, и сверка с целым ником не ловит ни одного. И именно с ИСТОРИЕЙ:
+// users.name хранит только текущий ник, а обращались к человеку тем, который
+// был у него тогда (nick_history завели ровно потому, что ники здесь меняют
+// десятками).
+func (s *Store) SiteNickTokens(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT name FROM users WHERE name != ''
+		UNION
+		SELECT DISTINCT nick FROM nick_history WHERE nick != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var nick string
+		if err := rows.Scan(&nick); err != nil {
+			return nil, err
+		}
+		forEachWord(nick, func(w []rune) { out[string(w)] = true })
+	}
+	return out, rows.Err()
+}
+
 // siteNicks — все ники сайта в нижнем регистре. Нужен для проверки обращений;
 // ~22 тыс. строк, один запрос за сборку карты.
 func (s *Store) siteNicks(ctx context.Context) (map[string]bool, error) {
