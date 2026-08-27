@@ -402,7 +402,6 @@ func (d *daemon) setupTelegram(ctx context.Context) error {
 		ChannelID:        tgCfg.ChannelID,
 		DiscussionChatID: tgCfg.DiscussionChatID,
 		Signature:        tgCfg.Signature,
-		BaseURL:          cfg.Site.BaseURL,
 		HTTPClient:       tgClient,
 	}, log, handler.Handle)
 	if err != nil {
@@ -863,7 +862,6 @@ func (d *daemon) setupDigest() error {
 		Weekday:     weekday,
 		Hour:        hour,
 		OutDir:      digestOutDir(cfg),
-		SiteBase:    cfg.Site.BaseURL,
 		Notify:      fanOutAlerts(d.alerters),
 		AutoPublish: cfg.Digest.AutoPublish,
 	}
@@ -873,7 +871,7 @@ func (d *daemon) setupDigest() error {
 	// зеркало НГС, по которому дайджест жил с самого начала.
 	dcfg.Data = digest.NewStoreSource(d.st, cfg.Site.BaseURL)
 	if d.plat != nil {
-		dcfg.Data = platdigest.New(d.plat, cfg.Site.BaseURL)
+		dcfg.Data = platdigest.New(d.plat)
 	}
 	// Куда выходит выпуск. С площадкой — заметкой ЗДЕСЬ, а в Telegram и MAX её
 	// несёт исходящий обход, как всякую написанную здесь: один текст, один

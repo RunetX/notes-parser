@@ -210,10 +210,10 @@ func TestBuildPersons(t *testing.T) {
 		t.Fatalf("новички: %+v", is.Newcomers)
 	}
 	nc := is.Newcomers[0]
-	if !strings.Contains(nc.ProfileURL, "/profile/42") || nc.Notes != 1 || nc.Comments != 2 {
+	if nc.Notes != 1 || nc.Comments != 2 {
 		t.Errorf("слитый новичок 42: %+v", nc)
 	}
-	if len(is.Returnees) != 1 || !strings.Contains(is.Returnees[0].ProfileURL, "/profile/77") {
+	if len(is.Returnees) != 1 {
 		t.Fatalf("возвращение: %+v", is.Returnees)
 	}
 }

@@ -239,8 +239,10 @@ func TestPostNoteRequest(t *testing.T) {
 	if !strings.Contains(text, "Мария &lt;3") || !strings.Contains(text, "текст &amp; &lt;тэг&gt;") {
 		t.Errorf("HTML не экранирован: %q", text)
 	}
-	if !strings.Contains(text, `<a href="https://love.ngs.ru/profile/77">`) {
-		t.Errorf("нет ссылки на профиль: %q", text)
+	// Ссылок на анкету НГС проект не ставит нигде (27.08.2026): имя автора в
+	// посте канала стоит текстом.
+	if strings.Contains(text, "ngs.ru") {
+		t.Errorf("в пост вернулась ссылка на анкету: %q", text)
 	}
 	if !strings.Contains(text, "@channel") {
 		t.Errorf("нет подписи: %q", text)

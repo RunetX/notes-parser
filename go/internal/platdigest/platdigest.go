@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,26 +41,17 @@ import (
 )
 
 // Source — площадка как источник выпуска (реализует digest.Source).
+//
+// Адреса НГС здесь нет вовсе: до 27.08.2026 источник собирал по номеру строки
+// ссылку на анкету love.ngs.ru для имён в рубриках, а ссылок на НГС проект
+// больше не ставит нигде (решение владельца). Имя в выпуске стоит текстом.
 type Source struct {
 	pool *pgxpool.Pool
-	// ngsBase — адрес НГС для ссылок на анкеты. У участника с анкетой id строки
-	// РАВЕН её номеру, поэтому ссылка собирается подстановкой; у нативного
-	// (вошёл по приглашению) анкеты нет вовсе, и ссылки не будет.
-	ngsBase string
 }
 
-// New создаёт источник. ngsBase — базовый адрес love.ngs.ru.
-func New(p *platform.Platform, ngsBase string) *Source {
-	return &Source{pool: p.Pool(), ngsBase: strings.TrimSuffix(ngsBase, "/")}
-}
-
-// ProfileURL — анкета автора на НГС; пусто у нативного участника и анонима.
-func (s *Source) ProfileURL(author string) string {
-	id, err := strconv.ParseInt(author, 10, 64)
-	if err != nil || id <= 0 || id >= platform.NativeIDBase || s.ngsBase == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s/profile/%d/", s.ngsBase, id)
+// New создаёт источник.
+func New(p *platform.Platform) *Source {
+	return &Source{pool: p.Pool()}
 }
 
 // authorKey — идентичность человека для слияния рубрик: номер строки. NULL

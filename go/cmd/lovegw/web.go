@@ -84,16 +84,17 @@ func cmdWeb(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// Один и тот же webWriter уходит и как Writer, и как Moderator: списки
+	// остаются разными (в этом их смысл), а хранилище медиа нужно обоим — файл
+	// кладут и публикация участника, и картинка, поставленная администратором.
+	wr := webWriter{Platform: pf, media: media}
 	srv := web.New(web.Config{
 		Listen:   cfg.Platform.Listen,
 		BaseURL:  cfg.Platform.BaseURL,
 		MediaDir: cfg.Platform.MediaDir,
-		// Адрес НГС — для метки происхождения у зеркальной заметки: она ведёт
-		// на оригинал, и брать его надо из конфига, а не из литерала в морде.
-		SiteBaseURL: cfg.Site.BaseURL,
-		Operator:    operatorOf(cfg),
-		Log:         log,
-	}, pf, pf, webWriter{Platform: pf, media: media}, pf, site)
+		Operator: operatorOf(cfg),
+		Log:      log,
+	}, pf, pf, wr, wr, site)
 	// Шина событий: страница «События», колокольчик и живой канал. Морда только
 	// ЧИТАЕТ поводы и отмечает их прочитанными — раздаёт их демон (platbus),
 	// потому что горутина, поднятая и здесь, и там, делала бы одну работу вдвоём.
@@ -173,6 +174,28 @@ func (w webWriter) CreateNote(ctx context.Context, in platform.NewNote, shot *we
 		in.Image = &m
 	}
 	return w.Platform.CreateNote(ctx, in)
+}
+
+// SetNoteImageAsAdmin — картинка ЛЮБОЙ заметки решением администратора.
+//
+// Порядок тот же, что у CreateNote, и по той же причине: байты ложатся на диск
+// ДО транзакции, потому что строка note_images без файла — это битая картинка на
+// странице, то есть поломка ВИДИМАЯ, а файл без строки не виден никому. Цена та
+// же и названа так же: откатилась транзакция — файл остался, уборки каталога у
+// площадки нет вовсе. Здесь она дешевле, чем у публикации: жмёт кнопку
+// администратор, а не кто угодно.
+//
+// sourceURL пуст: качать было неоткуда, картинку принесли (см. platform/media.go).
+func (w webWriter) SetNoteImageAsAdmin(ctx context.Context, actor platform.Viewer, noteID int64, shot *web.Shot, reason string) error {
+	var img *platform.Media
+	if shot != nil {
+		m, err := w.media.PutSized(ctx, shot.Data, "", shot.Width, shot.Height)
+		if err != nil {
+			return err
+		}
+		img = &m
+	}
+	return w.Platform.SetNoteImageAsAdmin(ctx, actor, noteID, img, reason)
 }
 
 // operatorOf — реквизиты оператора персональных данных для текстов согласий.

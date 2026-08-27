@@ -11,23 +11,13 @@ import (
 )
 
 func TestOriginMarksBothSides(t *testing.T) {
-	setNGSBase("https://love.ngs.ru")
-	t.Cleanup(func() { setNGSBase("") })
-
 	mirror := originOf(312811)
 	if mirror.Label != "НГС" {
 		t.Errorf("зеркальная помечена как %q", mirror.Label)
 	}
-	if mirror.URL != "https://love.ngs.ru/notes/312811/" {
-		t.Errorf("адрес оригинала %q", mirror.URL)
-	}
-
 	own := originOf(platform.NativeIDBase + 7)
 	if own.Label != SiteName {
 		t.Errorf("нативная помечена как %q, ожидалось %q", own.Label, SiteName)
-	}
-	if own.URL != "" {
-		t.Errorf("у своей заметки есть «оригинал» %q — вести туда некуда", own.URL)
 	}
 	// Обе метки обязаны объяснять себя: на НГС их не было (правило Ш5з).
 	for _, o := range []noteOrigin{mirror, own} {
@@ -38,44 +28,31 @@ func TestOriginMarksBothSides(t *testing.T) {
 }
 
 // Значков ДВА, а не три: восстановленное из чужих зеркал читателю ничем не
-// отличается от свежего зеркала. Но ссылки у него нет — страницы на сайте не
-// существует, и вести туда значило бы обещать несуществующее.
-func TestRestoredLooksLikeMirrorButHasNoOriginal(t *testing.T) {
-	setNGSBase("https://love.ngs.ru")
-	t.Cleanup(func() { setNGSBase("") })
-
-	o := originOf(platform.RestoredIDBase + 5)
-	if o.Label != "НГС" {
+// отличается от свежего зеркала.
+func TestRestoredLooksLikeMirror(t *testing.T) {
+	if o := originOf(platform.RestoredIDBase + 5); o.Label != "НГС" {
 		t.Errorf("восстановленная помечена как %q: значков должно быть два, а не три", o.Label)
 	}
-	if o.URL != "" {
-		t.Errorf("у восстановленной есть ссылка %q", o.URL)
-	}
 }
 
-// Адрес чужого сайта не выдумывается: не задан — метка остаётся, ссылки нет.
-func TestOriginWithoutBaseHasNoLink(t *testing.T) {
-	setNGSBase("")
-	if o := originOf(312811); o.URL != "" || o.Label != "НГС" {
-		t.Errorf("без адреса НГС получили %+v", o)
-	}
-}
-
-func TestOriginBadgeIsOnTheFeedAndOnThePage(t *testing.T) {
+// Метка НИКУДА НЕ ВЕДЁТ (решение владельца 27.08.2026): ссылок на НГС площадка
+// не ставит. Тест сторожит именно это — не отсутствие поля в структуре (его
+// вернули бы первой же правкой), а отсутствие адреса чужого сайта на странице.
+func TestNoNGSLinkAnywhereOnTheNotePages(t *testing.T) {
 	st := noteStore()
-	h := newTestServer(t, st, Config{SiteBaseURL: "https://love.ngs.ru"})
-	t.Cleanup(func() { setNGSBase("") })
+	h := newTestServer(t, st, Config{})
 
-	feed := do(h, guest(t, "GET", "/")).Body.String()
-	if !strings.Contains(feed, `class="orig"`) {
-		t.Error("в ленте нет метки происхождения")
-	}
-	if !strings.Contains(feed, "love.ngs.ru/notes/312811/") {
-		t.Error("метка зеркальной заметки не ведёт на оригинал")
-	}
-	page := do(h, guest(t, "GET", "/n/312811")).Body.String()
-	if !strings.Contains(page, `class="orig"`) {
-		t.Error("на странице заметки нет метки происхождения")
+	for _, path := range []string{"/", "/n/312811"} {
+		body := do(h, guest(t, "GET", path)).Body.String()
+		if !strings.Contains(body, `class="orig"`) {
+			t.Errorf("%s: нет метки происхождения", path)
+		}
+		if strings.Contains(body, "ngs.ru") {
+			t.Errorf("%s: на странице снова стоит адрес НГС", path)
+		}
+		if strings.Contains(body, `<a class="orig"`) {
+			t.Errorf("%s: метка происхождения снова стала ссылкой", path)
+		}
 	}
 }
 
@@ -83,19 +60,19 @@ func TestOriginBadgeIsOnTheFeedAndOnThePage(t *testing.T) {
 // разметки сверяется с оригиналом НГС в fidelity_test.
 // Метка показывается ЗНАЧКОМ, а не словом (решение владельца 26.08.2026): имя
 // чужого сайта не печатается на каждой карточке ленты. Но и не пропадает совсем
-// — уходит в .sr-only, оставаясь именем ссылки для читалки, — и объясняется
+// — уходит в .sr-only, оставаясь именем источника для читалки, — и объясняется
 // заголовком, как велит Ш5з.
 func TestOriginBadgeIsASignNotAWord(t *testing.T) {
 	st := noteStore()
-	h := newTestServer(t, st, Config{SiteBaseURL: "https://love.ngs.ru"})
-	t.Cleanup(func() { setNGSBase("") })
+	h := newTestServer(t, st, Config{})
 
 	feed := do(h, guest(t, "GET", "/")).Body.String()
 	i := strings.Index(feed, `class="orig"`)
 	if i < 0 {
 		t.Fatal("метки происхождения в ленте нет вовсе")
 	}
-	badge := feed[i:strings.Index(feed[i:], "</a>")+i]
+	const tail = "</span></span>" // закрывают sr-only и саму метку
+	badge := feed[i : i+strings.Index(feed[i:], tail)+len(tail)]
 	if !strings.Contains(badge, "<svg") {
 		t.Error("метка нарисована не значком")
 	}
@@ -106,8 +83,10 @@ func TestOriginBadgeIsASignNotAWord(t *testing.T) {
 		t.Error("значок не объясняет себя заголовком (правило Ш5з)")
 	}
 	// А ВИДИМЫМ текстом источник больше не назван: вычёркиваем спрятанную
-	// подпись и смотрим, что от метки осталось для глаза.
+	// подпись и заголовок (он всплывает при наведении, а не печатается) и
+	// смотрим, что от метки осталось для глаза.
 	visible := strings.Replace(badge, `<span class="sr-only">НГС</span>`, "", 1)
+	visible = visible[strings.Index(visible, ">"):]
 	if strings.Contains(visible, "НГС") {
 		t.Error("имя источника снова напечатано словом на карточке")
 	}
@@ -115,8 +94,7 @@ func TestOriginBadgeIsASignNotAWord(t *testing.T) {
 
 func TestOriginBadgeDoesNotSplitTheCommentLink(t *testing.T) {
 	st := noteStore()
-	h := newTestServer(t, st, Config{SiteBaseURL: "https://love.ngs.ru"})
-	t.Cleanup(func() { setNGSBase("") })
+	h := newTestServer(t, st, Config{})
 
 	feed := do(h, guest(t, "GET", "/")).Body.String()
 	if !strings.Contains(feed, `<span class="lbl">Комментарии</span> <span class="cnt">3</span>`) {

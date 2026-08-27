@@ -101,8 +101,4 @@ type Source interface {
 	// PeakCommentHour — самый плотный календарный час одного треда за горизонт:
 	// начало часа (UTC), заметка, число комментариев. n = 0 — считать нечего.
 	PeakCommentHour(ctx context.Context, since time.Time) (hourStart time.Time, noteID string, n int, err error)
-	// ProfileURL — адрес анкеты автора; пусто — анкеты нет (нативный участник
-	// площадки, аноним). Знает об этом источник, а не выпуск: «кто такой
-	// автор» — это его понятие.
-	ProfileURL(author string) string
 }

@@ -289,7 +289,6 @@ func runPostTest(ctx context.Context, cfg *config.Config, tgClient *http.Client,
 		ChannelID:        tgCfg.ChannelID,
 		DiscussionChatID: tgCfg.DiscussionChatID,
 		Signature:        tgCfg.Signature,
-		BaseURL:          cfg.Site.BaseURL,
 		HTTPClient:       tgClient,
 	}, nil, handler)
 	if err != nil {

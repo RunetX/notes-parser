@@ -44,14 +44,14 @@ func quietLog() *slog.Logger {
 func scheduleCfg(t *testing.T, st *store.Store, notify func(context.Context, string)) ScheduleConfig {
 	t.Helper()
 	return ScheduleConfig{
-		Data:     NewStoreSource(st, siteBase),
-		Loc:      nsk,
-		Weekday:  time.Friday,
-		Hour:     19,
-		OutDir:   t.TempDir(),
-		SiteBase: siteBase,
-		Grace:    defaultGrace,
-		Notify:   notify,
+		Data:        NewStoreSource(st, siteBase),
+		Loc:         nsk,
+		Weekday:     time.Friday,
+		Hour:        19,
+		OutDir:      t.TempDir(),
+		SiteBaseURL: "https://t3h.ru",
+		Grace:       defaultGrace,
+		Notify:      notify,
 	}
 }
 

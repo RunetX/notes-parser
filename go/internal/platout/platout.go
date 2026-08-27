@@ -33,7 +33,6 @@ package platout
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -461,7 +460,6 @@ func (s *Service) replyTarget(ctx context.Context, sink mirror.Sink, replyToID i
 func (s *Service) noteRow(n platform.OutNote) store.Note {
 	return store.Note{
 		ID:              strconv.FormatInt(n.ID, 10),
-		AuthorID:        authorRef(n.AuthorID),
 		AuthorName:      n.AuthorNick,
 		Text:            n.Body,
 		TextHTML:        chantext.FromSiteMarkup(n.Body),
@@ -487,7 +485,6 @@ func (s *Service) commentRow(c platform.OutComment) store.Comment {
 		ID:          c.ID,
 		NoteID:      strconv.FormatInt(c.NoteID, 10),
 		AuthorName:  c.AuthorNick,
-		AuthorLink:  authorLink(c.AuthorID),
 		AvatarURL:   s.mediaURL(c.AvatarSHA, c.AvatarMIME),
 		PublishedAt: c.PublishedAt,
 		Text:        c.Body,
@@ -543,22 +540,12 @@ func (s *Service) warnOnce(sink string, noteID int64, msg string) {
 	s.log.Warn(msg, "note", noteID, "sink", sink)
 }
 
-// authorRef — id автора для композера поста: он делает из него ссылку на анкету
-// НГС. Пусто — имя без ссылки (аноним либо участник без анкеты).
-func authorRef(id int64) string {
-	if id == 0 {
-		return ""
-	}
-	return strconv.FormatInt(id, 10)
-}
-
-// authorLink — ссылка на анкету НГС в шапке комментария; пусто — имя без ссылки.
-func authorLink(id int64) string {
-	if id == 0 {
-		return ""
-	}
-	return fmt.Sprintf("https://love.ngs.ru/profile/%d/", id)
-}
+// Ссылок на анкету НГС здесь больше нет (27.08.2026, решение владельца):
+// authorRef и authorLink собирали адрес love.ngs.ru для шапки поста и шапки
+// комментария, а композеры приёмников его больше не рисуют. Полей
+// store.Note.AuthorID и store.Comment.AuthorLink мы теперь не заполняем вовсе:
+// оставить их значило бы держать наготове дорогу, по которой ссылка вернётся
+// первой же правкой композера.
 
 func allTrue(n int) []bool {
 	done := make([]bool, n)

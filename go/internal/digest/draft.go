@@ -140,7 +140,7 @@ func draftSections(is *Issue) []draftSection {
 func newcomerLines(persons []Person) string {
 	lines := make([]string, 0, len(persons))
 	for _, p := range persons {
-		lines = append(lines, personLink(p)+" — "+activityText(p)+".")
+		lines = append(lines, personName(p)+" — "+activityText(p)+".")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -150,7 +150,7 @@ func returneeLines(is *Issue) string {
 	for _, p := range is.Returnees {
 		weeks := int(is.Window.Start.Sub(p.PrevSeenAt).Hours() / (24 * 7))
 		lines = append(lines, fmt.Sprintf("%s — снова здесь после %d %s тишины.",
-			personLink(p), weeks, pluralRu(weeks, "недели", "недель", "недель")))
+			personName(p), weeks, pluralRu(weeks, "недели", "недель", "недель")))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -216,13 +216,10 @@ func recordLine(r Record, top *NoteStat) string {
 	return r.Text
 }
 
-func personLink(p Person) string {
-	if p.ProfileURL == "" {
-		return html.EscapeString(p.Name)
-	}
-	return fmt.Sprintf(`<a href="%s">%s</a>`,
-		html.EscapeString(p.ProfileURL), html.EscapeString(p.Name))
-}
+// personName — имя участника в рубрике. Именно ИМЯ, а не ссылка: анкету НГС
+// выпуск не называет с 27.08.2026 (ссылок на НГС проект не ставит нигде), а
+// своей страницы участника у площадки нет вовсе.
+func personName(p Person) string { return html.EscapeString(p.Name) }
 
 func activityText(p Person) string {
 	notes := ""

@@ -74,6 +74,12 @@ func shotServerFull(t *testing.T, conv imgconv.Converter) (http.Handler, *fakeWr
 
 // upload — форма с файлом, отправленная с нашей же страницы.
 func upload(t *testing.T, token, body string, file []byte, opts ...func(*multipart.Writer)) *http.Request {
+	return uploadTo(t, "/new", token, body, file, opts...)
+}
+
+// uploadTo — то же самое на заданный адрес: файл принимают ДВА маршрута —
+// публикация заметки и правка, где картинку ставит администратор.
+func uploadTo(t *testing.T, target, token, body string, file []byte, opts ...func(*multipart.Writer)) *http.Request {
 	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -97,7 +103,7 @@ func upload(t *testing.T, token, body string, file []byte, opts ...func(*multipa
 	if err := mw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest("POST", "/new", &buf)
+	r := httptest.NewRequest("POST", target, &buf)
 	r.Header.Set("Content-Type", mw.FormDataContentType())
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	if token != "" {

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Verdict — мнение проверки о публикации.
@@ -174,6 +175,12 @@ const (
 	// текста в журнале нет намеренно (см. EditNoteAsAdmin): правят обычно
 	// затем, чтобы чего-то в тексте НЕ осталось.
 	ActionEdit = "edit"
+	// ActionImage / ActionImageOff — администратор поставил заметке иллюстрацию
+	// или снял её. Отдельно от ActionEdit, потому что это другое действие с
+	// другой дверью: текст копии с НГС не правится ВООБЩЕ, а картинка ставится
+	// любой заметке — см. SetNoteImageAsAdmin.
+	ActionImage    = "image"
+	ActionImageOff = "image_remove"
 	// Приглашения. Действие администратора, а не модератора, но журнал у
 	// площадки один: «кого впустили» — такая же часть истории, как «кого
 	// скрыли», и разводить её по двум местам значило бы читать в двух.
@@ -579,6 +586,125 @@ func (p *Platform) EditNoteAsAdmin(ctx context.Context, actor Viewer, noteID int
 		return err
 	}
 	return wrapf(tx.Commit(ctx), "правка заметки %d", noteID)
+}
+
+// SetNoteImageAsAdmin ставит заметке иллюстрацию решением администратора и
+// снимает её. img == nil — снять.
+//
+// Заводится она затем, что БАЙТЫ КАРТИНКИ ЗЕРКАЛЬНОЙ ЗАМЕТКИ СМЕРТНЫ: у
+// исторических строк в note_images лежит одна ссылка на hsmedia.ru, живой поток
+// приносил файлы только тем заметкам, что зеркалились при работающем демоне, —
+// и в день, когда НГС отдавать файлы перестанет, у таких заметок на странице
+// останется битая картинка. Восполнить её иначе нечем: своего файла площадка не
+// принимает нигде, кроме формы новой заметки, а завести заметку заново значило
+// бы потерять её тред.
+//
+// Дверь — АДМИНИСТРАТОРСКАЯ, как у EditNoteAsAdmin, и по той же причине: это
+// подмена того, что стоит под чужим именем, и со стороны заметить её нечем.
+//
+// Отличие от правки текста ровно одно, и оно принципиальное: ПОСТАВИТЬ картинку
+// можно ЛЮБОЙ заметке, включая зеркальную. Текст копии не правится потому, что
+// молчаливое расхождение с оригиналом врёт читателю о том, что он читает копию;
+// с картинкой всё наоборот — там, где на НГС картинка БЫЛА, наша копия без неё
+// и есть расхождение, а поставленный файл его закрывает. А вот СНЯТЬ
+// иллюстрацию у зеркальной нельзя (ErrNotNative): это уже расхождение, и вдобавок
+// оно не удержится — сверка platsink досылает недостающие иллюстрации по счёту,
+// и снятая вернулась бы сама в ближайшие пять минут. Замена же счёта строк не
+// меняет вовсе: у копии подменяются БАЙТЫ за существующей строкой, а её ссылка
+// остаётся на месте ключом для той же сверки (подробности ниже, у самого SQL).
+//
+// В moderation_queue заметка отсюда НЕ попадает. Правило «заметка с картинкой
+// идёт к модератору всегда» написано про файл, который принёс участник; здесь
+// файл выбрал сам администратор, и ставить его же решение себе в очередь значит
+// проверять себя. Текст при этом не меняется вовсе — а если его правят, очередь
+// заводит EditNoteAsAdmin, отдельным действием.
+func (p *Platform) SetNoteImageAsAdmin(ctx context.Context, actor Viewer, noteID int64, img *Media, reason string) error {
+	if !actor.CanAdmin() {
+		return ErrNotAdmin
+	}
+	if img == nil && !IsNative(noteID) {
+		return ErrNotNative
+	}
+	reason = trimReason(reason)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return wrapf(err, "иллюстрация заметки %d", noteID)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
+
+	var status Status
+	err = tx.QueryRow(ctx, `SELECT status FROM notes WHERE id = $1 FOR UPDATE`, noteID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
+	}
+	if err != nil {
+		return wrapf(err, "иллюстрация заметки %d", noteID)
+	}
+	// Скрытую модерацией — можно, ровно как и текст: убрать лишнее и вернуть
+	// заметку людям это одно действие в два нажатия. Скрытое автором и
+	// обезличенное не показывается никому, и трогать его незачем.
+	if status != StatusVisible && status != StatusHiddenMod {
+		return fmt.Errorf("заметка %d: %w", noteID, ErrNotFound)
+	}
+	// Дальше пути расходятся, и расходятся они из-за СВЕРКИ.
+	//
+	// У НАТИВНОЙ заметки всё просто: старые строки уходят целиком, новая встаёт
+	// нулевой позицией — картинка у заметки одна. Файл в хранилище при этом
+	// остаётся: оно адресуемо содержимым, и тот же файл может стоять у другой
+	// заметки или у кого-то аватаром (тот же довод, что у авторского DropImage).
+	//
+	// У ЗЕРКАЛЬНОЙ строку трогать нельзя: platsink досылает недостающие
+	// иллюстрации ПО СЧЁТУ (reconcile.syncImages), и заметка, у которой мы
+	// уменьшили число строк, получила бы зеркальные обратно — а заметка с двумя
+	// иллюстрациями на НГС собрала бы у нас три. Поэтому здесь меняются БАЙТЫ за
+	// существующей строкой: её ссылка (hsmedia.ru) остаётся ключом для сверки, а
+	// читателю адрес всё равно собирается из sha256 (см. NoteImages), и он теперь
+	// наш. Это и есть настоящее действие — не «добавить свою картинку копии», а
+	// «вернуть копии её умершую иллюстрацию».
+	action := ActionImage
+	var tag pgconn.CommandTag
+	switch {
+	case IsNative(noteID):
+		if tag, err = tx.Exec(ctx, `DELETE FROM note_images WHERE note_id = $1`, noteID); err != nil {
+			return wrapf(err, "иллюстрация заметки %d", noteID)
+		}
+		if img == nil {
+			action = ActionImageOff
+			if tag.RowsAffected() == 0 {
+				return ErrNothingToDo
+			}
+			break
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO note_images (note_id, position, sha256, url)
+			VALUES ($1, 0, $2, $3)`, noteID, img.SHA256, img.URL); err != nil {
+			return wrapf(err, "иллюстрация заметки %d", noteID)
+		}
+	default:
+		// Первая по порядку показа: если иллюстраций было несколько, меняем ту,
+		// что стоит наверху, — остальные остаются как были.
+		if tag, err = tx.Exec(ctx, `
+			UPDATE note_images SET sha256 = $2
+			 WHERE note_id = $1
+			   AND position = (SELECT min(position) FROM note_images WHERE note_id = $1)`,
+			noteID, img.SHA256); err != nil {
+			return wrapf(err, "иллюстрация заметки %d", noteID)
+		}
+		// Иллюстрации у копии не было вовсе — заводим свою. Сверке она не мешает:
+		// в зеркале у такой заметки картинок ноль, и досылать оно ничего не станет.
+		if tag.RowsAffected() == 0 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO note_images (note_id, position, sha256, url)
+				VALUES ($1, 0, $2, $3)`, noteID, img.SHA256, img.URL); err != nil {
+				return wrapf(err, "иллюстрация заметки %d", noteID)
+			}
+		}
+	}
+	if err := audit(ctx, tx, actor.UserID, action, NoteSubject(noteID),
+		map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	return wrapf(tx.Commit(ctx), "иллюстрация заметки %d", noteID)
 }
 
 // SetThreadLocked закрывает и открывает обсуждение. Наше решение, а не перенос

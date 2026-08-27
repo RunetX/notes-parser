@@ -30,9 +30,8 @@ func sampleIssue() *Issue {
 				Text: strings.Repeat("яркая мысль ", 10)},
 			RepliesAfter: 3,
 		}},
-		Newcomers: []Person{{Name: "Новая & Ко", ProfileURL: "https://love.test/profile/42",
-			Notes: 1, Comments: 2}},
-		Returnees: []Person{{Name: "Старожил", ProfileURL: "https://love.test/profile/77",
+		Newcomers: []Person{{Name: "Новая & Ко", Notes: 1, Comments: 2}},
+		Returnees: []Person{{Name: "Старожил",
 			Comments: 1, PrevSeenAt: w.Start.Add(-42 * 24 * time.Hour)}},
 		Records: []Record{
 			{Text: "87 комментариев — самый длинный тред с апреля.", NoteID: "312696"},

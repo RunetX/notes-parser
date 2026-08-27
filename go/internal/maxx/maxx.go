@@ -149,7 +149,7 @@ func (m *Mirror) Me(ctx context.Context) (model.BotInfo, error) {
 func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error) {
 	msg := maxbot.NewMessage().
 		SetChat(m.channelID).
-		SetText(ComposeNoteMessage(m.baseURL, m.signature, n)).
+		SetText(ComposeNoteMessage(m.signature, n)).
 		SetFormat(model.FormatHTML).
 		SetDisableLinkPreview(true)
 	m.attachImage(ctx, msg, n.AuthorAvatarURL, avatar, "аватар автора")
@@ -223,7 +223,7 @@ func (m *Mirror) StartThread(ctx context.Context, n store.Note, _ string) (strin
 	}
 	msg := maxbot.NewMessage().
 		SetChat(m.discussionChatID).
-		SetText(ComposeNoteMessage(m.baseURL, "", n)).
+		SetText(ComposeNoteMessage("", n)).
 		SetFormat(model.FormatHTML).
 		SetDisableLinkPreview(true)
 	mid, err := m.send(ctx, m.discussionChatID, msg)

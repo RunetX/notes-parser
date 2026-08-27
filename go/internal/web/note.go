@@ -163,8 +163,10 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 			!note.Locked && note.Status == platform.StatusVisible,
 		CanModerate: canMod,
 		Editable:    note.Editable(time.Now()),
-		AdminEdit: me.Role >= platform.RoleAdmin && s.mod != nil &&
-			platform.IsNative(note.ID),
+		// У ЛЮБОЙ заметки, включая зеркальную: текст копии не правится, но
+		// картинку администратор ставит и ей (27.08.2026). Что именно откроется
+		// в форме, решает editTarget, а подпись ссылке — modNote.
+		AdminEdit: me.Role >= platform.RoleAdmin && s.mod != nil,
 		Compose: form,
 
 		Reactions: reactions,

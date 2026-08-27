@@ -569,13 +569,13 @@ span.rxb { cursor: default; }
 /* Метка происхождения (origin.go, правило Ш5з) — ЗНАЧКОМ, а не словом
    (решение владельца 26.08.2026): подпись печатала имя чужого сайта на каждой
    карточке ленты, а вопрос «откуда это» задают редко. Своё — знак самой
-   площадки, чужое — стрелка наружу; имя остаётся в заголовке и в адресе ссылки.
-   Тихим цветом, потому что спорить с датой за внимание ей по-прежнему незачем;
-   пунктир снизу снят — подчёркивать больше нечего. */
+   площадки, чужое — два листа, знак копии; имя остаётся в заголовке и в
+   спрятанной подписи для читалки. Тихим цветом, потому что спорить с датой за
+   внимание ей по-прежнему незачем; пунктир снизу снят — подчёркивать больше
+   нечего. Правил для ссылки здесь больше нет: с 27.08.2026 метка никуда не
+   ведёт, и курсор у неё один — «help». */
 .orig { margin-left: 10px; color: var(--meta); display: inline-flex; align-items: center; vertical-align: -2px; cursor: help; }
 .orig .ico { width: 14px; height: 14px; }
-a.orig { color: var(--meta); cursor: pointer; }
-a.orig:hover { color: var(--link); }
 .clink { margin-left: 18px; }
 /* «Добавить комментарий» стоит той же строкой, что и ссылка на обсуждение, и
    тем же кеглем: это второй вход в тот же разговор, а не отдельное действие. */
@@ -990,6 +990,14 @@ a.orig:hover { color: var(--link); }
    заметки. */
 .mtext { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mdec { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0 0; }
+/* Текст заметки в форме, где его не правят: администратор у ЗЕРКАЛЬНОЙ заметки
+   ставит одну картинку, а видеть, к чему он её ставит, обязан. Не textarea и не
+   поле ввода: править нечего, и вид должен об этом говорить сам — тот же лист,
+   что и на странице, только приглушённой рамкой. */
+.lockedtext { border: 1px solid var(--rule); border-radius: 3px; padding: 10px 12px;
+  background: var(--card); color: var(--ink); max-height: 40vh; overflow-y: auto; }
+.lockedtext p { margin: 0 0 10px; }
+.lockedtext p:last-child { margin-bottom: 0; }
 .mreason, .mdays, .mrole {
   font: inherit; font-size: 13px; padding: 5px 8px; flex: 1 1 16rem;
   border: 1px solid var(--rule); border-radius: 3px; background: var(--card); color: var(--ink);

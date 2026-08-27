@@ -199,8 +199,10 @@ func TestNoteCarriesPlatformLink(t *testing.T) {
 	if got := sk.calls[0].text; got != "давайте" {
 		t.Errorf("тело поста изменено: %q", got)
 	}
-	if sk.calls[0].link != "294456" {
-		t.Errorf("ссылка на анкету автора: %q", sk.calls[0].link)
+	// Анкету НГС пост больше не называет (27.08.2026): ссылок на НГС проект не
+	// ставит нигде, и приёмнику id автора не передаётся вовсе.
+	if sk.calls[0].link != "" {
+		t.Errorf("приёмнику снова уехал адрес анкеты: %q", sk.calls[0].link)
 	}
 }
 
@@ -297,8 +299,8 @@ func TestCommentJoinsMirroredThread(t *testing.T) {
 	if c.replyTo != "901" {
 		t.Errorf("адресат: %q, ждали 901 (сообщение зеркальной реплики)", c.replyTo)
 	}
-	if c.link != "https://love.ngs.ru/profile/1472546/" {
-		t.Errorf("ссылка на анкету: %q", c.link)
+	if c.link != "" {
+		t.Errorf("приёмнику снова уехал адрес анкеты: %q", c.link)
 	}
 }
 

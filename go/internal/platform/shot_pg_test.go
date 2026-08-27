@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // mustShot кладёт картинку в хранилище и возвращает её учётную запись.
@@ -377,5 +378,128 @@ func TestNoteThumbsReadsManyAtOnce(t *testing.T) {
 	}
 	if _, err := p.NoteThumbs(ctx, nil); err != nil {
 		t.Errorf("пустой список: %v", err)
+	}
+}
+
+// Картинку администратор ставит ЛЮБОЙ заметке, включая зеркальную, и это не
+// оговорка, а весь смысл права: у копии с НГС иллюстрация лежит ссылкой на
+// чужой хост, и в день, когда он перестанет отдавать файлы, восполнить её будет
+// нечем. Текст копии при этом по-прежнему не правится — двери у действий разные.
+func TestАдминистраторСтавитКартинкуЗеркальнойЗаметке(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := Viewer{UserID: mustUser(t, p, "админ"), Role: RoleAdmin}
+	ingestNote(t, p, 312811, 1493279, "Рио")
+	// Так выглядит зеркальная иллюстрация: ссылка на сервер НГС и никаких байтов.
+	if err := p.AttachNoteImage(ctx, 312811, nil, "https://hsmedia.ru/old.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	shot := mustShot(t, p, 1200, 800)
+
+	// Модератору нельзя: подмена того, что стоит под чужим именем, — дело
+	// администраторское, ровно как и правка текста.
+	mod := Viewer{UserID: mustUser(t, p, "Хатуль мадан"), Role: RoleModerator}
+	if err := p.SetNoteImageAsAdmin(ctx, mod, 312811, &shot, ""); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("картинка от модератора: %v, ожидался ErrNotAdmin", err)
+	}
+
+	if err := p.SetNoteImageAsAdmin(ctx, admin, 312811, &shot, "картинка с НГС отвалилась"); err != nil {
+		t.Fatalf("картинка от администратора: %v", err)
+	}
+	// Строка ОСТАЛАСЬ той же — подменились байты за ней. Это важно буквально:
+	// сверка platsink считает иллюстрации по числу строк, и уменьши мы его,
+	// зеркальная картинка вернулась бы сама в ближайшие пять минут.
+	imgs, err := p.NoteImages(ctx, 312811)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 1 || imgs[0].URL != shot.URL {
+		t.Fatalf("иллюстрации заметки: %+v", imgs)
+	}
+	if imgs[0].SourceURL != "https://hsmedia.ru/old.jpg" {
+		t.Fatalf("ссылка зеркальной строки потерялась: %q", imgs[0].SourceURL)
+	}
+	var rows int
+	if err := p.pool.QueryRow(ctx,
+		`SELECT count(*) FROM note_images WHERE note_id = 312811`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("строк иллюстраций %d, сверка досылала бы недостающие", rows)
+	}
+
+	// Текст зеркальной не тронут: право про картинку и только про неё.
+	n, err := p.NoteRow(ctx, 312811)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.Body != "заметка 312811" {
+		t.Fatalf("текст копии изменился: %q", n.Body)
+	}
+
+	// А СНЯТЬ иллюстрацию у копии нельзя: это уже расхождение с оригиналом, и
+	// вдобавок оно не удержится — сверка досылает недостающие по счёту.
+	if err := p.SetNoteImageAsAdmin(ctx, admin, 312811, nil, ""); !errors.Is(err, ErrNotNative) {
+		t.Fatalf("снятие у зеркальной: %v, ожидался ErrNotNative", err)
+	}
+
+	// В журнале — факт и причина, отдельным действием от правки текста.
+	entries, err := p.SubjectAudit(ctx, NoteSubject(312811), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Action != ActionImage || entries[0].Actor != admin.UserID {
+		t.Fatalf("журнал картинки: %+v", entries)
+	}
+	if entries[0].Details["reason"] != "картинка с НГС отвалилась" {
+		t.Fatalf("причина не записана: %+v", entries[0].Details)
+	}
+}
+
+// У НАТИВНОЙ заметки картинку можно и снять. В очередь модерации она при этом не
+// возвращается: файл выбрал сам администратор, и ставить его же решение себе в
+// очередь значило бы проверять себя.
+func TestАдминистраторСнимаетКартинкуНативнойЗаметки(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := Viewer{UserID: mustUser(t, p, "админ"), Role: RoleAdmin}
+	author := mustUser(t, p, "Рио")
+	shot := mustShot(t, p, 1600, 900)
+	id, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "с картинкой", Image: &shot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Очередь проверки заводится публикацией; отмечаем её проверенной, чтобы
+	// увидеть, трогает ли её картинка.
+	if _, err := p.pool.Exec(ctx, `
+		UPDATE moderation_queue SET checked_at = now()
+		 WHERE subject_kind = $1 AND subject_id = $2`, SubjectNote, id); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.SetNoteImageAsAdmin(ctx, admin, id, nil, "чужое лицо в кадре"); err != nil {
+		t.Fatalf("снятие картинки: %v", err)
+	}
+	imgs, err := p.NoteImages(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 0 {
+		t.Fatalf("картинка осталась: %+v", imgs)
+	}
+	// Снимать нечего — не действие, и путать его с ошибкой нельзя (то же
+	// правило, что у замка и закрепления).
+	if err := p.SetNoteImageAsAdmin(ctx, admin, id, nil, ""); !errors.Is(err, ErrNothingToDo) {
+		t.Fatalf("повторное снятие: %v, ожидался ErrNothingToDo", err)
+	}
+
+	var checked *time.Time
+	if err := p.pool.QueryRow(ctx, `
+		SELECT checked_at FROM moderation_queue
+		 WHERE subject_kind = $1 AND subject_id = $2`, SubjectNote, id).Scan(&checked); err != nil {
+		t.Fatal(err)
+	}
+	if checked == nil {
+		t.Fatal("картинка администратора вернула карточку в очередь: он проверял бы себя")
 	}
 }

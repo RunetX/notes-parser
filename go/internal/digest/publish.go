@@ -16,13 +16,16 @@ import (
 
 // Publish постит выпуск weekID в мессенджер приёмника. Возвращает число
 // отправленных этим вызовом частей; (0, nil) — выпуск уже был опубликован.
-func Publish(ctx context.Context, st *store.Store, p Publisher, d Draft, weekID, siteBase string) (int, error) {
+//
+// ourBase — адрес ПЛОЩАДКИ для ссылок в теле (см. ResolveLinks); пусто —
+// подписи остаются текстом.
+func Publish(ctx context.Context, st *store.Store, p Publisher, d Draft, weekID, ourBase string) (int, error) {
 	if _, _, done, err := st.Target(ctx, p.Name(), store.TargetDigest, weekID); err != nil {
 		return 0, err
 	} else if done {
 		return 0, nil
 	}
-	blocks, err := ResolveLinks(ctx, st, d, p, siteBase)
+	blocks, err := ResolveLinks(ctx, st, d, p, ourBase)
 	if err != nil {
 		return 0, fmt.Errorf("резолв ссылок (%s): %w", p.Name(), err)
 	}

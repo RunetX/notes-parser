@@ -6,6 +6,7 @@ package web
 
 import (
 	"context"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -436,6 +437,21 @@ func TestEditSendsNewText(t *testing.T) {
 
 // foreignNativeNote — заготовка с ЧУЖОЙ нативной заметкой, старой и с ответами: ровно
 // та, которую авторское окно править уже не даёт.
+// shotModServer — площадка с вошедшим администратором, живой модерацией и
+// подключённым перекодировщиком: без него поля файла в форме нет вовсе.
+func shotModServer(t *testing.T, st *fakeStore, role platform.Role) (http.Handler, *fakeMod, string, *fakeShots) {
+	t.Helper()
+	auth, token := signedInAs(t, platform.User{
+		ID: modUserID, Nick: "Хатуль мадан", Kind: platform.KindMember, Role: role,
+	})
+	mod := newFakeMod()
+	conv := newShots()
+	srv := New(Config{BaseURL: "http://127.0.0.1", Log: quietLog()}, st, auth, &fakeWriter{}, mod, nil)
+	t.Cleanup(func() { _ = srv.Close() })
+	srv.SetShots(conv)
+	return srv.routes(), mod, token, conv
+}
+
 func foreignNativeNote() *fakeStore {
 	st := noteStore()
 	st.note.Own = false
@@ -496,23 +512,98 @@ func TestПравкаАдминистратораДоходитДоЯдра(t *t
 	}
 }
 
-// Зеркальную заметку не правит никто: здесь её копия, и молча разойтись с
-// оригиналом значило бы соврать читателю о том, что он читает копию.
-func TestЗеркальнуюЗаметкуНеПравитИАдминистратор(t *testing.T) {
-	h, mod, token := modServerOn(t, foreignNativeNote(), platform.RoleAdmin)
+// Текст зеркальной заметки не правит НИКТО: здесь её копия, и молча разойтись с
+// оригиналом значило бы соврать читателю о том, что он читает копию. А вот
+// КАРТИНКУ администратор ставит и ей (27.08.2026): у копии иллюстрация живёт
+// ссылкой на сервер НГС и в день, когда он перестанет отдавать файлы, обратится
+// в пустое место — восполнить её иначе нечем.
+func TestУЗеркальнойЗаметкиАдминистраторМеняетТолькоКартинку(t *testing.T) {
+	h, mod, token, conv := shotModServer(t, foreignNativeNote(), platform.RoleAdmin)
 
 	page := do(h, as(guest(t, "GET", "/n/312811"), token)).Body.String()
-	if strings.Contains(page, "/n/312811/edit") {
-		t.Error("под зеркальной заметкой предложена правка")
+	if !strings.Contains(page, "/n/312811/edit") {
+		t.Fatal("под зеркальной заметкой не предложена картинка")
 	}
-	if got := do(h, as(guest(t, "GET", "/n/312811/edit"), token)).Code; got != http.StatusForbidden {
-		t.Errorf("экран правки зеркальной: код %d, ожидался 403", got)
+	// Подпись у ссылки другая: «Поправить» под текстом, который не правится,
+	// обещало бы не то.
+	if !strings.Contains(page, `<span class="lbl">Картинка</span>`) {
+		t.Error("ссылка подписана так, будто правится текст")
 	}
-	if w := do(h, postAs(t, "/n/312811/edit", url.Values{"body": {"переписал"}}, token)); w.Code != http.StatusForbidden {
-		t.Errorf("правка зеркальной: код %d, ожидался 403", w.Code)
+
+	form := do(h, as(guest(t, "GET", "/n/312811/edit"), token)).Body.String()
+	if strings.Contains(form, "<textarea") {
+		t.Error("на экране есть поле текста, которого править нельзя")
+	}
+	if !strings.Contains(form, `name="shot"`) || !strings.Contains(form, "multipart/form-data") {
+		t.Error("на экране нет поля файла — ради него форма и открывается")
+	}
+	// Снять картинку у копии нельзя: сверка вернула бы её через пять минут.
+	if strings.Contains(form, `name="drop_shot"`) {
+		t.Error("предложено снять иллюстрацию у зеркальной заметки")
+	}
+
+	w := do(h, uploadTo(t, "/n/312811/edit", token, "переписал", []byte("файл"),
+		func(mw *multipart.Writer) {
+			_ = mw.WriteField("reason", "картинка с НГС отвалилась")
+		}))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d, тело: %s", w.Code, w.Body.String())
+	}
+	if conv.calls != 1 {
+		t.Errorf("перекодировщик позвали %d раз", conv.calls)
 	}
 	if mod.edited != "" {
-		t.Errorf("до ядра дошёл текст %q", mod.edited)
+		t.Errorf("до ядра дошёл ТЕКСТ зеркальной заметки: %q", mod.edited)
+	}
+	if !mod.shotSet || mod.shot == nil || mod.shotNote != 312811 {
+		t.Fatalf("картинка до ядра не дошла: set=%v shot=%v note=%d", mod.shotSet, mod.shot, mod.shotNote)
+	}
+	if mod.editReason != "картинка с НГС отвалилась" {
+		t.Errorf("«зачем» до журнала не дошло: %q", mod.editReason)
+	}
+	if len(mod.acts) != 1 || !strings.HasPrefix(mod.acts[0], "image ") {
+		t.Errorf("ядро позвали как %v", mod.acts)
+	}
+}
+
+// У НАТИВНОЙ заметки та же форма меняет и текст, и картинку — но это два разных
+// действия ядра с разными дверями и разными записями в журнале.
+func TestУНативнойЗаметкиАдминистраторМеняетИТекстИКартинку(t *testing.T) {
+	native := sampleNote()
+	native.ID = platform.NativeIDBase + 7
+	native.Own = false
+	native.CommentCount = 3
+	native.PublishedAt = time.Now().Add(-48 * time.Hour)
+	st := &fakeStore{total: 1, notes: []platform.NoteView{native}, note: native}
+	h, mod, token, _ := shotModServer(t, st, platform.RoleAdmin)
+	target := "/n/" + strconv.FormatInt(native.ID, 10) + "/edit"
+
+	if w := do(h, uploadTo(t, target, token, "объявление без опечатки", []byte("файл"))); w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d, тело: %s", w.Code, w.Body.String())
+	}
+	if mod.edited != "объявление без опечатки" {
+		t.Errorf("текст до ядра не дошёл: %q", mod.edited)
+	}
+	if !mod.shotSet || mod.shot == nil {
+		t.Error("картинка до ядра не дошла")
+	}
+	if len(mod.acts) != 2 || !strings.HasPrefix(mod.acts[0], "edit ") ||
+		!strings.HasPrefix(mod.acts[1], "image ") {
+		t.Errorf("ядро позвали как %v, ожидались правка и картинка", mod.acts)
+	}
+}
+
+// Отказ ядра на картинке не проваливается пятисоткой и не теряет набранного.
+func TestОтказНаКартинкеПоказываетсяЧеловеком(t *testing.T) {
+	h, mod, token, _ := shotModServer(t, foreignNativeNote(), platform.RoleAdmin)
+	mod.fail = platform.ErrRateLimited
+
+	w := do(h, uploadTo(t, "/n/312811/edit", token, "", []byte("файл")))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("код %d, ожидался 429", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "Слишком часто") {
+		t.Errorf("отказ не объяснён человеком: %s", body)
 	}
 }
 

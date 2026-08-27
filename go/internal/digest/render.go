@@ -28,9 +28,16 @@ type Block struct {
 
 // ResolveLinks превращает маркеры {note:ID|текст} в <a href>: ссылка на тред
 // заметки в мессенджере приёмника (message_targets → ThreadLink), фолбэк —
-// страница заметки на сайте (есть всегда).
-func ResolveLinks(ctx context.Context, st *store.Store, d Draft, p Publisher, siteBase string) ([]Block, error) {
-	siteBase = strings.TrimSuffix(siteBase, "/")
+// страница заметки НА ПЛОЩАДКЕ (у зеркальной строки id равен id на НГС, поэтому
+// адрес получается прямой подстановкой — тот же приём, что в RenderPlatform).
+//
+// Фолбэком была страница заметки на love.ngs.ru: она «есть всегда», но ссылок
+// на НГС проект больше не ставит нигде (решение владельца 27.08.2026). Дорога
+// эта — публикация выпуска прямо в каналы — работает только БЕЗ площадки, и
+// тогда своей страницы у заметки нет вовсе: подпись остаётся текстом. Ссылка
+// без адреса хуже её отсутствия.
+func ResolveLinks(ctx context.Context, st *store.Store, d Draft, p Publisher, ourBase string) ([]Block, error) {
+	ourBase = strings.TrimSuffix(ourBase, "/")
 	var blocks []Block
 	var resolveErr error
 	for _, sec := range d.Sections {
@@ -38,7 +45,10 @@ func ResolveLinks(ctx context.Context, st *store.Store, d Draft, p Publisher, si
 			text := noteMarkerRe.ReplaceAllStringFunc(el, func(marker string) string {
 				sub := noteMarkerRe.FindStringSubmatch(marker)
 				id, label := sub[1], sub[2]
-				href := siteBase + "/notes/" + id + "/"
+				href := ""
+				if ourBase != "" {
+					href = ourBase + "/n/" + id
+				}
 				_, threadID, found, err := st.Target(ctx, p.Name(), store.TargetNoteThread, id)
 				switch {
 				case err != nil:
@@ -47,6 +57,9 @@ func ResolveLinks(ctx context.Context, st *store.Store, d Draft, p Publisher, si
 					if l := p.ThreadLink(threadID); l != "" {
 						href = l
 					}
+				}
+				if href == "" {
+					return label
 				}
 				return `<a href="` + href + `">` + label + `</a>`
 			})

@@ -65,6 +65,15 @@ type Moderator interface {
 	// (объявления, выпуск дайджеста), и опечатку в них до сих пор чинили только
 	// новой публикацией поверх старой.
 	EditNoteAsAdmin(ctx context.Context, actor platform.Viewer, noteID int64, body, reason string) error
+	// SetNoteImageAsAdmin — поставить заметке иллюстрацию и снять её. shot —
+	// уже ПЕРЕКОДИРОВАННЫЕ байты (nil — снять), как и у Writer.CreateNote: класть
+	// их в хранилище обязан тот же код, что у зеркала и у аватара.
+	//
+	// Заметка ЛЮБАЯ, в том числе зеркальная, и в этом всё отличие от правки
+	// текста: у копии с НГС картинка смертна (в note_images лежит ссылка на
+	// hsmedia.ru), и поставить файл — единственный способ её вернуть. Снять
+	// иллюстрацию у зеркальной ядро откажет (см. SetNoteImageAsAdmin).
+	SetNoteImageAsAdmin(ctx context.Context, actor platform.Viewer, noteID int64, shot *Shot, reason string) error
 	IssueInvite(ctx context.Context, actor platform.Viewer, bindUser int64, note string, ttl time.Duration) (string, error)
 	Invites(ctx context.Context, limit int) ([]platform.Invite, error)
 	RevokeInvite(ctx context.Context, actor platform.Viewer, issuedAt time.Time) error
@@ -485,10 +494,15 @@ type modAct struct {
 	IsNote bool
 	Pinned bool
 	Locked bool
-	// AdminEdit — «Поправить» под ЧУЖОЙ нативной заметкой. Право
-	// администраторское, поэтому и стоит оно в полоске модерации, а не в подвале
-	// заметки рядом с авторским окном правки.
+	// AdminEdit — «Поправить» под ЧУЖОЙ заметкой. Право администраторское,
+	// поэтому и стоит оно в полоске модерации, а не в подвале заметки рядом с
+	// авторским окном правки.
 	AdminEdit bool
+	// AdminShot — заметка ЗЕРКАЛЬНАЯ, и правится у неё одна картинка. Ссылка та
+	// же, а подпись другая: «Поправить» под текстом, который не правится, обещало
+	// бы не то. Считается здесь, рядом с AdminEdit, чтобы решение «что кому
+	// показать» осталось в одном месте.
+	AdminShot bool
 	CSRF      string
 	Back      string
 }
@@ -506,6 +520,7 @@ func modNote(p notePage) modAct {
 		// Авторское «Поправить» стоит в подвале заметки, и второй такой же
 		// ссылкой рядом администратор-автор ничего нового не узнает.
 		AdminEdit:   p.AdminEdit && !p.Editable,
+		AdminShot:   p.AdminEdit && !platform.IsNative(p.Note.ID),
 		CanModerate: p.CanModerate,
 		// Пожаловаться на СВОЮ публикацию нельзя, и «пожаловаться» под чужой
 		// показываем только тому, кто вправе писать: жалоба заводит работу
@@ -533,7 +548,8 @@ func modFeedNote(d noteItemData) modAct {
 		IsNote:      true,
 		Pinned:      d.Note.Pinned,
 		Locked:      d.Note.Locked,
-		AdminEdit:   d.Page.CanEdit && platform.IsNative(d.Note.ID),
+		AdminEdit:   d.Page.CanEdit,
+		AdminShot:   d.Page.CanEdit && !platform.IsNative(d.Note.ID),
 		CanModerate: d.Page.CanModerate,
 		CSRF:        d.Page.CSRF,
 		Back:        d.Page.Back,

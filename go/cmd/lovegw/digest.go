@@ -214,7 +214,7 @@ func digestPreview(ctx context.Context, cfg *config.Config, st *store.Store, w d
 		return errors.New("digest: ни один мессенджер не включён (messengers.telegram/max)")
 	}
 	for _, p := range pubs {
-		blocks, err := digest.ResolveLinks(ctx, st, d, p, cfg.Site.BaseURL)
+		blocks, err := digest.ResolveLinks(ctx, st, d, p, cfg.Platform.BaseURL)
 		if err != nil {
 			return err
 		}
@@ -306,7 +306,7 @@ func digestPublish(ctx context.Context, cfg *config.Config, st *store.Store, w d
 		return errors.New("digest: ни один мессенджер не включён (messengers.telegram/max)")
 	}
 	for _, p := range pubs {
-		sent, err := digest.Publish(ctx, st, p, d, w.ID, cfg.Site.BaseURL)
+		sent, err := digest.Publish(ctx, st, p, d, w.ID, cfg.Platform.BaseURL)
 		switch {
 		case err != nil:
 			return fmt.Errorf("%s: %w (повторный publish докатит недостающие части)", p.Name(), err)
@@ -369,7 +369,6 @@ func publishPublishers(cfg *config.Config, only string) ([]digest.Publisher, err
 			ChannelID:        tgCfg.ChannelID,
 			DiscussionChatID: tgCfg.DiscussionChatID,
 			Signature:        tgCfg.Signature,
-			BaseURL:          cfg.Site.BaseURL,
 			HTTPClient:       tgClient,
 		}, slog.Default(), func(context.Context, *models.Update) {})
 		if err != nil {
@@ -457,5 +456,5 @@ func digestSource(ctx context.Context, cfg *config.Config, st *store.Store) (dig
 	if err != nil {
 		return nil, nil, err
 	}
-	return platdigest.New(p, cfg.Site.BaseURL), p.Close, nil
+	return platdigest.New(p), p.Close, nil
 }

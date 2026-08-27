@@ -46,7 +46,6 @@ type Mirror struct {
 	channelID        int64
 	discussionChatID int64
 	signature        string
-	baseURL          string
 	log              *slog.Logger
 	// hc — тот же клиент, что и у поллинга: файлы Bot API качаем через прокси,
 	// иначе с российского IP они недоступны.
@@ -83,7 +82,6 @@ type Params struct {
 	ChannelID        int64
 	DiscussionChatID int64
 	Signature        string
-	BaseURL          string
 	HTTPClient       *http.Client
 }
 
@@ -104,7 +102,6 @@ func NewMirror(p Params, log *slog.Logger, onUpdate func(ctx context.Context, u 
 		channelID:        p.ChannelID,
 		discussionChatID: p.DiscussionChatID,
 		signature:        p.Signature,
-		baseURL:          strings.TrimSuffix(p.BaseURL, "/"),
 		log:              log,
 		hc:               hc,
 		mediaCache:       make(map[string]string),
@@ -213,7 +210,7 @@ func (m *Mirror) Me(ctx context.Context) (*models.User, error) { return m.b.GetM
 // текстом без аватара. Контент заметки не режем ни при каких условиях.
 func (m *Mirror) PostNote(ctx context.Context, n store.Note, avatar []byte) (string, error) {
 	subLink := m.subscribeLink(n)
-	text := ComposeNoteMessage(m.baseURL, m.signature, n, subLink)
+	text := ComposeNoteMessage(m.signature, n, subLink)
 
 	if len(avatar) > 0 && chantext.VisibleUTF16Len(text) <= captionLimit {
 		msg, err := send(ctx, m, m.channelID, func(ctx context.Context) (*models.Message, error) {
@@ -598,20 +595,18 @@ func (m *Mirror) sendInterval(chatID int64) time.Duration {
 // останавливает канал насовсем (в MAX эта пробка уже случалась, 06.08.2026).
 // У заметок НГС такой длины не бывает; у написанных ЗДЕСЬ потолок тела —
 // 20 000 знаков, то есть впятеро больше сообщения.
-func ComposeNoteMessage(baseURL, signature string, n store.Note, subLink string) string {
-	return composeNote(baseURL, signature, n, subLink, messageLimit)
+func ComposeNoteMessage(signature string, n store.Note, subLink string) string {
+	return composeNote(signature, n, subLink, messageLimit)
 }
 
 // composeNote собирает пост под заданный предел видимой длины. Режется только
 // ТЕЛО: шапка с автором и подвал со ссылками — то, по чему читатель находит
 // оригинал, и терять их ради лишней строки текста нельзя.
-func composeNote(baseURL, signature string, n store.Note, subLink string, limit int) string {
-	name := html.EscapeString(n.AuthorName)
-	head := fmt.Sprintf("<b>%s:</b>\n", name)
-	if n.AuthorID != "" && n.AuthorID != "0" {
-		head = fmt.Sprintf(`<b><a href="%s">%s:</a></b>%s`,
-			html.EscapeString(baseURL+"/profile/"+n.AuthorID), name, "\n")
-	}
+func composeNote(signature string, n store.Note, subLink string, limit int) string {
+	// Имя автора — просто имя. Ссылкой на анкету НГС оно было до 27.08.2026;
+	// ссылок на НГС проект не ставит нигде (решение владельца), а второго
+	// адреса у зеркального автора нет: страницы участника площадка не заводит.
+	head := fmt.Sprintf("<b>%s:</b>\n", html.EscapeString(n.AuthorName))
 	sub := ""
 	if subLink != "" {
 		sub = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(subLink), linkSubscribe)
@@ -677,18 +672,19 @@ func commentHead(name, age string) string {
 	return fmt.Sprintf("%s, %s:", html.EscapeString(name), html.EscapeString(age))
 }
 
-// composeComment собирает HTML комментария с заголовком-ссылкой автора,
-// обрезая ТЕЛО под лимит видимой длины limit (Python резал сырой HTML по
-// байтам и мог сломать разметку). Заголовок в лимит заложен и не режется.
+// composeComment собирает HTML комментария с заголовком автора, обрезая ТЕЛО
+// под лимит видимой длины limit (Python резал сырой HTML по байтам и мог
+// сломать разметку). Заголовок в лимит заложен и не режется.
+//
+// Заголовок был ССЫЛКОЙ на анкету НГС до 27.08.2026: ссылок на НГС проект не
+// ставит нигде (решение владельца). Поле store.Comment.AuthorLink при этом
+// живо — по нему дайджест зеркала опознаёт человека, числового id у
+// комментария НГС нет вовсе.
 //
 // Тело либо размечено отправителем (реплика площадки со знаками НГС), либо
 // экранируется целиком, как весь текст сайта.
 func composeComment(c store.Comment, limit int) string {
-	head := commentHead(c.AuthorName, c.AuthorAge)
-	if c.AuthorLink != "" {
-		head = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), head)
-	}
-	head = "<b>" + head + "</b>\n"
+	head := "<b>" + commentHead(c.AuthorName, c.AuthorAge) + "</b>\n"
 	body := c.TextHTML
 	if body == "" {
 		body = html.EscapeString(c.Text)

@@ -11,8 +11,10 @@ import (
 func TestComposeNoteMessage(t *testing.T) {
 	n := store.Note{ID: "1", AuthorID: "376712", AuthorName: "Мария <3",
 		Text: "Текст с <тегами> & амперсандом"}
-	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n, "")
-	want := `<b><a href="https://love.ngs.ru/profile/376712">Мария &lt;3:</a></b>` + "\n" +
+	got := ComposeNoteMessage("@grfmn", n, "")
+	// Имя автора — просто имя: ссылок на анкету НГС проект не ставит нигде
+	// (решение владельца 27.08.2026).
+	want := "<b>Мария &lt;3:</b>\n" +
 		"Текст с &lt;тегами&gt; &amp; амперсандом\n\n@grfmn"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
@@ -26,7 +28,7 @@ func TestComposeNoteMessageFooter(t *testing.T) {
 	n := store.Note{ID: "312818", AuthorID: "0", AuthorName: "Анонимно", Text: "т"}
 	link := "https://t.me/ryumkinbot?start=sub_312818"
 
-	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n, link)
+	got := ComposeNoteMessage("@grfmn", n, link)
 	if want := `@grfmn · <a href="` + link + `">` + linkSubscribe + `</a>`; !strings.HasSuffix(got, want) {
 		t.Errorf("подвал с подписью:\n%s", got)
 	}
@@ -34,7 +36,7 @@ func TestComposeNoteMessageFooter(t *testing.T) {
 		t.Errorf("видимая длина с подписью: %d", n)
 	}
 
-	got = ComposeNoteMessage("https://love.ngs.ru", "", n, link)
+	got = ComposeNoteMessage("", n, link)
 	if want := "т\n\n" + `<a href="` + link + `">` + linkSubscribe + `</a>`; !strings.HasSuffix(got, want) {
 		t.Errorf("подвал без подписи:\n%s", got)
 	}
@@ -52,7 +54,7 @@ func TestComposeNoteMessageFitsLimit(t *testing.T) {
 	n := store.Note{ID: "100000000001", AuthorID: "1", AuthorName: "Паноптикум",
 		Text:      strings.Repeat("ы", 20000),
 		SourceURL: "https://t3h.ru/n/100000000001"}
-	got := ComposeNoteMessage("https://love.ngs.ru", "@grfmn", n, "")
+	got := ComposeNoteMessage("@grfmn", n, "")
 	if l := chantext.VisibleUTF16Len(got); l > messageLimit {
 		t.Errorf("видимая длина %d > предела %d", l, messageLimit)
 	}
@@ -73,13 +75,13 @@ func TestComposeNoteMessageFitsLimit(t *testing.T) {
 func TestComposeNoteMessageKeepsSenderMarkup(t *testing.T) {
 	n := store.Note{ID: "100000000001", AuthorID: "1", AuthorName: "Паноптикум",
 		Text: "[b]Хотелки[/b]", TextHTML: "<b>Хотелки</b>"}
-	if got := ComposeNoteMessage("https://love.ngs.ru", "", n, ""); !strings.Contains(got, "<b>Хотелки</b>") {
+	if got := ComposeNoteMessage("", n, ""); !strings.Contains(got, "<b>Хотелки</b>") {
 		t.Errorf("разметка отправителя не доехала: %q", got)
 	}
 
 	long := store.Note{ID: "100000000002", AuthorID: "1", AuthorName: "Паноптикум",
 		TextHTML: "<b>" + strings.Repeat("ы", 20000) + "</b>"}
-	got := ComposeNoteMessage("https://love.ngs.ru", "", long, "")
+	got := ComposeNoteMessage("", long, "")
 	body := got[strings.Index(got, "</b>\n")+len("</b>\n"):]
 	if err := chantext.ValidateHTML(body); err != nil {
 		t.Errorf("обрезанное тело невалидно: %v", err)
@@ -88,7 +90,7 @@ func TestComposeNoteMessageKeepsSenderMarkup(t *testing.T) {
 
 func TestComposeNoteMessageAnonymous(t *testing.T) {
 	n := store.Note{ID: "1", AuthorID: "0", AuthorName: "Анонимно", Text: "т"}
-	got := ComposeNoteMessage("https://love.ngs.ru", "", n, "")
+	got := ComposeNoteMessage("", n, "")
 	if got != "<b>Анонимно:</b>\nт" {
 		t.Errorf("got: %q", got)
 	}
@@ -103,7 +105,7 @@ func TestComposeCommentCaptionTruncates(t *testing.T) {
 	got := ComposeCommentCaption(c)
 	// Видимая часть (шапка + текст без тегов) должна влезать в лимит 1024.
 	head := "Имя, 30 лет:\n"
-	if !strings.Contains(got, ">"+"Имя, 30 лет:"+"</a>") {
+	if !strings.Contains(got, "<b>Имя, 30 лет:</b>") {
 		t.Errorf("шапка с пробелом после запятой не найдена: %.80s", got)
 	}
 	body := got[strings.Index(got, "</b>\n")+len("</b>\n"):]
@@ -149,23 +151,23 @@ func TestComposeCommentCaptionEscapes(t *testing.T) {
 	}
 }
 
-// Ссылка автора приезжает атрибутом чужой вёрстки. Кавычка в ней вырвалась бы
-// из href, а сообщение с битой разметкой Telegram отвергает — очередь
-// комментариев заметки встала бы навсегда.
-func TestComposeCommentEscapesAuthorLink(t *testing.T) {
+// Ссылки на анкету НГС в шапке комментария больше нет (27.08.2026): поле
+// AuthorLink живо — по нему дайджест зеркала опознаёт человека, — но в пост оно
+// не идёт. Тест сторожит именно это: адрес чужого сайта в канал не попадает ни
+// в каком виде.
+func TestComposeCommentDoesNotLinkTheNGSProfile(t *testing.T) {
 	c := store.Comment{AuthorName: "Имя", AuthorAge: "30 лет",
-		AuthorLink: `https://love.ngs.ru/profile/1/"><b>`, Text: "т"}
+		AuthorLink: "https://love.ngs.ru/profile/1/", Text: "т"}
 	got := ComposeCommentCaption(c)
-	if strings.Contains(got, `"><b>`) {
-		t.Errorf("ссылка не экранирована: %s", got)
+	if strings.Contains(got, "ngs.ru") || strings.Contains(got, "<a href=") {
+		t.Errorf("в шапку вернулась ссылка на анкету: %s", got)
 	}
-	if !strings.Contains(got, "&#34;&gt;&lt;b&gt;") {
-		t.Errorf("нет экранированной ссылки: %s", got)
+	if !strings.Contains(got, "<b>Имя, 30 лет:</b>") {
+		t.Errorf("шапка без ссылки: %q", got)
 	}
 }
 
-// Ссылки может не быть (parse.absolutize отбрасывает чужие схемы) — тогда шапка
-// остаётся текстом, а не пустым <a href="">.
+// Ссылки может не быть вовсе — шапка от этого не меняется.
 func TestComposeCommentWithoutAuthorLink(t *testing.T) {
 	got := ComposeCommentCaption(store.Comment{AuthorName: "Гость", AuthorAge: "30 лет", Text: "т"})
 	if strings.Contains(got, `<a href="">`) {

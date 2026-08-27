@@ -83,15 +83,13 @@ const authorFieldLimit = 100
 // ComposeNoteMessage собирает HTML-текст поста заметки. Текст заметки сайтом не
 // ограничен, поэтому укладывается в бюджет MAX; шапка и подпись в бюджет
 // заложены и не режутся — по ним читатель находит оригинал.
-func ComposeNoteMessage(baseURL, signature string, n store.Note) string {
-	name := html.EscapeString(textutil.TruncateTrim(n.AuthorName, authorFieldLimit))
+func ComposeNoteMessage(signature string, n store.Note) string {
+	// Имя автора — просто имя. Ссылкой на анкету НГС оно было до 27.08.2026;
+	// ссылок на НГС проект не ставит нигде (решение владельца), а второго
+	// адреса у зеркального автора нет: страницы участника площадка не заводит.
 	var head strings.Builder
-	if n.AuthorID == "" || n.AuthorID == "0" {
-		fmt.Fprintf(&head, "<b>%s:</b>\n", name)
-	} else {
-		fmt.Fprintf(&head, `<b><a href="%s">%s:</a></b>%s`,
-			html.EscapeString(baseURL+"/profile/"+n.AuthorID), name, "\n")
-	}
+	fmt.Fprintf(&head, "<b>%s:</b>\n",
+		html.EscapeString(textutil.TruncateTrim(n.AuthorName, authorFieldLimit)))
 	tail := ""
 	if foot := noteFooter(signature, n.SourceURL); foot != "" {
 		tail = "\n\n" + foot
@@ -138,9 +136,8 @@ func ComposeCommentMessage(c store.Comment) string {
 		inner = fmt.Sprintf("%s, %s:", name,
 			html.EscapeString(textutil.TruncateTrim(c.AuthorAge, authorFieldLimit)))
 	}
-	if c.AuthorLink != "" {
-		inner = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), inner)
-	}
+	// AuthorLink (анкета НГС) в шапку больше не идёт: ссылок на НГС проект не
+	// ставит. Само поле живо — по нему дайджест зеркала опознаёт человека.
 	head := "<b>" + inner + "</b>\n"
 	return head + fitBody(c.TextHTML, c.Text, messageBudget-apiLen(head))
 }

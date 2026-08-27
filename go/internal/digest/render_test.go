@@ -45,7 +45,7 @@ func TestResolveLinks(t *testing.T) {
 		{"<b>Шапка</b>", "тред {note:1|раз} и {note:2|два}"},
 		{"фолбэк {note:3|три}"},
 	}}
-	blocks, err := ResolveLinks(ctx, st, d, p, "https://love.test/")
+	blocks, err := ResolveLinks(ctx, st, d, p, "https://t3h.ru/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,11 +55,29 @@ func TestResolveLinks(t *testing.T) {
 	if want := `<a href="https://t.me/c/x/555">раз</a>`; !strings.Contains(blocks[1].Text, want) {
 		t.Errorf("ссылка на тред: %q", blocks[1].Text)
 	}
-	if want := `<a href="https://love.test/notes/2/">два</a>`; !strings.Contains(blocks[1].Text, want) {
+	// Фолбэк — страница ПЛОЩАДКИ: ссылок на НГС проект не ставит нигде
+	// (27.08.2026), а у зеркальной строки id равен id на сайте.
+	if want := `<a href="https://t3h.ru/n/2">два</a>`; !strings.Contains(blocks[1].Text, want) {
 		t.Errorf("фолбэк без треда: %q", blocks[1].Text)
 	}
-	if want := `<a href="https://love.test/notes/3/">три</a>`; !strings.Contains(blocks[2].Text, want) {
+	if want := `<a href="https://t3h.ru/n/3">три</a>`; !strings.Contains(blocks[2].Text, want) {
 		t.Errorf("фолбэк при недоступном deep-link: %q", blocks[2].Text)
+	}
+}
+
+// Без площадки фолбэку взяться неоткуда: подпись остаётся текстом, а не
+// ссылкой в никуда. Это ровно тот случай, ради которого прямая публикация в
+// каналы и живёт — работа БЕЗ площадки.
+func TestResolveLinksWithoutOurBaseKeepsPlainText(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	d := Draft{Sections: [][]string{{"фолбэк {note:3|три}"}}}
+	blocks, err := ResolveLinks(ctx, st, d, &fakePub{name: "tg"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blocks[0].Text; got != "фолбэк три" {
+		t.Errorf("подпись без адреса: %q", got)
 	}
 }
 

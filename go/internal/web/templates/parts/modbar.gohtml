@@ -96,8 +96,10 @@
     </form>
     {{end}}
     {{if $m.AdminEdit}}<a class="mlink" href="/n/{{$m.NoteID}}/edit"
-       title="Правка администратора: текст заметки, без автора и анонимности"
-       >{{template "ico" "edit"}}<span class="lbl">Поправить</span></a>{{end}}
+       {{- if $m.AdminShot}} title="Заметка пришла с НГС: текст копии не правится, но картинку можно поставить свою"
+       >{{template "ico" "edit"}}<span class="lbl">Картинка</span></a>
+       {{- else}} title="Правка администратора: текст и картинка заметки, без автора и анонимности"
+       >{{template "ico" "edit"}}<span class="lbl">Поправить</span></a>{{end}}{{end}}
     {{if $m.AuthorID}}<a class="mlink" href="/mod/u/{{$m.AuthorID}}"
        title="Карточка автора: решения, запреты, жалобы"
        >{{template "ico" "user"}}<span class="lbl">Автор</span></a>{{end}}

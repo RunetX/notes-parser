@@ -59,10 +59,15 @@ type composePage struct {
 	// меняется: условий авторского окна тут нет вовсе, зато появляется поле
 	// «зачем» — оно уходит в журнал, и без него правка чужого текста осталась бы
 	// записью «кто-то что-то поправил».
-	Admin     bool
-	Body      string
-	Anonymous bool
-	Problem   string
+	Admin bool
+	// TextLocked — заметка ЗЕРКАЛЬНАЯ, и администратор открыл форму ради одной
+	// картинки: текст копии не правится вообще (см. platform.ErrNotNative), и
+	// поля для него на экране нет вовсе — поле, отвечающее отказом, хуже его
+	// отсутствия.
+	TextLocked bool
+	Body       string
+	Anonymous  bool
+	Problem    string
 	// CanShot — площадка сейчас принимает файлы (есть перекодировщик). Нет —
 	// поля файла в форме нет вовсе.
 	CanShot bool
@@ -174,19 +179,35 @@ func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err erro
 // ---------------------------------------------------------------- правка заметки
 
 func (s *Server) handleEditNote(w http.ResponseWriter, r *http.Request) {
-	_, note, asAdmin, ok := s.editTarget(w, r)
+	_, note, mode, ok := s.editTarget(w, r)
 	if !ok {
 		return
 	}
-	s.render(w, r, http.StatusOK, composePageName, composePage{
-		page:      s.newPage(r, "Правка заметки"),
-		Note:      note,
-		Editing:   true,
-		Admin:     asAdmin,
-		Body:      note.Body,
-		Anonymous: note.Anonymous,
-		HasShot:   !asAdmin && s.noteHasImage(r.Context(), note.ID),
-	})
+	s.render(w, r, http.StatusOK, composePageName, s.editForm(r, note, mode, note.Body, ""))
+}
+
+// editForm — форма правки в одном месте: её собирают и показ, и каждый отказ, а
+// две копии разошлись бы на первом же новом поле.
+//
+// Картинку администратор ставит ЛЮБОЙ заметке, поэтому поле файла у него есть и
+// у зеркальной; «снять» — только там, где ядро это позволит (у зеркальной
+// иллюстрация вернулась бы сверкой через пять минут, см. SetNoteImageAsAdmin),
+// и кнопки, ведущей к отказу, мы не рисуем.
+func (s *Server) editForm(r *http.Request, note platform.NoteView, mode editMode, body, problem string) composePage {
+	admin := mode != editOwn
+	has := s.noteHasImage(r.Context(), note.ID)
+	return composePage{
+		page:       s.newPage(r, "Правка заметки"),
+		Note:       note,
+		Editing:    true,
+		Admin:      admin,
+		TextLocked: mode == editShot,
+		Body:       body,
+		Anonymous:  note.Anonymous,
+		Problem:    problem,
+		CanShot:    admin && s.takesShots(),
+		HasShot:    has && (mode == editOwn || platform.IsNative(note.ID)),
+	}
 }
 
 // noteHasImage — есть ли у заметки картинка. Спрашивается только формой правки:
@@ -199,26 +220,84 @@ func (s *Server) noteHasImage(ctx context.Context, id int64) bool {
 }
 
 func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
-	if !s.postWrite(w, r) {
+	multipart := isMultipart(r)
+	if !multipart {
+		// Прежняя дорога (urlencoded) остаётся рабочей: она работает и из старой
+		// вкладки, и когда картинки площадка не принимает вовсе.
+		if !s.postWrite(w, r) {
+			return
+		}
+	} else if !sameOrigin(r) {
+		s.fail(w, r, http.StatusForbidden, "Запрос пришёл не с нашей страницы.")
 		return
 	}
-	u, note, asAdmin, ok := s.editTarget(w, r)
+	u, note, mode, ok := s.editTarget(w, r)
 	if !ok {
 		return
 	}
+	if multipart {
+		// Слот перекодирования занимается ДО чтения тела, как и у публикации:
+		// память в контейнере одна на всех, и кто прислал файл — участник или
+		// администратор, — ей безразлично. Право уже проверено выше, и это тот
+		// самый дешёвый отказ, ради которого порядок и выстроен.
+		release, ok := s.takeShotSlot(w, r)
+		if !ok {
+			return
+		}
+		defer release()
+		if !s.postUpload(w, r) {
+			return
+		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
+	}
 	body := r.FormValue("body")
+	if mode == editShot {
+		// Текст копии не правится вообще, поэтому чужое поле из формы не
+		// читается вовсе: подложить его подделанной страницей нельзя, если оно
+		// никуда не идёт.
+		body = note.Body
+	}
 	// Снятие картинки — часть той же правки, а не отдельное действие: разведи их
 	// на две транзакции, и отказ второй оставит человека с закрытым навсегда
 	// окном и с картинкой, которую он снимал.
 	dropShot := r.FormValue("drop_shot") != ""
+
+	shot, problem := s.takeShot(r.Context(), r)
+	if problem != "" {
+		// Ничего не меняется вовсе: сохранить текст молча, без картинки, значит
+		// решить за того, кто её осознанно прикладывал.
+		page := s.editForm(r, note, mode, body, problem)
+		page.LostShot = true
+		s.render(w, r, http.StatusBadRequest, composePageName, page)
+		return
+	}
+
 	var err error
-	if asAdmin {
-		err = s.mod.EditNoteAsAdmin(r.Context(), platform.Viewer{UserID: u.ID, Role: u.Role},
-			note.ID, body, r.FormValue("reason"))
-	} else {
+	switch {
+	case mode == editOwn:
 		err = s.wr.EditNote(r.Context(), u.ID, platform.NoteEdit{
 			NoteID: note.ID, Body: body, DropImage: dropShot,
 		})
+	default:
+		actor := platform.Viewer{UserID: u.ID, Role: u.Role}
+		if mode == editAdmin {
+			err = s.mod.EditNoteAsAdmin(r.Context(), actor, note.ID, body, r.FormValue("reason"))
+		}
+		// Картинка — ОТДЕЛЬНОЕ действие ядра, а не часть правки текста, и
+		// потому отдельная транзакция: у них разные двери (текст копии с НГС не
+		// правится вообще, картинка ставится любой заметке) и разные записи в
+		// журнале. Порядок «сперва текст» выбран так, чтобы отказ на картинке не
+		// отменял уже сохранённых слов, — а сказано об отказе будет в любом
+		// случае.
+		if err == nil || errors.Is(err, platform.ErrNothingToDo) {
+			if shot != nil || dropShot {
+				err = s.mod.SetNoteImageAsAdmin(r.Context(), actor, note.ID, shot, r.FormValue("reason"))
+			}
+		}
 	}
 	// «Текст и так такой» отказом не считается: администратор мог открыть форму
 	// и закрыть её, ничего не изменив, — то же правило, что у кнопок модерации.
@@ -228,11 +307,9 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 			s.oops(w, r, "правка заметки", err)
 			return
 		}
-		s.render(w, r, status, composePageName, composePage{
-			page: s.newPage(r, "Правка заметки"), Note: note, Editing: true, Admin: asAdmin,
-			Body: body, Anonymous: note.Anonymous, Problem: problem,
-			HasShot: !asAdmin && s.noteHasImage(r.Context(), note.ID),
-		})
+		page := s.editForm(r, note, mode, body, problem)
+		page.LostShot = shot != nil
+		s.render(w, r, status, composePageName, page)
 		return
 	}
 	// Ролик, названный в новом тексте, показывается карточкой — но только когда
@@ -242,15 +319,27 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/n/"+strconv.FormatInt(note.ID, 10), http.StatusSeeOther)
 }
 
-// editTarget — заметка, которую этому человеку сейчас можно править, и КЕМ он
-// её правит: автором в своём окне или администратором. Пустой последний
-// результат означает «ответ уже отправлен».
+// editMode — чем человек правит открытую форму. Трёх состояний, а не двух,
+// потому что у администратора их два: НАТИВНУЮ заметку он правит целиком, а у
+// зеркальной вправе поменять одну картинку — текст копии не правится вообще.
+type editMode int
+
+const (
+	editOwn   editMode = iota // автор в своём окне
+	editAdmin                 // администратор: текст нативной заметки и картинка
+	editShot                  // администратор у зеркальной: только картинка
+)
+
+// editTarget — заметка, которую этому человеку сейчас можно править, и КАК он
+// её правит: автором в своём окне, администратором целиком или администратором
+// ради одной картинки. Пустой последний результат означает «ответ уже
+// отправлен».
 //
-// Одна дорога на оба случая, потому что различаются они только правом и текстом
+// Одна дорога на все случаи, потому что различаются они только правом и текстом
 // на экране: форма, адрес и разбор ответа общие, а две копии разошлись бы на
 // первой же правке — ровно как разошлись бы правило страницы и правило ядра,
 // если бы Editable считался в двух местах.
-func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.User, platform.NoteView, bool, bool) {
+func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.User, platform.NoteView, editMode, bool) {
 	var none platform.NoteView
 	u, ok := s.me(r)
 	if !ok {
@@ -259,22 +348,22 @@ func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.Us
 		} else {
 			s.fail(w, r, http.StatusUnauthorized, "Чтобы писать, нужно войти.")
 		}
-		return platform.User{}, none, false, false
+		return platform.User{}, none, editOwn, false
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
-		return u, none, false, false
+		return u, none, editOwn, false
 	}
 	admin := u.Role >= platform.RoleAdmin && s.mod != nil
 	note, err := s.st.NoteViewByID(r.Context(), platform.Viewer{UserID: u.ID, Role: u.Role}, id)
 	if errors.Is(err, platform.ErrNotFound) {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
-		return u, none, false, false
+		return u, none, editOwn, false
 	}
 	if err != nil {
 		s.oops(w, r, "чтение заметки", err)
-		return u, none, false, false
+		return u, none, editOwn, false
 	}
 	// Скрытая заметка для читателя отсутствует — как и на её собственной
 	// странице. Администратору скрытое модерацией видно: снять из текста лишнее
@@ -282,7 +371,7 @@ func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.Us
 	if note.Status != platform.StatusVisible &&
 		!(admin && note.Status == platform.StatusHiddenMod) {
 		s.fail(w, r, http.StatusNotFound, "Такой заметки нет.")
-		return u, none, false, false
+		return u, none, editOwn, false
 	}
 
 	switch {
@@ -291,15 +380,16 @@ func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.Us
 		// чтобы кнопка не отвечала отказом.
 		if s.wr == nil {
 			s.fail(w, r, http.StatusServiceUnavailable, "Запись сейчас недоступна.")
-			return u, none, false, false
+			return u, none, editOwn, false
 		}
-		return u, note, false, true
+		return u, note, editOwn, true
 	case admin && platform.IsNative(note.ID):
-		return u, note, true, true
+		return u, note, editAdmin, true
 	case admin:
-		s.fail(w, r, http.StatusForbidden,
-			"Эта заметка пришла с НГС — здесь её копия, и текст копии не правится. "+
-				"Иначе страница молча разошлась бы с оригиналом.")
+		// Зеркальная. Форма открывается ради КАРТИНКИ: у копии с НГС она
+		// смертна (в базе лежит ссылка на чужой хост), и поставить свой файл —
+		// единственный способ её вернуть. Текста форма не покажет вовсе.
+		return u, note, editShot, true
 	case !note.Own:
 		s.fail(w, r, http.StatusForbidden, "Это не ваша заметка.")
 	default:
@@ -307,7 +397,7 @@ func (s *Server) editTarget(w http.ResponseWriter, r *http.Request) (platform.Us
 			"Править заметку можно только первые десять минут и только пока под ней нет ответов. "+
 				"Дальше текст остаётся как есть: под ним уже отвечают вам.")
 	}
-	return u, none, false, false
+	return u, none, editOwn, false
 }
 
 // ---------------------------------------------------------------- ответ в тред

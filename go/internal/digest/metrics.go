@@ -237,7 +237,7 @@ func fillPersons(ctx context.Context, src Source, is *Issue) error {
 		}
 		p, ok := merged[key]
 		if !ok {
-			p = &Person{Name: name, ProfileURL: src.ProfileURL(key)}
+			p = &Person{Name: name}
 			merged[key] = p
 		}
 		p.Notes += notes

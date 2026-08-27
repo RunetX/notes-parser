@@ -25,14 +25,13 @@ type ScheduleConfig struct {
 	// Data — по чему считается выпуск: зеркало НГС или площадка. С 22.08.2026
 	// это разные базы, и выбирает вызывающий: сводку публикуют на площадке,
 	// значит и считать её надо по тому, что человек видит вокруг выпуска.
-	Data     Source
-	Loc      *time.Location
-	Weekday  time.Weekday
-	Hour     int
-	OutDir   string
-	SiteBase string
-	Grace    time.Duration                          // окно догона пропущенного слота; 0 — 48h
-	Notify   func(ctx context.Context, text string) // ЛС админу (может быть nil)
+	Data    Source
+	Loc     *time.Location
+	Weekday time.Weekday
+	Hour    int
+	OutDir  string
+	Grace   time.Duration                          // окно догона пропущенного слота; 0 — 48h
+	Notify  func(ctx context.Context, text string) // ЛС админу (может быть nil)
 
 	// LLM заполняет LLM-рубрики автоматически (nil — черновик с
 	// плейсхолдерами под полуручной цикл). Ошибка редактуры не срывает
@@ -51,8 +50,12 @@ type ScheduleConfig struct {
 	// Нет её (площадка не настроена) — остаётся прежний путь, публикация прямо
 	// в каналы через Publishers. Это не запасной сценарий на случай сбоя, а
 	// работа без площадки вообще: без неё заметке взяться неоткуда.
-	Site        Site
-	SiteBaseURL string // адрес площадки для ссылок в теле выпуска
+	Site Site
+	// SiteBaseURL — адрес ПЛОЩАДКИ: по нему собираются ссылки на заметки и в
+	// теле выпуска-заметки, и в постах прямой публикации в каналы. Адрес НГС
+	// здесь стоял до 27.08.2026 (ссылок на НГС проект не ставит нигде); пусто —
+	// подписи в выпуске остаются текстом, а это ровно случай «площадки нет».
+	SiteBaseURL string
 	Publishers  []Publisher
 }
 
@@ -269,7 +272,7 @@ func publishToChannels(ctx context.Context, st *store.Store, cfg ScheduleConfig,
 	}
 	var parts []string
 	for _, p := range cfg.Publishers {
-		sent, err := Publish(ctx, st, p, d, w.ID, cfg.SiteBase)
+		sent, err := Publish(ctx, st, p, d, w.ID, cfg.SiteBaseURL)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", p.Name(), err)
 		}

@@ -55,8 +55,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-const ngsBase = "https://love.ngs.ru"
-
 // Окно недели теста: слот в среду, чтобы «до окна» и «после» были явно разными
 // датами.
 var (
@@ -83,7 +81,7 @@ func newSource(t *testing.T) (*Source, *platform.Platform) {
 	if err := shared.EnsureConsentDocs(ctx, platform.Operator{}); err != nil {
 		t.Fatalf("тексты согласий: %v", err)
 	}
-	return New(shared, ngsBase), shared
+	return New(shared), shared
 }
 
 func ingestNote(t *testing.T, p *platform.Platform, id, author int64, nick string, at time.Time) {
@@ -250,23 +248,6 @@ func TestCommenterHistorySeparatesNewcomerFromReturnee(t *testing.T) {
 	}
 	if got := byAuthor["1496082"]; !got.PrevSeenAt.IsZero() {
 		t.Errorf("у новенькой нашлось прошлое: %v", got.PrevSeenAt)
-	}
-}
-
-// Ссылка на анкету есть у пришедшего с НГС (id строки равен номеру анкеты) и
-// нет у нативного участника: анкеты у него не существует, и ссылка вела бы в
-// никуда.
-func TestProfileURLOnlyForNGSProfiles(t *testing.T) {
-	src, p := newSource(t)
-	member := nativeMember(t, p, "Приглашённый")
-	if got := src.ProfileURL("175869"); got != ngsBase+"/profile/175869/" {
-		t.Errorf("ссылка на анкету НГС: %q", got)
-	}
-	if got := src.ProfileURL(fmt.Sprint(member)); got != "" {
-		t.Errorf("у нативного участника появилась анкета: %q", got)
-	}
-	if got := src.ProfileURL(""); got != "" {
-		t.Errorf("у анонима появилась анкета: %q", got)
 	}
 }
 

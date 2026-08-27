@@ -38,9 +38,9 @@ func Compose(reason string, n store.Note, c store.Comment, link, linkLabel strin
 	if c.AuthorAge != "" {
 		author += ", " + html.EscapeString(c.AuthorAge)
 	}
-	if c.AuthorLink != "" {
-		author = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(c.AuthorLink), author)
-	}
+	// Ссылкой на анкету НГС имя было до 27.08.2026: ссылок на НГС проект не
+	// ставит нигде (решение владельца). Поле AuthorLink при этом живо — по нему
+	// дайджест зеркала опознаёт человека.
 	fmt.Fprintf(&b, "<b>%s</b> в заметке <i>%s</i>", author,
 		html.EscapeString(textutil.TruncateTrim(textutil.OneLine(n.AuthorName+": "+n.Text), noteLimit)))
 	if !c.PublishedAt.IsZero() {

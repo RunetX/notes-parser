@@ -37,6 +37,11 @@ type fakeMod struct {
 	// edited — что дошло до ядра при правке чужой заметки: текст и «зачем».
 	edited     string
 	editReason string
+	// shot — что дошло до ядра при правке КАРТИНКИ: сама картинка (nil — «снять»)
+	// и было ли обращение вообще.
+	shot     *Shot
+	shotSet  bool
+	shotNote int64
 	// pinnedFull — закреплённых уже столько, сколько лента выдерживает: ядро в
 	// этом случае отказывает, и морда обязана сказать об этом человеком, а не
 	// пятисоткой.
@@ -116,6 +121,20 @@ func (f *fakeMod) EditNoteAsAdmin(_ context.Context, actor platform.Viewer,
 	}
 	f.edited, f.editReason = body, reason
 	return f.note("edit " + strconv.FormatInt(id, 10))
+}
+
+// Картинка чужой заметки. Дубль повторяет два правила ядра: право
+// администратора и «снять можно только у нативной» — поставить можно ЛЮБОЙ.
+func (f *fakeMod) SetNoteImageAsAdmin(_ context.Context, actor platform.Viewer,
+	id int64, shot *Shot, reason string) error {
+	if !actor.CanAdmin() {
+		return platform.ErrNotAdmin
+	}
+	if shot == nil && !platform.IsNative(id) {
+		return platform.ErrNotNative
+	}
+	f.shot, f.shotSet, f.shotNote, f.editReason = shot, true, id, reason
+	return f.note("image " + strconv.FormatInt(id, 10))
 }
 
 // Приглашения. Дубль повторяет ровно два правила ядра, на которые опирается
@@ -335,10 +354,20 @@ func TestПравкаВЛентеТолькоАдминистратору(t *tes
 	if !strings.Contains(do(h, as(guest(t, "GET", "/"), token)).Body.String(), link) {
 		t.Error("администратору в ленте не предложена правка")
 	}
-	// А под ЗЕРКАЛЬНОЙ её нет ни у кого: здесь копия страницы НГС.
+	// Под ЗЕРКАЛЬНОЙ ссылка есть, но она про КАРТИНКУ: текст копии не правится
+	// вовсе, а иллюстрация у неё живёт ссылкой на сервер НГС (27.08.2026).
 	h, _, token = modServerOn(t, hiddenFeed(), platform.RoleAdmin)
+	feed := do(h, as(guest(t, "GET", "/"), token)).Body.String()
+	if !strings.Contains(feed, "/n/312811/edit") {
+		t.Fatal("в ленте не предложена картинка зеркальной заметки")
+	}
+	if !strings.Contains(feed, `<span class="lbl">Картинка</span>`) {
+		t.Error("ссылка под зеркальной подписана так, будто правится текст")
+	}
+	// А модератору её нет и там: право администраторское.
+	h, _, token = modServerOn(t, hiddenFeed(), platform.RoleModerator)
 	if strings.Contains(do(h, as(guest(t, "GET", "/"), token)).Body.String(), "/n/312811/edit") {
-		t.Error("в ленте предложена правка зеркальной заметки")
+		t.Error("модератору предложена правка зеркальной заметки")
 	}
 }
 

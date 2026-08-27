@@ -44,14 +44,6 @@ func (s *StoreSource) authorKey(profileID string) string {
 	return profileKey(s.siteBase + "/profile/" + profileID)
 }
 
-// ProfileURL — у зеркала ключ и есть адрес анкеты.
-func (s *StoreSource) ProfileURL(author string) string {
-	if author == "" {
-		return ""
-	}
-	return author + "/"
-}
-
 func (s *StoreSource) CommentsBetween(ctx context.Context, start, end time.Time) ([]Comment, error) {
 	rows, err := s.st.CommentsBetween(ctx, start, end)
 	if err != nil {
