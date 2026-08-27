@@ -111,19 +111,44 @@ func loadNSK() *time.Location {
 	return time.FixedZone("NOVT", 7*3600)
 }
 
-// ParseNotes разбирает страницу ленты заметок. Пустая лента считается
-// дрейфом вёрстки: на сайте заметки есть всегда.
+// Feed — разбор ленты заметок: сами заметки и число элементов, которым лента
+// НЕ НАЗВАЛА id.
+//
+// Безымянный элемент — не мусор и не дрейф вёрстки: так лента показывает
+// заметку с ЗАПРЕЩЁННЫМИ комментариями (замер на живой ленте 27.08.2026,
+// заметка 313096). Ссылку на страницу треда сайт у неё не рисует вовсе, а
+// больше id в элементе не лежит нигде — ни атрибутом на <li>, ни в другой
+// ссылке: человеку заметка показана, а назвать её нечем. Молча пропускать
+// такую заметку — значит терять её насовсем, поэтому счёт ведётся: «сколько
+// заметок мы видим, но не можем назвать» — и с этим числом зеркало идёт за
+// id в мобильную версию (ParseMobileFeedIDs), где ссылка на заметку есть
+// всегда.
+type Feed struct {
+	Notes   []Note
+	Unnamed int
+}
+
+// ParseNotes разбирает страницу ленты заметок и отдаёт только сами заметки:
+// безымянные элементы вызывающему безразличны (crawl, backfill, modwatch —
+// все они работают с уже названными заметками).
 func ParseNotes(r io.Reader) ([]Note, error) {
+	f, err := ParseFeed(r)
+	return f.Notes, err
+}
+
+// ParseFeed разбирает страницу ленты заметок. Пустая лента считается
+// дрейфом вёрстки: на сайте заметки есть всегда.
+func ParseFeed(r io.Reader) (Feed, error) {
 	doc, err := goquery.NewDocumentFromReader(r)
 	if err != nil {
-		return nil, fmt.Errorf("разбор HTML ленты: %w", err)
+		return Feed{}, fmt.Errorf("разбор HTML ленты: %w", err)
 	}
 	items := doc.Find(selNoteItem)
 	if items.Length() == 0 {
-		return nil, &MarkupError{Selector: selNoteItem, Context: "лента заметок"}
+		return Feed{}, &MarkupError{Selector: selNoteItem, Context: "лента заметок"}
 	}
 
-	var notes []Note
+	var feed Feed
 	var parseErr error
 	items.EachWithBreak(func(i int, s *goquery.Selection) bool {
 		n, ok, err := parseFeedNote(s)
@@ -131,19 +156,26 @@ func ParseNotes(r io.Reader) ([]Note, error) {
 			parseErr = err
 			return false
 		}
-		if ok {
-			notes = append(notes, n)
+		switch {
+		case ok:
+			feed.Notes = append(feed.Notes, n)
+		case strings.TrimSpace(s.Find(selNoteText).First().Text()) != "":
+			// Текст есть, id нет — заметка, которую нечем назвать. Пустой
+			// элемент (текста нет вовсе) в этот счёт не идёт: это не заметка.
+			feed.Unnamed++
 		}
 		return true
 	})
 	if parseErr != nil {
-		return nil, parseErr
+		return Feed{}, parseErr
 	}
-	return notes, nil
+	return feed, nil
 }
 
-// parseFeedNote разбирает один элемент ленты. Второй результат false —
-// заметку без id пропускаем (паритет с Python-версией), это не ошибка.
+// parseFeedNote разбирает один элемент ленты. Второй результат false — id у
+// элемента нет, и взять его неоткуда: это не ошибка вёрстки, а заметка с
+// запрещёнными комментариями (см. Feed) либо вовсе не заметка. Что из двух —
+// решает вызывающий по наличию текста.
 func parseFeedNote(s *goquery.Selection) (Note, bool, error) {
 	link := s.Find(selCommentLink).First()
 	id, ok := link.Attr("name")

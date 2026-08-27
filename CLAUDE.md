@@ -468,7 +468,24 @@ messages, and all user-facing bot strings are in Russian.
     the button falls back to the chat invite link. The site's «не актуальна» mark is recorded in `comments_closed` as
     metadata only — it appears within minutes of publication while comments keep
     arriving, so it must never drive archival; notes are archived solely by the
-    week-based `ShouldArchive` rule. A mirrored comment is posted as a reply to
+    week-based `ShouldArchive` rule.
+    **Заметку с ЗАПРЕЩЁННЫМИ комментариями лента не называет вовсе**
+    (27.08.2026, заметка 313096, жалоба владельца «на НГС появилась, а к нам не
+    зашла»): ссылку на тред сайт ей не рисует, а id заметки лежит ТОЛЬКО в этой
+    ссылке — элемент остаётся с текстом, автором и датой, но безымянным, и
+    прежний разбор молча его пропускал («заметку без id пропускаем»). Заметка не
+    доходила ни в каналы, ни на площадку, и в логе о ней не было ни строки.
+    Теперь безымянные считает сам парсер (`love.Feed.Unnamed`), а ИМЯ им даёт
+    МОБИЛЬНАЯ лента (`love.ParseMobileFeedIDs`), где текст заметки сам по себе
+    ссылка на неё и рисуется независимо от того, можно ли в тред писать; тело
+    зеркало дочитывает обычной десктопной страницей треда, дальше заметка идёт
+    наравне с остальными. Мобильную версию спрашивают не каждый обход, а на
+    изменение ленты (`feedShape`): безымянная заметка висит в окне часами, и всё
+    это время ответ тот же. Ниже нижнего края окна ленты зеркало не спускается —
+    там уже не «сайт показал, а мы не увидели», а история. Не показала и
+    мобильная — warn в лог с советом `pull <id>`: угадывать id по соседям
+    нельзя, в ленте бывают дыры (в том же замере не было ни 313090, ни 313088).
+    A mirrored comment is posted as a reply to
     its addressee's message, so the messenger renders the original as a quote:
     the addressee is the «Ник, …» prefix (`love.AddressPrefix`) resolved against
     the note's already-mirrored commenters — the site's own `parent_id` points at

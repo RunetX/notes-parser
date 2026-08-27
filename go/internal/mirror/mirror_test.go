@@ -31,9 +31,14 @@ type fakeSite struct {
 	totals map[string]int
 	// pageCalls — сколько раз воркер ходил за НЕ первой страницей окна.
 	pageCalls int
+	// unnamed — сколько элементов лента показала без id (заметки с
+	// запрещёнными комментариями).
+	unnamed int
 }
 
-func (f *fakeSite) FetchNotes(context.Context) ([]love.Note, error) { return f.notes, f.notesErr }
+func (f *fakeSite) FetchFeed(context.Context) (love.Feed, error) {
+	return love.Feed{Notes: f.notes, Unnamed: f.unnamed}, f.notesErr
+}
 func (f *fakeSite) FetchCommentsPage(_ context.Context, id string) (love.CommentsPage, error) {
 	if f.commentsErr != nil {
 		return love.CommentsPage{}, f.commentsErr
@@ -1216,4 +1221,96 @@ func images(f *fakeSink) int {
 		}
 	}
 	return n
+}
+
+// Заметку с запрещёнными комментариями лента показывает БЕЗ id: ссылки на тред
+// сайт ей не рисует, а больше id в элементе нет нигде. Имя ей даёт мобильная
+// версия, тело — обычная страница треда; дальше она идёт наравне с остальными.
+func TestUnnamedNoteNamedByMobileFeed(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{
+		notes:   []love.Note{{ID: "313095", Text: "названная"}},
+		unnamed: 1,
+		headers: map[string]*love.Note{
+			"313096": {AuthorID: "0", AuthorName: "Анонимно", Text: "запрещённая", CommentsClosed: true},
+		},
+	}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	asked := 0
+	m.mobileIDs = func(context.Context) ([]string, error) {
+		asked++
+		// Ниже окна десктопной ленты (313094) зеркало не спускается.
+		return []string{"313096", "313095", "313094"}, nil
+	}
+
+	m.feedCycle(ctx, false)
+
+	n, err := st.NoteByID(ctx, "313096")
+	if err != nil {
+		t.Fatalf("безымянная заметка не заведена: %v", err)
+	}
+	if n.Text != "запрещённая" {
+		t.Errorf("тело заметки взято не со страницы треда: %q", n.Text)
+	}
+	if !n.CommentsClosed {
+		t.Error("пометка сайта не зафиксирована")
+	}
+	if _, err := st.NoteByID(ctx, "313094"); err == nil {
+		t.Error("заметка из-под нижнего края ленты заведена, а не должна")
+	}
+	// Лента идёт от новых к старым, постим от старых к новым: названная 313095
+	// уходит в канал раньше опознанной 313096.
+	var posted []string
+	for _, c := range sink.calls {
+		if c.kind == "note" {
+			posted = append(posted, c.noteID)
+		}
+	}
+	if len(posted) != 2 || posted[0] != "313095" || posted[1] != "313096" {
+		t.Fatalf("порядок постинга: %v, ожидалось [313095 313096]", posted)
+	}
+
+	// Лента не изменилась — переспрашивать мобильную версию незачем: заметка
+	// так и висит в окне безымянной, и второй копии у неё не появится.
+	m.feedCycle(ctx, false)
+	if asked != 1 {
+		t.Errorf("мобильную ленту спросили %d раз(а), ожидался один", asked)
+	}
+	posted = posted[:0]
+	for _, c := range sink.calls {
+		if c.kind == "note" {
+			posted = append(posted, c.noteID)
+		}
+	}
+	if len(posted) != 2 {
+		t.Errorf("повторный обход запостил заметку заново: %v", posted)
+	}
+}
+
+// Мобильная версия безымянную заметку не показала (или недоступна) — обход
+// ленты от этого не страдает: названные заметки уходят в канал как обычно, а
+// выдумывать id зеркало не пытается.
+func TestUnnamedNoteStaysUnknownWhenMobileSilent(t *testing.T) {
+	ctx := context.Background()
+	site := &fakeSite{notes: []love.Note{{ID: "313095", Text: "названная"}}, unnamed: 1}
+	sink := &fakeSink{}
+	m, st := newTestMirror(t, site, sink, false)
+	m.mobileIDs = func(context.Context) ([]string, error) {
+		return []string{"313095", "313094"}, nil
+	}
+
+	if !m.feedCycle(ctx, false) {
+		t.Fatal("обход ленты должен считаться успешным")
+	}
+	if _, err := st.NoteByID(ctx, "313095"); err != nil {
+		t.Errorf("названная заметка не заведена: %v", err)
+	}
+	known, err := st.KnownNoteIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(known) != 1 {
+		t.Errorf("заведено заметок: %d, ожидалась одна — %v", len(known), known)
+	}
 }

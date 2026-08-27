@@ -40,7 +40,10 @@ const (
 
 // SiteClient — то, что mirror требует от клиента сайта.
 type SiteClient interface {
-	FetchNotes(ctx context.Context) ([]love.Note, error)
+	// FetchFeed — лента вместе со счётчиком заметок, которым сайт не дал id
+	// (love.Feed): зеркалу мало самих заметок, ему нужно знать и о тех, что
+	// лента показала, но не назвала.
+	FetchFeed(ctx context.Context) (love.Feed, error)
 	FetchCommentsPage(ctx context.Context, noteID string) (love.CommentsPage, error)
 	// FetchCommentsPageAt — заданная страница окна комментариев (page ≥ 1),
 	// нужна для добора реплик, пропущенных за время молчания источника.
@@ -118,6 +121,12 @@ type Mirror struct {
 	seedFirst    bool
 	subNotify    map[string]SubNotify
 	onNewNote    func(ctx context.Context, n love.Note)
+	mobileIDs    func(ctx context.Context) ([]string, error)
+
+	// unnamedProbe — отпечаток ленты (названные id плюс число безымянных), с
+	// которым мобильную версию уже спрашивали. Пока лента та же, спрашивать
+	// нечего: ответ не изменится, а безымянная заметка живёт в окне часами.
+	unnamedProbe string
 
 	// Интервалы менеджера воркеров; поля (а не константы), чтобы тесты могли
 	// их сжать. Продовые значения ставит New.
@@ -147,6 +156,13 @@ type Config struct {
 	// только вне seed-режима; обязан быть неблокирующим — зеркалирование не
 	// должно ждать чужую службу.
 	OnNewNote func(ctx context.Context, n love.Note)
+	// MobileFeedIDs (может быть nil) — спросить id заметок у МОБИЛЬНОЙ ленты
+	// сайта. Нужен ровно для одного: у заметки с запрещёнными комментариями
+	// десктопная лента не рисует ссылку на тред, и id её не лежит в элементе
+	// нигде — назвать заметку можно только оттуда (love.FetchMobileFeedIDs).
+	// nil — способность выключена: безымянные заметки останутся ненайденными,
+	// и зеркало скажет об этом в лог.
+	MobileFeedIDs func(ctx context.Context) ([]string, error)
 }
 
 // New создаёт зеркало, публикующее во все переданные приёмники (fan-out).
@@ -171,6 +187,7 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 		seedFirst:    cfg.SeedFirst,
 		subNotify:    cfg.SubNotify,
 		onNewNote:    cfg.OnNewNote,
+		mobileIDs:    cfg.MobileFeedIDs,
 		rescanEvery:  rescanInterval,
 		retryPause:   workerRetryPause,
 		events:       make(chan string, 16),
@@ -229,7 +246,7 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 	// Сначала дожимаем застрявшие pending (упали между INSERT и постом).
 	m.retryPending(ctx)
 
-	notes, err := m.site.FetchNotes(ctx)
+	feed, err := m.site.FetchFeed(ctx)
 	if err != nil {
 		m.log.Warn("лента недоступна", "err", err)
 		m.reportSiteError(ctx, keyFeedDrift, keyFeedForbidden, err)
@@ -241,6 +258,10 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 	if err != nil {
 		m.log.Error("чтение известных заметок", "err", err)
 		return false
+	}
+	notes := feed.Notes
+	if feed.Unnamed > 0 {
+		notes = m.nameUnnamed(ctx, notes, feed.Unnamed, known)
 	}
 	// Холодный старт (seed или пустая БД): берём только верх ленты — незачем
 	// вываливать в канал всю историю. Дальше окно не режем: заметка, успевшая
@@ -284,6 +305,142 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 		m.log.Info("обход ленты", "новых", posted)
 	}
 	return true
+}
+
+// nameUnnamed возвращает ленту, дополненную заметками, которых сайт не назвал.
+//
+// Лента отдаёт такой элемент с текстом, автором и датой, но без единого
+// упоминания id: так выглядит заметка с ЗАПРЕЩЁННЫМИ комментариями (см.
+// love.Feed). Пропустить её — значит потерять насовсем: в окно ленты она уже
+// попала, а другого способа узнать о ней у зеркала нет. Имя ей даёт мобильная
+// версия того же раздела, где текст заметки сам по себе ссылка на неё.
+//
+// Правило отбора одно: берём id, которых десктопная лента не назвала и которые
+// не старше самой старой названной. Ниже окна ленты не спускаемся намеренно —
+// мобильная страница показывает заметок больше, и её хвост это уже не «сайт
+// показал, а мы не увидели», а обычная история, до которой зеркалу дела нет.
+func (m *Mirror) nameUnnamed(ctx context.Context, notes []love.Note, unnamed int, known map[string]bool) []love.Note {
+	shape := feedShape(notes, unnamed)
+	if shape == m.unnamedProbe {
+		return notes // лента с прошлого вопроса не изменилась — ответ будет тот же
+	}
+	if m.mobileIDs == nil {
+		m.unnamedProbe = shape
+		m.log.Warn("в ленте заметка без id, а спросить мобильную версию нечем",
+			"безымянных", unnamed)
+		return notes
+	}
+	ids, err := m.mobileIDs(ctx)
+	if err != nil {
+		// Отпечаток не запоминаем: недоступность мобильной ленты проходит
+		// сама, и на следующем обходе вопрос надо задать заново.
+		m.log.Warn("мобильная лента недоступна, безымянные заметки не опознаны", "err", err)
+		return notes
+	}
+	m.unnamedProbe = shape
+
+	found := 0
+	for _, id := range unnamedCandidates(notes, ids) {
+		found++
+		if known[id] {
+			continue // уже опознали на прошлом обходе
+		}
+		n, ok := m.noteByID(ctx, id)
+		if !ok {
+			continue
+		}
+		notes = insertByID(notes, n)
+		m.log.Info("заметка без id в ленте опознана мобильной версией", "note", id)
+	}
+	if found < unnamed {
+		m.log.Warn("лента не назвала заметку, мобильная версия её не показала — завести руками (lovegw pull <id>)",
+			"безымянных", unnamed, "опознано", found)
+	}
+	return notes
+}
+
+// noteByID добирает заметку страницей её треда: в ленте у неё нет ни id, ни,
+// значит, разобранной карточки — а заводить заметку не из чего.
+func (m *Mirror) noteByID(ctx context.Context, id string) (love.Note, bool) {
+	page, err := m.site.FetchCommentsPage(ctx, id)
+	if err != nil {
+		m.log.Warn("страница безымянной заметки недоступна", "note", id, "err", err)
+		return love.Note{}, false
+	}
+	if page.Note == nil {
+		m.log.Warn("шапка безымянной заметки не разобрана", "note", id)
+		return love.Note{}, false
+	}
+	n := *page.Note
+	n.ID = id
+	return n, true
+}
+
+// feedShape — отпечаток ленты для вопроса мобильной версии: названные id и
+// число безымянных. Пока он тот же, лента не менялась, а значит не изменится и
+// ответ: опознанная заметка так и висит в окне безымянной (сайт не начнёт
+// рисовать ей ссылку), а неопознанная не появится в мобильной ленте задним
+// числом. Один вопрос на изменение ленты вместо одного на каждый обход.
+func feedShape(notes []love.Note, unnamed int) string {
+	var b strings.Builder
+	for _, n := range notes {
+		b.WriteString(n.ID)
+		b.WriteByte(',')
+	}
+	fmt.Fprintf(&b, "#%d", unnamed)
+	return b.String()
+}
+
+// unnamedCandidates — id мобильной ленты, которых нет в десктопной и которые не
+// старше её нижнего края. Порядок — как в мобильной ленте, от новых к старым.
+func unnamedCandidates(notes []love.Note, ids []string) []string {
+	named := make(map[string]bool, len(notes))
+	var oldest int64
+	for _, n := range notes {
+		named[n.ID] = true
+		if v := noteNum(n.ID); v > 0 && (oldest == 0 || v < oldest) {
+			oldest = v
+		}
+	}
+	var out []string
+	for _, id := range ids {
+		if named[id] {
+			continue
+		}
+		if v := noteNum(id); v > 0 && v >= oldest {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// insertByID ставит заметку на её место в ленте. Лента идёт от новых к старым,
+// а id растут с публикацией, поэтому место находится по числу: дальше по ленте
+// заметка пойдёт наравне с остальными — и в порядке постинга (старые первыми),
+// и в окне догона.
+func insertByID(notes []love.Note, n love.Note) []love.Note {
+	v := noteNum(n.ID)
+	at := len(notes)
+	for i, cur := range notes {
+		if noteNum(cur.ID) < v {
+			at = i
+			break
+		}
+	}
+	out := make([]love.Note, 0, len(notes)+1)
+	out = append(out, notes[:at]...)
+	out = append(out, n)
+	out = append(out, notes[at:]...)
+	return out
+}
+
+// noteNum — id заметки числом (0, если это не число: сравнивать такие нечем).
+func noteNum(id string) int64 {
+	v, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // ingestResult — итог обработки одной новой заметки из ленты.

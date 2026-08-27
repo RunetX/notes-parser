@@ -1055,6 +1055,8 @@ func (d *daemon) run(ctx context.Context) error {
 		AlertSend:    fanOutAlerts(d.alerters),
 		SubNotify:    d.subNotify,
 		OnNewNote:    d.onNewNote,
+
+		MobileFeedIDs: d.mobileFeedIDs(),
 	}, log)
 
 	log.Info("lovegw запущен", "seed", d.seed, "db", cfg.DBPath,
@@ -1075,6 +1077,25 @@ func (d *daemon) run(ctx context.Context) error {
 	}
 	log.Info("lovegw остановлен")
 	return nil
+}
+
+// mobileFeedIDs — способность зеркала назвать заметку, которой десктопная лента
+// имени не дала: у заметки с запрещёнными комментариями сайт не рисует ссылку
+// на тред, и id её не лежит в элементе нигде. Мобильная лента называет все.
+//
+// Клиент тот же анонимный мобильный, что читает анкеты: задача одна — прочитать
+// чужую страницу, ничего в ней не потревожив, — и свой лимитер у него оттого,
+// что вопрос этот редкий (раз на изменение ленты) и отбирать такт у зеркала он
+// не должен. Не собрался — не беда: зеркало работает как прежде и скажет в лог,
+// что безымянную заметку опознать нечем.
+func (d *daemon) mobileFeedIDs() func(context.Context) ([]string, error) {
+	c, err := mobileProfileClient(d.cfg, d.log)
+	if err != nil {
+		d.log.Warn("мобильная лента недоступна: заметки с запрещёнными комментариями останутся незамеченными",
+			"err", err)
+		return nil
+	}
+	return c.FetchMobileFeedIDs
 }
 
 // newASR собирает сервис распознавания голосовых. Провайдер российский —

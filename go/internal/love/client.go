@@ -102,11 +102,20 @@ func (c *Client) StrictPacing() {
 
 // FetchNotes скачивает и разбирает ленту заметок.
 func (c *Client) FetchNotes(ctx context.Context) ([]Note, error) {
+	feed, err := c.FetchFeed(ctx)
+	return feed.Notes, err
+}
+
+// FetchFeed — та же лента, но вместе со счётчиком безымянных элементов: у
+// заметки с запрещёнными комментариями сайт не рисует ссылку на тред, и назвать
+// её нечем (см. Feed). Зеркалу это знать обязательно, остальным обходам —
+// незачем.
+func (c *Client) FetchFeed(ctx context.Context) (Feed, error) {
 	body, err := c.RawNotes(ctx)
 	if err != nil {
-		return nil, err
+		return Feed{}, err
 	}
-	return ParseNotes(bytes.NewReader(body))
+	return ParseFeed(bytes.NewReader(body))
 }
 
 // FetchComments скачивает и разбирает комментарии заметки.

@@ -497,3 +497,56 @@ func TestEmojiOnlyCommentIsNotEmpty(t *testing.T) {
 		t.Errorf("текст %q, ожидался %q", comments[0].Text, want)
 	}
 }
+
+// Заметка с ЗАПРЕЩЁННЫМИ комментариями: лента показывает её текст, автора и
+// дату, но ссылку на тред — единственное место, где лежит id, — не рисует
+// вовсе. Фикстура notes_feed_forbidden.html — живая лента 27.08.2026
+// (/notes/limit~5/), где так вышла заметка 313096.
+func TestParseFeedCountsUnnamedNote(t *testing.T) {
+	feed, err := ParseFeed(openFixture(t, "notes_feed_forbidden.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Unnamed != 1 {
+		t.Errorf("безымянных элементов: %d, ожидался 1", feed.Unnamed)
+	}
+	if len(feed.Notes) != 4 {
+		t.Fatalf("названных заметок: %d, ожидалось 4", len(feed.Notes))
+	}
+	want := []string{"313095", "313094", "313093", "313092"}
+	for i, id := range want {
+		if feed.Notes[i].ID != id {
+			t.Errorf("заметка #%d: id %q, ожидался %q", i, feed.Notes[i].ID, id)
+		}
+	}
+	// Безымянный элемент разбор не рвёт: соседи по ленте разобраны целиком.
+	if feed.Notes[0].Text == "" || feed.Notes[0].AuthorName == "" {
+		t.Errorf("сосед безымянной заметки разобран не полностью: %+v", feed.Notes[0])
+	}
+	// ParseNotes для остальных обходов отдаёт то же, что и раньше: только
+	// названные заметки и без ошибки.
+	notes, err := ParseNotes(openFixture(t, "notes_feed_forbidden.html"))
+	if err != nil || len(notes) != 4 {
+		t.Errorf("ParseNotes = (%d заметок, %v), ожидалось (4, nil)", len(notes), err)
+	}
+}
+
+// Элемент без текста заметкой не считается вовсе: счётчик безымянных должен
+// отвечать на вопрос «сколько заметок мы видим, но не можем назвать», а не
+// «сколько пустых <li> нарисовал сайт».
+func TestParseFeedIgnoresEmptyItem(t *testing.T) {
+	const html = `<ul>
+	<li class="lv-notes__note-item">
+		<a name="1" class="lv-notes__comment-link">Комментарии</a>
+		<div class="lv-notes__note-text">текст</div>
+	</li>
+	<li class="lv-notes__note-item"><div class="lv-notes__note-text">   </div></li>
+	</ul>`
+	feed, err := ParseFeed(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Notes) != 1 || feed.Unnamed != 0 {
+		t.Errorf("получено %d заметок и %d безымянных, ожидалось 1 и 0", len(feed.Notes), feed.Unnamed)
+	}
+}
