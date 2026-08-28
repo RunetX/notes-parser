@@ -94,7 +94,10 @@ func voiceGenerate(ctx context.Context, ar *archive.Store, token, mode string, o
 	if err != nil {
 		return err
 	}
-	client, err := llmClient(cfg)
+	// Кэш-точка окупается здесь по устройству прогона: раундов до трёх, идут
+	// они встык и с ОДНИМ И ТЕМ ЖЕ системным промптом (systemFor зависит от
+	// режима, а не от раунда), — то есть второй раунд читает его по 0,1 цены.
+	client, err := llmClient(cfg, withSystemCache())
 	if err != nil {
 		return err
 	}
@@ -118,6 +121,10 @@ func voiceGenerate(ctx context.Context, ar *archive.Store, token, mode string, o
 	fmt.Fprintf(os.Stderr, "модель %s, черновиков %d, раундов до %d — запрос может занять минуты…\n",
 		client.Model(), req.Drafts, req.Rounds)
 	run, err := ar.GenerateVoice(ctx, client, card, req, time.Now())
+	// Расход печатается и на ошибке: оборвавшийся на третьем раунде прогон
+	// оплачен по первые два, и «сколько это стоило» спрашивают как раз тогда,
+	// когда результата нет.
+	fmt.Fprintf(os.Stderr, "расход: %s\n", client.Usage())
 	if err != nil {
 		return err
 	}
