@@ -318,6 +318,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /me/consent", s.handleMeConsent)
 	mux.HandleFunc("POST /me/nick", s.handleNick)
 	mux.HandleFunc("POST /me/avatar", s.handleAvatar)
+	mux.HandleFunc("POST /me/avatar/clear", s.handleAvatarClear)
 	mux.HandleFunc("POST /me/jump", s.handleJump)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	// События: свои поводы и отметка прочитанного. Маршруты заведены всегда —

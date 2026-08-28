@@ -892,7 +892,10 @@ span.rxb { cursor: default; }
   border: 1px solid var(--rule); border-radius: 3px; background: var(--btn); color: var(--ink);
 }
 
-.avaform { margin-top: 6px; }
+/* Кнопки про фото стоят В РЯД, а не столбиком: они про одно и то же место на
+ * странице, и разнесённые по строкам читались бы как две разные настройки. На
+ * узком экране ряд переносится — тем же flex-wrap, что в шапке. */
+.avarow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .avaform button {
   font: inherit; font-size: 13px; padding: 4px 12px; cursor: pointer;
   border: 1px solid var(--rule); border-radius: 3px; background: var(--btn); color: var(--ink);

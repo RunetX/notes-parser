@@ -30,6 +30,7 @@ type fakeAuth struct {
 	invites  map[string]int64            // код → к кому привязан (0 — ни к кому)
 	aborted  []int64                     // кому откатили вход
 	revoked  map[int64][]string          // отозванные согласия
+	avatars  map[int64]string            // фото в карточке участника
 	fail     error                       // если задано, всё падает этой ошибкой
 }
 
@@ -42,6 +43,7 @@ func newFakeAuth() *fakeAuth {
 		consents: map[int64]platform.Consents{},
 		invites:  map[string]int64{testInvite: 0},
 		revoked:  map[int64][]string{},
+		avatars:  map[int64]string{},
 	}
 }
 
@@ -149,7 +151,7 @@ func (f *fakeAuth) MemberCard(_ context.Context, id int64) (platform.Author, err
 	if !ok {
 		return platform.Author{}, platform.ErrNotFound
 	}
-	return platform.Author{ID: u.ID, Nick: u.Nick}, nil
+	return platform.Author{ID: u.ID, Nick: u.Nick, AvatarURL: f.avatars[id]}, nil
 }
 
 func (f *fakeAuth) MissingConsent(_ context.Context, userID int64, op platform.Operator) (platform.ConsentDoc, error) {

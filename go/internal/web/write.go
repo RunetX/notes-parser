@@ -41,6 +41,10 @@ type Writer interface {
 	// оно взято, и сами байты. Своего файла площадка не принимает вовсе, поэтому
 	// другого способа сменить здесь фото нет (Ш5д).
 	SetOwnAvatar(ctx context.Context, userID int64, url string, data []byte) error
+	// ClearOwnAvatar — снять с себя фото и остаться без него. Вторая дорога
+	// рядом с SetOwnAvatar, потому что первая пустую анкету НГС за причину
+	// снять фото не считает: чужая рука фото не отнимает, своя — вправе.
+	ClearOwnAvatar(ctx context.Context, userID int64) error
 	// React — нажать, переключить или снять реакцию. Правкой чужого это не
 	// является: строка своя, а объект остаётся нетронутым.
 	React(ctx context.Context, in platform.NewReaction) error

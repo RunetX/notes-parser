@@ -152,6 +152,14 @@ func (w webWriter) SetOwnAvatar(ctx context.Context, userID int64, url string, d
 	return err
 }
 
+// ClearOwnAvatar — снять фото. Общей дороги с putNGSAvatar тут нет и не нужно:
+// хранилища эта запись не касается вовсе — файл остаётся лежать (имя файла есть
+// его содержимое, и на ту же картинку ссылаются чужие строки), снимается только
+// привязка.
+func (w webWriter) ClearOwnAvatar(ctx context.Context, userID int64) error {
+	return w.Platform.ClearAvatar(ctx, userID)
+}
+
 // CreateNote — заметка вместе с приложенной картинкой.
 //
 // Байты ложатся на диск ДО транзакции, и иначе нельзя: note_images ссылается на

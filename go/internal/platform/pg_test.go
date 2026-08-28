@@ -866,3 +866,65 @@ func explain(t *testing.T, p *Platform, query string, args ...any) string {
 	}
 	return b.String()
 }
+
+
+// «Убрать фото» снимает ПРИВЯЗКУ, а файл остаётся лежать: имя файла есть его
+// содержимое, поэтому на ту же картинку ссылаются и чужие строки, а уборки
+// каталога у площадки нет вовсе.
+//
+// Главное же здесь — ссылка. Разовый добор медиа берёт как раз тех, у кого
+// ссылка есть, а байтов нет: оставшись, она вернула бы снятое фото на место
+// следующим же обходом — и человек, стёрший фото и здесь, и в анкете, увидел бы
+// его снова.
+func TestClearAvatarDropsTheLinkAndKeepsTheFile(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	store, err := NewMediaStore(p, t.TempDir())
+	if err != nil {
+		t.Fatalf("хранилище: %v", err)
+	}
+	const ngsURL = "https://n1s1.hsmedia.ru/preview/love/avatars/abc_100_100_c.jpg"
+	id, err := p.EnsureShadow(ctx, MirroredAuthor{ID: 312345, Nick: "Пух", AvatarURL: ngsURL})
+	if err != nil {
+		t.Fatalf("тень: %v", err)
+	}
+	m, err := store.Put(ctx, testPNG(t, 8, 5), ngsURL)
+	if err != nil {
+		t.Fatalf("приём медиа: %v", err)
+	}
+	if err := p.SetNGSAvatar(ctx, id, m.SHA256, ngsURL); err != nil {
+		t.Fatalf("фото: %v", err)
+	}
+
+	if err := p.ClearAvatar(ctx, id); err != nil {
+		t.Fatalf("снятие фото: %v", err)
+	}
+	u, err := p.UserByID(ctx, id)
+	if err != nil {
+		t.Fatalf("человек: %v", err)
+	}
+	if len(u.AvatarSHA) != 0 || u.NGSAvatarURL != "" {
+		t.Fatalf("фото осталось привязанным: sha %x, ссылка %q", u.AvatarSHA, u.NGSAvatarURL)
+	}
+	missing, err := p.MissingAvatars(ctx, 10)
+	if err != nil {
+		t.Fatalf("добор аватаров: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("снятое фото попало в добор медиа: %+v — следующий обход вернёт его на место", missing)
+	}
+	if !store.Has(m.SHA256, m.MIME) {
+		t.Fatal("файл удалён, а на ту же картинку ссылаются чужие строки")
+	}
+	var n int
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM media`).Scan(&n); err != nil {
+		t.Fatalf("учёт медиа: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("в учёте %d строк, ожидалась 1: снимается привязка, а не файл", n)
+	}
+
+	if err := p.ClearAvatar(ctx, 999999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("снятие у несуществующего: %v, ожидалось ErrNotFound", err)
+	}
+}

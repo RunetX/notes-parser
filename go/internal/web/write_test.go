@@ -27,6 +27,9 @@ type fakeWriter struct {
 	nick     string
 	reaction platform.NewReaction
 	avatar   fakeAvatar
+	// cleared — у кого сняли фото. Ноль означает «ядро об этом не просили», и
+	// половина тестов аватара проверяет именно это.
+	cleared int64
 	nextID   int64
 	fail     error
 	// shot — что дошло до ядра вместе с заметкой; nil означает «картинки не
@@ -94,6 +97,15 @@ func (f *fakeWriter) SetOwnAvatar(_ context.Context, _ int64, url string, data [
 		return f.fail
 	}
 	f.avatar = fakeAvatar{url: url, data: data}
+	return nil
+}
+
+func (f *fakeWriter) ClearOwnAvatar(_ context.Context, userID int64) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	f.cleared = userID
+	f.avatar = fakeAvatar{}
 	return nil
 }
 
