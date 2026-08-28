@@ -50,40 +50,46 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 		return err
 	}
 
-	actors := make([]narodsim.VacuumActor, 0, len(cast))
-	for _, c := range cast {
-		actors = append(actors, narodsim.VacuumActor{
-			UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID,
-			Decider: &narodsim.CardDecider{Card: *c.card, Seed: uint64(o.seed)},
-			Speaker: c.speaker(),
-		})
+	scripts := loadScripts(ctx, ar, notes)
+	if len(scripts) == 0 {
+		return fmt.Errorf("narod replay: не отработала ни одна заметка")
 	}
 
-	// Знакомство живёт дольше одного треда — карта общая на всю серию. Это и
-	// есть «мир» в его самой скромной части: в бою её помнит граф, здесь —
-	// переживает серию.
-	familiar := map[int64]map[int64]int{}
 	var runs []*narodsim.VacuumRun
-	for _, id := range notes {
-		sc, err := ar.LoadThreadScript(ctx, id)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "заметка %d пропущена: %v\n", id, err)
-			continue
+	for i := range seedCount(o) {
+		seed := uint64(o.seed) + uint64(i)
+		actors := make([]narodsim.VacuumActor, 0, len(cast))
+		for _, c := range cast {
+			// Модель зовут ТОЛЬКО на первом зерне: форма разговора бесплатна и
+			// потому повторяется, текст платный — платить впятеро не за что.
+			sp := c.speaker()
+			if i > 0 {
+				sp = nil
+			}
+			actors = append(actors, narodsim.VacuumActor{
+				UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID,
+				Decider: &narodsim.CardDecider{Card: *c.card, Seed: seed},
+				Speaker: sp,
+			})
 		}
-		run, err := narodsim.RunVacuum(ctx, sc, narodsim.VacuumOpts{
-			Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak, Familiar: familiar,
-		})
-		if err != nil {
-			return err
+		// Знакомство живёт дольше одного треда — карта общая на серию, но своя у
+		// каждого зерна: перенеся её между зёрнами, мы дали бы второму прогону
+		// знакомства, которых в нём не случалось.
+		familiar := map[int64]map[int64]int{}
+		for _, sc := range scripts {
+			run, err := narodsim.RunVacuum(ctx, sc, narodsim.VacuumOpts{
+				Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak, Familiar: familiar,
+			})
+			if err != nil {
+				return err
+			}
+			run.Seed = seed
+			fmt.Fprintf(os.Stderr, "  зерно %-3d заметка %-8d наших %-3d (в оригинале состав %-3d из %-4d)  "+
+				"заговорили %d/%d  шёл %.1f ч  %s\n",
+				seed, run.NoteID, run.Got.Replies, run.Want.Replies, run.OrigReplies,
+				len(run.Got.Spoke), len(run.Want.Spoke), float64(run.Got.SpanSec)/3600, run.Stopped)
+			runs = append(runs, run)
 		}
-		fmt.Fprintf(os.Stderr, "  заметка %-8d наших %-3d (в оригинале состав %-3d из %-4d)  "+
-			"заговорили %d/%d  шёл %.1f ч  %s\n",
-			run.NoteID, run.Got.Replies, run.Want.Replies, run.OrigReplies,
-			len(run.Got.Spoke), len(run.Want.Spoke), float64(run.Got.SpanSec)/3600, run.Stopped)
-		runs = append(runs, run)
-	}
-	if len(runs) == 0 {
-		return fmt.Errorf("narod replay: не отработала ни одна заметка")
 	}
 
 	now := time.Now()

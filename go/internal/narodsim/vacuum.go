@@ -88,6 +88,7 @@ const vacuumMaxReplies = 300
 
 // VacuumRun — итог прогона в вакууме.
 type VacuumRun struct {
+	Seed   uint64  `json:"seed"`
 	NoteID int64   `json:"note_id"`
 	Cast   []int64 `json:"cast"`
 	// Stopped — почему разговор кончился. Это НЕ служебная строка: «очередь

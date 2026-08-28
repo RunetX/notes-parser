@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -147,15 +148,57 @@ func writeVacuumCast(b *strings.Builder, rep *VacuumReport) {
 // разговор, затихший сам, — это разные исходы, и первый вообще не отвечает на
 // вопрос «когда они замолкают».
 func writeVacuumNotes(b *strings.Builder, rep *VacuumReport) {
-	fmt.Fprintf(b, "## По заметкам\n\n")
+	if len(rep.Runs) == 0 {
+		return
+	}
+	first := rep.Runs[0].Seed
+	fmt.Fprintf(b, "## По заметкам (зерно %d)\n\n", first)
 	fmt.Fprintf(b, "| заметка | наших реплик | в оригинале (состав / всего) | "+
 		"заговорили (наши / было) | шёл, ч | чем кончился |\n")
 	fmt.Fprintf(b, "|---:|---:|---:|---:|---:|---|\n")
 	for _, r := range rep.Runs {
+		if r.Seed != first {
+			continue
+		}
 		fmt.Fprintf(b, "| %d | %d | %d / %d | %d / %d | %.1f | %s |\n",
 			r.NoteID, r.Got.Replies, r.Want.Replies, r.OrigReplies,
 			len(r.Got.Spoke), len(r.Want.Spoke),
 			float64(r.Got.SpanSec)/3600, r.Stopped)
+	}
+	b.WriteString("\n")
+	writeVacuumSeeds(b, rep)
+}
+
+// writeVacuumSeeds — разброс серии по зёрнам.
+//
+// Вакууму он нужнее, чем solo: серия из десяти заметок при трёх жителях даёт
+// около десятка реплик всего, и одиночное зерно там не «слегка неточно», а
+// вопрос удачи. Правило то же самое: правка кубика удачна, только если вывела
+// число за разброс (см. writeSeeds).
+func writeVacuumSeeds(b *strings.Builder, rep *VacuumReport) {
+	bySeed := map[uint64][2]int{} // зерно → реплик, разговоров
+	var order []uint64
+	for _, r := range rep.Runs {
+		v, ok := bySeed[r.Seed]
+		if !ok {
+			order = append(order, r.Seed)
+		}
+		v[0] += r.Got.Replies
+		if r.Got.Depth >= 2 {
+			v[1]++
+		}
+		bySeed[r.Seed] = v
+	}
+	if len(order) < 2 {
+		b.WriteString("Прогон на ОДНОМ зерне: это бросок, а не замер (`-seeds`).\n\n")
+		return
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	fmt.Fprintf(b, "Разброс по зёрнам (те же заметки, другие броски):\n\n")
+	fmt.Fprintf(b, "| зерно | реплик за серию | заметок с разговором между жителями |\n|---:|---:|---:|\n")
+	for _, s := range order {
+		v := bySeed[s]
+		fmt.Fprintf(b, "| %d | %d | %d |\n", s, v[0], v[1])
 	}
 	b.WriteString("\n")
 }
@@ -163,20 +206,37 @@ func writeVacuumNotes(b *strings.Builder, rep *VacuumReport) {
 // writeVacuumShapes — портрет разговора против портрета.
 func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	var got, want VacuumShape
-	spoke, pairs, burst, judged := 0.0, 0.0, 0, 0
+	spoke, pairs := 0.0, 0.0
+	burst, judged, paired := 0, 0, 0
 	var firsts, gaps, wfirsts, wgaps []int
+	seeds := map[uint64]bool{}
+	for _, r := range rep.Runs {
+		seeds[r.Seed] = true
+	}
 	for _, r := range rep.Runs {
 		got.Replies += r.Got.Replies
-		want.Replies += r.Want.Replies
+		// Оригинал считается ОДИН раз: он на всех зёрнах один и тот же, а
+		// сложенный по разу на зерно он вырос бы впятеро и сделал бы нас впятеро
+		// молчаливее, чем мы есть.
+		if r.Seed == rep.Runs[0].Seed {
+			want.Replies += r.Want.Replies
+		}
 		got.Depth = max(got.Depth, r.Got.Depth)
 		want.Depth = max(want.Depth, r.Want.Depth)
 		if r.Got.BurstOnly() {
 			burst++
 		}
 		firsts = append(firsts, r.Got.First.Median)
-		gaps = append(gaps, r.Got.Gap.Median)
 		wfirsts = append(wfirsts, r.Want.First.Median)
-		wgaps = append(wgaps, r.Want.Gap.Median)
+		// Пауза между репликами существует только там, где реплик было хотя бы
+		// две. Заметка с одной репликой даёт ноль, и десяток таких нулей утянул
+		// бы медиану в «отвечают мгновенно» — при том, что отвечать было некому.
+		if r.Got.Gap.N > 0 {
+			gaps = append(gaps, r.Got.Gap.Median)
+		}
+		if r.Want.Gap.N > 0 {
+			wgaps = append(wgaps, r.Want.Gap.Median)
+		}
 		// Заметка, где из состава не заговорил НИКТО ни у нас, ни в оригинале,
 		// в среднее не идёт. Жаккар считает её полным совпадением — и по своему
 		// определению правильно, — но десяток пустых заметок так набирает
@@ -187,12 +247,20 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		}
 		judged++
 		spoke += JaccardSpoke(r.Got, r.Want)
-		pairs += JaccardPairs(r.Got, r.Want)
+		// Граф считается ОТДЕЛЬНО и по своему условию: заметка, где из состава
+		// никто никому не ответил, для «кто заговорил» законна, а для «кто кому»
+		// — пустое против пустого. Девять таких из десяти дают девяносто
+		// процентов согласия у графа, которого не было ни с одной стороны.
+		if len(r.Got.Pairs) > 0 || len(r.Want.Pairs) > 0 {
+			paired++
+			pairs += JaccardPairs(r.Got, r.Want)
+		}
 	}
 
 	fmt.Fprintf(b, "## Форма разговора\n\n")
 	fmt.Fprintf(b, "| | у нас | в оригинале (тот же состав) |\n|---|---:|---:|\n")
-	fmt.Fprintf(b, "| реплик всего | %d | %d |\n", got.Replies, want.Replies)
+	fmt.Fprintf(b, "| реплик за серию (в среднем на зерно) | %.0f | %d |\n",
+		float64(got.Replies)/float64(max(len(seeds), 1)), want.Replies)
 	fmt.Fprintf(b, "| первая реплика через, мин (медиана по заметкам) | %.0f | %.0f |\n",
 		float64(archive.NewDist(firsts).Median)/60, float64(archive.NewDist(wfirsts).Median)/60)
 	fmt.Fprintf(b, "| пауза между репликами, мин | %.0f | %.0f |\n",
@@ -208,7 +276,14 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		n := float64(judged)
 		fmt.Fprintf(b, "- состав заговоривших сошёлся на **%.0f %%** (Жаккар, среднее по %d заметкам из %d, "+
 			"где хоть кто-то говорил)\n", 100*spoke/n, judged, len(rep.Runs))
-		fmt.Fprintf(b, "- граф «кто кому отвечал» сошёлся на **%.0f %%**\n", 100*pairs/n)
+		if paired == 0 {
+			b.WriteString("- граф «кто кому отвечал» не считался: ни в одной заметке " +
+				"из состава никто никому не ответил — ни у нас, ни в оригинале\n")
+		} else {
+			fmt.Fprintf(b, "- граф «кто кому отвечал» сошёлся на **%.0f %%** (по %d заметкам, "+
+				"где ответ внутри состава был хоть с одной стороны)\n",
+				100*pairs/float64(paired), paired)
+		}
 	}
 	// Шторм печатается ВСЕГДА, включая ноль: это признак провала, и молчание о
 	// нём читалось бы как «не проверяли».
