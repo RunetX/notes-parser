@@ -74,3 +74,40 @@ func rep(s string, n int) string {
 	}
 	return string(out)
 }
+
+// Треды калибровки берутся РАВНОМЕРНО по размаху разговорчивости, а не с
+// верхушки. Правило оплачено замером 28.08.2026: с верхушки мерился потолок
+// кубика, а не его догадка.
+func TestSpreadPicksTakesBothEdges(t *testing.T) {
+	all := make([]ThreadPick, 20)
+	for i := range all {
+		all[i] = ThreadPick{NoteID: int64(i + 1), Said: i + 5}
+	}
+	got := spreadPicks(all, 5)
+	if len(got) != 5 {
+		t.Fatalf("отобрано %d тредов", len(got))
+	}
+	// Оба края на месте: скромный тред показывает кубик там, где потолок не
+	// мешает, людный — там, где мешает.
+	if got[0].Said != 5 || got[4].Said != 24 {
+		t.Errorf("края выборки %d и %d, ожидались 5 и 24", got[0].Said, got[4].Said)
+	}
+	// И середина не сбита в один угол.
+	if got[2].Said != 14 {
+		t.Errorf("середина выборки %d, ожидалось 14", got[2].Said)
+	}
+}
+
+// Просить больше, чем есть, — не ошибка: отдаётся всё, что подошло.
+func TestSpreadPicksShortList(t *testing.T) {
+	all := []ThreadPick{{Said: 5}, {Said: 9}}
+	if got := spreadPicks(all, 5); len(got) != 2 {
+		t.Errorf("на коротком списке отобрано %d", len(got))
+	}
+	if got := spreadPicks(all, 1); len(got) != 1 || got[0].Said != 9 {
+		t.Errorf("единственный тред берётся из середины: %+v", got)
+	}
+	if got := spreadPicks(nil, 5); got != nil {
+		t.Errorf("на пустом списке %v", got)
+	}
+}

@@ -400,13 +400,22 @@ type ThreadPick struct {
 	Total  int // всего реплик
 }
 
-// PickCalibrationThreads — треды, где донор сказал не меньше minSaid раз, от
-// самых разговорчивых к прочим.
+// PickCalibrationThreads — треды, где донор сказал не меньше minSaid раз,
+// РАВНОМЕРНО по всему их размаху разговорчивости.
 //
-// Порядок именно такой, потому что мерка снимается с ЕГО реплик: чем больше их в
-// треде, тем больше точек, где известна правда. Размер самого треда при этом ни
-// на что не влияет — платных вызовов в нём столько же, сколько реплик написал
-// донор, а точки решения считаются формулой и бесплатны.
+// Порог minSaid здесь про одно: в треде должны быть точки, где правда известна,
+// то есть донор в нём говорил. А вот отбирать среди подходящих САМЫЕ
+// разговорчивые нельзя, и это оплачено замером 28.08.2026. Прежняя редакция
+// брала верх списка, и на всех трёх слепках мерилась не догадка кубика, а его
+// потолок: у Полынь-Травы потолок 5 реплик на тред, а в отобранных тредах она
+// написала 68–107, то есть выше 7 % полнота не поднялась бы ни при какой
+// настройке. Порядок измеренной полноты у трёх слепков в точности повторил
+// отношение «потолок к числу реплик в отобранном треде» — то есть мерилась
+// выборка, а не поведение.
+//
+// Равномерно — значит от самого скромного подходящего треда до самого людного
+// одинаковыми шагами. Детерминированно, без жребия: два прогона одного слепка
+// обязаны идти по одним и тем же тредам, иначе их не сравнить.
 func (s *Store) PickCalibrationThreads(ctx context.Context, userIDs []int64, minSaid, limit int) ([]ThreadPick, error) {
 	if len(userIDs) == 0 {
 		return nil, fmt.Errorf("не заданы анкеты донора")
@@ -420,21 +429,40 @@ func (s *Store) PickCalibrationThreads(ctx context.Context, userIDs []int64, min
 		                      WHERE author_id IN (`+intList(userIDs)+`))
 		 GROUP BY c.note_id
 		HAVING said >= ?
-		 ORDER BY said DESC, total DESC
-		 LIMIT ?`, minSaid, limit)
+		 ORDER BY said, total, c.note_id`, minSaid)
 	if err != nil {
 		return nil, fmt.Errorf("подбор тредов: %w", err)
 	}
 	defer rows.Close()
-	var out []ThreadPick
+	var all []ThreadPick
 	for rows.Next() {
 		var p ThreadPick
 		if err := rows.Scan(&p.NoteID, &p.Said, &p.Total); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		all = append(all, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return spreadPicks(all, limit), nil
+}
+
+// spreadPicks берёт limit штук равномерно по отсортированному списку, вместе с
+// обоими краями: край скромных показывает, работает ли кубик там, где потолок не
+// мешает, край людных — не захлёбывается ли он там, где мешает.
+func spreadPicks(all []ThreadPick, limit int) []ThreadPick {
+	if limit <= 0 || len(all) <= limit {
+		return all
+	}
+	if limit == 1 {
+		return all[len(all)/2 : len(all)/2+1]
+	}
+	out := make([]ThreadPick, 0, limit)
+	for i := range limit {
+		out = append(out, all[i*(len(all)-1)/(limit-1)])
+	}
+	return out
 }
 
 // parseArchiveTime — время архива (ISO-8601 UTC). Отдельной функцией потому,

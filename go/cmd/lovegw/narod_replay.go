@@ -118,6 +118,11 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 	// другим отчётом — а сравнение это вся суть калибровки.
 	model := o.model
 	actor := narodsim.ActorReport{Actor: actorID, Nick: runs[0].Nick, CardID: card.ID, Runs: runs}
+	// Разговорчивость донора по всему архиву — рядом с полнотой, иначе та
+	// читается как свойство кубика, а бывает свойством выборки.
+	if actor.Load, err = ar.MineThreadLoad(ctx, []int64{actorID}); err != nil {
+		return err
+	}
 	if gen != nil {
 		model = gen.model
 		if actor.Voice, err = gen.speaker.Measure(ctx, actor.Texts()); err != nil {
@@ -137,9 +142,21 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 	return nil
 }
 
+// cardPath — где лежит карточка, названная так, как её называют в соседних
+// командах. `narod card u498196` кладёт файл по номеру анкеты, и требовать у
+// `show` и `replay` полный путь значило бы держать в одной семье команд два
+// разных смысла одного и того же слова; путь при этом принимается по-прежнему —
+// карточка бывает и не из каталога.
+func cardPath(dir, arg string) string {
+	if strings.ContainsAny(arg, `/\`) || strings.HasSuffix(arg, narod.CardExt) {
+		return arg
+	}
+	return filepath.Join(dir, arg+narod.CardExt)
+}
+
 // loadActorCard — карточка слепка из каталога (её кладёт `narod card`).
 func loadActorCard(dir, actor string) (*narod.Card, error) {
-	path := filepath.Join(dir, actor+narod.CardExt)
+	path := cardPath(dir, actor)
 	card, err := narod.LoadCard(path)
 	if err != nil {
 		return nil, fmt.Errorf("карточка %s не прочитана (снимите её `narod card %s`): %w",

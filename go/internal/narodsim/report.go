@@ -35,6 +35,13 @@ type ActorReport struct {
 	Rejected int        `json:"rejected"` // точек, где не выдала ничего
 	Skipped  int        `json:"skipped"`  // не взятых из-за потолка
 	Voice    Voice      `json:"voice"`    // мерка голоса пачками
+
+	// Load — сколько реплик донор пишет в треде ПО ВСЕМУ архиву. Стоит рядом с
+	// полнотой по той же причине, по какой рядом с точностью стоит базлайн
+	// молчуна: калибровка идёт по тредам, где донор говорил, то есть заведомо
+	// не по средним, — и не назвав, насколько они не средние, отчёт выдал бы
+	// свойство ВЫБОРКИ за свойство кубика. Ровно это и вышло 28.08.2026.
+	Load archive.Dist `json:"load"`
 }
 
 // Texts — что модель выдала, в порядке появления. Порядок нужен мерке: пачка
@@ -213,6 +220,7 @@ func (rep *Report) Markdown() string {
 			fmt.Fprintf(&b, "- медианная ошибка задержки на верных приходах: **%s**\n\n",
 				err.Truncate(time.Second))
 		}
+		writeSample(&b, a)
 
 		fmt.Fprintf(&b, "### Голос\n\n")
 		if a.Speeches == 0 {
@@ -292,4 +300,28 @@ func writeShape(b *strings.Builder, got, want archive.VoiceShape) {
 	fmt.Fprintf(b, "| слов в предложении (медиана) | %d | %d |\n", got.SentWords.Median, want.SentWords.Median)
 	fmt.Fprintf(b, "| доля реплик со смайлом | %.2f | %.2f |\n", got.EmojiRate, want.EmojiRate)
 	b.WriteString("\n")
+}
+
+// writeSample называет, насколько выборка тредов типична для донора.
+//
+// Без этой строки полнота нечитаема. Калибровка идёт по тредам, где донор
+// говорил не меньше нескольких раз, — то есть по верхнему хвосту его
+// разговорчивости, — а потолок реплик на тред взят по всему архиву. Разойдись
+// они сильно, и полнота упрётся в потолок, ничего не сказав о догадке: у
+// Полынь-Травы 28.08.2026 потолок 5 стоял против 68–107 реплик в отобранных
+// тредах, и выше 7 % полнота не поднялась бы ни при какой настройке кубика.
+func writeSample(b *strings.Builder, a ActorReport) {
+	if len(a.Runs) == 0 {
+		return
+	}
+	lo, hi := a.Runs[0].Mine, a.Runs[0].Mine
+	for _, r := range a.Runs[1:] {
+		lo, hi = min(lo, r.Mine), max(hi, r.Mine)
+	}
+	fmt.Fprintf(b, "Выборка: в отобранных тредах донор написал %d–%d реплик", lo, hi)
+	if a.Load.Median > 0 {
+		fmt.Fprintf(b, "; по всему архиву у него медиана %d на тред, p90 — %d",
+			a.Load.Median, a.Load.P90)
+	}
+	b.WriteString(".\n\n")
 }

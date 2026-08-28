@@ -182,3 +182,18 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// Полнота НИКОГДА не показывается без того, насколько типична выборка тредов:
+// калибровка идёт по тредам, где донор говорил, а потолок реплик взят по всему
+// архиву, — разойдись они, и полнота упрётся в потолок, ничего не сказав о
+// догадке.
+func TestMarkdownAlwaysShowsSampleSkew(t *testing.T) {
+	rep := sampleReport()
+	rep.Actors[0].Load = archive.Dist{Median: 3, P90: 11}
+	md := rep.Markdown()
+	for _, want := range []string{"Выборка:", "2–3 реплик", "медиана 3 на тред", "p90 — 11"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("в отчёте нет %q:\n%s", want, md)
+		}
+	}
+}

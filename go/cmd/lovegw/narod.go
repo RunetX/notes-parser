@@ -138,8 +138,8 @@ func writeCardFile(path string, card narod.Card) error {
 func narodShow(dir string, args []string) error {
 	var cards []narod.Card
 	if len(args) > 0 {
-		for _, path := range args {
-			c, err := narod.LoadCard(path)
+		for _, arg := range args {
+			c, err := narod.LoadCard(cardPath(dir, arg))
 			if err != nil {
 				return err
 			}
