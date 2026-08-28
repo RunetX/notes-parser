@@ -39,7 +39,7 @@ func (d *CardDecider) Decide(_ context.Context, p DecisionPoint) (Decision, erro
 		return Decision{}, nil
 	}
 
-	prob, dist := chanceOf(dice, d.Card.Latency, p)
+	prob, dist := chanceOf(d.Card, p)
 	rng := rand.New(rand.NewPCG(d.Seed^uint64(p.Actor), uint64(p.TriggerID)+1))
 	if rng.Float64() >= prob {
 		return Decision{}, nil
@@ -48,16 +48,35 @@ func (d *CardDecider) Decide(_ context.Context, p DecisionPoint) (Decision, erro
 }
 
 // chanceOf — вероятность заговорить и распределение задержки для точки.
-func chanceOf(dice narod.DiceParams, lat narod.LatencyDist, p DecisionPoint) (float64, narod.Dist) {
-	switch {
-	case p.TriggerID == 0:
+//
+// Вероятность ОТВЕТА берётся из замера (card.Rate) и зависит от того, как далеко
+// зашёл разговор. Числа карточки остаются запасным путём — на случай, когда
+// корзина замера пуста, — и оба довода за это записаны замером 28.08.2026:
+// придуманное «влезть в чужой разговор = 0.15» оказалось завышено в 20–40 раз
+// (настоящее — от 0.4 % у ДВ до 3.7 % у Полынь-Травы), а придуманное «ответить,
+// когда обратились = 0.7» попало почти точно (настоящее 39–91 %). То есть на
+// глаз угадывается то, что человек делает часто, и не угадывается то, что редко,
+// — а из редкого и состоит поведение в людном треде.
+//
+// Затухание при этом настоящее, но скромное: мимо-разговорная вероятность падает
+// вдвое-вчетверо от начала треда к трёхсотой реплике, а обращённая к нему — едва
+// на четверть. Человек уходит не из разговора вообще, а из ЧУЖОГО разговора.
+//
+// А вот «прийти в новую заметку» замерить нельзя и незачем притворяться: в
+// архиве видно, в какие треды человек пришёл, и не видно, какие он пролистал.
+func chanceOf(card narod.Card, p DecisionPoint) (float64, narod.Dist) {
+	dice, lat := card.Dice, card.Latency
+	if p.TriggerID == 0 {
 		// Заметка: «прийти в новую» — и задержка меряется от её публикации.
 		return dice.ComeToNote, lat.ToThreadSec
-	case p.Addressed:
-		return dice.ReplyMention, lat.ToReplySec
-	default:
-		return dice.ReplyOther, lat.ToReplySec
 	}
+	if r, ok := card.Rate.Rate(p.Seen, p.Addressed); ok {
+		return r, lat.ToReplySec
+	}
+	if p.Addressed {
+		return dice.ReplyMention, lat.ToReplySec
+	}
+	return dice.ReplyOther, lat.ToReplySec
 }
 
 // sampleDist — задержка по квантилям замера.

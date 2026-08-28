@@ -138,13 +138,56 @@ func TestSampleDist(t *testing.T) {
 // тред» и «через сколько ответил» — величины разного порядка.
 func TestChanceOfPicksRightDistribution(t *testing.T) {
 	c := testCard()
-	if p, dist := chanceOf(c.Dice, c.Latency, DecisionPoint{TriggerID: 0}); p != 0.3 || dist != c.Latency.ToThreadSec {
+	if p, dist := chanceOf(c, DecisionPoint{TriggerID: 0}); p != 0.3 || dist != c.Latency.ToThreadSec {
 		t.Errorf("на заметке: p=%v, dist=%+v", p, dist)
 	}
-	if p, dist := chanceOf(c.Dice, c.Latency, DecisionPoint{TriggerID: 5, Addressed: true}); p != 0.9 || dist != c.Latency.ToReplySec {
+	if p, dist := chanceOf(c, DecisionPoint{TriggerID: 5, Addressed: true}); p != 0.9 || dist != c.Latency.ToReplySec {
 		t.Errorf("на обращении: p=%v, dist=%+v", p, dist)
 	}
-	if p, _ := chanceOf(c.Dice, c.Latency, DecisionPoint{TriggerID: 5}); p != 0.1 {
+	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5}); p != 0.1 {
 		t.Errorf("в чужом разговоре: p=%v", p)
+	}
+}
+
+// Замер СИЛЬНЕЕ придуманного числа, и падает он вместе с глубиной треда.
+//
+// Правило оплачено замером 28.08.2026: придуманное «влезть в чужой разговор =
+// 0.15» оказалось завышено в 20–40 раз (настоящее от 0.4 % до 3.7 %), и в треде
+// на 298 реплик кубик приходил 71 раз мимо при одном попадании.
+func TestChanceOfPrefersMeasuredRate(t *testing.T) {
+	c := testCard()
+	c.Rate = narod.ReplyRate{Threads: 300, Buckets: []narod.RateBucket{
+		{Upto: 10, Chances: 1000, Answers: 30, ToHimChances: 100, ToHimAnswers: 70},
+		{Upto: 1 << 30, Chances: 1000, Answers: 10, ToHimChances: 100, ToHimAnswers: 50},
+	}}
+	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5, Seen: 3}); p != 0.03 {
+		t.Errorf("в начале треда p=%v, ожидалось 0.03 из замера, а не 0.1 из карточки", p)
+	}
+	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5, Seen: 200}); p != 0.01 {
+		t.Errorf("в глубине треда p=%v, ожидалось 0.01", p)
+	}
+	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5, Seen: 3, Addressed: true}); p != 0.7 {
+		t.Errorf("на обращении p=%v, ожидалось 0.7 из замера", p)
+	}
+	// «Прийти в новую заметку» замером не покрыто и покрыто быть не может: в
+	// архиве видно, куда человек пришёл, и не видно, что он пролистал.
+	if p, dist := chanceOf(c, DecisionPoint{TriggerID: 0, Seen: 0}); p != 0.3 || dist != c.Latency.ToThreadSec {
+		t.Errorf("на заметке p=%v", p)
+	}
+}
+
+// Тощая корзина замером НЕ считается: доля по трём случаям — это не редкость
+// события, а отсутствие данных, и подставлять её в кубик значило бы выдать шум
+// за характер. Тогда работает число карточки.
+func TestChanceOfFallsBackOnThinBucket(t *testing.T) {
+	c := testCard()
+	c.Rate = narod.ReplyRate{Buckets: []narod.RateBucket{
+		{Upto: 1 << 30, Chances: 5, Answers: 5, ToHimChances: 4, ToHimAnswers: 4},
+	}}
+	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5, Seen: 3}); p != 0.1 {
+		t.Errorf("на тощей корзине p=%v, ожидалось 0.1 из карточки", p)
+	}
+	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5, Seen: 3, Addressed: true}); p != 0.9 {
+		t.Errorf("на тощей корзине обращения p=%v, ожидалось 0.9 из карточки", p)
 	}
 }

@@ -23,15 +23,20 @@ import (
 
 // snapshotOpts — что настраивается при съёмке слепка.
 type snapshotOpts struct {
-	Recent     int // последних текстов в замер (0 — все)
-	NormSample int // комментариев в норму корпуса
-	TopWords   int // характерных слов
-	TopEdges   int // собеседников в стартовые отношения
-	Seed       int64
+	Recent      int // последних текстов в замер (0 — все)
+	NormSample  int // комментариев в норму корпуса
+	TopWords    int // характерных слов
+	TopEdges    int // собеседников в стартовые отношения
+	RateThreads int // последних тредов в замер отклика
+	Seed        int64
 }
 
 func defaultSnapshotOpts() snapshotOpts {
-	return snapshotOpts{Recent: 2000, NormSample: 100000, TopWords: 40, TopEdges: 12, Seed: 1}
+	// RateThreads — 300 последних тредов: этого хватает на десятки тысяч
+	// возможностей ответить даже у скромного участника, а хвост в тринадцать лет
+	// утянул бы кривую к тому, каким человек был когда-то.
+	return snapshotOpts{Recent: 2000, NormSample: 100000, TopWords: 40, TopEdges: 12,
+		RateThreads: 300, Seed: 1}
 }
 
 // buildSnapshotCard снимает слепок реального участника архива.
@@ -114,6 +119,12 @@ func buildSnapshotCard(ctx context.Context, st *archive.Store, token string, opt
 		return narod.Card{}, err
 	}
 	card.Dice = diceFromShape(voice.Comments, load)
+
+	rate, err := st.MineReplyRate(ctx, accIDs, opts.RateThreads)
+	if err != nil {
+		return narod.Card{}, err
+	}
+	card.Rate = rateFromArchive(rate)
 
 	if err := card.Validate(); err != nil {
 		return narod.Card{}, fmt.Errorf("слепок %s: %w", voice.Identity, err)
@@ -306,6 +317,15 @@ func relationsFromArchive(rels []archive.RelationRow) []narod.SeedEdge {
 // Потолок на тред — p90 замера, а не максимум: максимум у говорливого автора
 // это один скандал на всю историю, и мерить им обычный вечер значит разрешить
 // жителю такой скандал каждый раз.
+// Вероятности ответа здесь — ЗАПАСНОЙ путь с 28.08.2026: настоящие берутся из
+// замера card.Rate, а эти работают там, где корзина замера пуста. Цену выдумки
+// тот замер и назвал: ReplyOther = 0.15 против настоящих 0.4–3.7 % — промах в
+// 20–40 раз, и он один давал 71 приход мимо на тред в 298 реплик. ReplyMention =
+// 0.7 против настоящих 39–91 % попало почти точно. Урок записан здесь, потому
+// что править эти числа будут отсюда: на глаз угадывается то, что человек делает
+// часто, и не угадывается то, что редко, — а поведение в людном треде состоит
+// как раз из редкого. ComeToNote замером не покрыт и покрыт быть не может: в
+// архиве видно, в какие треды человек пришёл, и не видно, какие пролистал.
 func diceFromShape(sh archive.VoiceShape, load archive.Dist) narod.DiceParams {
 	d := narod.DiceParams{
 		ComeToNote: 0.35, ReplyMention: 0.7, ReplyOther: 0.15,
@@ -368,3 +388,17 @@ func parseAge(s string) int {
 }
 
 func round2(x float64) float64 { return math.Round(x*100) / 100 }
+
+// rateFromArchive переносит кривую отклика в карточку. Числа переносятся как
+// есть, включая пустые корзины: по ним видно, где замера не хватило, а
+// выброшенная пустая корзина выглядела бы как её отсутствие в природе.
+func rateFromArchive(r archive.ReplyRate) narod.ReplyRate {
+	out := narod.ReplyRate{Threads: r.Threads}
+	for _, b := range r.Buckets {
+		out.Buckets = append(out.Buckets, narod.RateBucket{
+			Upto: b.Upto, Chances: b.Chances, Answers: b.Answers,
+			ToHimChances: b.ToHimChances, ToHimAnswers: b.ToHimAnswers,
+		})
+	}
+	return out
+}

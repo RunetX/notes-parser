@@ -198,21 +198,24 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 		return nil, err
 	}
 
-	said := 0
 	for i, c := range sc.Comments {
 		// Своя реплика решением не считается: сам себя житель не подначивает.
 		// Зато здесь спрашивают модель — это и есть точка, где правда известна.
 		if c.AuthorID == o.Actor {
-			said++
 			if err := speak(ctx, run, o, sc, i, c); err != nil {
 				return nil, err
 			}
 			continue
 		}
+		// Said — сколько раз заговорил САМ ЖИТЕЛЬ, а не донор. Разница
+		// принципиальная: потолок реплик на тред это правило про СВОЙ бюджет, а
+		// приложенный к правде он гасил жителя тем вернее, чем разговорчивее был
+		// донор, — у Полынь-Травы потолок 5 против 68–107 её реплик означал
+		// мёртвое молчание на всём остатке треда и мерил не догадку, а потолок.
 		if err := step(ctx, run, o, sc, DecisionPoint{
 			Now: c.PublishedAt, Actor: o.Actor, TriggerID: c.ID, Trigger: c.Text,
 			Author: c.AuthorID, Nick: c.AuthorNick, Addressed: c.TargetID == o.Actor,
-			Seen: i + 1, Said: said,
+			Seen: i + 1, Said: run.Matrix.TP + run.Matrix.FP,
 		}, answered, c.ID); err != nil {
 			return nil, err
 		}

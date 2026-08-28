@@ -199,6 +199,7 @@ type Card struct {
 	Rhythm    Rhythm         `json:"rhythm"`
 	Triggers  []Topic        `json:"triggers,omitempty"`
 	Relations []SeedEdge     `json:"relations,omitempty"`
+	Rate      ReplyRate      `json:"rate"`
 	Dice      DiceParams     `json:"dice"`
 	Seed      int64          `json:"seed"`
 }
@@ -344,4 +345,49 @@ func Nicks(cards []Card) []string {
 		out = append(out, c.Persona.Nick)
 	}
 	return out
+}
+
+// ReplyRate — с какой вероятностью человек откликается на очередную реплику, по
+// позиции той в треде. Замер, а не настройка: кубик, у которого вероятность
+// одна на весь тред, одинаково рвётся в беседу на двадцатой реплике и на
+// трёхсотой (замер 28.08.2026 — 71 приход мимо на тред в 298 реплик).
+//
+// Две меры порознь, потому что «к нему обратились» и «мимо него говорят»
+// отличаются на порядок: одна средняя между ними не описывает ни того, ни
+// другого.
+type ReplyRate struct {
+	Threads int          `json:"threads"`
+	Buckets []RateBucket `json:"buckets,omitempty"`
+}
+
+// RateBucket — отклик в одной корзине позиций. Хранятся ЧИСЛА, а не готовая
+// доля: по числу возможностей видно, замер это или три случая.
+type RateBucket struct {
+	Upto         int `json:"upto"`
+	Chances      int `json:"chances"`
+	Answers      int `json:"answers"`
+	ToHimChances int `json:"to_him_chances"`
+	ToHimAnswers int `json:"to_him_answers"`
+}
+
+// RateMinChances — ниже этого корзина замером не считается.
+const RateMinChances = 30
+
+// Rate — вероятность отклика на реплику в позиции pos. Второе значение — был ли
+// это замер: пустую корзину нельзя ни подставить в кубик, ни назвать нулём.
+func (r ReplyRate) Rate(pos int, toHim bool) (float64, bool) {
+	for _, b := range r.Buckets {
+		if pos > b.Upto {
+			continue
+		}
+		chances, answers := b.Chances, b.Answers
+		if toHim {
+			chances, answers = b.ToHimChances, b.ToHimAnswers
+		}
+		if chances < RateMinChances {
+			return 0, false
+		}
+		return float64(answers) / float64(chances), true
+	}
+	return 0, false
 }
