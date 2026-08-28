@@ -126,3 +126,58 @@ func TestTargetRunesEmpty(t *testing.T) {
 		t.Errorf("по пустому разбросу получено %d", got)
 	}
 }
+
+// Эмодзи решаются НА КАЖДУЮ реплику и в долю донора попадают. Доля — свойство
+// десятка реплик; прочитав «ставит изредка», модель решает за весь прогон разом
+// и решает случайно: на замере 28.08.2026 у одного слепка вышло 0 % против 12 %
+// у донора, у другого 16 % против 18 %.
+func TestWantEmojiHitsAuthorShare(t *testing.T) {
+	s := &VoiceSpeaker{EmojiRate: 0.12, Seed: 1}
+	yes := 0
+	for id := int64(1); id <= 500; id++ {
+		w := s.wantEmoji(id)
+		if w == nil {
+			t.Fatalf("реплика %d осталась без жребия", id)
+		}
+		if *w {
+			yes++
+		}
+	}
+	// Допуск широкий: проверяется, что доля НЕ вырождается в 0 или в 100 %.
+	if yes < 40 || yes > 80 {
+		t.Errorf("эмодзи выпали в %d репликах из 500, ожидалось около 60", yes)
+	}
+}
+
+// Автор без эмодзи жребия не получает вовсе: сказать модели «эмодзи нет» на
+// каждой реплике значило бы тратить строку промпта на то, чего и так не бывает.
+func TestWantEmojiSilentForAuthorWithout(t *testing.T) {
+	if got := (&VoiceSpeaker{}).wantEmoji(1); got != nil {
+		t.Errorf("у автора без эмодзи выпал жребий %v", *got)
+	}
+}
+
+// Жребий эмодзи не совпадает с жребием длины: без соли эмодзи приходились бы
+// ровно на длинные реплики.
+func TestEmojiAndLengthDiceAreDecorrelated(t *testing.T) {
+	s := &VoiceSpeaker{Runes: narod.Dist{P10: 30, Median: 75, P90: 174, Max: 970},
+		EmojiRate: 0.5, Seed: 1}
+	var longWithEmoji, longTotal int
+	for id := int64(1); id <= 300; id++ {
+		if s.targetRunes(id) <= 75 {
+			continue
+		}
+		longTotal++
+		if *s.wantEmoji(id) {
+			longWithEmoji++
+		}
+	}
+	// При доле 0.5 эмодзи должны попадаться примерно у половины длинных, а не у
+	// всех и не ни у одной.
+	if longTotal == 0 {
+		t.Fatal("длинных реплик не выпало вовсе")
+	}
+	if share := float64(longWithEmoji) / float64(longTotal); share < 0.3 || share > 0.7 {
+		t.Errorf("эмодзи у %.2f длинных реплик — жребии связаны", share)
+	}
+}

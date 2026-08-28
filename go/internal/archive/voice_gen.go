@@ -52,8 +52,15 @@ type VoiceRequest struct {
 	Model          string // для марки артефакта
 
 	// TargetRunes — длина ИМЕННО ЭТОЙ реплики, выпавшая жребием из разброса
-	// автора. Ноль — прежнее поведение (цель разбросом), см. writeLengthTarget.
+	// автора. Ноль — прежнее поведение (цель разбросом), см. writeReplyTargets.
 	TargetRunes int
+
+	// Emoji — есть ли в ЭТОЙ реплике эмодзи. Три состояния: nil «жребий не
+	// бросали», true «есть», false «нет». Свойство того же рода, что длина: оно
+	// живёт МЕЖДУ репликами (у автора эмодзи в 12–18 % из них), а сказанное
+	// долей в промпте одной репликой выразиться не может — модель либо ставит
+	// эмодзи всегда, либо, как вышло на замере, не ставит вовсе.
+	Emoji *bool
 }
 
 // VoiceDraft — черновик и всё, что о нём известно.
@@ -417,6 +424,15 @@ func validateDraft(text string, card *VoiceCard, req VoiceRequest, kind string, 
 		}
 		return fmt.Sprintf("длина %d рун вне диапазона автора (%d–%d)", len(r), lo, hi)
 	}
+	// Эмодзи проверяются В ОБЕ СТОРОНЫ. Лишнее ловить так же важно, как
+	// недостающее: доля у автора 12–18 %, то есть в пяти репликах из шести
+	// эмодзи нет, и «поставил, где не просили» портит замер ровно так же.
+	if req.Emoji != nil && hasEmoji(r) != *req.Emoji {
+		if *req.Emoji {
+			return "эмодзи в этой реплике нет, а задано, что есть"
+		}
+		return "эмодзи в этой реплике есть, а задано, что нет"
+	}
 	if md := markdownHit(text); md != "" {
 		return "markdown в тексте (" + md + "), у автора такого нет"
 	}
@@ -668,7 +684,7 @@ func buildVoicePrompt(card *VoiceCard, req VoiceRequest, kind, feedback string) 
 	} else {
 		writeThreadBlock(&b, req.Thread)
 	}
-	writeLengthTarget(&b, card, req, kind)
+	writeReplyTargets(&b, card, req, kind)
 	fmt.Fprintf(&b, "Вариантов: %d.\n", draftsOf(req))
 
 	writeSamplesBlock(&b, card.Samples)
@@ -1079,7 +1095,8 @@ func quantileOff(n int, d Dist) string {
 	return ""
 }
 
-// writeLengthTarget задаёт длину ЭТОЙ реплики.
+// writeReplyTargets задаёт то, что у автора живёт МЕЖДУ репликами: длину этой
+// реплики и то, есть ли в ней эмодзи.
 //
 // Разброс длины рождается МЕЖДУ репликами, а не внутри одной: человек пишет то
 // обрубком, то простынёй, и каждая его реплика по отдельности имеет какую-то
@@ -1090,18 +1107,29 @@ func quantileOff(n int, d Dist) string {
 // автора. Жребием, а не по настоящей реплике донора, хотя её длина в реплее
 // известна: длина — крупная часть стилометрии, и подсказав её, мы бы измеряли
 // голос по тексту, которому половину ответа выдали заранее.
-func writeLengthTarget(b *strings.Builder, card *VoiceCard, req VoiceRequest, kind string) {
+func writeReplyTargets(b *strings.Builder, card *VoiceCard, req VoiceRequest, kind string) {
 	sh := shapeOf(card, kind)
-	if req.TargetRunes > 0 {
+	switch {
+	case req.TargetRunes > 0:
 		fmt.Fprintf(b, "ДЛИНА ЭТОЙ РЕПЛИКИ: около %d знаков. Число выпало жребием из "+
 			"разброса автора — не подтягивай его к привычной середине: короткая реплика "+
 			"должна быть по-настоящему короткой, длинная по-настоящему длинной.\n",
 			req.TargetRunes)
-		return
-	}
-	if sh.Runes.Median > 0 {
+	case sh.Runes.Median > 0:
 		fmt.Fprintf(b, "ДЛИНА: цель — весь разброс автора (%d–%d рун), а НЕ его середина.\n",
 			sh.Runes.P10, sh.Runes.P90)
+	}
+	// Эмодзи названы для ЭТОЙ реплики, а не долей: доля — свойство десятка
+	// реплик, и одной репликой она невыразима. Отрицательный случай печатается
+	// наравне с положительным: без него «не сказано» читается моделью как
+	// «поставь, раз автор ставит», и эмодзи оказываются в каждой.
+	if req.Emoji != nil {
+		if *req.Emoji {
+			b.WriteString("ЭМОДЗИ: в этой реплике эмодзи ЕСТЬ — ровно один, там, где его " +
+				"поставил бы автор.\n")
+		} else {
+			b.WriteString("ЭМОДЗИ: в этой реплике эмодзи НЕТ.\n")
+		}
 	}
 }
 

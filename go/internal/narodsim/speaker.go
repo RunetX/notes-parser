@@ -41,13 +41,34 @@ type VoiceSpeaker struct {
 	// к середине (замер 28.08.2026 — медиана на треть выше донорской при p90 на
 	// четверть ниже, у всех трёх слепков).
 	Runes narod.Dist
-	Seed  uint64
+	// EmojiRate — доля реплик автора с эмодзи; ноль значит «жребий не бросаем».
+	EmojiRate float64
+	Seed      uint64
 }
 
-// lengthSalt разводит жребий длины и жребий кубика: на одной и той же точке они
-// берут первое число из потока, и без соли длинная реплика приходилась бы ровно
-// на приход жителя.
-const lengthSalt = 0x9E3779B97F4A7C15
+// Соли разводят жребии между собой: на одной и той же точке каждый берёт первое
+// число из своего потока, и без соли длинная реплика приходилась бы ровно на
+// приход жителя, а эмодзи — ровно на длинную реплику.
+const (
+	lengthSalt = 0x9E3779B97F4A7C15
+	emojiSalt  = 0xBF58476D1CE4E5B9
+)
+
+// wantEmoji — есть ли эмодзи в ЭТОЙ реплике.
+//
+// Тот же приём, что с длиной, и по той же причине: доля — свойство десятка
+// реплик, одной репликой она невыразима, и модель, прочитав «ставит изредка»,
+// решает за весь прогон разом. На замере 28.08.2026 она решила «не ставить
+// вовсе»: 0 % против 12 % у донора, — а у другого слепка в тот же прогон вышло
+// 16 % против 18 %, то есть решение это ещё и случайное.
+func (s *VoiceSpeaker) wantEmoji(commentID int64) *bool {
+	if s.EmojiRate <= 0 {
+		return nil
+	}
+	rng := rand.New(rand.NewPCG(s.Seed^emojiSalt, uint64(commentID)+1))
+	want := rng.Float64() < s.EmojiRate
+	return &want
+}
 
 // targetRunes — длина этой реплики жребием.
 //
@@ -71,6 +92,7 @@ func (s *VoiceSpeaker) Speak(ctx context.Context, p SpeechPoint) (Speech, error)
 	req.Mode = archive.VoiceModeComment
 	req.Thread = archive.ScriptVoiceThread(p.Script, p.Upto, p.Truth.ReplyTo, s.SelfIDs, branchLimit)
 	req.TargetRunes = s.targetRunes(p.Truth.ID)
+	req.Emoji = s.wantEmoji(p.Truth.ID)
 
 	run, err := s.Store.GenerateVoice(ctx, s.Gen, s.Card, req, p.Now)
 	if err != nil {

@@ -231,7 +231,7 @@ func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID
 	return &replayGen{
 		speaker: &narodsim.VoiceSpeaker{
 			Store: ar, Gen: client, Card: vcard, SelfIDs: []int64{actorID},
-			Runes: card.Register.Runes, Seed: uint64(o.seed),
+			Runes: card.Register.Runes, EmojiRate: card.Register.EmojiRate, Seed: uint64(o.seed),
 			Req: archive.VoiceRequest{
 				Drafts: o.drafts, Rounds: o.rounds, Model: client.Model(),
 			},

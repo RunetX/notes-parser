@@ -136,3 +136,32 @@ func TestLengthBandFollowsTarget(t *testing.T) {
 		t.Errorf("по пустому замеру рамка %d–%d", lo, hi)
 	}
 }
+
+// Эмодзи проверяются В ОБЕ СТОРОНЫ: лишнее ловить так же важно, как
+// недостающее. Доля у автора 12–18 %, то есть в пяти репликах из шести эмодзи
+// нет, и «поставил, где не просили» портит замер ровно так же.
+func TestValidateDraftChecksEmojiBothWays(t *testing.T) {
+	card := &VoiceCard{Comments: VoiceShape{
+		Kind: VoiceKindComments, Texts: 100, Runes: Dist{P10: 30, Median: 75, P90: 174},
+		EmojiRate: 0.12,
+	}}
+	yes, no := true, false
+
+	if why := validateDraft("да ну тебя 🙂 совсем", card, VoiceRequest{Emoji: &yes},
+		VoiceKindComments, 0); why != "" {
+		t.Errorf("эмодзи задан и стоит, а черновик отвергнут: %s", why)
+	}
+	if why := validateDraft("да ну тебя совсем", card, VoiceRequest{Emoji: &yes},
+		VoiceKindComments, 0); why == "" {
+		t.Error("эмодзи задан, а его нет — черновик принят")
+	}
+	if why := validateDraft("да ну тебя 🙂 совсем", card, VoiceRequest{Emoji: &no},
+		VoiceKindComments, 0); why == "" {
+		t.Error("эмодзи не задан, а он стоит — черновик принят")
+	}
+	// Жребия не бросали — проверки нет вовсе.
+	if why := validateDraft("да ну тебя 🙂 совсем", card, VoiceRequest{},
+		VoiceKindComments, 0); why != "" {
+		t.Errorf("без жребия черновик отвергнут: %s", why)
+	}
+}
