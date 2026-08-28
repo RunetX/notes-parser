@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -203,25 +204,59 @@ func (a vacActor) speaker() narodsim.Speaker {
 }
 
 // loadVacuumCast читает карточки состава.
+//
+// Токен — либо анкета донора `u<id>`, либо СЛУГ ЖИТЕЛЯ (`kedrach`). Второе
+// заведено 29.08.2026: у композита номера анкеты нет и не будет до `enroll`, а
+// посмотреть, как ведёт себя состав из девяти жителей, надо ДО того, как они
+// выйдут на площадку, — иначе первый прогон живого состава окажется боевым.
+//
+// Жителю выдаётся номер из своей полосы (`composeBand`), выведенный из слуга:
+// он не совпадёт ни с одной анкетой архива, повторяется от прогона к прогону
+// (иначе знакомство и мир не сошлись бы между зёрнами) и годится ключом в
+// журнале мира. Сравнивать такой прогон с оригиналом нечем — житель в архивном
+// треде не говорил и говорить не мог, — и отчёт это скажет сам: суженный
+// оригинал выйдет пустым.
 func loadVacuumCast(o replayOpts, tokens []string) ([]*vacActor, error) {
 	out := make([]*vacActor, 0, len(tokens))
 	seen := map[int64]bool{}
 	for _, token := range tokens {
-		id, err := strconv.ParseInt(strings.TrimPrefix(token, "u"), 10, 64)
+		card, err := loadActorCard(o.cardsDir, token)
 		if err != nil {
-			return nil, fmt.Errorf("narod replay: состав задаётся анкетами u<id>, а не %q", token)
+			return nil, err
+		}
+		id, err := castID(token, card)
+		if err != nil {
+			return nil, err
 		}
 		if seen[id] {
 			return nil, fmt.Errorf("narod replay: %s в составе дважды", token)
 		}
 		seen[id] = true
-		card, err := loadActorCard(o.cardsDir, token)
-		if err != nil {
-			return nil, err
-		}
 		out = append(out, &vacActor{token: token, userID: id, card: card})
 	}
 	return out, nil
+}
+
+// composeBand — полоса номеров для жителей, у которых анкеты нет.
+//
+// Тот же приём, что у полос идентификаторов площадки: дискриминатор в самом
+// ключе, а не в отдельной колонке, поэтому перепутать жителя с донором нельзя
+// даже по ошибке. Номера анкет НГС живут ниже 1e7, слепки из архива — тем более.
+const composeBand = 1_000_000_000
+
+// castID — номер участника сцены. У донора это его анкета, у жителя —
+// устойчивый хеш слуга в своей полосе.
+func castID(token string, card *narod.Card) (int64, error) {
+	if id, err := strconv.ParseInt(strings.TrimPrefix(token, "u"), 10, 64); err == nil {
+		return id, nil
+	}
+	if card.Kind != narod.KindComposite {
+		return 0, fmt.Errorf("narod replay: %s это не житель и не анкета u<id> — "+
+			"слепок в состав задаётся анкетой донора", token)
+	}
+	h := fnv.New32a()
+	h.Write([]byte(card.ID))
+	return composeBand + int64(h.Sum32()), nil
 }
 
 // vacuumSpeakers подключает модель всему составу разом — либо никому.

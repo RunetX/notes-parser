@@ -109,6 +109,7 @@ func composeCard(r composeRecipe, donors []narod.Card, now time.Time) (narod.Car
 	card.Errors = blendErrors(donors, w)
 	card.Triggers = r.Triggers
 	card.Dice = blendDice(donors, w)
+	card.Rate = blendRate(donors, w)
 	if r.Dice != nil {
 		card.Dice = *r.Dice
 	}
@@ -462,4 +463,76 @@ func narodCompose(_ context.Context, dir, recipePath string, verifyOnly bool) er
 	}
 	fmt.Fprintf(os.Stderr, "житель %s → %s\n", card.ID, path)
 	return narod.WriteCardBrief(os.Stdout, card)
+}
+
+// blendRate смешивает ЗАМЕР ОТКЛИКА — самое важное, что есть в карточке, и до
+// 29.08.2026 он не смешивался вовсе.
+//
+// Дефект был молчаливый и стоил бы всей калибровки: `Rate` появился 28.08.2026
+// вместе с замером `archive.MineReplyRate`, а `compose` старше — и композит
+// выходил с пустым замером, то есть кубик у ЖИТЕЛЯ откатывался на запасные
+// `Dice.ReplyOther`, ровно те придуманные числа, которые замер опроверг в
+// 20–40 раз. Слепки при этом считались правильно, поэтому в калибровке всё
+// сходилось, а разошлось бы только на площадке.
+//
+// Смешиваются ДОЛИ, а не счётчики. Сложить счётчики напрямую нельзя: у одного
+// донора корпус в 138 тысяч реплик, у другого в две с половиной, и сумма
+// отдала бы корзину крупному независимо от весов рецепта. Поэтому у каждого
+// донора берётся его вероятность, доли усредняются по весам, а счётчики
+// восстанавливаются под неё — они остаются мерой того, СКОЛЬКО за этой долей
+// стоит наблюдений, и именно по ним `RateMinChances` решает, замер это или нет.
+func blendRate(donors []narod.Card, w []float64) narod.ReplyRate {
+	out := narod.ReplyRate{
+		Buckets:  blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Rate.Buckets }),
+		Familiar: blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Rate.Familiar }),
+		Tempo:    blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Rate.Tempo }),
+	}
+	for i, d := range donors {
+		out.Threads += int(w[i] * float64(d.Rate.Threads))
+	}
+	return out
+}
+
+// blendBuckets — одна полка замера. Корзины у доноров одни и те же (границы
+// заданы кодом майнера), поэтому смешиваются они по счёту; донор, у которого
+// корзины нет вовсе, в неё просто не голосует.
+func blendBuckets(donors []narod.Card, w []float64, pick func(narod.Card) []narod.RateBucket) []narod.RateBucket {
+	n := 0
+	for _, d := range donors {
+		n = max(n, len(pick(d)))
+	}
+	if n == 0 {
+		return nil
+	}
+	out := make([]narod.RateBucket, n)
+	for i := range out {
+		var mimoP, mimoW, himP, himW, chances, himChances float64
+		for j, d := range donors {
+			bs := pick(d)
+			if i >= len(bs) {
+				continue
+			}
+			b := bs[i]
+			out[i].Upto = b.Upto
+			if b.Chances > 0 {
+				mimoP += w[j] * float64(b.Answers) / float64(b.Chances)
+				mimoW += w[j]
+				chances += w[j] * float64(b.Chances)
+			}
+			if b.ToHimChances > 0 {
+				himP += w[j] * float64(b.ToHimAnswers) / float64(b.ToHimChances)
+				himW += w[j]
+				himChances += w[j] * float64(b.ToHimChances)
+			}
+		}
+		if mimoW > 0 {
+			out[i].Chances = int(chances + 0.5)
+			out[i].Answers = int(chances*(mimoP/mimoW) + 0.5)
+		}
+		if himW > 0 {
+			out[i].ToHimChances = int(himChances + 0.5)
+			out[i].ToHimAnswers = int(himChances*(himP/himW) + 0.5)
+		}
+	}
+	return out
 }
