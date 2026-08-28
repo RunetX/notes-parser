@@ -100,6 +100,12 @@ type VacuumOpts struct {
 
 const vacuumMaxReplies = 300
 
+// vacuumTempo — окно накала: за сколько считается «сколько прилетело только
+// что». Совпадает с окном ЗАМЕРА (archive.tempoWindow) не по совпадению: кубику
+// подаётся та же величина, по которой снята кривая, и разойдись они — множитель
+// прикладывался бы к накалу, которого в замере не было.
+const vacuumTempo = 10 * time.Minute
+
 // VacuumRun — итог прогона в вакууме.
 type VacuumRun struct {
 	Seed   uint64  `json:"seed"`
@@ -330,6 +336,7 @@ func (st *vacState) say(ctx context.Context, at time.Time, ev vacEvent, t0 time.
 			Addressed:   c.TargetID == id,
 			Tone:        st.o.Feel[id][c.AuthorID],
 			Seen:        len(st.got.Comments),
+			Tempo:       st.tempo(at),
 			Said:        st.said[id] + st.pending[id],
 			Familiarity: st.familiar[id][c.AuthorID],
 		}, at); err != nil {
@@ -550,4 +557,22 @@ func jaccardStr(a, b []string) float64 {
 		return 1
 	}
 	return float64(both) / float64(union)
+}
+
+// tempo — сколько реплик прозвучало за последние vacuumTempo до момента at.
+//
+// Считается по хвосту треда с конца, а не хранится счётчиком: реплики приходят
+// строго по возрастанию времени (очередь отдаёт ближайшее событие), поэтому
+// нужный отрезок всегда в конце, и обход прерывается на первой же старой. В
+// длинном треде это единицы шагов, а не проход по трёмстам репликам.
+func (st *vacState) tempo(at time.Time) int {
+	edge := at.Add(-vacuumTempo)
+	n := 0
+	for i := len(st.got.Comments) - 1; i >= 0; i-- {
+		if st.got.Comments[i].PublishedAt.Before(edge) {
+			break
+		}
+		n++
+	}
+	return n
 }

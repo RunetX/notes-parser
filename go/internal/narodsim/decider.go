@@ -130,6 +130,15 @@ func chanceOf(card narod.Card, p DecisionPoint) (float64, narod.Dist) {
 		if lift, ok := card.Rate.FamiliarLift(p.Familiarity, p.Addressed); ok {
 			r *= lift
 		}
+		// Накал: без него вероятность постоянна и в мёртвом треде, и в
+		// разгоревшемся. Замер говорит, что горячий тред РАЗВОДИТ людей по парам —
+		// в чужой разговор влезают втрое реже, своему собеседнику отвечают вдвое
+		// надёжнее, — и перепалка растёт именно отсюда. Множитель поэтому
+		// разнонаправленный, и разделяет его тот же признак Addressed, что у
+		// знакомства: одна средняя величина между этими двумя не значит ничего.
+		if lift, ok := card.Rate.TempoLift(p.Tempo, p.Addressed); ok {
+			r *= lift
+		}
 		r *= relationLift(card, p)
 		return min(r, MaxChance), lat.ToReplySec
 	}

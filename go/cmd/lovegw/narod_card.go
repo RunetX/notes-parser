@@ -407,6 +407,7 @@ func rateFromArchive(r archive.ReplyRate) narod.ReplyRate {
 		Threads:  r.Threads,
 		Buckets:  rateBucketsToCard(r.Buckets),
 		Familiar: rateBucketsToCard(r.Familiar),
+		Tempo:    rateBucketsToCard(r.Tempo),
 	}
 }
 
