@@ -218,6 +218,7 @@ func usage() {
   lovegw narod  [-db archive.db] [-cards dir] [-recent N] [-norm-sample N] card <p<id>|u<id>>   # слепок донора: манера, ритм, задержки, ошибки
   lovegw narod  [-cards data/narod/cards] show [файл …]                                         # карточка так, как её увидит модель
   lovegw narod  [-world data/narod.db] world                                                    # состояние мира: акторы и версия схемы
+  lovegw narod  [-db archive.db] -actor u<id> [-threads N] [-speak] replay                      # калибровка слепка на архивных тредах (без -speak — бесплатно)
   lovegw secrets keygen                                                                        # новый ключ шифрования сессий
   lovegw secrets [-config config.json] [-accounts accounts.db] status                            # что лежит открыто, что зашифровано
   lovegw secrets [-config config.json] [-accounts accounts.db] [-old-key-env NAME] encrypt       # зашифровать/перешить под текущий ключ

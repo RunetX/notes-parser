@@ -393,6 +393,50 @@ func participantsOf(cs []ScriptComment) []ScriptActor {
 	return out
 }
 
+// ThreadPick — тред, годный в калибровку.
+type ThreadPick struct {
+	NoteID int64
+	Said   int // сколько раз в нём говорил донор
+	Total  int // всего реплик
+}
+
+// PickCalibrationThreads — треды, где донор сказал не меньше minSaid раз, от
+// самых разговорчивых к прочим.
+//
+// Порядок именно такой, потому что мерка снимается с ЕГО реплик: чем больше их в
+// треде, тем больше точек, где известна правда. Размер самого треда при этом ни
+// на что не влияет — платных вызовов в нём столько же, сколько реплик написал
+// донор, а точки решения считаются формулой и бесплатны.
+func (s *Store) PickCalibrationThreads(ctx context.Context, userIDs []int64, minSaid, limit int) ([]ThreadPick, error) {
+	if len(userIDs) == 0 {
+		return nil, fmt.Errorf("не заданы анкеты донора")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.note_id,
+		       SUM(CASE WHEN c.author_id IN (`+intList(userIDs)+`) THEN 1 ELSE 0 END) said,
+		       COUNT(*) total
+		  FROM comments c
+		 WHERE c.note_id IN (SELECT DISTINCT note_id FROM comments
+		                      WHERE author_id IN (`+intList(userIDs)+`))
+		 GROUP BY c.note_id
+		HAVING said >= ?
+		 ORDER BY said DESC, total DESC
+		 LIMIT ?`, minSaid, limit)
+	if err != nil {
+		return nil, fmt.Errorf("подбор тредов: %w", err)
+	}
+	defer rows.Close()
+	var out []ThreadPick
+	for rows.Next() {
+		var p ThreadPick
+		if err := rows.Scan(&p.NoteID, &p.Said, &p.Total); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // parseArchiveTime — время архива (ISO-8601 UTC). Отдельной функцией потому,
 // что архив писался годами и в старых строках встречается форма без зоны.
 func parseArchiveTime(s string) (time.Time, error) {

@@ -44,6 +44,10 @@ type DecisionPoint struct {
 	Trigger   string
 	Author    int64 // кто её сказал; у заметки — её автор
 	Nick      string
+	// Addressed — обратились к самому жителю. Отдельным полем, а не разбором
+	// текста: обращение уже срезано в ребро, и второй разбор рядом с первым
+	// однажды разошёлся бы с ним.
+	Addressed bool
 	Seen      int // сколько реплик уже прозвучало
 	Said      int // сколько раз житель уже говорил в этом треде
 }
@@ -207,7 +211,8 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 		}
 		if err := step(ctx, run, o, sc, DecisionPoint{
 			Now: c.PublishedAt, Actor: o.Actor, TriggerID: c.ID, Trigger: c.Text,
-			Author: c.AuthorID, Nick: c.AuthorNick, Seen: i + 1, Said: said,
+			Author: c.AuthorID, Nick: c.AuthorNick, Addressed: c.TargetID == o.Actor,
+			Seen: i + 1, Said: said,
 		}, answered, c.ID); err != nil {
 			return nil, err
 		}

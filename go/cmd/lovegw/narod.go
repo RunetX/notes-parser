@@ -26,7 +26,7 @@ var defaultCardsDir = filepath.Join("data", "narod", "cards")
 
 func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
-		"card": true, "compose": true, "show": true, "world": true,
+		"card": true, "compose": true, "show": true, "world": true, "replay": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -34,8 +34,24 @@ func cmdNarod(ctx context.Context, args []string) error {
 	worldPath := fs.String("world", filepath.Join("data", "narod.db"), "база состояния мира")
 	recent := fs.Int("recent", 2000, "card: последних реплик в замер")
 	normSample := fs.Int("norm-sample", 100000, "card: комментариев в норму корпуса (с чем сравнивать ошибки)")
-	seed := fs.Int64("seed", 1, "card: зерно выборки образцов")
+	seed := fs.Int64("seed", 1, "card: зерно выборки образцов; replay: зерно кубика")
 	verify := fs.Bool("verify", false, "compose: только проверить близость к донорам, карточку не писать")
+
+	actor := fs.String("actor", "", "replay: слепок, на месте которого играем (u<id>)")
+	notes := fs.String("note", "", "replay: id заметок через запятую; пусто — подобрать по донору")
+	threads := fs.Int("threads", 5, "replay: сколько тредов подобрать")
+	minSaid := fs.Int("min-said", 5, "replay: сколько реплик донора нужно в треде")
+	// Модель выключена по умолчанию: бесплатный прогон считает матрицу решений,
+	// и крутить его можно сколько угодно. Деньги тратятся только по -speak.
+	speak := fs.Bool("speak", false, "replay: звать модель (ПЛАТНО); без флага считается только матрица решений")
+	maxSpeak := fs.Int("max-speak", 40, "replay: потолок обращений к модели за прогон (0 — без потолка)")
+	drafts := fs.Int("drafts", 3, "replay: черновиков за один запрос к модели")
+	// Раунд по умолчанию один: мерка голоса — это ПЕРВАЯ попытка, а раунд с
+	// обратной связью меряет судью, а не пишущего, и стоит вдвое.
+	rounds := fs.Int("rounds", 1, "replay: раундов с обратной связью (1 — без неё)")
+	outDir := fs.String("out", filepath.Join("data", "narod", "replay"), "replay: куда класть отчёты")
+	cfgPath := fs.String("config", "config.json", "replay: конфиг (нужен только с -speak)")
+	model := fs.String("model", "", "replay: модель (пусто — из секции llm)")
 	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
@@ -54,8 +70,15 @@ func cmdNarod(ctx context.Context, args []string) error {
 		return narodShow(*cardsDir, fs.Args())
 	case "world":
 		return narodWorld(ctx, *worldPath)
+	case "replay":
+		return narodReplay(ctx, replayOpts{
+			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir,
+			actor: *actor, notes: *notes, threads: *threads, minSaid: *minSaid,
+			speak: *speak, maxSpeak: *maxSpeak, drafts: *drafts, rounds: *rounds,
+			seed: *seed, cfgPath: *cfgPath, model: *model,
+		})
 	default:
-		return fmt.Errorf("narod: нужна подкоманда (card|compose|show|world)")
+		return fmt.Errorf("narod: нужна подкоманда (card|compose|show|world|replay)")
 	}
 }
 

@@ -116,6 +116,41 @@ func TestEveryMinedErrorClassCanBeInjected(t *testing.T) {
 	}
 }
 
+// Потолок разговорчивости берётся ИЗ ЗАМЕРА, а не с потолка. Правило оплачено
+// первым же бесплатным прогоном реплея 28.08.2026: у ДВ в карточке стояло 5
+// реплик на тред против настоящих 44–53, кубик глох после пятой, и калибровка
+// ловила 6 % его настоящих ответов вместо 21 %.
+func TestDiceCapsComeFromMeasurement(t *testing.T) {
+	sh := archive.VoiceShape{AddressPrefix: 0.72}
+	load := archive.Dist{P10: 1, Median: 3, P90: 11, Max: 53}
+	d := diceFromShape(sh, load)
+	if d.MaxPerThread != 11 {
+		t.Errorf("потолок на тред %d, ожидался p90 = 11", d.MaxPerThread)
+	}
+	// Не максимум: у говорливого автора максимум — это один скандал на всю
+	// историю, и мерить им обычный вечер значит разрешать скандал каждый раз.
+	if d.MaxPerThread == load.Max {
+		t.Error("потолок взят по максимуму замера")
+	}
+	if d.MaxPerDay <= d.MaxPerThread {
+		t.Errorf("суточный потолок %d не выше тредового %d — он молча заменит собой тредовый",
+			d.MaxPerDay, d.MaxPerThread)
+	}
+	// Пустой замер не должен обнулять потолки: житель молчал бы всегда.
+	if got := diceFromShape(sh, archive.Dist{}); got.MaxPerThread <= 0 || got.MaxPerDay <= 0 {
+		t.Errorf("без замера потолки обнулились: %+v", got)
+	}
+	// Вероятности замерить нельзя — они остаются базой брифа, и это не дефект.
+	if d.ComeToNote != 0.35 || d.ReplyMention != 0.7 {
+		t.Errorf("вероятности уехали от базы: %+v", d)
+	}
+	// Разговорчивого (обращается по имени) отличает готовность влезть в чужое.
+	if quiet := diceFromShape(archive.VoiceShape{AddressPrefix: 0.1}, load); quiet.ReplyOther >= d.ReplyOther {
+		t.Errorf("молчун влезает в чужой разговор не реже разговорчивого: %v против %v",
+			quiet.ReplyOther, d.ReplyOther)
+	}
+}
+
 func TestSlugOfIdentity(t *testing.T) {
 	cases := map[string]string{
 		"p1527":  "p1527",

@@ -33,6 +33,40 @@ type VoiceLatency struct {
 	ToReply  Dist `json:"to_reply_sec"`  // от чужой реплики до ответа на неё
 }
 
+// MineThreadLoad — сколько реплик человек пишет В ОДНОМ треде.
+//
+// Величина эта ПРЯМО СЧИТАЕТСЯ по архиву, и об этом стоит сказать отдельно:
+// вероятности прихода замерить нельзя (никто не знает, сколько заметок человек
+// прочёл и не ответил), и по соседству легко решить, что и разговорчивость
+// придётся брать с потолка. Замер 28.08.2026 показал цену такой ошибки: у ДВ в
+// карточке стоял потолок 5 реплик на тред, а в живых тредах он писал по 44–53, и
+// кубик глох после пятой — из настоящих ответов калибровка ловила 6 %.
+func (s *Store) MineThreadLoad(ctx context.Context, accIDs []int64) (Dist, error) {
+	if len(accIDs) == 0 {
+		return Dist{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COUNT(*) n FROM comments
+		 WHERE author_id IN (`+intList(accIDs)+`)
+		 GROUP BY note_id`)
+	if err != nil {
+		return Dist{}, fmt.Errorf("замер реплик на тред: %w", err)
+	}
+	defer rows.Close()
+	var xs []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			return Dist{}, err
+		}
+		xs = append(xs, n)
+	}
+	if err := rows.Err(); err != nil {
+		return Dist{}, err
+	}
+	return distOf(xs), nil
+}
+
 // MineLatency замеряет задержки личности (все её анкеты).
 //
 // Ответ считается по НАСТОЯЩЕМУ дереву (comment_reply), а не по parent_id:

@@ -109,7 +109,11 @@ func buildSnapshotCard(ctx context.Context, st *archive.Store, token string, opt
 	if rels, err := st.IdentityRelations(ctx, voice.Identity, opts.TopEdges); err == nil {
 		card.Relations = relationsFromArchive(rels)
 	}
-	card.Dice = diceFromShape(voice.Comments)
+	load, err := st.MineThreadLoad(ctx, accIDs)
+	if err != nil {
+		return narod.Card{}, err
+	}
+	card.Dice = diceFromShape(voice.Comments, load)
 
 	if err := card.Validate(); err != nil {
 		return narod.Card{}, fmt.Errorf("слепок %s: %w", voice.Identity, err)
@@ -285,13 +289,24 @@ func relationsFromArchive(rels []archive.RelationRow) []narod.SeedEdge {
 	return out
 }
 
-// diceFromShape — стартовые вероятности прихода.
+// diceFromShape — стартовые вероятности прихода и потолки разговорчивости.
 //
-// Замерить их по архиву нельзя: «сколько заметок человек прочёл и не ответил»
-// не знает никто, включая его самого. Поэтому берём базу из брифа (четверо-
-// шестеро из десяти не приходят) и лишь чуть двигаем её разговорчивостью —
-// тем, отвечает ли человек другим или пишет мимо.
-func diceFromShape(sh archive.VoiceShape) narod.DiceParams {
+// ВЕРОЯТНОСТИ замерить по архиву нельзя: «сколько заметок человек прочёл и не
+// ответил» не знает никто, включая его самого. Поэтому берём базу из брифа
+// (четверо-шестеро из десяти не приходят) и лишь чуть двигаем её тем, живёт
+// человек в разговоре или пишет мимо.
+//
+// А вот ПОТОЛКИ считаются прямо, и путать эти два случая дорого. Пока потолок
+// стоял константой, у ДВ в карточке было 5 реплик на тред против настоящих
+// 44–53, кубик глох после пятой, и калибровка ловила 6 % его настоящих ответов
+// (замер 28.08.2026, первый же бесплатный прогон реплея). Отсюда правило:
+// величина, которую видно в архиве, берётся из архива, даже когда соседняя
+// величина рядом взята с потолка.
+//
+// Потолок на тред — p90 замера, а не максимум: максимум у говорливого автора
+// это один скандал на всю историю, и мерить им обычный вечер значит разрешить
+// жителю такой скандал каждый раз.
+func diceFromShape(sh archive.VoiceShape, load archive.Dist) narod.DiceParams {
 	d := narod.DiceParams{
 		ComeToNote: 0.35, ReplyMention: 0.7, ReplyOther: 0.15,
 		MaxPerThread: 3, MaxPerDay: 8,
@@ -299,7 +314,18 @@ func diceFromShape(sh archive.VoiceShape) narod.DiceParams {
 	if sh.AddressPrefix > 0.5 {
 		// Человек, который в половине реплик обращается по имени, живёт в
 		// разговоре, а не в монологе.
-		d.ReplyOther, d.MaxPerThread = 0.25, 5
+		d.ReplyOther = 0.25
+	}
+	if load.P90 > 0 {
+		d.MaxPerThread = load.P90
+	}
+	if load.Median > 0 {
+		// За сутки человек бывает в нескольких тредах: один людный плюс пара
+		// обычных. Суточного замера у нас нет, но потолок обязан быть ВЫШЕ
+		// тредового — иначе он молча заменяет его собой, и правило про тред
+		// перестаёт что-либо значить. Ровно это и вышло на первой редакции
+		// (3 × медиану = 9 против тредовых 11), и поймал это тест, а не прогон.
+		d.MaxPerDay = d.MaxPerThread + 2*load.Median
 	}
 	return d
 }
