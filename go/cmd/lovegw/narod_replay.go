@@ -66,12 +66,27 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 	}
 	fmt.Fprintf(os.Stderr, "слепок %s (%s), тредов %d\n", o.actor, card.Persona.Nick, len(notes))
 
-	speaker, usage, err := replaySpeaker(ctx, ar, o, actorID)
+	gen, err := replaySpeaker(ctx, ar, o, actorID)
 	if err != nil {
 		return err
 	}
-	if speaker == nil {
+	var speaker narodsim.Speaker
+	if gen == nil {
 		fmt.Fprintln(os.Stderr, "модель НЕ подключена (-speak) — считается только матрица решений, бесплатно")
+	} else {
+		// Полоса спрашивается ДО первого запроса к модели. Непригодная означает,
+		// что мерить нечем, а платить за измерение, которое ничего не измерит, —
+		// единственное, чего калибровке делать нельзя.
+		band, err := gen.speaker.Band(ctx)
+		if err != nil {
+			return err
+		}
+		if !band.Usable {
+			return fmt.Errorf("мерить нечем, к модели не пошли: %s", band.Why)
+		}
+		fmt.Fprintf(os.Stderr, "полоса: %d пачек настоящих реплик, медиана места %d из %d\n",
+			band.N, band.Median, band.Of)
+		speaker = gen.speaker
 	}
 
 	dec := &narodsim.CardDecider{Card: *card, Seed: uint64(o.seed)}
@@ -98,17 +113,26 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 	}
 
 	now := time.Now()
-	rep := narodsim.NewReport(o.model, uint64(o.seed), now, []narodsim.ActorReport{{
-		Actor: actorID, Nick: runs[0].Nick, CardID: card.ID, Runs: runs,
-	}})
+	// Модель называется РЕЗОЛЬВЕННАЯ, а не то, что набрали в -model: по
+	// умолчанию там пусто, и отчёт, не называющий модель, нельзя сравнить с
+	// другим отчётом — а сравнение это вся суть калибровки.
+	model := o.model
+	actor := narodsim.ActorReport{Actor: actorID, Nick: runs[0].Nick, CardID: card.ID, Runs: runs}
+	if gen != nil {
+		model = gen.model
+		if actor.Voice, err = gen.speaker.Measure(ctx, actor.Texts()); err != nil {
+			return err
+		}
+	}
+	rep := narodsim.NewReport(model, uint64(o.seed), now, []narodsim.ActorReport{actor})
 	dir := filepath.Join(o.outDir, fmt.Sprintf("%s-solo-%s", o.actor, now.Format("20060102-150405")))
 	if err := narodsim.WriteSoloReport(dir, rep); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "\n%s", rep.Markdown())
 	fmt.Fprintf(os.Stderr, "отчёт: %s\n", dir)
-	if usage != nil {
-		fmt.Fprintf(os.Stderr, "расход: %s\n", usage())
+	if gen != nil {
+		fmt.Fprintf(os.Stderr, "расход: %s\n", gen.usage())
 	}
 	return nil
 }
@@ -152,37 +176,54 @@ func replayNotes(ctx context.Context, ar *archive.Store, actorID int64, o replay
 	return out, nil
 }
 
-// replaySpeaker собирает генератор, если прогон платный. Второе значение —
-// как спросить расход после прогона (nil у бесплатного).
-func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID int64) (
-	narodsim.Speaker, func() string, error) {
+// replayGen — платная половина прогона: кто пишет, чем меряет и во что обошлось.
+type replayGen struct {
+	speaker *narodsim.VoiceSpeaker
+	model   string
+	usage   func() string
+}
 
+// replaySpeaker собирает генератор, если прогон платный; nil означает
+// бесплатный прогон, а не отсутствие настроек.
+func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID int64) (*replayGen, error) {
 	if !o.speak {
-		return nil, nil, nil
+		return nil, nil
 	}
 	cfg, err := config.Load(o.cfgPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Кэш-точка окупается: на каждой реплике системный промпт один и тот же, а
 	// точек в прогоне десятки, и идут они встык.
 	client, err := llmClientFor(cfg, o.model, "low", 0, withSystemCache())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	p := archive.VoiceCardDefaults()
-	p.Genre, p.Kind, p.Solo = archive.GenreAll, "comments", true
+	p.Genre, p.Kind, p.Solo = archive.GenreAll, archive.VoiceKindComments, true
 	p.Seed = o.seed
+	// Полоса нужна ПАЧКАМИ, а пачка набирается из нескольких комментариев —
+	// значит отложенных текстов нужно во столько же раз больше, иначе полоса
+	// выйдет из трёх точек и квантиль по ней будет грубее, чем разница, которую
+	// им меряют.
+	p.Band = replayBand
 	vcard, err := ar.BuildVoiceCard(ctx, o.actor, p, time.Now())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &narodsim.VoiceSpeaker{
+	return &replayGen{
+		speaker: &narodsim.VoiceSpeaker{
 			Store: ar, Gen: client, Card: vcard, SelfIDs: []int64{actorID},
 			Req: archive.VoiceRequest{
 				Drafts: o.drafts, Rounds: o.rounds, Model: client.Model(),
 			},
 		},
-		func() string { return client.Usage().String() },
-		nil
+		model: client.Model(),
+		usage: func() string { return client.Usage().String() },
+	}, nil
 }
+
+// replayBand — сколько реплик донора откладывать под полосу. Двести при
+// медиане в 75 знаков дают около двадцати пяти пачек — столько же точек, сколько
+// прежде давала полоса из отдельных комментариев, только теперь пригодных.
+const replayBand = 200

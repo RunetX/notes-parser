@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"lovegw/internal/archive"
 	"lovegw/internal/narod"
 )
 
@@ -33,6 +34,21 @@ type ActorReport struct {
 	Speeches int        `json:"speeches"` // реплик, которые модель выдала
 	Rejected int        `json:"rejected"` // точек, где не выдала ничего
 	Skipped  int        `json:"skipped"`  // не взятых из-за потолка
+	Voice    Voice      `json:"voice"`    // мерка голоса пачками
+}
+
+// Texts — что модель выдала, в порядке появления. Порядок нужен мерке: пачка
+// это подряд идущие реплики разговора.
+func (a ActorReport) Texts() []string {
+	var out []string
+	for _, r := range a.Runs {
+		for _, s := range r.Speech {
+			if s.Rejected == "" && s.Got != "" {
+				out = append(out, s.Got)
+			}
+		}
+	}
+	return out
 }
 
 // Report — сессия целиком.
@@ -207,10 +223,7 @@ func (rep *Report) Markdown() string {
 				fmt.Fprintf(&b, ", не взято из-за потолка: %d", a.Skipped)
 			}
 			fmt.Fprintf(&b, "\n\n")
-			fmt.Fprintf(&b, "- медианный квантиль полосы: **%.2f** — доля настоящих текстов "+
-				"автора, узнанных атрибутором ХУЖЕ нашего (0,5 — «неотличим от собственной середины»)\n",
-				a.MedianQuantile())
-			fmt.Fprintf(&b, "- медианное место в атрибуции: **%.0f**\n\n", a.MedianRank())
+			writeVoice(&b, a.Voice)
 		}
 
 		fmt.Fprintf(&b, "### По тредам\n\n")
@@ -233,4 +246,50 @@ func silentBaseline(m Matrix) float64 {
 		return 0
 	}
 	return float64(m.TN+m.FP) / float64(m.Total())
+}
+
+// writeVoice печатает мерку голоса — или причину, по которой её нет.
+//
+// Причина стоит ВМЕСТО чисел, а не рядом с ними. Непригодная полоса даёт
+// правдоподобный ноль, и приписка мелким шрифтом читается как примечание к
+// измерению, а не как «измерения не было»: ровно так первый платный прогон
+// сообщил о провале голоса, которого не мерил.
+func writeVoice(b *strings.Builder, v Voice) {
+	bt := v.Batch
+	switch {
+	case bt.Why != "":
+		fmt.Fprintf(b, "Мерка не состоялась: %s.\n\n", bt.Why)
+	case bt.Chunks == 0:
+		// Пустая мерка — это отчёт, собранный без неё, а не нулевой результат.
+		// Нули здесь печатались бы как приговор голосу.
+		fmt.Fprintf(b, "Голос не мерили.\n\n")
+	default:
+		// Знаков названо ДВА числа, и это не педантизм: хвост короче пачки в
+		// мерку не идёт, а одно число «сколько написано» выдавало бы за
+		// измеренное то, что измерено не было.
+		fmt.Fprintf(b, "Пачками против таких же пачек настоящих реплик автора; "+
+			"в мерку вошло %d знаков из %d написанных (хвост короче пачки отброшен):\n\n",
+			bt.Used, bt.Runes)
+		fmt.Fprintf(b, "- медианный квантиль полосы: **%.2f** — доля пачек настоящих текстов, "+
+			"узнанных атрибутором ХУЖЕ нашей (0,5 — «неотличим от собственной середины»)\n",
+			bt.MedianQuantile())
+		fmt.Fprintf(b, "- медианное место в атрибуции: **%d** из %d; пачек наших %d, в полосе %d\n\n",
+			bt.MedianRank(), bt.Band.Of, bt.Chunks, bt.Band.N)
+	}
+	writeShape(b, v.Got, v.Want)
+}
+
+// writeShape — портрет против портрета. Ранг говорит «не похоже», портрет
+// говорит ЧЕМ, и без него отчёт не подсказывает, что править.
+func writeShape(b *strings.Builder, got, want archive.VoiceShape) {
+	if got.Texts == 0 || want.Texts == 0 {
+		return
+	}
+	fmt.Fprintf(b, "Механика письма — житель против донора:\n\n")
+	fmt.Fprintf(b, "| | житель | донор |\n|---|---:|---:|\n")
+	fmt.Fprintf(b, "| знаков в реплике (медиана) | %d | %d |\n", got.Runes.Median, want.Runes.Median)
+	fmt.Fprintf(b, "| знаков, p90 | %d | %d |\n", got.Runes.P90, want.Runes.P90)
+	fmt.Fprintf(b, "| слов в предложении (медиана) | %d | %d |\n", got.SentWords.Median, want.SentWords.Median)
+	fmt.Fprintf(b, "| доля реплик со смайлом | %.2f | %.2f |\n", got.EmojiRate, want.EmojiRate)
+	b.WriteString("\n")
 }

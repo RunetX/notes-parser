@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"lovegw/internal/archive"
 )
 
 func sampleReport() *Report {
@@ -65,9 +67,53 @@ func TestMarkdownCarriesStampAndNumbers(t *testing.T) {
 		"Не публиковать", // марка машинного артефакта
 		"claude-opus-5",
 		"ДВ (u498196",
-		"0.50", // медианный квантиль
 		"500", "501",
 	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("в отчёте нет %q:\n%s", want, md)
+		}
+	}
+}
+
+// Мерка голоса, которой не было, ЧИСЕЛ НЕ ДАЁТ. Правило оплачено первым платным
+// прогоном 28.08.2026: отчёт напечатал «квантиль 0.00, место 7932 из 9361», и
+// это читалось как приговор голосу, тогда как полоса в тот момент была
+// непригодна и BandQuantile возвращал ноль всему подряд.
+func TestMarkdownNeverPrintsUnmeasuredVoice(t *testing.T) {
+	md := sampleReport().Markdown() // Voice пуст: прогон собран без мерки
+	if !strings.Contains(md, "Голос не мерили") {
+		t.Errorf("непомеренный голос не назван:\n%s", md)
+	}
+	if strings.Contains(md, "квантиль полосы") {
+		t.Errorf("напечатан квантиль, которого не мерили:\n%s", md)
+	}
+
+	// Непригодная полоса называет ПРИЧИНУ вместо чисел.
+	rep := sampleReport()
+	rep.Actors[0].Voice = Voice{Batch: archive.VoiceBatch{
+		Why: "полоса непригодна: 26 из 30 текстов короче порога объёма",
+	}}
+	md = rep.Actors[0].Voice.Batch.Why
+	if got := rep.Markdown(); !strings.Contains(got, md) {
+		t.Errorf("причина отказа не названа:\n%s", got)
+	}
+}
+
+// А померенный — даёт, и рядом с числом стоит портрет: ранг говорит «не
+// похоже», портрет говорит ЧЕМ.
+func TestMarkdownShowsBatchVoiceWithShape(t *testing.T) {
+	rep := sampleReport()
+	rep.Actors[0].Voice = Voice{
+		Batch: archive.VoiceBatch{
+			Runes: 1200, Used: 1150, Chunks: 2, Ranks: []int{800, 900}, Quants: []float64{0.4, 0.6},
+			Band: archive.VoiceBand{N: 25, Of: 9361, Usable: true},
+		},
+		Got:  archive.VoiceShape{Texts: 3, Runes: archive.Dist{Median: 140}},
+		Want: archive.VoiceShape{Texts: 200, Runes: archive.Dist{Median: 75}},
+	}
+	md := rep.Markdown()
+	// Медиана из двух берёт верхнюю — так же, как у ошибки задержки выше.
+	for _, want := range []string{"0.60", "900", "9361", "140", "75", "1150", "1200"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("в отчёте нет %q:\n%s", want, md)
 		}

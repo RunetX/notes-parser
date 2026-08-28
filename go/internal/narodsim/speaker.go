@@ -77,3 +77,46 @@ func speechOf(run *archive.VoiceRun) Speech {
 		Copy:     run.Best.Copy,
 	}
 }
+
+// Voice — итог мерки голоса по всем репликам прогона.
+//
+// Единица здесь ПАЧКА, а не реплика, и это не выбор удобства. Комментарий
+// донора медианой в 75 знаков — 73 символьные 3-граммы против порога в 300, за
+// которым ранг атрибуции шумит; полоса из таких текстов честно объявляет себя
+// непригодной, а BandQuantile у непригодной полосы возвращает ноль. Первый
+// платный прогон 28.08.2026 напечатал этот ноль как измерение («квантиль 0.00,
+// место 7932 из 9361») — приговор голосу, вынесенный измерителем, который в тот
+// момент ничего не мерил.
+type Voice struct {
+	Batch archive.VoiceBatch `json:"batch"`
+
+	// Got / Want — механический портрет нашего текста против донорского. Ранг
+	// говорит «не похоже», портрет говорит ЧЕМ: в том же прогоне реплики вышли
+	// длиннее донорской медианы, и в ранге этого было не видно.
+	Got  archive.VoiceShape `json:"got"`
+	Want archive.VoiceShape `json:"want"`
+}
+
+// Measurer — кто умеет померить голос. Оба метода здесь потому, что вопрос у
+// них один и тот же, заданный до и после: полоса отвечает «есть ли чем мерить»
+// ДО первого платного обращения, пачки — «что вышло» после.
+type Measurer interface {
+	// Band — полоса до первого обращения к модели: годится ли вообще мерить.
+	Band(ctx context.Context) (archive.VoiceBand, error)
+	Measure(ctx context.Context, texts []string) (Voice, error)
+}
+
+// Measure — пачки против пачек плюс портрет против портрета.
+func (s *VoiceSpeaker) Measure(ctx context.Context, texts []string) (Voice, error) {
+	kind := archive.VoiceKindComments
+	batch, err := s.Store.ScoreVoiceBatch(ctx, s.Card, kind, s.Req, texts)
+	if err != nil {
+		return Voice{}, err
+	}
+	return Voice{Batch: batch, Got: archive.MeasureTexts(texts, kind), Want: archive.CardShape(s.Card, kind)}, nil
+}
+
+// Band — полоса до первого обращения к модели: годится ли вообще мерить.
+func (s *VoiceSpeaker) Band(ctx context.Context) (archive.VoiceBand, error) {
+	return s.Store.VoiceBatchBand(ctx, s.Card, archive.VoiceKindComments, s.Req)
+}

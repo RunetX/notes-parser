@@ -198,23 +198,7 @@ func (s *Store) GenerateVoice(ctx context.Context, gen JSONGenerator, card *Voic
 	}
 	run.Stamp.Model = req.Model
 
-	v, err := s.newVoiceScorer(ctx, card.Genre, req.LexWeight, req.ActiveDays, req.MinAuthorNotes)
-	if err != nil {
-		return nil, err
-	}
-	// Анкеты берём У КАРТЫ, а не через identityMembers(identity): в solo-режиме
-	// карта — одна анкета, и ранг обязан считаться по ней же, иначе полоса меряет
-	// лучшую из склеенных (у кластера из 11 анкет медиана ранга вырождается в 1).
-	if len(card.Accounts) == 0 {
-		return nil, fmt.Errorf("voice: %s не резолвится в анкеты", card.Identity)
-	}
-	member := make(map[int64]bool, len(card.Accounts))
-	accIDs := make([]int64, 0, len(card.Accounts))
-	for _, a := range card.Accounts {
-		member[a.ID] = true
-		accIDs = append(accIDs, a.ID)
-	}
-	pn, err := s.profileNgrams(ctx, accIDs, card.Genre)
+	v, member, pn, err := s.voiceContext(ctx, card, req)
 	if err != nil {
 		return nil, err
 	}
