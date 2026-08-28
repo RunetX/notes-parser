@@ -684,3 +684,104 @@ smilePanel(document);
   });
   if (!document.hidden) open();
 })();
+
+// Картинка уходит на сервер СРАЗУ по выбору, а не вместе с заметкой.
+//
+// Что это чинит. Раньше файл ехал телом той же формы: человек писал заметку,
+// нажимал «Опубликовать» и минуту смотрел на молчащий экран (десять мегабайт с
+// телефона столько и ползут), а отказ — «это не картинка», «слишком много
+// точек» — приходил в самом конце, вместе с потерей выбранного файла: обратно
+// браузер его не отдаёт. Теперь закачка идёт, пока пишется текст, отказ виден
+// сразу, а форма отправляется с одним номером черновика (shotdraft.go).
+//
+// Кнопка отправки на время закачки неактивна — публиковать всё равно нечего,
+// пока картинка не доехала, а нажатие в этот момент отправило бы заметку без
+// неё.
+//
+// Разметку скрипт НЕ СОБИРАЕТ и здесь: карточку с превью и скрытым полем рисует
+// сервер (parts/shotdraft.gohtml), тот же шаблон, что ставит её на форму после
+// отказа публикации. Скрипт лишь кладёт присланное в готовый короб.
+//
+// Отказ этой дороги НЕ ломает прежнюю: если предзагрузка не удалась по сетевой
+// причине, выбор файла остаётся в поле, и он уедет телом формы, как раньше.
+(function () {
+  'use strict';
+
+  var form = document.querySelector('form.wform');
+  if (!form || !window.FormData || !window.XMLHttpRequest) return;
+
+  var input = form.querySelector('input[type=file][name=shot]');
+  var box = form.querySelector('.shotbox');
+  var wait = form.querySelector('.shotwait');
+  var bar = form.querySelector('.shotbar');
+  var send = form.querySelector('button[type=submit]');
+  if (!input || !box || !wait || !bar || !send) return;
+
+  var busy = false;
+
+  var idle = function () {
+    busy = false;
+    wait.hidden = true;
+    send.disabled = false;
+  };
+
+  // Отправлять, пока картинка едет, нечего: Enter в поле текста и второе
+  // нажатие кнопки — те же самые «опубликовать без неё».
+  form.addEventListener('submit', function (e) {
+    if (busy) e.preventDefault();
+  });
+
+  // «Убрать»: карточка уходит вместе со скрытым полем, и заметка публикуется
+  // без картинки. Сам черновик на сервере не трогаем — он вытеснится следующим
+  // выбором или протухнет сам; отдельный запрос ради этого не стоит того.
+  form.addEventListener('click', function (e) {
+    if (!e.target.closest) return;
+    if (e.target.closest('.shotdrop')) {
+      box.innerHTML = '';
+      input.value = '';
+    }
+  });
+
+  input.addEventListener('change', function () {
+    if (busy || !input.files || !input.files.length) return;
+    busy = true;
+    box.innerHTML = '';
+    bar.value = 0;
+    wait.hidden = false;
+    send.disabled = true;
+
+    var data = new FormData();
+    // CSRF первым полем — ровно как в разметке формы: порядок частей multipart
+    // это порядок в разметке, и токен обязан быть проверен до чтения файла.
+    var csrf = form.querySelector('input[name=csrf]');
+    if (csrf) data.append('csrf', csrf.value);
+    data.append('shot', input.files[0]);
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/shot');
+    xhr.setRequestHeader('Accept', 'text/html');
+    // Полоса — весь видимый смысл затеи: «загружается» без числа не отличается
+    // от «зависло», а именно им это раньше и выглядело.
+    xhr.upload.addEventListener('progress', function (e) {
+      if (e.lengthComputable) bar.value = Math.round((e.loaded / e.total) * 100);
+    });
+    xhr.addEventListener('load', function () {
+      // 200 — карточка с превью, 400 — отказ по самому файлу. И то и другое
+      // сервер прислал готовой разметкой, и в обоих случаях выбор из поля
+      // снимается: файл либо уже на сервере, либо негоден, и второй раз ехать
+      // ему незачем.
+      if (xhr.status === 200 || xhr.status === 400) {
+        box.innerHTML = xhr.responseText;
+        input.value = '';
+      }
+      // Прочее (сессия истекла, площадка занята, потолок частоты) — не про
+      // файл, а про нас: оставляем выбор в поле, чтобы он уехал обычной
+      // дорогой вместе с заметкой.
+      idle();
+    });
+    xhr.addEventListener('error', idle);
+    xhr.addEventListener('abort', idle);
+    xhr.addEventListener('timeout', idle);
+    xhr.send(data);
+  });
+})();

@@ -804,6 +804,29 @@ span.rxb { cursor: default; }
 .wact .alt { color: var(--meta); font-size: 13px; }
 .chk { font-size: 13px; color: var(--meta); display: flex; gap: 6px; align-items: center; }
 
+/* Приложенная картинка: полоса закачки и карточка с превью (shotdraft.go).
+   Обе строки нарисованы сервером заранее и скрыты — скрипт их только
+   показывает, поэтому без JS они молчат и ничего не занимают.
+
+   Превью НЕ во всю ширину формы: это не иллюстрация, а подтверждение выбора, и
+   рядом с ним обязаны помещаться слова о том, что уйдёт с заметкой. Отсюда же
+   потолок по высоте — вертикальный снимок с телефона иначе выдавил бы кнопку
+   «Опубликовать» за нижний край экрана. */
+.shotwait { font-size: 13px; color: var(--meta); display: flex; gap: 10px; align-items: center; margin: 0; }
+.shotwait progress { flex: 1; max-width: 16rem; height: 8px; }
+.shotbox:empty { display: none; }
+.shotbox { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.shotbox .fine { margin: 0; flex: 1; min-width: 12rem; }
+.shotprev {
+  max-width: 220px; max-height: 220px; width: auto; height: auto;
+  border: 1px solid var(--rule); border-radius: 3px; display: block;
+}
+.shotdrop {
+  font: inherit; font-size: 13px; padding: 2px 10px; margin-left: 6px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--card); color: var(--meta);
+}
+
 .compose { max-width: 44rem; }
 .compose .bad, .replybox .bad { margin: 10px 0 0; }
 

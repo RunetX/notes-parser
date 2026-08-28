@@ -45,8 +45,13 @@ const (
 //
 // Размеры здесь потому, что задавали их мы сами, а stdlib не умеет читать webp
 // и посчитать их заново не сможет.
+//
+// MIME нужен ровно одному месту — показу черновика (shotdraft.go): хранилище
+// определяет тип само по содержимому, и для публикации это поле не читает
+// никто. Держать его тут дешевле, чем снифать байты заново в момент отдачи.
 type Shot struct {
 	Data   []byte
+	MIME   string
 	Width  int
 	Height int
 }
@@ -60,6 +65,7 @@ func (s *Server) SetShots(c imgconv.Converter) {
 	}
 	s.shots = c
 	s.shotSem = make(chan struct{}, shotsInFlight)
+	s.drafts = newShotDrafts()
 }
 
 // takesShots — принимаем ли мы сейчас файлы. Спрашивают шаблон формы и роутер.
@@ -130,7 +136,57 @@ func (s *Server) takeShot(ctx context.Context, r *http.Request) (*Shot, string) 
 	if err != nil {
 		return nil, shotProblem(err)
 	}
-	return &Shot{Data: res.Data, Width: res.Width, Height: res.Height}, ""
+	return &Shot{Data: res.Data, MIME: res.MIME, Width: res.Width, Height: res.Height}, ""
+}
+
+// pickShot — картинка для публикации, откуда бы она ни пришла.
+//
+// Дорог ДВЕ, и вторая не заменяет первую, а обгоняет её. Со скриптом файл уже
+// уехал на сервер по выбору, и форма несёт лишь номер черновика; без скрипта
+// (старая вкладка, отключённый JS, отказавшая сеть) он приезжает телом формы,
+// ровно как раньше. Прежняя дорога обязана остаться рабочей — это условие
+// площадки, а не любезность.
+//
+// Файл СИЛЬНЕЕ черновика: если он в форме есть, значит человек приложил его
+// прямо сейчас, а номер в скрытом поле остался от прошлого выбора.
+//
+// Второе возвращаемое — номер использованного черновика. Он нужен вызывающему
+// дважды: убрать черновик после удачи и вернуть его на перерисованную форму
+// после отказа — иначе картинка терялась бы на каждом «слишком часто».
+func (s *Server) pickShot(ctx context.Context, r *http.Request, owner int64) (*Shot, string, string) {
+	if shot, problem := s.takeShot(ctx, r); shot != nil || problem != "" {
+		return shot, "", problem
+	}
+	id := r.FormValue(draftField)
+	if id == "" || s.drafts == nil {
+		return nil, "", ""
+	}
+	shot, ok := s.drafts.get(owner, id)
+	if !ok {
+		// Черновик протух или не пережил рестарт морды. Публиковать текст молча,
+		// без картинки, нельзя по тому же правилу, что и при негодном файле: её
+		// прикладывали осознанно.
+		return nil, "", "Картинка не дождалась отправки — приложите её заново."
+	}
+	return &shot, id, ""
+}
+
+// draftView — карточка черновика для шаблона. nil, если черновика нет.
+func draftView(shot *Shot, id string) *shotDraftView {
+	if shot == nil || id == "" {
+		return nil
+	}
+	return &shotDraftView{ID: id, Width: shot.Width, Height: shot.Height}
+}
+
+// hadFilePart — файл приехал ТЕЛОМ формы, а не номером черновика.
+//
+// От этого зависит одна строка на экране: «выберите файл заново» правдива
+// только для тела — предзагруженная картинка лежит на сервере и возвращается на
+// форму сама. Спрашивается разметка запроса, а не результат разбора: к моменту
+// отказа файл мог и не дойти до перекодировщика.
+func hadFilePart(r *http.Request) bool {
+	return r.MultipartForm != nil && len(r.MultipartForm.File[shotField]) > 0
 }
 
 // shotProblem переводит отказ перекодировщика в текст для человека. Числа в нём

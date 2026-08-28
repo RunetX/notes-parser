@@ -223,6 +223,12 @@ type Server struct {
 	// shotSem — очередь перекодирования. Отдельно от общего семафора морды:
 	// тот считает запросы, а этот — память (см. shotsInFlight).
 	shotSem chan struct{}
+	// drafts — предзагруженные картинки, ждущие своей заметки (shotdraft.go).
+	// Живут в памяти ПРОЦЕССА, а не в хранилище: файл, выбранный и не
+	// опубликованный, остался бы на диске навсегда — уборки каталога у площадки
+	// нет вовсе. Заводится вместе с перекодировщиком: без него класть туда
+	// нечего.
+	drafts *shotDrafts
 	// secure — куки помечаются Secure и получают префикс __Host-. Выводится из
 	// BaseURL: по http браузер такие куки просто отбросит, и разработка встала
 	// бы на ровном месте.
@@ -329,6 +335,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /new", s.handleCreateNote)
 	mux.HandleFunc("GET /n/{id}/edit", s.handleEditNote)
 	mux.HandleFunc("POST /n/{id}/edit", s.handleUpdateNote)
+	// Картинка уходит на сервер РАНЬШЕ заметки, по одному её выбору: форме
+	// остаётся номер черновика, а человеку — отказ, увиденный до того, как он
+	// написал текст (shotdraft.go). Без скрипта путь этот не зовётся вовсе, и
+	// файл едет телом формы, как раньше.
+	mux.HandleFunc("POST /shot", s.handleShotUpload)
+	mux.HandleFunc("GET /shot/{id}", s.handleShotFile)
 	// GET и POST по одному адресу: сервер отдаёт форму ответа и он же её
 	// принимает. Форма приходит ГОТОВОЙ строкой, как и живой добор, — второго
 	// способа собрать разметку у площадки не заводится (replyform.go).
@@ -477,7 +489,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // Совпадение считается по СЕГМЕНТАМ, а не по префиксу строки: «/consent» не
 // должен закрывать «/consents» — это опубликованные документы, и их читать
 // можно и нужно всем.
-var privateRoots = []string{"/me", "/events", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz"}
+var privateRoots = []string{"/me", "/events", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz", "/shot"}
 
 // privatePath — этот адрес роботам закрыт.
 func privatePath(p string) bool {

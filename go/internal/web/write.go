@@ -73,10 +73,16 @@ type composePage struct {
 	CanShot bool
 	// HasShot — у правимой заметки есть картинка, значит есть и «снять».
 	HasShot bool
-	// LostShot — отказ случился, когда файл уже был приложен. Браузер его не
+	// LostShot — отказ случился, когда файл ехал ТЕЛОМ формы. Браузер его не
 	// возвращает, и человеку надо сказать об этом прямо, а не оставить гадать,
 	// почему поле опустело.
+	//
+	// Со скриптом такого не бывает вовсе: файл уже лежит черновиком на сервере
+	// и приезжает обратно в Draft — ради этого предзагрузка и заводилась.
 	LostShot bool
+	// Draft — приложенная картинка, ждущая своей заметки (shotdraft.go). Стоит
+	// на форме и после отказа: отказ ядра не должен стоить человеку файла.
+	Draft *shotDraftView
 }
 
 // ---------------------------------------------------------------- новая заметка
@@ -120,7 +126,11 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	// транзакции и остаётся единственной, которой можно верить.
 	if multipart {
 		if err := s.wr.MayPublishNote(r.Context(), u.ID); err != nil {
-			s.composeProblem(w, r, err, "", false, true)
+			// Цена дешёвого отказа названа честно: тело ещё не прочитано, а
+			// значит форма перерисуется без набранного текста и без номера
+			// черновика. Читать десять мегабайт ради того, кому мы уже
+			// отказали, дороже — см. шапку MayPublishNote в ядре.
+			s.composeProblem(w, r, err, "", false, true, nil)
 			return
 		}
 		release, ok := s.takeShotSlot(w, r)
@@ -141,13 +151,13 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	body := r.FormValue("body")
 	anon := r.FormValue("anonymous") != ""
 
-	shot, problem := s.takeShot(r.Context(), r)
+	shot, draft, problem := s.pickShot(r.Context(), r, u.ID)
 	if problem != "" {
 		// Заметка НЕ публикуется. Опубликовать текст молча, без картинки, значит
 		// решить за человека, который её осознанно прикладывал.
 		s.render(w, r, http.StatusBadRequest, composePageName, composePage{
 			page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon,
-			Problem: problem, LostShot: true, CanShot: s.takesShots(),
+			Problem: problem, LostShot: hadFilePart(r), CanShot: s.takesShots(),
 		})
 		return
 	}
@@ -156,15 +166,21 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 		AuthorID: u.ID, Anonymous: anon, Body: body,
 	}, shot)
 	if err != nil {
-		s.composeProblem(w, r, err, body, anon, shot != nil)
+		s.composeProblem(w, r, err, body, anon, hadFilePart(r) && draft == "", draftView(shot, draft))
 		return
 	}
+	// Черновик прожил ровно до заметки. Убирается ПОСЛЕ удачи, а не при чтении:
+	// отказ ядра (бан, частота, истёкшая редакция согласия) картинки стоить не
+	// должен — на перерисованной форме она остаётся приложенной.
+	s.dropDraft(draft)
 	videoWarm(id, body)
 	http.Redirect(w, r, "/n/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
-// composeProblem перерисовывает форму с отказом, не теряя набранного текста.
-func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err error, body string, anon, hadShot bool) {
+// composeProblem перерисовывает форму с отказом, не теряя ни набранного текста,
+// ни приложенной картинки: предзагруженная возвращается карточкой, приехавшая
+// телом формы — увы, только словами о том, что её надо выбрать заново.
+func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err error, body string, anon, lost bool, draft *shotDraftView) {
 	status, problem := writeProblem(err)
 	if problem == "" {
 		s.oops(w, r, "публикация заметки", err)
@@ -172,7 +188,8 @@ func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err erro
 	}
 	s.render(w, r, status, composePageName, composePage{
 		page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon,
-		Problem: problem, LostShot: hadShot, CanShot: s.takesShots(),
+		Problem: problem, LostShot: lost, CanShot: s.takesShots(),
+		Draft: draft,
 	})
 }
 
@@ -266,12 +283,12 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 	// окном и с картинкой, которую он снимал.
 	dropShot := r.FormValue("drop_shot") != ""
 
-	shot, problem := s.takeShot(r.Context(), r)
+	shot, draft, problem := s.pickShot(r.Context(), r, u.ID)
 	if problem != "" {
 		// Ничего не меняется вовсе: сохранить текст молча, без картинки, значит
 		// решить за того, кто её осознанно прикладывал.
 		page := s.editForm(r, note, mode, body, problem)
-		page.LostShot = true
+		page.LostShot = hadFilePart(r)
 		s.render(w, r, http.StatusBadRequest, composePageName, page)
 		return
 	}
@@ -308,10 +325,12 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page := s.editForm(r, note, mode, body, problem)
-		page.LostShot = shot != nil
+		page.LostShot = hadFilePart(r) && draft == ""
+		page.Draft = draftView(shot, draft)
 		s.render(w, r, status, composePageName, page)
 		return
 	}
+	s.dropDraft(draft)
 	// Ролик, названный в новом тексте, показывается карточкой — но только когда
 	// превью уже лежит рядом. Правка подталкивает закачку ровно так же, как
 	// публикация: иначе карточку увидел бы не тот, кто пришёл читать первым.
