@@ -12,8 +12,10 @@ package narodsim
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 
 	"lovegw/internal/archive"
+	"lovegw/internal/narod"
 )
 
 // branchLimit — сколько строк разговора показывать модели. Двадцать: столько же
@@ -32,6 +34,32 @@ type VoiceSpeaker struct {
 	// Req — шаблон запроса: черновики, раунды, пороги. Mode и Thread
 	// подставляются на каждой точке.
 	Req archive.VoiceRequest
+
+	// Runes — разброс длины реплики у донора и зерно жребия по нему. Длина
+	// называется НА КАЖДУЮ реплику отдельно: разброс живёт между репликами, а
+	// не внутри одной, и промпт, просивший «обычную» длину, давал прогон, сбитый
+	// к середине (замер 28.08.2026 — медиана на треть выше донорской при p90 на
+	// четверть ниже, у всех трёх слепков).
+	Runes narod.Dist
+	Seed  uint64
+}
+
+// lengthSalt разводит жребий длины и жребий кубика: на одной и той же точке они
+// берут первое число из потока, и без соли длинная реплика приходилась бы ровно
+// на приход жителя.
+const lengthSalt = 0x9E3779B97F4A7C15
+
+// targetRunes — длина этой реплики жребием.
+//
+// Жребием, а не по настоящей реплике донора, хотя в реплее она известна: длина
+// это крупная часть стилометрии, и подсказав её, мы мерили бы голос по тексту,
+// которому половину ответа выдали заранее.
+func (s *VoiceSpeaker) targetRunes(commentID int64) int {
+	if s.Runes.Median <= 0 {
+		return 0
+	}
+	rng := rand.New(rand.NewPCG(s.Seed^lengthSalt, uint64(commentID)+1))
+	return int(quantileAt(s.Runes, rng.Float64()) + 0.5)
 }
 
 // Speak генерирует реплику на месте настоящей.
@@ -42,6 +70,7 @@ func (s *VoiceSpeaker) Speak(ctx context.Context, p SpeechPoint) (Speech, error)
 	req := s.Req
 	req.Mode = archive.VoiceModeComment
 	req.Thread = archive.ScriptVoiceThread(p.Script, p.Upto, p.Truth.ReplyTo, s.SelfIDs, branchLimit)
+	req.TargetRunes = s.targetRunes(p.Truth.ID)
 
 	run, err := s.Store.GenerateVoice(ctx, s.Gen, s.Card, req, p.Now)
 	if err != nil {

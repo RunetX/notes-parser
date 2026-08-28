@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"lovegw/internal/archive"
+	"lovegw/internal/narod"
 )
 
 // Удача переносится в отчёт целиком: квантиль это мерка голоса, ранг и
@@ -70,5 +71,58 @@ func TestVoiceSpeakerNeedsParts(t *testing.T) {
 	var s VoiceSpeaker
 	if _, err := s.Speak(t.Context(), SpeechPoint{}); err == nil {
 		t.Fatal("пустой speaker принят")
+	}
+}
+
+// Длина называется НА КАЖДУЮ реплику отдельно и берётся жребием по всему
+// разбросу донора, а не по его середине.
+//
+// Правило оплачено замером 28.08.2026: промпт просил «цель p25–p75» — то есть
+// среднюю половину, — и у всех трёх слепков медиана вышла на треть ВЫШЕ
+// донорской при p90 на четверть НИЖЕ. Разброс живёт МЕЖДУ репликами: каждая
+// реплика человека имеет какую-то одну длину, а «обычную» модель выбирала
+// каждый раз заново.
+func TestTargetRunesSpreadsAcrossReplies(t *testing.T) {
+	s := &VoiceSpeaker{Runes: narod.Dist{P10: 30, Median: 75, P90: 174, Max: 970}, Seed: 1}
+	var short, long int
+	for id := int64(1); id <= 200; id++ {
+		switch n := s.targetRunes(id); {
+		case n <= 0:
+			t.Fatalf("реплика %d получила длину %d", id, n)
+		case n < 60:
+			short++
+		case n > 150:
+			long++
+		}
+	}
+	// И короткие, и длинные обязаны встречаться: ради этого всё и заведено.
+	if short < 20 || long < 10 {
+		t.Errorf("разброса нет: коротких %d, длинных %d из 200", short, long)
+	}
+}
+
+// Жребий длины воспроизводим и НЕ совпадает с жребием кубика: без соли длинная
+// реплика приходилась бы ровно на приход жителя.
+func TestTargetRunesDeterministicAndDecorrelated(t *testing.T) {
+	s := &VoiceSpeaker{Runes: narod.Dist{P10: 30, Median: 75, P90: 174, Max: 970}, Seed: 1}
+	if a, b := s.targetRunes(42), s.targetRunes(42); a != b {
+		t.Errorf("жребий не воспроизводится: %d и %d", a, b)
+	}
+	same := 0
+	for id := int64(1); id <= 100; id++ {
+		if s.targetRunes(id) == (&VoiceSpeaker{Runes: s.Runes, Seed: 1 ^ lengthSalt}).targetRunes(id) {
+			same++
+		}
+	}
+	if same > 90 {
+		t.Errorf("соль не разводит потоки: совпадений %d из 100", same)
+	}
+}
+
+// Пустой замер длины молчит, а не выдумывает число.
+func TestTargetRunesEmpty(t *testing.T) {
+	s := &VoiceSpeaker{}
+	if got := s.targetRunes(1); got != 0 {
+		t.Errorf("по пустому разбросу получено %d", got)
 	}
 }

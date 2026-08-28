@@ -87,22 +87,28 @@ func chanceOf(card narod.Card, p DecisionPoint) (float64, narod.Dist) {
 // распределение подогнало бы хвост под формулу, а хвост здесь и есть содержание —
 // человек отвечает то через минуту, то через три часа.
 func sampleDist(d narod.Dist, u float64) time.Duration {
-	sec := func(f float64) time.Duration { return time.Duration(f * float64(time.Second)) }
+	return time.Duration(quantileAt(d, u) * float64(time.Second))
+}
+
+// quantileAt — само восстановление квантиля, без единиц измерения. Отдельно от
+// задержки, потому что тем же жребием берётся ДЛИНА реплики: у обеих величин
+// содержание в хвосте, а не в середине.
+func quantileAt(d narod.Dist, u float64) float64 {
 	switch {
 	case d.Median <= 0:
 		return 0
 	case u < 0.1:
-		return sec(lerp(0, float64(d.P10), u/0.1))
+		return lerp(0, float64(d.P10), u/0.1)
 	case u < 0.5:
-		return sec(lerp(float64(d.P10), float64(d.Median), (u-0.1)/0.4))
+		return lerp(float64(d.P10), float64(d.Median), (u-0.1)/0.4)
 	case u < 0.9:
-		return sec(lerp(float64(d.Median), float64(d.P90), (u-0.5)/0.4))
+		return lerp(float64(d.Median), float64(d.P90), (u-0.5)/0.4)
 	default:
 		top := float64(d.Max)
 		if top < float64(d.P90) {
 			top = float64(d.P90)
 		}
-		return sec(lerp(float64(d.P90), top, (u-0.9)/0.1))
+		return lerp(float64(d.P90), top, (u-0.9)/0.1)
 	}
 }
 

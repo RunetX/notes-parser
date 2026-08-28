@@ -126,8 +126,15 @@ func WriteVoiceBrief(w io.Writer, c *VoiceCard, kind string) error {
 		fmt.Fprintf(w, " (%s — %s)", sh.From, sh.To)
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Длина: медиана %d рун (p10 %d, p90 %d, макс %d) — цель %d–%d.\n",
-		sh.Runes.Median, sh.Runes.P10, sh.Runes.P90, sh.Runes.Max, sh.Runes.P25, sh.Runes.P75)
+	// Цели «p25–p75» здесь БОЛЬШЕ НЕТ, и это не сокращение текста. Межквартильный
+	// размах — это средняя половина, то есть промпт прямо просил писать в
+	// середине разброса; модель исполняла инструкцию, а замер 28.08.2026 читал
+	// исполнение как машинный след: у всех трёх слепков медиана вышла на треть
+	// ВЫШЕ донорской, а p90 на четверть НИЖЕ — разброс сжат к середине. Длина
+	// теперь задаётся на каждую реплику отдельно (VoiceRequest.TargetRunes), а
+	// здесь остаётся описание автора, каким оно и было.
+	fmt.Fprintf(w, "Длина: медиана %d рун (p10 %d, p90 %d, макс %d).\n",
+		sh.Runes.Median, sh.Runes.P10, sh.Runes.P90, sh.Runes.Max)
 	fmt.Fprintf(w, "Предложений: медиана %d; слов в предложении %.1f; длина слова %.1f; абзацев медиана %d.\n",
 		sh.Sentences.Median, sh.WordsPerSentence, sh.WordRunes, sh.Paragraphs.Median)
 	// РИТМ — главная цель. Ровный поток предложений одной длины читается как

@@ -111,3 +111,28 @@ func TestSpreadPicksShortList(t *testing.T) {
 		t.Errorf("на пустом списке %v", got)
 	}
 }
+
+// Заданная длина двигает и ГРАНИЦЫ приёмки: жребий берёт хвост распределения, а
+// рамка по разбросу автора отсекала бы как раз длинные реплики — то самое, ради
+// чего задание и заведено.
+func TestLengthBandFollowsTarget(t *testing.T) {
+	sh := VoiceShape{Runes: Dist{P10: 30, Median: 75, P90: 174, Max: 970}}
+
+	lo, hi := lengthBand(sh, VoiceRequest{})
+	if lo != 18 || hi != 278 {
+		t.Errorf("без задания рамка %d–%d, ожидалась 18–278", lo, hi)
+	}
+	// Длинный жребий прежней рамкой был бы забракован, новой — принят.
+	lo, hi = lengthBand(sh, VoiceRequest{TargetRunes: 400})
+	if lo != 160 || hi != 1000 {
+		t.Errorf("на задании 400 рамка %d–%d, ожидалась 160–1000", lo, hi)
+	}
+	// И короткий тоже: 30 знаков в прежнюю рамку попадали, но допуск теперь свой.
+	if lo, hi = lengthBand(sh, VoiceRequest{TargetRunes: 30}); lo != 12 || hi != 75 {
+		t.Errorf("на задании 30 рамка %d–%d, ожидалась 12–75", lo, hi)
+	}
+	// Пустой замер рамки не даёт вовсе — проверять нечем.
+	if lo, hi = lengthBand(VoiceShape{}, VoiceRequest{}); lo != 0 || hi != 0 {
+		t.Errorf("по пустому замеру рамка %d–%d", lo, hi)
+	}
+}

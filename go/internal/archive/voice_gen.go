@@ -50,6 +50,10 @@ type VoiceRequest struct {
 	MinAuthorNotes int
 	Control        string // вторая личность для контроля
 	Model          string // для марки артефакта
+
+	// TargetRunes — длина ИМЕННО ЭТОЙ реплики, выпавшая жребием из разброса
+	// автора. Ноль — прежнее поведение (цель разбросом), см. writeLengthTarget.
+	TargetRunes int
 }
 
 // VoiceDraft — черновик и всё, что о нём известно.
@@ -139,13 +143,15 @@ const voiceSystemComment = voiceSystemBase + `
 
 Пишешь КОММЕНТАРИЙ в живую ветку. Отвечаешь той реплике, что помечена
 «← отвечаем на эту». Обращение «Ник,» в начале НЕ пиши — его подставит сам
-инструмент. Комментарий короткий: держись медианы длины из измерений.`
+инструмент. Длина этой реплики названа в задании отдельным числом — целься в НЕГО,
+а не в привычную середину.`
 
 const voiceSystemCommentTop = voiceSystemBase + `
 
 Пишешь КОММЕНТАРИЙ первого уровня — реплику к самой заметке, а не ответ
 кому-то из уже написавших. Обращений по нику в начале не пиши вовсе: адресата
-здесь нет. Комментарий короткий: держись медианы длины из измерений.`
+здесь нет. Длина этой реплики названа в задании отдельным числом — целься в НЕГО,
+а не в привычную середину.`
 
 // voiceSchema — structured outputs Claude API. Ограничений массива (minItems/
 // maxItems) здесь быть не должно: API их не поддерживает и отвечает 400
@@ -404,11 +410,12 @@ func validateDraft(text string, card *VoiceCard, req VoiceRequest, kind string, 
 	}
 	sh := shapeOf(card, kind)
 	r := []rune(text)
-	if sh.Runes.P10 > 0 {
-		lo, hi := int(float64(sh.Runes.P10)*0.6), int(float64(sh.Runes.P90)*1.6)
-		if len(r) < lo || len(r) > hi {
-			return fmt.Sprintf("длина %d рун вне диапазона автора (%d–%d)", len(r), lo, hi)
+	if lo, hi := lengthBand(sh, req); hi > 0 && (len(r) < lo || len(r) > hi) {
+		if req.TargetRunes > 0 {
+			return fmt.Sprintf("длина %d рун мимо заданных %d (допуск %d–%d)",
+				len(r), req.TargetRunes, lo, hi)
 		}
+		return fmt.Sprintf("длина %d рун вне диапазона автора (%d–%d)", len(r), lo, hi)
 	}
 	if md := markdownHit(text); md != "" {
 		return "markdown в тексте (" + md + "), у автора такого нет"
@@ -661,6 +668,7 @@ func buildVoicePrompt(card *VoiceCard, req VoiceRequest, kind, feedback string) 
 	} else {
 		writeThreadBlock(&b, req.Thread)
 	}
+	writeLengthTarget(&b, card, req, kind)
 	fmt.Fprintf(&b, "Вариантов: %d.\n", draftsOf(req))
 
 	writeSamplesBlock(&b, card.Samples)
@@ -1069,4 +1077,51 @@ func quantileOff(n int, d Dist) string {
 		return fmt.Sprintf("%d рун — длиннее обычного (у автора %d–%d)", n, d.P25, d.P75)
 	}
 	return ""
+}
+
+// writeLengthTarget задаёт длину ЭТОЙ реплики.
+//
+// Разброс длины рождается МЕЖДУ репликами, а не внутри одной: человек пишет то
+// обрубком, то простынёй, и каждая его реплика по отдельности имеет какую-то
+// одну длину. Модель же пишет каждую реплику независимо и каждый раз целится в
+// «обычное» — оттого весь прогон и сбивался к середине.
+//
+// Поэтому число называется на каждый вызов и берётся ЖРЕБИЕМ из разброса
+// автора. Жребием, а не по настоящей реплике донора, хотя её длина в реплее
+// известна: длина — крупная часть стилометрии, и подсказав её, мы бы измеряли
+// голос по тексту, которому половину ответа выдали заранее.
+func writeLengthTarget(b *strings.Builder, card *VoiceCard, req VoiceRequest, kind string) {
+	sh := shapeOf(card, kind)
+	if req.TargetRunes > 0 {
+		fmt.Fprintf(b, "ДЛИНА ЭТОЙ РЕПЛИКИ: около %d знаков. Число выпало жребием из "+
+			"разброса автора — не подтягивай его к привычной середине: короткая реплика "+
+			"должна быть по-настоящему короткой, длинная по-настоящему длинной.\n",
+			req.TargetRunes)
+		return
+	}
+	if sh.Runes.Median > 0 {
+		fmt.Fprintf(b, "ДЛИНА: цель — весь разброс автора (%d–%d рун), а НЕ его середина.\n",
+			sh.Runes.P10, sh.Runes.P90)
+	}
+}
+
+// lengthBand — в каких пределах длина черновика ещё принимается.
+//
+// Когда длина задана на эту реплику, границы считаются ОТ НЕЁ, а не от разброса
+// автора, и это не придирка: жребий берёт и хвост распределения, а прежняя рамка
+// (p10×0.6 … p90×1.6) отсекала бы как раз длинные реплики — то есть ровно то,
+// ради появления чего задание и заведено. Допуск нарочно широкий: цель здесь
+// сдвинуть модель с её привычной середины, а не заставить попасть в знак.
+func lengthBand(sh VoiceShape, req VoiceRequest) (int, int) {
+	if req.TargetRunes > 0 {
+		lo := int(float64(req.TargetRunes) * 0.4)
+		if lo < 1 {
+			lo = 1
+		}
+		return lo, int(float64(req.TargetRunes) * 2.5)
+	}
+	if sh.Runes.P10 <= 0 {
+		return 0, 0
+	}
+	return int(float64(sh.Runes.P10) * 0.6), int(float64(sh.Runes.P90) * 1.6)
 }

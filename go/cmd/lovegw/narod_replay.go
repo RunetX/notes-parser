@@ -66,7 +66,7 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 	}
 	fmt.Fprintf(os.Stderr, "слепок %s (%s), тредов %d\n", o.actor, card.Persona.Nick, len(notes))
 
-	gen, err := replaySpeaker(ctx, ar, o, actorID)
+	gen, err := replaySpeaker(ctx, ar, o, actorID, card)
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ type replayGen struct {
 
 // replaySpeaker собирает генератор, если прогон платный; nil означает
 // бесплатный прогон, а не отсутствие настроек.
-func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID int64) (*replayGen, error) {
+func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID int64, card *narod.Card) (*replayGen, error) {
 	if !o.speak {
 		return nil, nil
 	}
@@ -231,6 +231,7 @@ func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID
 	return &replayGen{
 		speaker: &narodsim.VoiceSpeaker{
 			Store: ar, Gen: client, Card: vcard, SelfIDs: []int64{actorID},
+			Runes: card.Register.Runes, Seed: uint64(o.seed),
 			Req: archive.VoiceRequest{
 				Drafts: o.drafts, Rounds: o.rounds, Model: client.Model(),
 			},
