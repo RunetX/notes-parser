@@ -112,20 +112,16 @@ func peerMemory(ctx context.Context, w *World, actorID string, p MemoryPeer) (st
 
 // innerMemory — свои последние события: то, что случилось вне площадки.
 func innerMemory(ctx context.Context, w *World, actorID string) (string, error) {
-	all, err := w.Recall(ctx, actorID, 40)
+	all, err := w.RecallKind(ctx, actorID, JournalInner, memoryInner)
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	n := 0
 	for _, e := range all {
-		if e.Kind != JournalInner || strings.TrimSpace(e.Text) == "" {
+		if strings.TrimSpace(e.Text) == "" {
 			continue
 		}
 		fmt.Fprintf(&b, "— %s: %s\n", e.At.Format("02.01"), strings.TrimSpace(e.Text))
-		if n++; n >= memoryInner {
-			break
-		}
 	}
 	return b.String(), nil
 }

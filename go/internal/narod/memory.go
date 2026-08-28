@@ -102,6 +102,37 @@ func (w *World) Recall(ctx context.Context, actorID string, n int) ([]JournalEnt
 	return out, rows.Err()
 }
 
+// RecallKind — последние n записей ОДНОГО сорта, от новых к старым.
+//
+// Отдельным запросом, а не выборкой из Recall: сортов в журнале несколько, и
+// реплик там на порядки больше, чем событий жизни. Отфильтруй мы последние
+// сорок записей — у говорливого жителя в них не оказалось бы ни одного
+// внутреннего события, и он выглядел бы человеком, с которым никогда ничего не
+// происходит. В реплее этого не видно (реплики туда не пишутся), в бою было бы
+// видно сразу и объяснялось бы «моделью, которая забывает».
+func (w *World) RecallKind(ctx context.Context, actorID, kind string, n int) ([]JournalEntry, error) {
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT id, actor_id, at, kind, coalesce(note_id, 0), comment_id, text, meta
+		  FROM journal WHERE actor_id = ? AND kind = ? ORDER BY id DESC LIMIT ?`,
+		actorID, kind, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []JournalEntry
+	for rows.Next() {
+		var e JournalEntry
+		var at string
+		if err := rows.Scan(&e.ID, &e.ActorID, &at, &e.Kind, &e.NoteID, &e.CommentID,
+			&e.Text, &e.Meta); err != nil {
+			return nil, err
+		}
+		e.At, _ = time.Parse(time.RFC3339, at)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // Edge — отношение одного к другому. НАПРАВЛЕННОЕ: симпатия не взаимна по своей
 // природе, и пара, где один прощает, а второй помнит, — как раз то, ради чего
 // граф и заводится.

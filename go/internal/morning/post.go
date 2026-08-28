@@ -15,9 +15,14 @@ import (
 )
 
 // generateRetries — сколько раз переспрашиваем модель, прежде чем сдаться.
-// Столько же, сколько у амвона и у редактуры дайджеста: брак бывает разовым, а
-// причина брака уезжает в промпт, так что второй заход не слепой.
-const generateRetries = 3
+// Причина брака уезжает в промпт, так что заход не слепой.
+//
+// На одну попытку больше, чем у амвона: цена исчерпанных попыток тут другая. У
+// амвона это пропущенная реплика под чужой заметкой, каких за день десяток, а
+// здесь — УТРО, которого в этот день не будет вовсе. Замер 28.08.2026: правило
+// про час выхода забраковало три попытки подряд в одном прогоне из двух —
+// модель настойчиво шутит про «шесть утра», а на следующем заходе исправляется.
+const generateRetries = 4
 
 // Draft собирает поводы дня и просит модель написать заметку, НИЧЕГО не
 // публикуя. Стенд промпта: им же пользуется `lovegw morning draft`, и он обязан
@@ -35,6 +40,7 @@ func (s *Service) Draft(ctx context.Context, slot time.Time) (draft, []holidays.
 
 	in := promptInput{
 		Nick:     s.nick(ctx),
+		Hour:     slot.Hour(),
 		Weekday:  weekdays[int(slot.Weekday())],
 		DateWord: fmt.Sprintf("%d %s %d года", slot.Day(), months[int(slot.Month())-1], slot.Year()),
 		Facts:    facts,
@@ -46,6 +52,7 @@ func (s *Service) Draft(ctx context.Context, slot time.Time) (draft, []holidays.
 	cfg := validateConfig{
 		MinRunes: s.cfg.MinRunes, MaxRunes: s.cfg.MaxRunes, MaxLines: s.cfg.MaxLines,
 		Day: slot.Day(), Month: int(slot.Month()), Weekday: weekdays[int(slot.Weekday())],
+		Hour:  slot.Hour(),
 		Facts: facts,
 	}
 	d, err := s.ask(genCtx, morningSystem, buildPrompt(in), cfg)
@@ -142,6 +149,10 @@ func (s *Service) ask(ctx context.Context, system, base string, cfg validateConf
 			return d, nil
 		}
 		lastErr = err
+		// Забракованный текст едет в лог: причина без текста говорит, ЧТО
+		// не так, и молчит о том, на чём модель настаивает, — а стенд правится
+		// именно по этому.
+		s.log.Debug("утренняя заметка: брак", "причина", err, "попытка", attempt+1, "текст", d.Text)
 		if !retriable {
 			return draft{}, err
 		}

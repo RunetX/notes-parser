@@ -272,7 +272,7 @@ func factsFixture() []holidays.Occasion {
 func validCfg() validateConfig {
 	return validateConfig{
 		MinRunes: 50, MaxRunes: 1200, MaxLines: 18,
-		Day: 24, Month: 8, Weekday: "понедельник",
+		Day: 24, Month: 8, Weekday: "понедельник", Hour: 5,
 		Facts: factsFixture(),
 	}
 }
@@ -340,6 +340,17 @@ func TestValidate(t *testing.T) {
 		// закрытым списком, которым мы узнаём ЧУЖОЕ утро в ленте.
 		{"не поздоровались", draft{
 			Text: strings.Replace(ok, "Доброе утро! ", "Здравствуйте. ", 1), Used: used}, true},
+		// Час выхода: заметку читают в пять утра, и «в шесть утра» в ней
+		// читается как враньё (замечание владельца по заметке 313100).
+		{"чужой час как текущий", draft{
+			Text: strings.ReplaceAll(ok, "Что у вас сегодня?", "Подняли в шесть утра. Что у вас?"),
+			Used: used}, true},
+		{"свой час назвать можно", draft{
+			Text: strings.ReplaceAll(ok, "Что у вас сегодня?", "В пять утра тихо. Что у вас?"),
+			Used: used}, false},
+		{"чужой час с оговоркой", draft{
+			Text: strings.ReplaceAll(ok, "Что у вас сегодня?", "До семи утра ещё можно поспать. Что у вас?"),
+			Used: used}, false},
 		{"поводы не названы вовсе", draft{Text: ok, Used: nil}, true},
 		{"назван номер, а повода в тексте нет", draft{Text: ok, Used: []int{1, 2, 3, 4}}, true},
 	}

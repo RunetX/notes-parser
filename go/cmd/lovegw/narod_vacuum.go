@@ -142,14 +142,14 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 	reports := make([]narodsim.VacuumActorReport, 0, len(cast))
 	for _, c := range cast {
 		reports = append(reports, narodsim.VacuumActorReport{
-			UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID,
+			UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID, Band: c.band,
 		})
 	}
 	rep := narodsim.NewVacuumReport(model, uint64(o.seed), now, reports, runs)
 	// Голос меряется ПОСЛЕ серии и по всем текстам жителя разом: пачка — это
 	// подряд идущие реплики, и по одному треду их набирается меньше порога.
 	for i, c := range cast {
-		if c.voice == nil {
+		if c.voice == nil || !c.band.Usable {
 			continue
 		}
 		if rep.Actors[i].Voice, err = c.voice.Measure(ctx, rep.TextsOf(c.userID)); err != nil {
@@ -177,6 +177,9 @@ type vacActor struct {
 	userID int64
 	card   *narod.Card
 	voice  *narodsim.VoiceSpeaker // nil — прогон бесплатный
+	// band — годится ли мерить голос этого жителя. Спрашивается ДО первого
+	// запроса и в отчёт едет как есть: непригодная встаёт ВМЕСТО чисел.
+	band archive.VoiceBand
 }
 
 // speaker отдаёт говорящего так, чтобы nil-интерфейс не притворялся живым:
@@ -213,10 +216,19 @@ func loadVacuumCast(o replayOpts, tokens []string) ([]*vacActor, error) {
 
 // vacuumSpeakers подключает модель всему составу разом — либо никому.
 //
-// Полоса спрашивается у КАЖДОГО и ДО первого запроса: непригодная хоть у одного
-// останавливает прогон целиком. Иначе вышел бы отчёт, где у части жителей голос
-// измерен, а у части напечатан правдоподобный ноль, — и различить их в таблице
-// было бы нечем.
+// Полоса спрашивается у КАЖДОГО и ДО первого запроса — но останавливает прогон
+// теперь только тогда, когда она непригодна у ВСЕХ. Правило это правилось по
+// живому случаю 28.08.2026: у «Инженера Шурика 54» слой не узнаёт и настоящие
+// тексты автора (медиана места 5243 из 9361), и прежний порядок отменил из-за
+// этого весь прогон — вместе с миром, летописью и памятью, которым полоса не
+// нужна вовсе. Вопросы разные: «похож ли текст на донора» и «двинулся ли мир»,
+// и первый, оставшись без ответа, не отменяет второго.
+//
+// Чего нельзя по-прежнему — печатать вместо ответа ноль: у непригодной полосы
+// BandQuantile возвращает его молча. Поэтому причина едет в отчёт и встаёт
+// ВМЕСТО чисел (VacuumActorReport.Band), а прогон целиком отменяется, только
+// если мерить нечем ни у кого: тогда у платной половины не остаётся ни одной
+// проверки, и тратить на неё деньги — решение человека, а не умолчание.
 func vacuumSpeakers(ctx context.Context, ar *archive.Store, o replayOpts, cast []*vacActor) (string, *llm.Client, func() string, error) {
 	if !o.speak {
 		fmt.Fprintln(os.Stderr, "модель НЕ подключена (-speak) — реплики без текста, "+
@@ -227,19 +239,27 @@ func vacuumSpeakers(ctx context.Context, ar *archive.Store, o replayOpts, cast [
 	if err != nil {
 		return "", nil, nil, err
 	}
+	var usable int
 	for _, c := range cast {
 		if c.voice, err = replayVoice(ctx, ar, client, o, c.token, c.userID, c.card); err != nil {
 			return "", nil, nil, err
 		}
-		band, err := c.voice.Band(ctx)
-		if err != nil {
+		if c.band, err = c.voice.Band(ctx); err != nil {
 			return "", nil, nil, err
 		}
-		if !band.Usable {
-			return "", nil, nil, fmt.Errorf("мерить нечем у %s, к модели не пошли: %s", c.token, band.Why)
+		if !c.band.Usable {
+			fmt.Fprintf(os.Stderr, "полоса %s НЕПРИГОДНА (%s) — говорить будет, "+
+				"мерить голос не станем\n", c.token, c.band.Why)
+			continue
 		}
+		usable++
 		fmt.Fprintf(os.Stderr, "полоса %s: %d пачек, медиана места %d из %d\n",
-			c.token, band.N, band.Median, band.Of)
+			c.token, c.band.N, c.band.Median, c.band.Of)
+	}
+	if usable == 0 {
+		return "", nil, nil, fmt.Errorf("мерить голос нечем ни у кого из состава — " +
+			"к модели не пошли: платить за прогон, у которого не осталось ни одной " +
+			"проверки, надо решать руками")
 	}
 	return client.Model(), client, func() string { return client.Usage().String() }, nil
 }
