@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"lovegw/internal/archive"
+	"lovegw/internal/llm"
 	"lovegw/internal/narod"
 	"lovegw/internal/narodsim"
 )
@@ -45,7 +46,7 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 	}
 	fmt.Fprintf(os.Stderr, "состав %d, заметок %d\n", len(cast), len(notes))
 
-	model, usage, err := vacuumSpeakers(ctx, ar, o, cast)
+	model, client, usage, err := vacuumSpeakers(ctx, ar, o, cast)
 	if err != nil {
 		return err
 	}
@@ -54,12 +55,29 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 	if len(scripts) == 0 {
 		return fmt.Errorf("narod replay: не отработала ни одна заметка")
 	}
+	// Серия идёт ПО ВРЕМЕНИ: мир копится от треда к треду, и задом наперёд житель
+	// «помнил» бы разговор, которого в его прошлом ещё не было.
+	sortScripts(scripts)
 	// Темы заметок разбираются ОДИН раз на все зёрна: от броска они не зависят,
 	// а лексиконов дюжина и каждый — регэксп.
 	topics, err := noteTopics(scripts)
 	if err != nil {
 		return err
 	}
+
+	now := time.Now()
+	dir := filepath.Join(o.outDir, fmt.Sprintf("vacuum-%s", now.Format("20060102-150405")))
+
+	// Мир открывается ВСЕГДА, даже когда модели нет: знакомство считается по
+	// самому треду и копится даром, а летописец без модели просто молчит про
+	// симпатию. Так у бесплатного прогона остаётся половина мира, которая ему
+	// доступна, — и видно, что это именно половина.
+	world, err := openVacWorld(ctx, filepath.Join(dir, "world.db"),
+		chronicler(client), uint64(o.seed), cast, now)
+	if err != nil {
+		return err
+	}
+	defer world.Close()
 
 	var runs []*narodsim.VacuumRun
 	for i := range seedCount(o) {
@@ -82,15 +100,37 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 		// каждого зерна: перенеся её между зёрнами, мы дали бы второму прогону
 		// знакомства, которых в нём не случалось.
 		familiar := map[int64]map[int64]int{}
+		// Мир копится тоже ровно один раз, на первом зерне: он держится на словах
+		// реплик, а на прочих зёрнах слов нет вовсе. Пускать туда прогон без слов
+		// значило бы копить знакомства пятикратно и объявить их одним миром.
+		w := world
+		if i > 0 {
+			w = nil
+		}
 		for _, sc := range scripts {
-			run, err := narodsim.RunVacuum(ctx, sc, narodsim.VacuumOpts{
+			opts := narodsim.VacuumOpts{
 				Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak,
 				Topics: topics[sc.NoteID], Familiar: familiar,
-			})
+			}
+			if w != nil {
+				if err := w.live(ctx, sc.Note.PublishedAt); err != nil {
+					return err
+				}
+				if opts.Feel, err = w.feel(ctx); err != nil {
+					return err
+				}
+				opts.Recall = w.recall
+			}
+			run, err := narodsim.RunVacuum(ctx, sc, opts)
 			if err != nil {
 				return err
 			}
 			run.Seed = seed
+			if w != nil {
+				if err := w.chronicle(ctx, run); err != nil {
+					return err
+				}
+			}
 			fmt.Fprintf(os.Stderr, "  зерно %-3d заметка %-8d наших %-3d (в оригинале состав %-3d из %-4d)  "+
 				"заговорили %d/%d  шёл %.1f ч  %s\n",
 				seed, run.NoteID, run.Got.Replies, run.Want.Replies, run.OrigReplies,
@@ -99,7 +139,6 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 		}
 	}
 
-	now := time.Now()
 	reports := make([]narodsim.VacuumActorReport, 0, len(cast))
 	for _, c := range cast {
 		reports = append(reports, narodsim.VacuumActorReport{
@@ -118,7 +157,9 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 		}
 	}
 
-	dir := filepath.Join(o.outDir, fmt.Sprintf("vacuum-%s", now.Format("20060102-150405")))
+	if rep.World, err = world.summary(ctx); err != nil {
+		return err
+	}
 	if err := narodsim.WriteVacuumReport(dir, rep); err != nil {
 		return err
 	}
@@ -176,31 +217,31 @@ func loadVacuumCast(o replayOpts, tokens []string) ([]*vacActor, error) {
 // останавливает прогон целиком. Иначе вышел бы отчёт, где у части жителей голос
 // измерен, а у части напечатан правдоподобный ноль, — и различить их в таблице
 // было бы нечем.
-func vacuumSpeakers(ctx context.Context, ar *archive.Store, o replayOpts, cast []*vacActor) (string, func() string, error) {
+func vacuumSpeakers(ctx context.Context, ar *archive.Store, o replayOpts, cast []*vacActor) (string, *llm.Client, func() string, error) {
 	if !o.speak {
 		fmt.Fprintln(os.Stderr, "модель НЕ подключена (-speak) — реплики без текста, "+
-			"мерится только форма разговора, бесплатно")
-		return o.model, nil, nil
+			"мерится только форма разговора и мир не двигается, бесплатно")
+		return o.model, nil, nil, nil
 	}
 	client, err := replayClient(o)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	for _, c := range cast {
 		if c.voice, err = replayVoice(ctx, ar, client, o, c.token, c.userID, c.card); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		band, err := c.voice.Band(ctx)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		if !band.Usable {
-			return "", nil, fmt.Errorf("мерить нечем у %s, к модели не пошли: %s", c.token, band.Why)
+			return "", nil, nil, fmt.Errorf("мерить нечем у %s, к модели не пошли: %s", c.token, band.Why)
 		}
 		fmt.Fprintf(os.Stderr, "полоса %s: %d пачек, медиана места %d из %d\n",
 			c.token, band.N, band.Median, band.Of)
 	}
-	return client.Model(), func() string { return client.Usage().String() }, nil
+	return client.Model(), client, func() string { return client.Usage().String() }, nil
 }
 
 // vacuumNotes — заметки серии: заданные руками либо подобранные по составу.

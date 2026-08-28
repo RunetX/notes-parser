@@ -85,6 +85,17 @@ type VacuumOpts struct {
 	// nil: тогда все друг другу незнакомы, и это законное начало мира, а не
 	// отсутствие данных.
 	Familiar map[int64]map[int64]int
+
+	// Feel — как жители относятся друг к другу на НАЧАЛО треда: [-1..+1]
+	// (narod.Edge.Tone). Снимок, а не живая карта: симпатию называет летописец,
+	// прочитав закончившийся разговор, — то есть внутри треда ей меняться неоткуда.
+	Feel map[int64]map[int64]float64
+
+	// Recall — что житель помнит про названных людей, готовым блоком для промпта.
+	// Замыканием, а не миром: харнесс обязан гоняться там, где базы мира нет вовсе
+	// (тесты, чужая машина), и знать про SQLite ему незачем. nil — реплика
+	// пишется по одному разговору.
+	Recall func(ctx context.Context, actor int64, peers []int64) (string, error)
 }
 
 const vacuumMaxReplies = 300
@@ -201,6 +212,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 		if err := st.roll(ctx, byActor[id], DecisionPoint{
 			Now: t0, Actor: id, NoteID: sc.NoteID, Topics: o.Topics, TriggerID: 0, Trigger: sc.Note.Text,
 			Author: sc.Note.AuthorID, Nick: sc.Note.AuthorNick,
+			Tone: o.Feel[id][sc.Note.AuthorID],
 		}, t0); err != nil {
 			return nil, err
 		}
@@ -316,6 +328,7 @@ func (st *vacState) say(ctx context.Context, at time.Time, ev vacEvent, t0 time.
 			Now: at, Actor: id, NoteID: st.got.NoteID, TriggerID: c.ID, Trigger: c.Text,
 			Author: c.AuthorID, Nick: c.AuthorNick,
 			Addressed:   c.TargetID == id,
+			Tone:        st.o.Feel[id][c.AuthorID],
 			Seen:        len(st.got.Comments),
 			Said:        st.said[id] + st.pending[id],
 			Familiarity: st.familiar[id][c.AuthorID],
@@ -337,9 +350,13 @@ func (st *vacState) speak(ctx context.Context, c *archive.ScriptComment, at time
 		st.run.Skipped++
 		return nil
 	}
+	memory, err := st.recall(ctx, c.AuthorID)
+	if err != nil {
+		return err
+	}
 	s, err := sp.Speak(ctx, SpeechPoint{
 		Now: at, Actor: c.AuthorID, Script: st.got, Upto: len(st.got.Comments),
-		Slot: c.ID, ReplyTo: c.ReplyTo,
+		Slot: c.ID, ReplyTo: c.ReplyTo, Memory: memory,
 	})
 	if err != nil {
 		return fmt.Errorf("реплика %d жителя %d: %w", c.ID, c.AuthorID, err)
@@ -351,6 +368,32 @@ func (st *vacState) speak(ctx context.Context, c *archive.ScriptComment, at time
 	c.Text = s.Got
 	st.run.Speeches++
 	return nil
+}
+
+// recall — что житель помнит про тех, кто в этом разговоре уже говорил.
+//
+// Спрашивается ПО УЧАСТНИКАМ, а не по всему составу: память про человека, ещё
+// не сказавшего ни слова, — это подсказка о том, кто сейчас придёт, и реплика
+// начала бы отвечать на несказанное. Автор заметки в список входит всегда: он
+// уже сказал — самой заметкой.
+func (st *vacState) recall(ctx context.Context, actor int64) (string, error) {
+	if st.o.Recall == nil {
+		return "", nil
+	}
+	seen := map[int64]bool{actor: true}
+	peers := []int64{}
+	if a := st.got.Note.AuthorID; a != 0 && !seen[a] {
+		seen[a] = true
+		peers = append(peers, a)
+	}
+	for _, c := range st.got.Comments {
+		if seen[c.AuthorID] {
+			continue
+		}
+		seen[c.AuthorID] = true
+		peers = append(peers, c.AuthorID)
+	}
+	return st.o.Recall(ctx, actor, peers)
 }
 
 // shapeOf снимает форму разговора по составу cast.

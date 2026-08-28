@@ -61,6 +61,15 @@ type VoiceRequest struct {
 	// долей в промпте одной репликой выразиться не может — модель либо ставит
 	// эмодзи всегда, либо, как вышло на замере, не ставит вовсе.
 	Emoji *bool
+
+	// Memory — что автор помнит про людей в этом разговоре и про себя, готовым
+	// блоком. Пусто — прежнее поведение: реплика пишется по одному треду.
+	//
+	// Готовым блоком, а не структурой, потому что собирает его тот, у кого есть
+	// мир (эпик «народ»), а архиву про граф отношений знать нечего: здесь он
+	// вставляется в промпт и только. Обратное — тянуть narod в archive — сломало
+	// бы и слои, и `personas voice`, которому память не нужна вовсе.
+	Memory string
 }
 
 // VoiceDraft — черновик и всё, что о нём известно.
@@ -673,6 +682,13 @@ func voiceFeedback(drafts []VoiceDraft, card *VoiceCard, kind string) string {
 func buildVoicePrompt(card *VoiceCard, req VoiceRequest, kind, feedback string) string {
 	var b strings.Builder
 	_ = WriteVoiceBrief(&b, card, kind)
+
+	// Память идёт ДО разговора: человек входит в тред, уже зная, кто здесь и что
+	// у него с этими людьми было, и читает чужие слова сквозь это знание. Подай
+	// её после треда — и она превратится в задание «а теперь вспомни».
+	if strings.TrimSpace(req.Memory) != "" {
+		b.WriteString(req.Memory)
+	}
 
 	if req.Mode == VoiceModeNote {
 		b.WriteString("\n=== ЗАДАНИЕ ===\n")

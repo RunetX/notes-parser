@@ -422,6 +422,39 @@ func (r ReplyRate) FamiliarLift(prior int, toHim bool) (float64, bool) {
 	return got / avg, true
 }
 
+// FamiliarSpan — во сколько раз знакомство поднимает отклик в САМОМ сильном
+// своём случае: замеренный размах рычага «кто говорит».
+//
+// Нужен он не сам по себе, а как ПОТОЛОК другому рычагу — отношению. Симпатию
+// в архиве замерить нельзя вовсе: там видно, что человек написал, и не видно,
+// как он к собеседнику относился. Но сказать «отношение решает не больше, чем
+// решает знакомство» — можно, и это не догадка: знакомство и есть след того же
+// самого («мы уже разговаривали, и я вернулся»), только доступный счёту.
+//
+// Отсюда разделение труда, которое и делает рычаг честным: РАЗМАХ берётся из
+// замера, а модель называет одно лишь НАПРАВЛЕНИЕ и долю размаха. Придумано
+// здесь ровно то, чего в архиве нет и быть не может, — знак.
+func (r ReplyRate) FamiliarSpan(toHim bool) (float64, bool) {
+	avg, ok := averageRate(r.Familiar, toHim)
+	if !ok || avg <= 0 {
+		return 1, false
+	}
+	best := avg
+	for _, b := range r.Familiar {
+		chances, answers := b.Chances, b.Answers
+		if toHim {
+			chances, answers = b.ToHimChances, b.ToHimAnswers
+		}
+		if chances < RateMinChances {
+			continue
+		}
+		if got := float64(answers) / float64(chances); got > best {
+			best = got
+		}
+	}
+	return best / avg, true
+}
+
 // averageRate — отклик по всем корзинам разом: знаменатель множителя.
 func averageRate(buckets []RateBucket, toHim bool) (float64, bool) {
 	var chances, answers int

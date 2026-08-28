@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -255,7 +257,8 @@ func (w *World) AddEpisode(ctx context.Context, e Episode) (int64, error) {
 func (w *World) EpisodesOf(ctx context.Context, src, dst string, n int) ([]Episode, error) {
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT id, src, dst, at, kind, summary, comment_ids, coalesce(note_id, 0), compressed
-		  FROM episodes WHERE src = ? AND dst = ? ORDER BY id DESC LIMIT ?`, src, dst, n)
+		  FROM episodes WHERE src = ? AND dst = ? AND compressed = 0
+		 ORDER BY id DESC LIMIT ?`, src, dst, n)
 	if err != nil {
 		return nil, err
 	}
@@ -357,4 +360,115 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// EpisodeCap — сколько случаев пара помнит поимённо. Дальше старые
+// сворачиваются в выжимку: в промпт уходят последние, а история пары длиной в
+// год иначе вытеснила бы оттуда сам разговор.
+const EpisodeCap = 12
+
+// CompactEpisodes сворачивает старые случаи пары в одну выжимку.
+//
+// Сжатие НИЧЕГО НЕ СТИРАЕТ и ничего не переписывает — оно ПОМЕЧАЕТ: свёрнутые
+// строки остаются в таблице как были, просто перестают идти в промпт. Иначе
+// пришлось бы выбирать между двумя одинаково плохими вещами: либо промпт растёт
+// без предела, либо свидетельство о том, что между людьми было, уничтожается
+// ради экономии места.
+//
+// Выжимку пишет КОД, а не модель, и это тот же довод, по которому знакомство
+// считается, а не оценивается: «сцепились четырежды с марта по май» — это
+// арифметика, и в ней нельзя ни соврать, ни приукрасить. Модель, пересказавшая
+// дюжину поводов одним абзацем, через год давала бы персонажу воспоминание,
+// которого не было ни в одном треде.
+func (w *World) CompactEpisodes(ctx context.Context, src, dst string, now time.Time) error {
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT id, at, kind FROM episodes
+		 WHERE src = ? AND dst = ? AND compressed = 0 AND kind <> ?
+		 ORDER BY id DESC`, src, dst, EpisodeDigest)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id   int64
+		at   time.Time
+		kind string
+	}
+	var all []row
+	for rows.Next() {
+		var r row
+		var at string
+		if err := rows.Scan(&r.id, &at, &r.kind); err != nil {
+			rows.Close()
+			return err
+		}
+		r.at, _ = time.Parse(time.RFC3339, at)
+		all = append(all, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(all) <= EpisodeCap {
+		return nil
+	}
+	old := all[EpisodeCap:] // ORDER BY id DESC — значит здесь самые давние
+
+	kinds := map[string]int{}
+	first, last := old[len(old)-1].at, old[0].at
+	ids := make([]any, 0, len(old))
+	for _, r := range old {
+		kinds[r.kind]++
+		ids = append(ids, r.id)
+	}
+	names := make([]string, 0, len(kinds))
+	for k := range kinds {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for i, k := range names {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s %d", k, kinds[k])
+	}
+	summary := fmt.Sprintf("%s — с %s по %s",
+		b.String(), first.Format("02.01.2006"), last.Format("02.01.2006"))
+
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // откат после Commit — no-op
+
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE episodes SET compressed = 1 WHERE id IN ("+marks+")", ids...); err != nil {
+		return fmt.Errorf("свёртка %s→%s: %w", src, dst, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO episodes (src, dst, at, kind, summary, comment_ids, note_id, compressed)
+		VALUES (?, ?, ?, ?, ?, '[]', NULL, 0)`,
+		src, dst, fmtTime(now), EpisodeDigest, summary); err != nil {
+		return fmt.Errorf("выжимка %s→%s: %w", src, dst, err)
+	}
+	return tx.Commit()
+}
+
+// Tone — как одно число: [-1..+1], где минус это «раздражает», плюс «нравится».
+//
+// Одним числом потому, что кубик спрашивает у отношения ровно одно: тянет к
+// этому человеку или отталкивает. Обе шкалы при этом остаются раздельными в
+// базе — они и правда не концы одной, — но решение «влезать ли в его разговор»
+// принимается по их разности, и складывать её каждый раз заново у зовущего
+// значило бы завести второе место, где живёт смысл шкал.
+func (e Edge) Tone() float64 {
+	t := (e.Sympathy - e.Irritation) / EdgeScale
+	switch {
+	case t > 1:
+		return 1
+	case t < -1:
+		return -1
+	}
+	return t
 }
