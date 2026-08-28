@@ -46,6 +46,16 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 	}
 	fmt.Fprintf(os.Stderr, "состав %d, заметок %d\n", len(cast), len(notes))
 
+	// Кривая тишины снимается ОДИН раз на прогон и по всему корпусу, а не по
+	// подобранным заметкам: «через сколько разговор считается кончившимся» —
+	// свойство площадки, а не темы. Секунда на три тысячи тредов.
+	fade, err := ar.MineDecay(ctx, 3000, 2)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "кривая тишины: %d тредов, после часа молчания продолжаются %.0f %%\n",
+		fade.Threads, hazardPct(fade, time.Hour))
+
 	model, client, usage, err := vacuumSpeakers(ctx, ar, o, cast)
 	if err != nil {
 		return err
@@ -110,7 +120,7 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 		for _, sc := range scripts {
 			opts := narodsim.VacuumOpts{
 				Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak,
-				Topics: topics[sc.NoteID], Familiar: familiar,
+				Topics: topics[sc.NoteID], Familiar: familiar, Hazard: fade.Hazard,
 			}
 			if w != nil {
 				if err := w.live(ctx, sc.Note.PublishedAt); err != nil {
@@ -352,4 +362,17 @@ func hotNotes(ctx context.Context, ar *archive.Store, ids []int64, o replayOpts)
 			"меньше, чем просили\n", silent)
 	}
 	return out, nil
+}
+
+// hazardPct — доля продолжений после тишины такой длины, в процентах. Нужна
+// одной строке лога: цифра говорит, что кривая снялась не пустой.
+func hazardPct(c archive.DecayCurve, d time.Duration) float64 {
+	p := 100.0
+	for _, h := range c.Hazard {
+		if d.Seconds() < float64(h.SilenceSec) {
+			break
+		}
+		p = h.P * 100
+	}
+	return p
 }

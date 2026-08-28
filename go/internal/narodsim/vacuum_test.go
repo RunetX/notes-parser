@@ -357,3 +357,85 @@ func TestBranchingCountsRootsApart(t *testing.T) {
 		t.Errorf("разрастание пустого треда %.2f, ожидался ноль", got)
 	}
 }
+
+// Тишина убивает тред, и правило это ЗАМЕРЕНО, а не поставлено от руки:
+// `archive.MineDecay` по 2981 треду говорит, что после часа молчания разговор
+// продолжается в половине случаев, после трёх — в четверти, после двенадцати —
+// в пяти процентах.
+//
+// Тест закрепляет три вещи. Первая — ступенька: между корзинами величина не
+// интерполируется, берётся последняя пройденная. Вторая — короткая тишина не
+// убивает вовсе (там живёт обычный ход беседы). Третья и главная — без кривой
+// (Hazard == nil) тред не умирает от тишины совсем, и это законный режим для
+// харнесса без archive.db, но НЕ для калибровки: замер 29.08.2026 показал, что
+// без неё девять десятых реплик набирались к 11,3 ч при настоящих 1,7–7,1 —
+// реплика с хвоста распределения задержек воскрешала затихший тред.
+func TestHazardIsAStaircase(t *testing.T) {
+	hz := []archive.DecayHazard{
+		{SilenceSec: 720, P: 0.756},
+		{SilenceSec: 3600, P: 0.502},
+		{SilenceSec: 10800, P: 0.256},
+	}
+	cases := []struct {
+		silence time.Duration
+		want    float64
+	}{
+		{time.Minute, 1},          // короче первой корзины — не убивает
+		{11 * time.Minute, 1},     // всё ещё короче
+		{12 * time.Minute, 0.756}, // ровно на пороге — корзина уже действует
+		{40 * time.Minute, 0.756}, // между корзинами берётся ПРОЙДЕННАЯ
+		{2 * time.Hour, 0.502},    //
+		{50 * time.Hour, 0.256},   // за последней корзиной — она же
+	}
+	for _, c := range cases {
+		if got := hazardAt(hz, c.silence); got != c.want {
+			t.Errorf("тишина %s: %.3f, ожидалось %.3f", c.silence, got, c.want)
+		}
+	}
+	if got := hazardAt(nil, time.Hour); got != 1 {
+		t.Errorf("без замера тред от тишины не умирает: %.3f", got)
+	}
+}
+
+// Тред, затихший надолго, не воскресает: реплика, назначенная на десятый час,
+// не имеет права снова завести разговор и потянуть за собой каскад.
+//
+// Проверяется поведением прогона, а не таблицей: правило живёт в цикле вакуума,
+// и таблица подтвердила бы только арифметику hazardAt. Кривая здесь жёсткая
+// (после часа тишины — ноль продолжений), потому что тест про МЕХАНИЗМ; сама
+// величина замерена и живёт в archive.
+func TestVacuumSilenceEndsTheThread(t *testing.T) {
+	card := measuredCard()
+	// Задержки длинные и почти без разброса: первая волна приходит через час, и
+	// дальше каждый ответ — ещё через час. Без тормоза такой тред идёт до
+	// горизонта.
+	card.Latency.ToThreadSec = narod.Dist{P10: 3600, Median: 3600, P90: 3600, Max: 3600}
+	card.Latency.ToReplySec = narod.Dist{P10: 3600, Median: 3600, P90: 3600, Max: 3600}
+	card.Dice = narod.DiceParams{ComeToNote: 1, ReplyMention: 1, ReplyOther: 1, MaxPerThread: 20}
+
+	run := func(hz []archive.DecayHazard) *VacuumRun {
+		t.Helper()
+		sc := soloScript()
+		r, err := RunVacuum(context.Background(), sc, VacuumOpts{
+			Actors: vacCast(7, card, 1), Hazard: hz,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	free := run(nil)
+	braked := run([]archive.DecayHazard{{SilenceSec: 1800, P: 0}})
+	if braked.Got.Replies >= free.Got.Replies {
+		t.Errorf("с тормозом реплик %d, без него %d — тормоз ничего не остановил",
+			braked.Got.Replies, free.Got.Replies)
+	}
+	if braked.Stopped != "тишина — разговор кончился" {
+		t.Errorf("тред кончился так: %q", braked.Stopped)
+	}
+	if braked.Got.SpanSec > 3600 {
+		t.Errorf("разговор шёл %d с при тишине в полчаса — тред всё-таки воскрес",
+			braked.Got.SpanSec)
+	}
+}

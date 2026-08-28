@@ -295,6 +295,7 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	gotPairs, wantPairs := 0, 0
 	var firsts, gaps, wfirsts, wgaps []int
 	byDepth := map[uint64]int{}
+	var halfs, p90s, whalfs, wp90s, spans, wspans []int
 	origReplies, origRoots := 0, 0
 	seeds := map[uint64]bool{}
 	for _, r := range rep.Runs {
@@ -335,6 +336,19 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		// бы медиану в «отвечают мгновенно» — при том, что отвечать было некому.
 		if r.Got.Gap.N > 0 {
 			gaps = append(gaps, r.Got.Gap.Median)
+		}
+		// Затухание собирается только с тредов, где реплики БЫЛИ: у пустого
+		// «половина набралась на нулевой секунде» — не быстрый разговор, а
+		// отсутствие разговора, и десяток таких нулей утянул бы медиану.
+		if r.Got.Replies > 0 {
+			halfs = append(halfs, r.Got.HalfSec)
+			p90s = append(p90s, r.Got.P90Sec)
+			spans = append(spans, r.Got.SpanSec)
+		}
+		if r.Seed == rep.Runs[0].Seed && r.Want.Replies > 0 {
+			whalfs = append(whalfs, r.Want.HalfSec)
+			wp90s = append(wp90s, r.Want.P90Sec)
+			wspans = append(wspans, r.Want.SpanSec)
 		}
 		if r.Want.Gap.N > 0 {
 			wgaps = append(wgaps, r.Want.Gap.Median)
@@ -385,6 +399,7 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	fmt.Fprintf(b, "| во что разрастается реплика (оригинал — тред целиком) | %.2f | %.2f |\n\n",
 		branching(got.Replies, got.Roots), branching(origReplies, origRoots))
 
+	writeVacuumFade(b, halfs, p90s, spans, whalfs, wp90s, wspans)
 	writeVacuumDecay(b, rep)
 	if got.Replies == 0 {
 		b.WriteString("**Жители не сказали ни слова.** Согласие с оригиналом при таком " +
@@ -512,4 +527,59 @@ func decayCell(v float64, ok bool, n int) string {
 		return "—"
 	}
 	return fmt.Sprintf("%.2f <sub>(%d)</sub>", v, n)
+}
+
+// writeVacuumFade — ЗАТУХАНИЕ: как быстро тред набрал свои реплики.
+//
+// Пункт DoD этапа 3, и до 29.08.2026 он единственный из списка не был сделан
+// вовсе: `archive.MineDecay` замерял форму разговора по корпусу и не был
+// подключён ни к чему.
+//
+// Мерка — не длительность, а ДОЛЯ срока, за которую набралась половина реплик.
+// Длительность у вакуума своя по устройству (жители на площадке всегда, живые
+// заходили по разу), а вот форма сравнима.
+//
+// Что здесь машина, а что нет, решает ЗАМЕР, а не круглое число: у полных
+// оригиналов тех же десяти заметок доля 0.33 (размах 0.03–0.44), у суженных до
+// нашего состава — 0.50. То есть 0.5 не признак «наполняется ровно», а то, что
+// выходит у двух десятков говорящих; сильнее в начало разговор оседает оттого,
+// что народу заходит больше. Сравнивать надо с суженным.
+//
+// Обычной паузой между репликами форма не ловится вовсе: 29.08.2026 у нас была
+// правильная пауза (3 мин против 2) при девяти десятых, набиравшихся к 11,3 ч
+// вместо настоящих 1,7–7,1 — тред тянул хвост, которого у живых нет.
+func writeVacuumFade(b *strings.Builder, halfs, p90s, spans, whalfs, wp90s, wspans []int) {
+	if len(halfs) == 0 || len(whalfs) == 0 {
+		return
+	}
+	got, want := archive.NewDist(spans), archive.NewDist(wspans)
+	fmt.Fprintf(b, "### Затухание: как тред набирал реплики\n\n")
+	fmt.Fprintf(b, "| | у нас | в оригинале (тот же состав) |\n|---|---:|---:|\n")
+	fmt.Fprintf(b, "| половина реплик набралась за, ч | %.1f | %.1f |\n",
+		hours(archive.NewDist(halfs).Median), hours(archive.NewDist(whalfs).Median))
+	fmt.Fprintf(b, "| девять десятых, ч | %.1f | %.1f |\n",
+		hours(archive.NewDist(p90s).Median), hours(archive.NewDist(wp90s).Median))
+	fmt.Fprintf(b, "| весь разговор шёл, ч | %.1f | %.1f |\n",
+		hours(got.Median), hours(want.Median))
+	fmt.Fprintf(b, "| **половина — какой долей срока** | **%.2f** | **%.2f** |\n\n",
+		share(archive.NewDist(halfs).Median, got.Median),
+		share(archive.NewDist(whalfs).Median, want.Median))
+	b.WriteString("Последняя строка и есть ФОРМА, и читать её надо против " +
+		"оригинала, а не против круглого числа: у полных оригиналов тех же десяти " +
+		"заметок она 0.33 (размах 0.03–0.44), у суженных до нашего состава — 0.50. " +
+		"Разница не в аккуратности, а в людях: чем больше народу заходит, тем " +
+		"сильнее разговор оседает в начало. Сравнивать надо с суженным — в нём " +
+		"столько же говорящих, сколько у нас.\n\n")
+}
+
+func hours(sec int) float64 { return float64(sec) / 3600 }
+
+// share — какой долей срока набралась половина реплик. Ноль у нулевого срока:
+// тред из одной реплики про форму не говорит ничего, и печатать у него 1.00
+// значило бы записать в «идеально ровные».
+func share(part, whole int) float64 {
+	if whole <= 0 {
+		return 0
+	}
+	return float64(part) / float64(whole)
 }

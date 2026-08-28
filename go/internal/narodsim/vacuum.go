@@ -32,6 +32,7 @@ package narodsim
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"time"
 
@@ -90,6 +91,12 @@ type VacuumOpts struct {
 	// (narod.Edge.Tone). Снимок, а не живая карта: симпатию называет летописец,
 	// прочитав закончившийся разговор, — то есть внутри треда ей меняться неоткуда.
 	Feel map[int64]map[int64]float64
+
+	// Hazard — замеренная кривая «после тишины длиной X разговор продолжился»
+	// (archive.MineDecay). nil — тред не умирает от тишины вовсе: это законное
+	// состояние для тестов и для харнесса без archive.db, но НЕ для калибровки —
+	// без неё девять десятых реплик набираются вдвое дольше, чем у живых.
+	Hazard []archive.DecayHazard
 
 	// Recall — что житель помнит про названных людей, готовым блоком для промпта.
 	// Замыканием, а не миром: харнесс обязан гоняться там, где базы мира нет вовсе
@@ -167,9 +174,21 @@ type VacuumShape struct {
 	First   archive.Dist `json:"first_sec"`
 	Gap     archive.Dist `json:"gap_sec"`
 	SpanSec int          `json:"span_sec"` // от заметки до последней реплики
-	InBurst int          `json:"in_burst"` // реплик в первые vacuumBurst
-	Depth   int          `json:"depth"`    // самая длинная цепочка ответов
-	Roots   int          `json:"roots"`    // реплик В ЗАМЕТКУ, а не в ответ кому-то
+
+	// HalfSec/P90Sec — ЗАТУХАНИЕ: за сколько тред набрал половину своих реплик и
+	// девять десятых. Пара, а не одно число, потому что вопрос в ФОРМЕ: у живого
+	// разговора половина приходит заметно раньше половины срока, а хвост тянется
+	// часами — тред, набирающий реплики ровно, выдаёт машину так же верно, как
+	// тред, уложившийся в десять минут (`BurstOnly`).
+	//
+	// Мерится от заметки, а не от первой реплики: «через сколько до нас дошли»
+	// — часть той же формы, и у вакуума она своя (жители сидят на площадке
+	// всегда, живые заходили по разу).
+	HalfSec int `json:"half_sec"`
+	P90Sec  int `json:"p90_sec"`
+	InBurst int `json:"in_burst"` // реплик в первые vacuumBurst
+	Depth   int `json:"depth"`    // самая длинная цепочка ответов
+	Roots   int `json:"roots"`    // реплик В ЗАМЕТКУ, а не в ответ кому-то
 }
 
 // vacEvent — намеченная реплика.
@@ -252,6 +271,26 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 		}
 		if len(got.Comments) >= maxReplies {
 			run.Stopped = fmt.Sprintf("потолок реплик (%d)", maxReplies)
+			break
+		}
+		// ТИШИНА УБИВАЕТ ТРЕД, и это замер, а не правило от руки: в архиве видно,
+		// что после часа молчания разговор продолжается лишь в половине случаев,
+		// после трёх — в четверти, после двенадцати — в пяти процентах
+		// (`archive.MineDecay`, корзины Hazard, 2981 тред).
+		//
+		// Без этого броска кубик не знает, что разговор бывает КОНЧЕН: у задержки
+		// длинный хвост, и одна реплика, выпавшая на десятый час, воскрешает
+		// затихший тред — а за ней тянутся новые точки решения. Замер 29.08.2026
+		// поймал это ровно так: голова у нас правильная (половина реплик за 2,1 ч
+		// против 0,7–4,4 у оригиналов), а девять десятых набирались к 11,3 ч при
+		// настоящих 1,7–7,1.
+		//
+		// Бросок стоит ЗДЕСЬ, а не в кубике жителя, потому что вопрос не про
+		// человека: «разговор кончился» — свойство треда, и каждому отвечать на
+		// него порознь значило бы спрашивать двадцать девять раз то, что спрошено
+		// однажды.
+		if o.Hazard != nil && !st.alive(at, lastSaid(got.Comments, t0), o.Hazard) {
+			run.Stopped = "тишина — разговор кончился"
 			break
 		}
 		_, ev, _ := st.q.Pop()
@@ -434,6 +473,7 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 		heard        = map[int64]bool{}
 		depth        = map[int64]int{}
 		last         time.Time
+		offs         []int // когда сказана каждая реплика, от заметки
 	)
 	for _, c := range cs {
 		if !cast[c.AuthorID] {
@@ -441,6 +481,7 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 		}
 		sh.Replies++
 		sh.ByActor[c.AuthorID]++
+		offs = append(offs, int(c.PublishedAt.Sub(t0).Seconds()))
 		if _, ok := first[c.AuthorID]; !ok {
 			first[c.AuthorID] = c.PublishedAt
 			firsts = append(firsts, int(c.PublishedAt.Sub(t0).Seconds()))
@@ -483,6 +524,13 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 	sh.First, sh.Gap = archive.NewDist(firsts), archive.NewDist(gaps)
 	if !last.IsZero() {
 		sh.SpanSec = int(last.Sub(t0).Seconds())
+	}
+	// Затухание: реплики идут по возрастанию времени, поэтому квантиль — элемент
+	// по счёту. Ранг берётся ВВЕРХ (ceil), как у всякой порядковой статистики:
+	// в треде из двух реплик половина набралась на ПЕРВОЙ, а не на второй.
+	if n := len(offs); n > 0 {
+		sh.HalfSec = offs[min((n+1)/2-1, n-1)]
+		sh.P90Sec = offs[min((9*(n+1))/10-1, n-1)]
 	}
 	return sh
 }
@@ -683,4 +731,52 @@ func branchBucketOf(pos int) int {
 		}
 	}
 	return len(branchBuckets) - 1
+}
+
+// lastSaid — когда в треде сказали в последний раз; заметка, если ещё не
+// говорили. Тишина считается от НЕЁ, а не от первой реплики: заметка, к которой
+// сутки никто не подошёл, — тот же кончившийся разговор.
+func lastSaid(cs []archive.ScriptComment, t0 time.Time) time.Time {
+	if len(cs) == 0 {
+		return t0
+	}
+	return cs[len(cs)-1].PublishedAt
+}
+
+// alive — бросок «разговор ещё продолжается» по замеренной кривой тишины.
+//
+// Ключ броска — МОМЕНТ, на который назначена реплика, а не порядковый номер
+// события: он не зависит ни от того, сколько раз мы уже спрашивали, ни от
+// порядка очереди, поэтому прогон остаётся повторяемым при любой правке
+// каскада. Тот же довод, по которому монетка жителя выводится из (зерно,
+// анкета, заметка, реплика), а не берётся из последовательного генератора.
+func (st *vacState) alive(at, last time.Time, hz []archive.DecayHazard) bool {
+	silence := at.Sub(last)
+	if silence <= 0 {
+		return true
+	}
+	p := hazardAt(hz, silence)
+	if p >= 1 {
+		return true
+	}
+	rng := rand.New(rand.NewPCG(st.run.Seed^uint64(st.run.NoteID)*noteSalt, uint64(silence.Seconds())+1))
+	return rng.Float64() < p
+}
+
+// hazardAt — доля продолжений после тишины такой длины.
+//
+// Корзины замера идут по возрастанию, и берётся ПОСЛЕДНЯЯ, чей порог тишина уже
+// перешла: между корзинами величина не интерполируется намеренно — замер
+// ступенчатый, а гладкая кривая между семью точками была бы дорисовкой, которой
+// в архиве нет. Тишина короче первой корзины разговор не убивает вовсе: там
+// живёт обычный ход беседы, а не её конец.
+func hazardAt(hz []archive.DecayHazard, silence time.Duration) float64 {
+	p := 1.0
+	for _, h := range hz {
+		if silence.Seconds() < float64(h.SilenceSec) {
+			break
+		}
+		p = h.P
+	}
+	return p
 }
