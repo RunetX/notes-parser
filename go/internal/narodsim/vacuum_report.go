@@ -385,6 +385,7 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	fmt.Fprintf(b, "| во что разрастается реплика (оригинал — тред целиком) | %.2f | %.2f |\n\n",
 		branching(got.Replies, got.Roots), branching(origReplies, origRoots))
 
+	writeVacuumDecay(b, rep)
 	if got.Replies == 0 {
 		b.WriteString("**Жители не сказали ни слова.** Согласие с оригиналом при таком " +
 			"прогоне не считается вовсе: числа вышли бы про то, чего не было.\n\n")
@@ -469,4 +470,46 @@ func branching(total, roots int) float64 {
 		return 0
 	}
 	return 1 - float64(roots)/float64(total)
+}
+
+// writeVacuumDecay — ТОРМОЗ: как разрастание падает по ходу треда.
+//
+// Стоит отдельной таблицей, а не строкой в портрете разговора, потому что
+// отвечает на другой вопрос. Портрет спрашивает «сколько сказано», тормоз —
+// «почему разговор кончился именно здесь», и одним средним числом второе не
+// объясняется: у оригинала кривая идёт 2.00 → 0.75, то есть тред разгоняется
+// и сам себя гасит, а среднее 0.82 не похоже ни на один её участок.
+//
+// Оригинал берётся ЦЕЛИКОМ по той же причине, что и корни: у суженного треда
+// дети чужих реплик исчезают вместе с их авторами.
+func writeVacuumDecay(b *strings.Builder, rep *VacuumReport) {
+	var got, want BranchDecay
+	for _, r := range rep.Runs {
+		got.Add(r.GotDecay)
+		if r.Seed == rep.Runs[0].Seed {
+			want.Add(r.OrigDecay)
+		}
+	}
+	fmt.Fprintf(b, "### Тормоз: во что разрастается реплика по ходу треда\n\n")
+	fmt.Fprintf(b, "| реплика по счёту | у нас | в оригинале (тред целиком) |\n|---|---:|---:|\n")
+	for i, name := range BranchNames {
+		g, gok := got.Rate(i)
+		w, wok := want.Rate(i)
+		if !gok && !wok {
+			continue
+		}
+		fmt.Fprintf(b, "| %s | %s | %s |\n", name, decayCell(g, gok, got.At[i]), decayCell(w, wok, want.At[i]))
+	}
+	b.WriteString("\nПока число больше единицы, разговор разгоняется; ниже — гаснет. " +
+		"Тред кончается там, где кривая переходит через единицу, а не там, где " +
+		"кто-то упёрся в потолок реплик.\n\n")
+}
+
+// decayCell — клетка кривой. Пустая корзина честно говорит, что её нет, а не
+// печатает ноль: ноль означал бы «реплики были, и на них не отвечали».
+func decayCell(v float64, ok bool, n int) string {
+	if !ok {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f <sub>(%d)</sub>", v, n)
 }

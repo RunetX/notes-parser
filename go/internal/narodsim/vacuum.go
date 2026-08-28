@@ -132,6 +132,10 @@ type VacuumRun struct {
 	// у Жаккара по парам: суженный оригинал годится не для каждого вопроса.
 	OrigRoots int `json:"orig_roots"`
 
+	// GotDecay/OrigDecay — кривые тормоза, наша и оригинала. См. BranchDecay.
+	GotDecay  BranchDecay `json:"got_decay"`
+	OrigDecay BranchDecay `json:"orig_decay"`
+
 	Thread   *archive.ThreadScript `json:"-"` // сгенерированный разговор целиком
 	Speeches int                   `json:"speeches"`
 	Rejected int                   `json:"rejected"`
@@ -210,6 +214,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 	t0 := sc.Note.PublishedAt
 	run := &VacuumRun{NoteID: sc.NoteID, Cast: cast, OrigReplies: len(sc.Comments)}
 	run.OrigRoots = rootsOf(sc.Comments)
+	run.OrigDecay = decayOf(sc.Comments)
 	got := &archive.ThreadScript{NoteID: sc.NoteID, Note: sc.Note, Edges: map[string]int{}}
 	run.Thread = got
 
@@ -260,6 +265,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 		inCast[id] = true
 	}
 	run.Got = shapeOf(got.Comments, inCast, t0)
+	run.GotDecay = decayOf(got.Comments)
 	run.Want = shapeOf(sc.Comments, inCast, t0)
 	return run, nil
 }
@@ -603,4 +609,78 @@ func rootsOf(cs []archive.ScriptComment) int {
 		}
 	}
 	return n
+}
+
+// branchBuckets — по счёту в треде, корзинами. Границы взяты по замеру
+// оригинала 29.08.2026: перелом («реплика рождает меньше одной») лежит между
+// сороковой и сотой, и вокруг него корзины стоят чаще.
+var branchBuckets = []int{1, 5, 15, 40, 100, 300, 1 << 30}
+
+// BranchNames — подписи корзин; печатает их отчёт, считает — BranchDecay.
+var BranchNames = []string{"1-я", "2–5", "6–15", "16–40", "41–100", "101–300", "300+"}
+
+// BranchDecay — ТОРМОЗ разговора: сколько ответов рождает реплика в
+// зависимости от того, какая она в треде по счёту.
+//
+// Средним разрастанием по треду (VacuumShape.Roots и branching) размер
+// объясняется только наполовину: у живого разговора это число не постоянно, а
+// падает по ходу. Замер оригинала на десяти конфликтных заметках 29.08.2026:
+// 2.00 у первой реплики, 1.90 у второй-пятой, 1.19 к пятнадцатой, 0.83 к сотой
+// и 0.75 в хвосте, — то есть тред РАЗГОНЯЕТСЯ (больше одной) и сам себя гасит,
+// а перелом лежит около шестидесятой реплики.
+//
+// Отсюда и смысл замера для эпика: растить состав, глядя на одно среднее
+// число, нельзя. Среднее лежит ниже единицы и в разговоре, который начался
+// взрывом, — и состав, подобранный по среднему, либо не разгонится вовсе, либо
+// разгонится и не затормозит. Сравнивать надо КРИВЫЕ.
+type BranchDecay struct {
+	At   []int `json:"at"`   // сколько реплик попало в корзину
+	Kids []int `json:"kids"` // сколько ответов они собрали
+}
+
+// Rate — сколько ответов на реплику в корзине; второе значение ложно, когда
+// корзина пуста: ноль у пустой корзины неотличим от честного «не отвечали».
+func (d BranchDecay) Rate(i int) (float64, bool) {
+	if i >= len(d.At) || d.At[i] == 0 {
+		return 0, false
+	}
+	return float64(d.Kids[i]) / float64(d.At[i]), true
+}
+
+// Add складывает две кривые: корзины у них одни и те же.
+func (d *BranchDecay) Add(o BranchDecay) {
+	if len(d.At) == 0 {
+		d.At = make([]int, len(branchBuckets))
+		d.Kids = make([]int, len(branchBuckets))
+	}
+	for i := range o.At {
+		d.At[i] += o.At[i]
+		d.Kids[i] += o.Kids[i]
+	}
+}
+
+// decayOf снимает кривую с треда. Считается по ПОЛНОМУ треду, без сужения до
+// состава: см. VacuumRun.OrigRoots — у сужения дети чужих реплик пропадают.
+func decayOf(cs []archive.ScriptComment) BranchDecay {
+	d := BranchDecay{At: make([]int, len(branchBuckets)), Kids: make([]int, len(branchBuckets))}
+	pos := make(map[int64]int, len(cs))
+	for i, c := range cs {
+		pos[c.ID] = i + 1
+		d.At[branchBucketOf(i+1)]++
+	}
+	for _, c := range cs {
+		if p, ok := pos[c.ReplyTo]; ok {
+			d.Kids[branchBucketOf(p)]++
+		}
+	}
+	return d
+}
+
+func branchBucketOf(pos int) int {
+	for i, up := range branchBuckets {
+		if pos <= up {
+			return i
+		}
+	}
+	return len(branchBuckets) - 1
 }
