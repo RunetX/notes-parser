@@ -189,6 +189,16 @@ type Card struct {
 	Kind    string   `json:"kind"` // snapshot | composite
 	Sources []string `json:"sources,omitempty"`
 
+	// Accounts — номера анкет, из которых снят слепок. У человека с альтами их
+	// несколько, и карточка тогда ложится под номером ЛИЧНОСТИ (p<id>), а не
+	// анкеты: `narod card u1496130` пишет файл `p1713.json`. Без этого списка
+	// найти карточку по анкете, под которой человек говорил в архивном треде,
+	// было бы нечем — а реплей знает его именно по ней.
+	//
+	// У композита пуст: там доноров несколько и смешаны они числами, так что
+	// «под какой анкетой он говорил» вопрос без ответа.
+	Accounts []int64 `json:"accounts,omitempty"`
+
 	Persona   Bio            `json:"persona"`
 	Register  Register       `json:"register"`
 	Vocab     []Word         `json:"vocab,omitempty"`

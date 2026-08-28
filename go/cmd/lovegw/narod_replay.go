@@ -184,14 +184,42 @@ func cardPath(dir, arg string) string {
 }
 
 // loadActorCard — карточка слепка из каталога (её кладёт `narod card`).
+//
+// Ищется сперва по имени файла, а если такого нет — ПО АНКЕТЕ среди всех
+// карточек каталога. Второй путь не удобство: у человека с альтами слепок
+// ложится под номером ЛИЧНОСТИ (`narod card u1496130` пишет `p1713.json`), а
+// реплей знает его по анкете, под которой он говорил в архивном треде. Без
+// этого команда отвечала бы «карточка не прочитана» на карточку, которую сама
+// же только что и сняла.
 func loadActorCard(dir, actor string) (*narod.Card, error) {
 	path := cardPath(dir, actor)
 	card, err := narod.LoadCard(path)
-	if err != nil {
-		return nil, fmt.Errorf("карточка %s не прочитана (снимите её `narod card %s`): %w",
-			path, actor, err)
+	if err == nil {
+		return &card, nil
 	}
-	return &card, nil
+	if id, e := strconv.ParseInt(strings.TrimPrefix(actor, "u"), 10, 64); e == nil {
+		if c, ok := cardByAccount(dir, id); ok {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("карточка %s не прочитана (снимите её `narod card %s`): %w",
+		path, actor, err)
+}
+
+// cardByAccount — карточка, в которую вошла анкета id.
+func cardByAccount(dir string, id int64) (*narod.Card, bool) {
+	cards, err := narod.LoadCards(dir)
+	if err != nil {
+		return nil, false
+	}
+	for i := range cards {
+		for _, acc := range cards[i].Accounts {
+			if acc == id {
+				return &cards[i], true
+			}
+		}
+	}
+	return nil, false
 }
 
 // replayNotes — треды прогона: заданные руками либо подобранные по донору.

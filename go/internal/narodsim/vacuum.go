@@ -120,11 +120,23 @@ type VacuumShape struct {
 	Spoke   []int64       `json:"spoke"` // кто из состава заговорил
 	ByActor map[int64]int `json:"by_actor"`
 	Pairs   []string      `json:"pairs"` // «кто→кому» внутри состава
-	First   archive.Dist  `json:"first_sec"`
-	Gap     archive.Dist  `json:"gap_sec"`
-	SpanSec int           `json:"span_sec"` // от заметки до последней реплики
-	InBurst int           `json:"in_burst"` // реплик в первые vacuumBurst
-	Depth   int           `json:"depth"`    // самая длинная цепочка ответов
+
+	// Heard — кому из состава хоть раз ответили. Вторая мерка графа, и заведена
+	// она потому, что первая спрашивает невозможное: КТО КОМУ отвечает решает
+	// содержание реплики, а кубик содержания не знает вовсе — замер 28.08.2026
+	// дал по парам 3 совпадения из 54 наших против 230 настоящих, то есть
+	// околонулевой Жаккар, и читать его как провал было бы неверно.
+	//
+	// А вот «кого в этой компании слушают» — вопрос про расстановку, и на него
+	// кубик отвечать обязан: у него есть и разговорчивость, и знакомство, и
+	// потолки. Множество из дюжины имён против дюжины имён, а не пара из ста
+	// тридцати двух возможных.
+	Heard   []int64      `json:"heard"`
+	First   archive.Dist `json:"first_sec"`
+	Gap     archive.Dist `json:"gap_sec"`
+	SpanSec int          `json:"span_sec"` // от заметки до последней реплики
+	InBurst int          `json:"in_burst"` // реплик в первые vacuumBurst
+	Depth   int          `json:"depth"`    // самая длинная цепочка ответов
 }
 
 // vacEvent — намеченная реплика.
@@ -350,6 +362,7 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 		firsts, gaps []int
 		prev         time.Time
 		pairs        = map[string]bool{}
+		heard        = map[int64]bool{}
 		depth        = map[int64]int{}
 		last         time.Time
 	)
@@ -372,6 +385,7 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 		}
 		if cast[c.TargetID] && c.TargetID != c.AuthorID {
 			pairs[fmt.Sprintf("%d>%d", c.AuthorID, c.TargetID)] = true
+			heard[c.TargetID] = true
 		}
 		// Глубина считается по цепочке, ОСТАВШЕЙСЯ в составе: ответ человеку,
 		// которого здесь нет, начинает ветку заново. Иначе суженный оригинал
@@ -391,6 +405,10 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 		sh.Pairs = append(sh.Pairs, p)
 	}
 	sort.Strings(sh.Pairs)
+	for id := range heard {
+		sh.Heard = append(sh.Heard, id)
+	}
+	sort.Slice(sh.Heard, func(i, j int) bool { return sh.Heard[i] < sh.Heard[j] })
 	sh.First, sh.Gap = archive.NewDist(firsts), archive.NewDist(gaps)
 	if !last.IsZero() {
 		sh.SpanSec = int(last.Sub(t0).Seconds())
@@ -413,7 +431,20 @@ func (s VacuumShape) BurstOnly() bool {
 func JaccardSpoke(got, want VacuumShape) float64 { return jaccardInt(got.Spoke, want.Spoke) }
 
 // JaccardPairs — насколько сошёлся граф «кто кому отвечал».
+//
+// Мерка строгая до невыполнимости, и знать об этом обязан всякий, кто её читает:
+// направленная пара — это выбор СОДЕРЖАНИЯ («он сказал такое, что ответил
+// именно я»), а кубик содержания не видит вовсе. Замер 28.08.2026 на двенадцати
+// жителях: 3 совпадения из 54 наших пар против 230 настоящих. Держим её не как
+// цель, а как потолок — чтобы было видно, если однажды она вырастет.
 func JaccardPairs(got, want VacuumShape) float64 { return jaccardStr(got.Pairs, want.Pairs) }
+
+// JaccardHeard — насколько сошёлся круг тех, кого в компании СЛУШАЮТ.
+//
+// Достижимая половина того же вопроса: не «кто кому», а «кому отвечают». Это уже
+// про расстановку в компании, а её кубик знает — разговорчивостью, знакомством
+// и потолками.
+func JaccardHeard(got, want VacuumShape) float64 { return jaccardInt(got.Heard, want.Heard) }
 
 func jaccardInt(a, b []int64) float64 {
 	as := make([]string, 0, len(a))

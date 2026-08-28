@@ -64,6 +64,7 @@ func buildSnapshotCard(ctx context.Context, st *archive.Store, token string, opt
 		ID:        slugOfIdentity(voice.Identity),
 		Kind:      narod.KindSnapshot,
 		Sources:   []string{voice.Identity},
+		Accounts:  accIDs,
 		Seed:      opts.Seed,
 		VocabRate: voice.VocabRate,
 	}

@@ -206,8 +206,9 @@ func writeVacuumSeeds(b *strings.Builder, rep *VacuumReport) {
 // writeVacuumShapes — портрет разговора против портрета.
 func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	var got, want VacuumShape
-	spoke, pairs := 0.0, 0.0
+	spoke, pairs, heard := 0.0, 0.0, 0.0
 	burst, judged, paired := 0, 0, 0
+	gotPairs, wantPairs := 0, 0
 	var firsts, gaps, wfirsts, wgaps []int
 	seeds := map[uint64]bool{}
 	for _, r := range rep.Runs {
@@ -254,6 +255,9 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		if len(r.Got.Pairs) > 0 || len(r.Want.Pairs) > 0 {
 			paired++
 			pairs += JaccardPairs(r.Got, r.Want)
+			heard += JaccardHeard(r.Got, r.Want)
+			gotPairs += len(r.Got.Pairs)
+			wantPairs += len(r.Want.Pairs)
 		}
 	}
 
@@ -280,9 +284,15 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 			b.WriteString("- граф «кто кому отвечал» не считался: ни в одной заметке " +
 				"из состава никто никому не ответил — ни у нас, ни в оригинале\n")
 		} else {
-			fmt.Fprintf(b, "- граф «кто кому отвечал» сошёлся на **%.0f %%** (по %d заметкам, "+
-				"где ответ внутри состава был хоть с одной стороны)\n",
-				100*pairs/float64(paired), paired)
+			p := float64(paired)
+			fmt.Fprintf(b, "- круг тех, кого СЛУШАЮТ (кому хоть раз ответили), сошёлся на **%.0f %%** "+
+				"— по %d заметкам с ответами внутри состава\n", 100*heard/p, paired)
+			// Пары печатаются рядом и с сырым счётом, потому что мерка эта заведомо
+			// невыполнимая: направленная пара — выбор СОДЕРЖАНИЯ, а кубик содержания
+			// не видит. Ноль здесь читается как провал только тем, кому не сказали.
+			fmt.Fprintf(b, "- поимённые пары «кто→кому» — **%.1f %%** (%d наших пар против %d настоящих). "+
+				"Мерка держится как потолок, а не как цель: кто кому ответит, решает СОДЕРЖАНИЕ реплики, "+
+				"а кубик его не видит вовсе\n", 100*pairs/p, gotPairs, wantPairs)
 		}
 	}
 	// Шторм печатается ВСЕГДА, включая ноль: это признак провала, и молчание о

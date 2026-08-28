@@ -27,6 +27,7 @@ var defaultCardsDir = filepath.Join("data", "narod", "cards")
 func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
+		"scout": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -38,6 +39,9 @@ func cmdNarod(ctx context.Context, args []string) error {
 	verify := fs.Bool("verify", false, "compose: только проверить близость к донорам, карточку не писать")
 
 	seeds := fs.Int("seeds", 5, "replay: сколько зёрен прогнать (одно зерно — бросок, а не замер; модель зовут только на первом)")
+	with := fs.String("with", "", "scout: состав, вокруг которого искать соседей (u<id> через запятую)")
+	minComments := fs.Int("min-comments", scoutMinComments, "scout: корпус кандидата, ниже которого слепок не снять")
+	scoutLimit := fs.Int("top", 40, "scout: сколько кандидатов показать")
 	mode := fs.String("mode", modeSolo, "replay: solo (слепок среди настоящих) | vacuum (разговор с нуля)")
 	actor := fs.String("actor", "", "replay: слепок, на месте которого играем (u<id>); в вакууме — состав через запятую")
 	maxReply := fs.Int("max-replies", 60, "replay -mode vacuum: потолок реплик в треде")
@@ -71,6 +75,11 @@ func cmdNarod(ctx context.Context, args []string) error {
 		return narodCompose(ctx, *cardsDir, fs.Args()[0], *verify)
 	case "show":
 		return narodShow(*cardsDir, fs.Args())
+	case "scout":
+		return narodScout(ctx, scoutOpts{
+			dbPath: *dbPath, with: *with, threads: *threads,
+			minComments: *minComments, limit: *scoutLimit,
+		})
 	case "world":
 		return narodWorld(ctx, *worldPath)
 	case "replay":
@@ -90,7 +99,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 			return fmt.Errorf("narod replay: -mode бывает %s или %s, а не %q", modeSolo, modeVacuum, *mode)
 		}
 	default:
-		return fmt.Errorf("narod: нужна подкоманда (card|compose|show|world|replay)")
+		return fmt.Errorf("narod: нужна подкоманда (scout|card|compose|show|world|replay)")
 	}
 }
 
