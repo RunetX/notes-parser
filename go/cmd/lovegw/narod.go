@@ -51,6 +51,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	// Модель выключена по умолчанию: бесплатный прогон считает матрицу решений,
 	// и крутить его можно сколько угодно. Деньги тратятся только по -speak.
 	speak := fs.Bool("speak", false, "replay: звать модель (ПЛАТНО); без флага считается только матрица решений")
+	hot := fs.Bool("hot", false, "replay: брать треды с перепалками — там, где спорили, а не соглашались")
 	maxSpeak := fs.Int("max-speak", 40, "replay: потолок обращений к модели за прогон (0 — без потолка)")
 	drafts := fs.Int("drafts", 3, "replay: черновиков за один запрос к модели")
 	// Раунд по умолчанию один: мерка голоса — это ПЕРВАЯ попытка, а раунд с
@@ -87,6 +88,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir, mode: *mode,
 			actor: *actor, notes: *notes, threads: *threads, minSaid: *minSaid,
 			speak: *speak, maxSpeak: *maxSpeak, maxReply: *maxReply,
+			hot:    *hot,
 			drafts: *drafts, rounds: *rounds,
 			seed: *seed, seeds: *seeds, cfgPath: *cfgPath, model: *model,
 		}

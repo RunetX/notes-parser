@@ -277,6 +277,9 @@ func vacuumNotes(ctx context.Context, ar *archive.Store, cast []*vacActor, o rep
 	for _, c := range cast {
 		ids = append(ids, c.userID)
 	}
+	if o.hot {
+		return hotNotes(ctx, ar, ids, o)
+	}
 	picks, err := ar.PickCalibrationThreads(ctx, ids, o.minSaid, o.threads)
 	if err != nil {
 		return nil, err
@@ -315,6 +318,38 @@ func noteTopics(scripts []*archive.ThreadScript) (map[int64][]string, error) {
 			return nil, err
 		}
 		out[sc.NoteID] = t
+	}
+	return out, nil
+}
+
+// hotNotes — заметки, где разговор БУРЛИЛ: люди отвечали друг другу, а не
+// высказывались рядом.
+//
+// Печатает жар каждой отобранной вместе с числом настоящих рёбер: ноль дуэлей у
+// треда без рёбер значит «мобильное дерево по нему не обходили», а у треда с
+// тремя сотнями рёбер — «не спорили», и путать эти два состояния нельзя.
+func hotNotes(ctx context.Context, ar *archive.Store, ids []int64, o replayOpts) ([]int64, error) {
+	picks, err := ar.PickHotThreads(ctx, ids, o.minSaid, o.threads)
+	if err != nil {
+		return nil, err
+	}
+	if len(picks) == 0 {
+		return nil, fmt.Errorf("narod replay: у состава нет тредов с %d+ репликами — опустите -min-said", o.minSaid)
+	}
+	out := make([]int64, 0, len(picks))
+	var silent int
+	for _, p := range picks {
+		if p.Duels == 0 {
+			silent++
+		}
+		fmt.Fprintf(os.Stderr, "  заметка %-8d реплик %-4d наших %-3d  перепалок %-3d "+
+			"(%.0f на сотню)  самая длинная %-3d  настоящих рёбер %d\n",
+			p.NoteID, p.Total, p.Said, p.Duels, p.Heat(), p.Longest, p.Edges)
+		out = append(out, p.NoteID)
+	}
+	if silent > 0 {
+		fmt.Fprintf(os.Stderr, "из них без единой перепалки: %d — бурлящих тредов у состава "+
+			"меньше, чем просили\n", silent)
 	}
 	return out, nil
 }
