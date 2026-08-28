@@ -38,8 +38,12 @@ import (
 
 // DecisionPoint — момент, когда житель мог бы заговорить.
 type DecisionPoint struct {
-	Now       time.Time
-	Actor     int64 // чья очередь думать
+	Now   time.Time
+	Actor int64 // чья очередь думать
+	// NoteID — заметка, в которой всё происходит. Часть ключа монетки, а не
+	// справка: у точки решения на самой заметке номера реплики нет, и без этого
+	// поля бросок выходил бы одинаковым во всех тредах (см. pointSeed).
+	NoteID    int64
 	TriggerID int64 // реплика, на которую реагируем; 0 — сама заметка
 	Trigger   string
 	Author    int64 // кто её сказал; у заметки — её автор
@@ -69,14 +73,23 @@ type Decider interface {
 	Decide(ctx context.Context, p DecisionPoint) (Decision, error)
 }
 
-// SpeechPoint — момент, когда X ответил на самом деле; здесь и спрашивают
-// модель.
+// SpeechPoint — момент, когда житель пишет реплику; здесь и спрашивают модель.
 type SpeechPoint struct {
 	Now    time.Time
 	Actor  int64
 	Script *archive.ThreadScript
-	Upto   int                   // сколько реплик оригинала уже прозвучало
-	Truth  archive.ScriptComment // что человек написал НА САМОМ ДЕЛЕ
+	Upto   int // сколько реплик уже прозвучало
+
+	// Slot — номер места, куда встанет реплика. Им солятся жребии длины и
+	// эмодзи, поэтому он обязан быть свой у каждой точки и один и тот же при
+	// повторном прогоне: два прогона с одним зерном сравнивают между собой.
+	Slot    int64
+	ReplyTo int64 // кому отвечаем; 0 — самой заметке
+
+	// Truth — что человек написал НА САМОМ ДЕЛЕ. Заполнена ТОЛЬКО в solo: в
+	// вакууме правды нет вовсе — там нет и человека, на чьём месте играют, —
+	// и пустое поле здесь честнее выдуманного.
+	Truth archive.ScriptComment
 }
 
 // Speech — что вышло у жителя и насколько это похоже на правду.
@@ -151,6 +164,7 @@ type Point struct {
 
 // SoloRun — итог прогона.
 type SoloRun struct {
+	Seed    uint64   `json:"seed"`
 	NoteID  int64    `json:"note_id"`
 	Actor   int64    `json:"actor"`
 	Nick    string   `json:"nick"`
@@ -207,7 +221,7 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 
 	// Заметка — тоже точка решения: ответ первого уровня приходит на неё.
 	if err := step(ctx, run, o, sc, DecisionPoint{
-		Now: sc.Note.PublishedAt, Actor: o.Actor, TriggerID: 0,
+		Now: sc.Note.PublishedAt, Actor: o.Actor, NoteID: sc.NoteID, TriggerID: 0,
 		Trigger: sc.Note.Text, Author: sc.Note.AuthorID, Nick: sc.Note.AuthorNick,
 	}, answered, 0); err != nil {
 		return nil, err
@@ -233,7 +247,7 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 		// донор, — у Полынь-Травы потолок 5 против 68–107 её реплик означал
 		// мёртвое молчание на всём остатке треда и мерил не догадку, а потолок.
 		if err := step(ctx, run, o, sc, DecisionPoint{
-			Now: c.PublishedAt, Actor: o.Actor, TriggerID: c.ID, Trigger: c.Text,
+			Now: c.PublishedAt, Actor: o.Actor, NoteID: sc.NoteID, TriggerID: c.ID, Trigger: c.Text,
 			Author: c.AuthorID, Nick: c.AuthorNick, Addressed: c.TargetID == o.Actor,
 			Seen: i + 1, Said: run.Matrix.TP + run.Matrix.FP,
 			Familiarity: o.Familiar[c.AuthorID],
@@ -289,7 +303,8 @@ func speak(ctx context.Context, run *SoloRun, o SoloOpts, sc *archive.ThreadScri
 		return nil
 	}
 	sp, err := o.Speaker.Speak(ctx, SpeechPoint{
-		Now: c.PublishedAt, Actor: o.Actor, Script: sc, Upto: i, Truth: c,
+		Now: c.PublishedAt, Actor: o.Actor, Script: sc, Upto: i,
+		Slot: c.ID, ReplyTo: c.ReplyTo, Truth: c,
 	})
 	if err != nil {
 		return fmt.Errorf("реплика на месте %d: %w", c.ID, err)

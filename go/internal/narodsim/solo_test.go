@@ -58,8 +58,8 @@ type fakeSpeaker struct {
 }
 
 func (s *fakeSpeaker) Speak(_ context.Context, p SpeechPoint) (Speech, error) {
-	s.calls = append(s.calls, p.Truth.ID)
-	return Speech{Got: "как бы сказал " + p.Truth.AuthorNick, Quantile: s.q}, nil
+	s.calls = append(s.calls, p.Slot)
+	return Speech{Got: fmt.Sprintf("как бы сказал %d в %d", p.Actor, p.Slot), Quantile: s.q}, nil
 }
 
 func TestRunSoloMatrix(t *testing.T) {

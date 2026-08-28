@@ -2,6 +2,7 @@ package narodsim
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -42,6 +43,70 @@ func TestCardDeciderIsDeterministicPerPoint(t *testing.T) {
 	other.Decide(context.Background(), DecisionPoint{Actor: 9, TriggerID: 222})
 	if got, _ := other.Decide(context.Background(), p); got != first {
 		t.Errorf("решение зависит от истории вызовов: %+v против %+v", got, first)
+	}
+}
+
+// Монетка обязана падать с той частотой, которую ей назвали, — и падать так на
+// ПОДРЯД ИДУЩИХ номерах реплик, потому что в треде они именно такие.
+//
+// Проверка не педантизм: близкие зёрна у генератора — известное место, где
+// частота может уехать, а первое число потока здесь и есть всё решение. Замер
+// 28.08.2026 показал, что у PCG с этим всё в порядке, — и тест держит это
+// свойство впредь: ключ монетки ещё будет меняться.
+func TestCardDeciderKeepsTheOddsOnConsecutiveIDs(t *testing.T) {
+	card := testCard()
+	for _, want := range []float64{0.1, 0.3, 0.9} {
+		card.Dice.ReplyOther = want
+		d := &CardDecider{Card: card, Seed: 7}
+		const n = 20000
+		came := 0
+		for i := range int64(n) {
+			// Номера идут подряд, как в настоящем треде.
+			got, _ := d.Decide(context.Background(), DecisionPoint{
+				Actor: 9, NoteID: 313000, TriggerID: 63238000 + i,
+			})
+			if got.Speak {
+				came++
+			}
+		}
+		// Допуск — три стандартных отклонения биномиальной доли: тест обязан
+		// ловить перекос, а не пенять на честный разброс.
+		sd := 3 * math.Sqrt(want*(1-want)/n)
+		if got := float64(came) / n; got < want-sd || got > want+sd {
+			t.Errorf("при вероятности %.2f житель приходил в %.3f случаев (допуск ±%.3f)", want, got, sd)
+		}
+	}
+}
+
+// Заметка входит в ключ монетки. Без неё точка решения НА САМОЙ заметке
+// (номера реплики у неё нет вовсе) выпадала бы одинаково во всех тредах:
+// смолчавший на первой молчал бы дальше везде. Первый прогон в вакууме
+// 28.08.2026 дал ровно это — десять заметок подряд без единой реплики.
+func TestCardDeciderVariesByNote(t *testing.T) {
+	d := &CardDecider{Card: testCard(), Seed: 7}
+	came, notes := 0, 200
+	for n := range int64(notes) {
+		got, err := d.Decide(context.Background(), DecisionPoint{Actor: 9, NoteID: 300000 + n})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Speak {
+			came++
+		}
+	}
+	// Приходить он должен примерно в трети заметок; проверяется не точность
+	// доли, а то, что решение вообще МЕНЯЕТСЯ от заметки к заметке.
+	if came == 0 || came == notes {
+		t.Fatalf("на %d заметках житель решил одинаково %d раз — монетка не зависит от заметки",
+			notes, came)
+	}
+	// И при этом остаётся повторяемой: та же заметка — тот же ответ.
+	p := DecisionPoint{Actor: 9, NoteID: 300007}
+	first, _ := d.Decide(context.Background(), p)
+	for range 20 {
+		if got, _ := d.Decide(context.Background(), p); got != first {
+			t.Fatalf("та же заметка дала другое решение: %+v против %+v", got, first)
+		}
 	}
 }
 

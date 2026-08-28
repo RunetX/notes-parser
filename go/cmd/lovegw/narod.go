@@ -37,7 +37,10 @@ func cmdNarod(ctx context.Context, args []string) error {
 	seed := fs.Int64("seed", 1, "card: зерно выборки образцов; replay: зерно кубика")
 	verify := fs.Bool("verify", false, "compose: только проверить близость к донорам, карточку не писать")
 
-	actor := fs.String("actor", "", "replay: слепок, на месте которого играем (u<id>)")
+	seeds := fs.Int("seeds", 5, "replay: сколько зёрен прогнать (одно зерно — бросок, а не замер; модель зовут только на первом)")
+	mode := fs.String("mode", modeSolo, "replay: solo (слепок среди настоящих) | vacuum (разговор с нуля)")
+	actor := fs.String("actor", "", "replay: слепок, на месте которого играем (u<id>); в вакууме — состав через запятую")
+	maxReply := fs.Int("max-replies", 60, "replay -mode vacuum: потолок реплик в треде")
 	notes := fs.String("note", "", "replay: id заметок через запятую; пусто — подобрать по донору")
 	threads := fs.Int("threads", 5, "replay: сколько тредов подобрать")
 	minSaid := fs.Int("min-said", 5, "replay: сколько реплик донора нужно в треде")
@@ -71,12 +74,21 @@ func cmdNarod(ctx context.Context, args []string) error {
 	case "world":
 		return narodWorld(ctx, *worldPath)
 	case "replay":
-		return narodReplay(ctx, replayOpts{
-			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir,
+		opts := replayOpts{
+			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir, mode: *mode,
 			actor: *actor, notes: *notes, threads: *threads, minSaid: *minSaid,
-			speak: *speak, maxSpeak: *maxSpeak, drafts: *drafts, rounds: *rounds,
-			seed: *seed, cfgPath: *cfgPath, model: *model,
-		})
+			speak: *speak, maxSpeak: *maxSpeak, maxReply: *maxReply,
+			drafts: *drafts, rounds: *rounds,
+			seed: *seed, seeds: *seeds, cfgPath: *cfgPath, model: *model,
+		}
+		switch *mode {
+		case modeSolo:
+			return narodReplay(ctx, opts)
+		case modeVacuum:
+			return narodVacuum(ctx, opts)
+		default:
+			return fmt.Errorf("narod replay: -mode бывает %s или %s, а не %q", modeSolo, modeVacuum, *mode)
+		}
 	default:
 		return fmt.Errorf("narod: нужна подкоманда (card|compose|show|world|replay)")
 	}

@@ -1,0 +1,228 @@
+package main
+
+// lovegw narod replay -mode vacuum — калибровка в вакууме.
+//
+// От solo отличается тем, ЧТО берётся из архива: там подавался весь чужой
+// разговор, здесь — одна заметка. Дальше жители говорят сами, и меряется форма
+// того, что вышло.
+//
+// Прогон идёт СЕРИЕЙ заметок в сжатом времени, а не одной: знакомство копится от
+// треда к треду, и на одиночной заметке этого не увидеть вовсе. По той же
+// причине состав общий на всю серию — мир один.
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"lovegw/internal/archive"
+	"lovegw/internal/narod"
+	"lovegw/internal/narodsim"
+)
+
+func narodVacuum(ctx context.Context, o replayOpts) error {
+	tokens := splitTokens(o.actor)
+	if len(tokens) == 0 {
+		return fmt.Errorf("narod replay -mode vacuum: нужен состав, -actor u123,u456")
+	}
+	ar, err := archive.Open(ctx, o.dbPath)
+	if err != nil {
+		return err
+	}
+	defer ar.Close()
+
+	cast, err := loadVacuumCast(o, tokens)
+	if err != nil {
+		return err
+	}
+	notes, err := vacuumNotes(ctx, ar, cast, o)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "состав %d, заметок %d\n", len(cast), len(notes))
+
+	model, usage, err := vacuumSpeakers(ctx, ar, o, cast)
+	if err != nil {
+		return err
+	}
+
+	actors := make([]narodsim.VacuumActor, 0, len(cast))
+	for _, c := range cast {
+		actors = append(actors, narodsim.VacuumActor{
+			UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID,
+			Decider: &narodsim.CardDecider{Card: *c.card, Seed: uint64(o.seed)},
+			Speaker: c.speaker(),
+		})
+	}
+
+	// Знакомство живёт дольше одного треда — карта общая на всю серию. Это и
+	// есть «мир» в его самой скромной части: в бою её помнит граф, здесь —
+	// переживает серию.
+	familiar := map[int64]map[int64]int{}
+	var runs []*narodsim.VacuumRun
+	for _, id := range notes {
+		sc, err := ar.LoadThreadScript(ctx, id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "заметка %d пропущена: %v\n", id, err)
+			continue
+		}
+		run, err := narodsim.RunVacuum(ctx, sc, narodsim.VacuumOpts{
+			Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak, Familiar: familiar,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "  заметка %-8d наших %-3d (в оригинале состав %-3d из %-4d)  "+
+			"заговорили %d/%d  шёл %.1f ч  %s\n",
+			run.NoteID, run.Got.Replies, run.Want.Replies, run.OrigReplies,
+			len(run.Got.Spoke), len(run.Want.Spoke), float64(run.Got.SpanSec)/3600, run.Stopped)
+		runs = append(runs, run)
+	}
+	if len(runs) == 0 {
+		return fmt.Errorf("narod replay: не отработала ни одна заметка")
+	}
+
+	now := time.Now()
+	reports := make([]narodsim.VacuumActorReport, 0, len(cast))
+	for _, c := range cast {
+		reports = append(reports, narodsim.VacuumActorReport{
+			UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID,
+		})
+	}
+	rep := narodsim.NewVacuumReport(model, uint64(o.seed), now, reports, runs)
+	// Голос меряется ПОСЛЕ серии и по всем текстам жителя разом: пачка — это
+	// подряд идущие реплики, и по одному треду их набирается меньше порога.
+	for i, c := range cast {
+		if c.voice == nil {
+			continue
+		}
+		if rep.Actors[i].Voice, err = c.voice.Measure(ctx, rep.TextsOf(c.userID)); err != nil {
+			return err
+		}
+	}
+
+	dir := filepath.Join(o.outDir, fmt.Sprintf("vacuum-%s", now.Format("20060102-150405")))
+	if err := narodsim.WriteVacuumReport(dir, rep); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "\n%s", rep.Markdown())
+	fmt.Fprintf(os.Stderr, "отчёт: %s\n", dir)
+	if usage != nil {
+		fmt.Fprintf(os.Stderr, "расход: %s\n", usage())
+	}
+	return nil
+}
+
+// vacActor — один житель на сцене вместе со своей платной половиной.
+type vacActor struct {
+	token  string
+	userID int64
+	card   *narod.Card
+	voice  *narodsim.VoiceSpeaker // nil — прогон бесплатный
+}
+
+// speaker отдаёт говорящего так, чтобы nil-интерфейс не притворялся живым:
+// присвоив narodsim.Speaker нетипизированный nil-указатель, мы получили бы
+// интерфейс, у которого `!= nil` истинно, и вакуум пошёл бы звать модель.
+func (a vacActor) speaker() narodsim.Speaker {
+	if a.voice == nil {
+		return nil
+	}
+	return a.voice
+}
+
+// loadVacuumCast читает карточки состава.
+func loadVacuumCast(o replayOpts, tokens []string) ([]*vacActor, error) {
+	out := make([]*vacActor, 0, len(tokens))
+	seen := map[int64]bool{}
+	for _, token := range tokens {
+		id, err := strconv.ParseInt(strings.TrimPrefix(token, "u"), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("narod replay: состав задаётся анкетами u<id>, а не %q", token)
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("narod replay: %s в составе дважды", token)
+		}
+		seen[id] = true
+		card, err := loadActorCard(o.cardsDir, token)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &vacActor{token: token, userID: id, card: card})
+	}
+	return out, nil
+}
+
+// vacuumSpeakers подключает модель всему составу разом — либо никому.
+//
+// Полоса спрашивается у КАЖДОГО и ДО первого запроса: непригодная хоть у одного
+// останавливает прогон целиком. Иначе вышел бы отчёт, где у части жителей голос
+// измерен, а у части напечатан правдоподобный ноль, — и различить их в таблице
+// было бы нечем.
+func vacuumSpeakers(ctx context.Context, ar *archive.Store, o replayOpts, cast []*vacActor) (string, func() string, error) {
+	if !o.speak {
+		fmt.Fprintln(os.Stderr, "модель НЕ подключена (-speak) — реплики без текста, "+
+			"мерится только форма разговора, бесплатно")
+		return o.model, nil, nil
+	}
+	client, err := replayClient(o)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, c := range cast {
+		if c.voice, err = replayVoice(ctx, ar, client, o, c.token, c.userID, c.card); err != nil {
+			return "", nil, err
+		}
+		band, err := c.voice.Band(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		if !band.Usable {
+			return "", nil, fmt.Errorf("мерить нечем у %s, к модели не пошли: %s", c.token, band.Why)
+		}
+		fmt.Fprintf(os.Stderr, "полоса %s: %d пачек, медиана места %d из %d\n",
+			c.token, band.N, band.Median, band.Of)
+	}
+	return client.Model(), func() string { return client.Usage().String() }, nil
+}
+
+// vacuumNotes — заметки серии: заданные руками либо подобранные по составу.
+//
+// Подбираются по СОСТАВУ целиком, а не по каждому порознь: смысл вакуума в том,
+// что жители встречаются, и заметка, где из них говорил один, показывает
+// монолог.
+func vacuumNotes(ctx context.Context, ar *archive.Store, cast []*vacActor, o replayOpts) ([]int64, error) {
+	if o.notes != "" {
+		return parseNoteIDs(o.notes)
+	}
+	ids := make([]int64, 0, len(cast))
+	for _, c := range cast {
+		ids = append(ids, c.userID)
+	}
+	picks, err := ar.PickCalibrationThreads(ctx, ids, o.minSaid, o.threads)
+	if err != nil {
+		return nil, err
+	}
+	if len(picks) == 0 {
+		return nil, fmt.Errorf("narod replay: у состава нет тредов с %d+ репликами — опустите -min-said", o.minSaid)
+	}
+	out := make([]int64, 0, len(picks))
+	for _, p := range picks {
+		out = append(out, p.NoteID)
+	}
+	return out, nil
+}
+
+func splitTokens(s string) []string {
+	var out []string
+	for _, t := range strings.Split(s, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}

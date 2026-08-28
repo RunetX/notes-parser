@@ -220,6 +220,7 @@ func (rep *Report) Markdown() string {
 			fmt.Fprintf(&b, "- медианная ошибка задержки на верных приходах: **%s**\n\n",
 				err.Truncate(time.Second))
 		}
+		writeSeeds(&b, a)
 		writeSample(&b, a)
 
 		fmt.Fprintf(&b, "### Голос\n\n")
@@ -234,10 +235,20 @@ func (rep *Report) Markdown() string {
 			writeVoice(&b, a.Voice)
 		}
 
-		fmt.Fprintf(&b, "### По тредам\n\n")
+		// По тредам — только ПЕРВОЕ зерно: остальные идут по тем же тредам и
+		// добавили бы к таблице лишь повторяющиеся столбцы «реплик» и «своих».
+		// Разброс между зёрнами уже сказан выше своим числом.
+		if len(a.Runs) == 0 {
+			continue
+		}
+		first := a.Runs[0].Seed
+		fmt.Fprintf(&b, "### По тредам (зерно %d)\n\n", first)
 		fmt.Fprintf(&b, "| заметка | реплик | своих | TP | FP | FN | реплик модели |\n")
 		fmt.Fprintf(&b, "|---:|---:|---:|---:|---:|---:|---:|\n")
 		for _, r := range a.Runs {
+			if r.Seed != first {
+				continue
+			}
 			fmt.Fprintf(&b, "| %d | %d | %d | %d | %d | %d | %d |\n",
 				r.NoteID, r.Replies, r.Mine, r.Matrix.TP, r.Matrix.FP, r.Matrix.FN, len(r.Speech))
 		}
@@ -300,6 +311,49 @@ func writeShape(b *strings.Builder, got, want archive.VoiceShape) {
 	fmt.Fprintf(b, "| слов в предложении (медиана) | %d | %d |\n", got.SentWords.Median, want.SentWords.Median)
 	fmt.Fprintf(b, "| доля реплик со смайлом | %.2f | %.2f |\n", got.EmojiRate, want.EmojiRate)
 	b.WriteString("\n")
+}
+
+// writeSeeds — разброс по зёрнам, и это не приложение к итогу, а условие, при
+// котором итог вообще можно читать.
+//
+// Замер 28.08.2026 на ДВ: пять зёрен на одних и тех же пяти тредах дали полноту
+// 20–37 % и точность прихода 39–76 %. То есть ОДИНОЧНОЕ зерно — это бросок, а не
+// измерение, и «стало на десять пунктов лучше» между двумя такими прогонами не
+// значит ничего. До этого дня отчёт печатал одно число и выглядел точным.
+func writeSeeds(b *strings.Builder, a ActorReport) {
+	bySeed := map[uint64]*Matrix{}
+	var order []uint64
+	for _, r := range a.Runs {
+		m, ok := bySeed[r.Seed]
+		if !ok {
+			m = &Matrix{}
+			bySeed[r.Seed] = m
+			order = append(order, r.Seed)
+		}
+		m.TP += r.Matrix.TP
+		m.FP += r.Matrix.FP
+		m.TN += r.Matrix.TN
+		m.FN += r.Matrix.FN
+	}
+	if len(order) < 2 {
+		fmt.Fprintf(b, "Прогон на ОДНОМ зерне: это бросок, а не замер — "+
+			"на пяти зёрнах те же треды дают разброс в полтора-два раза (`-seeds`).\n\n")
+		return
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	fmt.Fprintf(b, "Разброс по зёрнам (те же треды, другие броски):\n\n")
+	fmt.Fprintf(b, "| зерно | полнота | точность прихода |\n|---:|---:|---:|\n")
+	loR, hiR := 2.0, -1.0
+	loP, hiP := 2.0, -1.0
+	for _, s := range order {
+		m := bySeed[s]
+		fmt.Fprintf(b, "| %d | %.0f %% | %.0f %% |\n", s, 100*m.Recall(), 100*m.Precision())
+		loR, hiR = min(loR, m.Recall()), max(hiR, m.Recall())
+		loP, hiP = min(loP, m.Precision()), max(hiP, m.Precision())
+	}
+	fmt.Fprintf(b, "\nПолнота ходит **%.0f–%.0f %%**, точность прихода **%.0f–%.0f %%** — "+
+		"правку кубика считать удачной можно, только если она вывела число за этот разброс.\n\n",
+		100*loR, 100*hiR, 100*loP, 100*hiP)
 }
 
 // writeSample называет, насколько выборка тредов типична для донора.

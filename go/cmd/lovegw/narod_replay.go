@@ -19,6 +19,7 @@ import (
 
 	"lovegw/internal/archive"
 	"lovegw/internal/config"
+	"lovegw/internal/llm"
 	"lovegw/internal/narod"
 	"lovegw/internal/narodsim"
 )
@@ -28,18 +29,27 @@ type replayOpts struct {
 	dbPath   string
 	cardsDir string
 	outDir   string
-	actor    string // u<id>
+	mode     string // solo | vacuum
+	actor    string // u<id>; в вакууме — состав через запятую
 	notes    string // список id через запятую; пусто — подобрать самому
 	threads  int    // сколько подобрать, если не заданы
 	minSaid  int    // сколько реплик донора нужно в треде
 	speak    bool   // звать модель (платно)
 	maxSpeak int
+	maxReply int // вакуум: потолок реплик в треде
 	drafts   int
 	rounds   int
 	seed     int64
+	seeds    int // сколько зёрен прогнать: одно — это бросок, а не замер
 	cfgPath  string
 	model    string
 }
+
+// Режимы реплея.
+const (
+	modeSolo   = "solo"
+	modeVacuum = "vacuum"
+)
 
 func narodReplay(ctx context.Context, o replayOpts) error {
 	if o.actor == "" {
@@ -89,27 +99,43 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 		speaker = gen.speaker
 	}
 
-	dec := &narodsim.CardDecider{Card: *card, Seed: uint64(o.seed)}
-	// Знакомство живёт дольше одного треда — карта общая на весь прогон.
-	familiar := map[int64]int{}
+	// Сценарии читаются ОДИН раз на все зёрна: тред на тысячу реплик собирается
+	// не мгновенно, а зёрна отличаются только бросками.
+	scripts := loadScripts(ctx, ar, notes)
+	if len(scripts) == 0 {
+		return fmt.Errorf("narod replay: не отработал ни один тред")
+	}
+
 	var runs []*narodsim.SoloRun
-	for _, id := range notes {
-		sc, err := ar.LoadThreadScript(ctx, id)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "тред %d пропущен: %v\n", id, err)
-			continue
+	for i := range seedCount(o) {
+		seed := uint64(o.seed) + uint64(i)
+		dec := &narodsim.CardDecider{Card: *card, Seed: seed}
+		// Знакомство живёт дольше одного треда — карта общая на серию, но своя у
+		// каждого зерна: перенеся её между зёрнами, мы дали бы второму прогону
+		// знакомства, которых в нём не случалось.
+		familiar := map[int64]int{}
+		// Модель зовут ТОЛЬКО на первом зерне: решение бесплатно и потому
+		// повторяется, голос платный и повторять его незачем — он не зависит от
+		// того, каким броском житель попал в эту точку.
+		sp := speaker
+		if i > 0 {
+			sp = nil
 		}
-		run, err := narodsim.RunSolo(ctx, sc, narodsim.SoloOpts{
-			Actor: actorID, Decider: dec, Speaker: speaker, MaxSpeak: o.maxSpeak,
-			Familiar: familiar,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "тред %d пропущен: %v\n", id, err)
-			continue
+		for _, sc := range scripts {
+			run, err := narodsim.RunSolo(ctx, sc, narodsim.SoloOpts{
+				Actor: actorID, Decider: dec, Speaker: sp, MaxSpeak: o.maxSpeak,
+				Familiar: familiar,
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "тред %d пропущен: %v\n", sc.NoteID, err)
+				continue
+			}
+			run.Seed = seed
+			fmt.Fprintf(os.Stderr, "  зерно %-3d тред %-8d реплик %-5d своих %-3d  TP %-3d FP %-4d FN %-3d  реплик модели %d\n",
+				seed, run.NoteID, run.Replies, run.Mine,
+				run.Matrix.TP, run.Matrix.FP, run.Matrix.FN, len(run.Speech))
+			runs = append(runs, run)
 		}
-		fmt.Fprintf(os.Stderr, "  тред %-8d реплик %-5d своих %-3d  TP %-3d FP %-4d FN %-3d  реплик модели %d\n",
-			run.NoteID, run.Replies, run.Mine, run.Matrix.TP, run.Matrix.FP, run.Matrix.FN, len(run.Speech))
-		runs = append(runs, run)
 	}
 	if len(runs) == 0 {
 		return fmt.Errorf("narod replay: не отработал ни один тред")
@@ -171,15 +197,7 @@ func loadActorCard(dir, actor string) (*narod.Card, error) {
 // replayNotes — треды прогона: заданные руками либо подобранные по донору.
 func replayNotes(ctx context.Context, ar *archive.Store, actorID int64, o replayOpts) ([]int64, error) {
 	if o.notes != "" {
-		var out []int64
-		for _, s := range strings.Split(o.notes, ",") {
-			id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("narod replay: -note %q: %w", s, err)
-			}
-			out = append(out, id)
-		}
-		return out, nil
+		return parseNoteIDs(o.notes)
 	}
 	picks, err := ar.PickCalibrationThreads(ctx, []int64{actorID}, o.minSaid, o.threads)
 	if err != nil {
@@ -196,6 +214,40 @@ func replayNotes(ctx context.Context, ar *archive.Store, actorID int64, o replay
 	return out, nil
 }
 
+// seedCount — сколько зёрен прогнать. Не меньше одного, и с этим считается
+// умолчание: одиночное зерно — не измерение, а один бросок.
+func seedCount(o replayOpts) int { return max(o.seeds, 1) }
+
+// loadScripts читает сценарии тредов; непрочитанный пропускается с объяснением,
+// а не роняет прогон — в архиве бывают заметки без времени.
+func loadScripts(ctx context.Context, ar *archive.Store, notes []int64) []*archive.ThreadScript {
+	out := make([]*archive.ThreadScript, 0, len(notes))
+	for _, id := range notes {
+		sc, err := ar.LoadThreadScript(ctx, id)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "тред %d пропущен: %v\n", id, err)
+			continue
+		}
+		out = append(out, sc)
+	}
+	return out
+}
+
+// parseNoteIDs — список заметок из -note. Общий на оба режима: разбор одного и
+// того же флага, написанный дважды, однажды разошёлся бы в мелочи вроде
+// пробелов, и разница вылезла бы на прогоне, а не на сборке.
+func parseNoteIDs(s string) ([]int64, error) {
+	var out []int64
+	for _, part := range strings.Split(s, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("narod replay: -note %q: %w", part, err)
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
 // replayGen — платная половина прогона: кто пишет, чем меряет и во что обошлось.
 type replayGen struct {
 	speaker *narodsim.VoiceSpeaker
@@ -203,22 +255,25 @@ type replayGen struct {
 	usage   func() string
 }
 
-// replaySpeaker собирает генератор, если прогон платный; nil означает
-// бесплатный прогон, а не отсутствие настроек.
-func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID int64, card *narod.Card) (*replayGen, error) {
-	if !o.speak {
-		return nil, nil
-	}
+// replayClient — модель для платного прогона.
+//
+// ОДИН клиент на прогон, даже когда жителей несколько: расход считает он сам, а
+// вопрос «во что обошёлся ЭТОТ прогон» задаётся про прогон целиком, — второй
+// клиент рядом дал бы два счёта, которые пришлось бы складывать руками.
+func replayClient(o replayOpts) (*llm.Client, error) {
 	cfg, err := config.Load(o.cfgPath)
 	if err != nil {
 		return nil, err
 	}
 	// Кэш-точка окупается: на каждой реплике системный промпт один и тот же, а
 	// точек в прогоне десятки, и идут они встык.
-	client, err := llmClientFor(cfg, o.model, "low", 0, withSystemCache())
-	if err != nil {
-		return nil, err
-	}
+	return llmClientFor(cfg, o.model, "low", 0, withSystemCache())
+}
+
+// replayVoice — говорящий за одного жителя поверх общего клиента.
+func replayVoice(ctx context.Context, ar *archive.Store, client *llm.Client, o replayOpts,
+	token string, actorID int64, card *narod.Card) (*narodsim.VoiceSpeaker, error) {
+
 	p := archive.VoiceCardDefaults()
 	p.Genre, p.Kind, p.Solo = archive.GenreAll, archive.VoiceKindComments, true
 	p.Seed = o.seed
@@ -227,20 +282,37 @@ func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID
 	// выйдет из трёх точек и квантиль по ней будет грубее, чем разница, которую
 	// им меряют.
 	p.Band = replayBand
-	vcard, err := ar.BuildVoiceCard(ctx, o.actor, p, time.Now())
+	vcard, err := ar.BuildVoiceCard(ctx, token, p, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return &narodsim.VoiceSpeaker{
+		Store: ar, Gen: client, Card: vcard, SelfIDs: []int64{actorID},
+		Runes: card.Register.Runes, EmojiRate: card.Register.EmojiRate, Seed: uint64(o.seed),
+		Req: archive.VoiceRequest{
+			Drafts: o.drafts, Rounds: o.rounds, Model: client.Model(),
+		},
+	}, nil
+}
+
+// replaySpeaker собирает платную половину прогона solo; nil означает
+// бесплатный прогон, а не отсутствие настроек.
+func replaySpeaker(ctx context.Context, ar *archive.Store, o replayOpts, actorID int64, card *narod.Card) (*replayGen, error) {
+	if !o.speak {
+		return nil, nil
+	}
+	client, err := replayClient(o)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := replayVoice(ctx, ar, client, o, o.actor, actorID, card)
 	if err != nil {
 		return nil, err
 	}
 	return &replayGen{
-		speaker: &narodsim.VoiceSpeaker{
-			Store: ar, Gen: client, Card: vcard, SelfIDs: []int64{actorID},
-			Runes: card.Register.Runes, EmojiRate: card.Register.EmojiRate, Seed: uint64(o.seed),
-			Req: archive.VoiceRequest{
-				Drafts: o.drafts, Rounds: o.rounds, Model: client.Model(),
-			},
-		},
-		model: client.Model(),
-		usage: func() string { return client.Usage().String() },
+		speaker: sp,
+		model:   client.Model(),
+		usage:   func() string { return client.Usage().String() },
 	}, nil
 }
 

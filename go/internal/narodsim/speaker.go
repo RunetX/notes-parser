@@ -90,9 +90,9 @@ func (s *VoiceSpeaker) Speak(ctx context.Context, p SpeechPoint) (Speech, error)
 	}
 	req := s.Req
 	req.Mode = archive.VoiceModeComment
-	req.Thread = archive.ScriptVoiceThread(p.Script, p.Upto, p.Truth.ReplyTo, s.SelfIDs, branchLimit)
-	req.TargetRunes = s.targetRunes(p.Truth.ID)
-	req.Emoji = s.wantEmoji(p.Truth.ID)
+	req.Thread = archive.ScriptVoiceThread(p.Script, p.Upto, p.ReplyTo, s.SelfIDs, branchLimit)
+	req.TargetRunes = s.targetRunes(p.Slot)
+	req.Emoji = s.wantEmoji(p.Slot)
 
 	run, err := s.Store.GenerateVoice(ctx, s.Gen, s.Card, req, p.Now)
 	if err != nil {
