@@ -31,6 +31,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // InnerMeanDays — раз во сколько дней с жителем случается что-то, о чём он
@@ -152,11 +153,25 @@ func askInner(ctx context.Context, gen JSONGenerator, card *Card, w *World,
 	return text, nil
 }
 
-// innerForbidden — слова, по которым видно, что модель написала про площадку, а
-// не про жизнь. Список короткий и закрытый — как AutoHideable: он про ПРАВО
-// машины, а не про вкус, и правится diff'ом.
+// innerForbidden — корни слов, по которым видно, что модель написала про
+// площадку, а не про жизнь. Список короткий и закрытый — как AutoHideable: он
+// про ПРАВО машины, а не про вкус, и правится diff'ом.
+//
+// Сверяются они с НАЧАЛОМ СЛОВА, а не с любым местом строки, и это не
+// придирчивость: подстрочный поиск по русскому тексту ловит хвосты. Первая
+// редакция держала здесь «ник » — и молча выбрасывала понедельник, субботник,
+// пикник, дневник, праздник, сантехник, то есть добрую половину обычных фраз.
+// Увидеть это удалось только на живом прогоне 28.08.2026 (ноль событий за два
+// треда), потому что все проверки были написаны на площадочных примерах — там
+// подстрока и корень совпадают.
+//
+// По той же причине из списка убраны «лент» (лента для шляпы) и «ветк» (ветка
+// яблони): у них корень СВОЙ, а не хвост, и совпадение с площадочным значением
+// настоящее. Такое слово надо не чинить проверкой, а выбрасывать — запрет,
+// отнимающий у человека ленту и ветку, дороже того, что он ловит.
 var innerForbidden = []string{
-	"заметк", "коммент", "тред", "форум", "сайт", "площадк", "лент", "ветк", "ник ",
+	"заметк", "коммент", "тред", "форум", "сайт", "площадк", "ник", "интернет",
+	"онлайн", "переписк",
 }
 
 // innerWinter / innerSummer — приметы времени года, по которым видно, что
@@ -180,10 +195,26 @@ var (
 )
 
 func innerReject(text string) string {
-	low := strings.ToLower(text)
-	for _, w := range innerForbidden {
-		if strings.Contains(low, w) {
-			return "про площадку, а не про жизнь: " + w
+	if root := rootHit(text, innerForbidden); root != "" {
+		return "про площадку, а не про жизнь: " + root
+	}
+	return ""
+}
+
+// rootHit — начинается ли хоть одно СЛОВО текста с одного из корней.
+//
+// Именно слово: русский суффикс превращает подстрочный поиск в ловушку, где
+// «ник» ловит понедельник, а «дар» — подарок и календарь. Проверка стоит одна на
+// оба списка, чтобы правило нельзя было соблюсти в одном месте и забыть в
+// другом.
+func rootHit(text string, roots []string) string {
+	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		for _, root := range roots {
+			if strings.HasPrefix(word, root) {
+				return root
+			}
 		}
 	}
 	return ""
@@ -191,7 +222,6 @@ func innerReject(text string) string {
 
 // innerSeasonMiss — не разошлось ли событие с временем года.
 func innerSeasonMiss(text string, day time.Time) string {
-	low := strings.ToLower(text)
 	var bad []string
 	switch day.Month() {
 	case time.June, time.July, time.August:
@@ -201,10 +231,8 @@ func innerSeasonMiss(text string, day time.Time) string {
 	default:
 		return ""
 	}
-	for _, w := range bad {
-		if strings.Contains(low, w) {
-			return "не то время года: " + w
-		}
+	if root := rootHit(text, bad); root != "" {
+		return "не то время года: " + root
 	}
 	return ""
 }
