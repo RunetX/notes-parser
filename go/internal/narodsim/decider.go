@@ -46,10 +46,18 @@ func (d *CardDecider) Decide(_ context.Context, p DecisionPoint) (Decision, erro
 
 	prob, dist := chanceOf(d.Card, p)
 	rng := rand.New(rand.NewPCG(pointSeed(d.Seed, p), uint64(p.TriggerID)+1))
+	// Задержка тянется ПЕРВОЙ, потому что от неё зависит сама вероятность: час
+	// суток решает не в момент публикации заметки, а в момент, когда житель до
+	// неё дошёл бы. Иначе заметка, вышедшая в три ночи, не собрала бы никого —
+	// хотя на деле её читают утром, и утренние люди в ней и окажутся.
+	after := sampleDist(dist, rng.Float64())
+	if p.TriggerID == 0 {
+		prob = min(prob*d.Card.Rhythm.HourWeight(p.Now.Add(after)), MaxChance)
+	}
 	if rng.Float64() >= prob {
 		return Decision{}, nil
 	}
-	return Decision{Speak: true, After: sampleDist(dist, rng.Float64())}, nil
+	return Decision{Speak: true, After: after}, nil
 }
 
 // pointSeed — ключ монетки: «кто и где» первым словом, «на что» вторым.
@@ -95,7 +103,19 @@ func chanceOf(card narod.Card, p DecisionPoint) (float64, narod.Dist) {
 	dice, lat := card.Dice, card.Latency
 	if p.TriggerID == 0 {
 		// Заметка: «прийти в новую» — и задержка меряется от её публикации.
-		return dice.ComeToNote, lat.ToThreadSec
+		//
+		// Сама вероятность неизмерима (в архиве видно, куда человек пришёл, и не
+		// видно, что он пролистал), а вот ПЕРЕКОС по теме измерим и вносится
+		// множителем: доля темы среди заметок, где он говорил, против доли той же
+		// темы среди всех заметок его времени. Без него кубик про заметку не
+		// знает ничего, кроме того, что она новая, — и выбор «кто придёт именно
+		// сюда» выходил случайным (замер 28.08.2026: состав заговоривших сходился
+		// с настоящим ровно настолько, насколько сошёлся бы жребий).
+		p0 := dice.ComeToNote
+		if lift, ok := card.TopicLift(p.Topics); ok {
+			p0 *= lift
+		}
+		return min(p0, MaxChance), lat.ToThreadSec
 	}
 	if r, ok := card.Rate.Rate(p.Seen, p.Addressed); ok {
 		// Знакомство накладывается МНОЖИТЕЛЕМ поверх позиции: вопросы разные —

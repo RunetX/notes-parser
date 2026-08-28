@@ -77,6 +77,9 @@ type VacuumOpts struct {
 	// на своём месте в разговоре, и молча выдавать её за написанную нельзя.
 	MaxSpeak int
 
+	// Topics — темы заметки (ключи лексикона), разобранные зовущим.
+	Topics []string
+
 	// Familiar — знакомство: «сколько раз я уже отвечал ему». Карта живёт ДОЛЬШЕ
 	// одного треда и передаётся зовущим — в бою её помнит граф мира. Может быть
 	// nil: тогда все друг другу незнакомы, и это законное начало мира, а не
@@ -196,7 +199,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 			continue
 		}
 		if err := st.roll(ctx, byActor[id], DecisionPoint{
-			Now: t0, Actor: id, NoteID: sc.NoteID, TriggerID: 0, Trigger: sc.Note.Text,
+			Now: t0, Actor: id, NoteID: sc.NoteID, Topics: o.Topics, TriggerID: 0, Trigger: sc.Note.Text,
 			Author: sc.Note.AuthorID, Nick: sc.Note.AuthorNick,
 		}, t0); err != nil {
 			return nil, err
@@ -445,6 +448,29 @@ func JaccardPairs(got, want VacuumShape) float64 { return jaccardStr(got.Pairs, 
 // про расстановку в компании, а её кубик знает — разговорчивостью, знакомством
 // и потолками.
 func JaccardHeard(got, want VacuumShape) float64 { return jaccardInt(got.Heard, want.Heard) }
+
+// ChanceJaccard — сколько дал бы ЖРЕБИЙ на тех же числах: столько-то наших имён
+// и столько-то настоящих, выбранных наугад из состава в n человек.
+//
+// Без этой строчки совпадение состава нечитаемо ровно так же, как точность
+// решений без базлайна молчуна. Пятеро наших и четверо настоящих из двенадцати
+// пересекаются вслепую на 23 % — и отчёт, печатающий 24 % как достижение, врёт
+// не числом, а умолчанием (замер 28.08.2026).
+//
+// Считается по ожидаемому размеру пересечения (a·b/n) — точной формулы для
+// среднего отношения нет, а разница между нею и этой оценкой много меньше
+// разброса по зёрнам.
+func ChanceJaccard(a, b, n int) float64 {
+	if a == 0 || b == 0 || n == 0 {
+		return 0
+	}
+	both := float64(a) * float64(b) / float64(n)
+	union := float64(a) + float64(b) - both
+	if union <= 0 {
+		return 0
+	}
+	return both / union
+}
 
 func jaccardInt(a, b []int64) float64 {
 	as := make([]string, 0, len(a))

@@ -206,7 +206,7 @@ func writeVacuumSeeds(b *strings.Builder, rep *VacuumReport) {
 // writeVacuumShapes — портрет разговора против портрета.
 func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	var got, want VacuumShape
-	spoke, pairs, heard := 0.0, 0.0, 0.0
+	spoke, pairs, heard, luck := 0.0, 0.0, 0.0, 0.0
 	burst, judged, paired := 0, 0, 0
 	gotPairs, wantPairs := 0, 0
 	var firsts, gaps, wfirsts, wgaps []int
@@ -248,6 +248,7 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		}
 		judged++
 		spoke += JaccardSpoke(r.Got, r.Want)
+		luck += ChanceJaccard(len(r.Got.Spoke), len(r.Want.Spoke), len(r.Cast))
 		// Граф считается ОТДЕЛЬНО и по своему условию: заметка, где из состава
 		// никто никому не ответил, для «кто заговорил» законна, а для «кто кому»
 		// — пустое против пустого. Девять таких из десяти дают девяносто
@@ -278,8 +279,12 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		b.WriteString("Ни в одной заметке из состава не заговорил никто — сравнивать нечего.\n\n")
 	} else {
 		n := float64(judged)
-		fmt.Fprintf(b, "- состав заговоривших сошёлся на **%.0f %%** (Жаккар, среднее по %d заметкам из %d, "+
-			"где хоть кто-то говорил)\n", 100*spoke/n, judged, len(rep.Runs))
+		// Жребий стоит рядом по той же причине, по какой рядом с точностью решений
+		// стоит молчун: пятеро наших и четверо настоящих из двенадцати пересекаются
+		// вслепую почти на четверть, и число без этой приписки читается как умение.
+		fmt.Fprintf(b, "- состав заговоривших сошёлся на **%.0f %%**, а ЖРЕБИЙ на тех же числах "+
+			"дал бы **%.0f %%** (Жаккар, среднее по %d заметкам из %d, где хоть кто-то говорил)\n",
+			100*spoke/n, 100*luck/n, judged, len(rep.Runs))
 		if paired == 0 {
 			b.WriteString("- граф «кто кому отвечал» не считался: ни в одной заметке " +
 				"из состава никто никому не ответил — ни у нас, ни в оригинале\n")

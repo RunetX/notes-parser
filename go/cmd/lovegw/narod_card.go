@@ -28,6 +28,7 @@ type snapshotOpts struct {
 	TopWords    int // характерных слов
 	TopEdges    int // собеседников в стартовые отношения
 	RateThreads int // последних тредов в замер отклика
+	LiftNotes   int // заметок в замер перекоса по темам
 	Seed        int64
 }
 
@@ -36,7 +37,7 @@ func defaultSnapshotOpts() snapshotOpts {
 	// возможностей ответить даже у скромного участника, а хвост в тринадцать лет
 	// утянул бы кривую к тому, каким человек был когда-то.
 	return snapshotOpts{Recent: 2000, NormSample: 100000, TopWords: 40, TopEdges: 12,
-		RateThreads: 300, Seed: 1}
+		RateThreads: 300, LiftNotes: 20000, Seed: 1}
 }
 
 // buildSnapshotCard снимает слепок реального участника архива.
@@ -112,6 +113,14 @@ func buildSnapshotCard(ctx context.Context, st *archive.Store, token string, opt
 	if facts, err := st.IdentityFacts(ctx, voice.Identity); err == nil {
 		card.Triggers = triggersFromFacts(facts)
 	}
+	// Перекос по темам — ЗАМЕР поверх интересов. Интерес говорит, КАК человек
+	// про тему говорит, перекос — ЗАЙДЁТ ли он в такую заметку вообще, и второе
+	// кубику нужнее: без него выбор «кто придёт именно сюда» выходит случайным.
+	lifts, err := st.MineTopicLift(ctx, accIDs, archive.DefaultTopics(), opts.LiftNotes)
+	if err != nil {
+		return narod.Card{}, err
+	}
+	card.Triggers = withTopicLift(card.Triggers, lifts)
 	if rels, err := st.IdentityRelations(ctx, voice.Identity, opts.TopEdges); err == nil {
 		card.Relations = relationsFromArchive(rels)
 	}
@@ -411,3 +420,54 @@ func rateBucketsToCard(bs []archive.RateBucket) []narod.RateBucket {
 	}
 	return out
 }
+
+// withTopicLift подмешивает ЗАМЕРЕННЫЙ перекос в список интересов.
+//
+// Списки разной природы и потому не заменяют друг друга: интересы отобраны по
+// силе сигнала в речи (о чём человек говорит), перекос — по тому, куда он
+// заходит. Тема, которую он в речи не поминает, а в заметки про неё ходит
+// втрое чаще среднего, обязана попасть в карточку, — поэтому измеренные темы
+// добавляются, даже если интересом не значились.
+//
+// Неизмеренные не добавляются вовсе: у них ноль в Lift, и «не мерили» не то же
+// самое, что «не интересуется».
+func withTopicLift(triggers []narod.Topic, lifts []archive.TopicLift) []narod.Topic {
+	byName := map[string]int{}
+	for i, t := range triggers {
+		byName[t.Name] = i
+	}
+	for _, l := range lifts {
+		if !l.Measured() {
+			continue
+		}
+		name := topicNames[l.Key]
+		if name == "" {
+			name = l.Title
+		}
+		if i, ok := byName[name]; ok {
+			triggers[i].Key, triggers[i].Lift = l.Key, l.Lift
+			continue
+		}
+		// Заметный перекос без интереса в речи — это находка, а не шум; слабый
+		// (около единицы) в карточке не нужен: он ничего не меняет ни в кубике,
+		// ни в брифе, а список тем читает человек.
+		if l.Lift >= topicLiftNotable || l.Lift <= 1/topicLiftNotable {
+			triggers = append(triggers, narod.Topic{Name: name, Key: l.Key, Lift: l.Lift})
+		}
+	}
+	sort.Slice(triggers, func(i, j int) bool {
+		if triggers[i].Lift != triggers[j].Lift {
+			return triggers[i].Lift > triggers[j].Lift
+		}
+		if triggers[i].Weight != triggers[j].Weight {
+			return triggers[i].Weight > triggers[j].Weight
+		}
+		return triggers[i].Name < triggers[j].Name
+	})
+	return triggers
+}
+
+// topicLiftNotable — во сколько раз перекос должен отличаться от единицы, чтобы
+// попасть в карточку темой, которой в речи не было. Полтора: ниже этого разница
+// не переживает разброс выборки, а список тем читает человек и модель.
+const topicLiftNotable = 1.5

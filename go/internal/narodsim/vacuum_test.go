@@ -272,7 +272,11 @@ func TestVacuumConversationNeedsACrowd(t *testing.T) {
 // остаётся на своём месте без слов, а отчёт называет, сколько таких.
 func TestVacuumSpeakerFillsBodies(t *testing.T) {
 	sp := &fakeSpeaker{}
-	actors := vacCast(3, testCard(), 3)
+	// Приходят все и наверняка: тест про ПОТОЛОК обращений к модели, и зависеть
+	// от того, повезло ли зерну, он не должен.
+	card := testCard()
+	card.Dice.ComeToNote = 1
+	actors := vacCast(3, card, 3)
 	for i := range actors {
 		actors[i].Speaker = sp
 	}

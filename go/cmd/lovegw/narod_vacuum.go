@@ -54,6 +54,12 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 	if len(scripts) == 0 {
 		return fmt.Errorf("narod replay: не отработала ни одна заметка")
 	}
+	// Темы заметок разбираются ОДИН раз на все зёрна: от броска они не зависят,
+	// а лексиконов дюжина и каждый — регэксп.
+	topics, err := noteTopics(scripts)
+	if err != nil {
+		return err
+	}
 
 	var runs []*narodsim.VacuumRun
 	for i := range seedCount(o) {
@@ -78,7 +84,8 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 		familiar := map[int64]map[int64]int{}
 		for _, sc := range scripts {
 			run, err := narodsim.RunVacuum(ctx, sc, narodsim.VacuumOpts{
-				Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak, Familiar: familiar,
+				Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak,
+				Topics: topics[sc.NoteID], Familiar: familiar,
 			})
 			if err != nil {
 				return err
@@ -231,4 +238,22 @@ func splitTokens(s string) []string {
 		}
 	}
 	return out
+}
+
+// noteTopics — темы каждой заметки серии, ключами лексикона архива.
+//
+// Разбираются ТЕМ ЖЕ лексиконом, каким снят перекос в карточке: разойдись они,
+// и множитель прикладывался бы к теме, которой в замере не было, — а заметить
+// это было бы нечем, кубик молча стал бы звать не тех.
+func noteTopics(scripts []*archive.ThreadScript) (map[int64][]string, error) {
+	lex := archive.DefaultTopics()
+	out := make(map[int64][]string, len(scripts))
+	for _, sc := range scripts {
+		t, err := archive.TopicsOf(sc.Note.Text, lex)
+		if err != nil {
+			return nil, err
+		}
+		out[sc.NoteID] = t
+	}
+	return out, nil
 }

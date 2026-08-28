@@ -43,7 +43,12 @@ type DecisionPoint struct {
 	// NoteID — заметка, в которой всё происходит. Часть ключа монетки, а не
 	// справка: у точки решения на самой заметке номера реплики нет, и без этого
 	// поля бросок выходил бы одинаковым во всех тредах (см. pointSeed).
-	NoteID    int64
+	NoteID int64
+	// Topics — темы САМОЙ ЗАМЕТКИ, ключами лексикона. Разбирает их зовущий, а не
+	// решение: разбор живёт в архиве, а кубик обязан работать и там, где архива
+	// нет вовсе. Пустой список законен — у заметки может не быть ни одной темы
+	// из закрытого набора, и это не то же самое, что «тема не подошла».
+	Topics    []string
 	TriggerID int64 // реплика, на которую реагируем; 0 — сама заметка
 	Trigger   string
 	Author    int64 // кто её сказал; у заметки — её автор
@@ -186,6 +191,10 @@ type SoloOpts struct {
 	// участником — это сотни платных вызовов. Отчёт называет пропущенное.
 	MaxSpeak int
 
+	// Topics — темы заметки (ключи лексикона). Разбирает их зовущий: разбор
+	// живёт в архиве, а решение обязано работать и без него.
+	Topics []string
+
 	// Familiar — сколько раз житель уже отвечал каждому, НАКОПЛЕННОЕ ПО ХОДУ
 	// прогона. Карту передаёт зовущий и держит её между тредами: знакомство
 	// живёт дольше одного разговора, а в бою его помнит граф мира.
@@ -221,7 +230,7 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 
 	// Заметка — тоже точка решения: ответ первого уровня приходит на неё.
 	if err := step(ctx, run, o, sc, DecisionPoint{
-		Now: sc.Note.PublishedAt, Actor: o.Actor, NoteID: sc.NoteID, TriggerID: 0,
+		Now: sc.Note.PublishedAt, Actor: o.Actor, NoteID: sc.NoteID, Topics: o.Topics, TriggerID: 0,
 		Trigger: sc.Note.Text, Author: sc.Note.AuthorID, Nick: sc.Note.AuthorNick,
 	}, answered, 0); err != nil {
 		return nil, err
