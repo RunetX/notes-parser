@@ -90,6 +90,8 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 	}
 
 	dec := &narodsim.CardDecider{Card: *card, Seed: uint64(o.seed)}
+	// Знакомство живёт дольше одного треда — карта общая на весь прогон.
+	familiar := map[int64]int{}
 	var runs []*narodsim.SoloRun
 	for _, id := range notes {
 		sc, err := ar.LoadThreadScript(ctx, id)
@@ -99,6 +101,7 @@ func narodReplay(ctx context.Context, o replayOpts) error {
 		}
 		run, err := narodsim.RunSolo(ctx, sc, narodsim.SoloOpts{
 			Actor: actorID, Decider: dec, Speaker: speaker, MaxSpeak: o.maxSpeak,
+			Familiar: familiar,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "тред %d пропущен: %v\n", id, err)

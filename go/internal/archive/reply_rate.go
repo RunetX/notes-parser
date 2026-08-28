@@ -55,7 +55,19 @@ type RateBucket struct {
 type ReplyRate struct {
 	Threads int          `json:"threads"` // по скольким тредам снято
 	Buckets []RateBucket `json:"buckets,omitempty"`
+
+	// Familiar — та же мера, но по ЗНАКОМСТВУ с говорящим: сколько раз человек
+	// уже отвечал ему раньше. Ею проверяется, вправе ли граф отношений двигать
+	// решение и насколько: без замера множитель за «своего» был бы ровно такой
+	// же выдумкой, как «влезть в чужой разговор = 0.15».
+	Familiar []RateBucket `json:"familiar,omitempty"`
 }
+
+// familiarBuckets — границы по числу прошлых ответов этому человеку. Первая
+// корзина «ни разу» и есть встреча с незнакомым, дальше степенной шаг: разница
+// между первым и пятым разговором велика, между сороковым и пятидесятым нет
+// никакой.
+var familiarBuckets = []int{0, 2, 5, 15, 50, 1 << 30}
 
 // rateMinChances — ниже этого корзина не считается замером: доля по трём
 // случаям — это не редкость события, а отсутствие данных, и подставлять её в
@@ -65,8 +77,12 @@ const rateMinChances = 30
 // Rate — вероятность отклика на реплику в позиции pos. Второе значение — был ли
 // это ЗАМЕР: пустая корзина возвращает 0, false, и звать её результатом нельзя.
 func (r ReplyRate) Rate(pos int, toHim bool) (float64, bool) {
-	for _, b := range r.Buckets {
-		if pos > b.Upto {
+	return rateIn(r.Buckets, pos, toHim)
+}
+
+func rateIn(buckets []RateBucket, x int, toHim bool) (float64, bool) {
+	for _, b := range buckets {
+		if x > b.Upto {
 			continue
 		}
 		chances, answers := b.Chances, b.Answers
@@ -122,7 +138,7 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT note_id, id, author_id IN (`+in+`)
+		SELECT note_id, id, author_id, author_id IN (`+in+`)
 		  FROM comments
 		 WHERE note_id IN (`+ids+`) AND published_at IS NOT NULL
 		 ORDER BY note_id, published_at, id`)
@@ -135,12 +151,22 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 	for i, up := range rateBuckets {
 		out.Buckets[i].Upto = up
 	}
+	out.Familiar = make([]RateBucket, len(familiarBuckets))
+	for i, up := range familiarBuckets {
+		out.Familiar[i].Upto = up
+	}
+	// prior — сколько раз человек УЖЕ ответил этому собеседнику к моменту
+	// очередной возможности. Считается на ходу, потому что вопрос временной:
+	// «отвечает ли он знакомым чаще» — про то, что было ДО, а итоговое число
+	// ответов знает и о том, что случилось после, и превращает замер в
+	// тавтологию.
+	prior := map[int64]int{}
 	var note int64
 	pos := 0
 	for rows.Next() {
-		var noteID, id int64
+		var noteID, id, author int64
 		var own bool
-		if err := rows.Scan(&noteID, &id, &own); err != nil {
+		if err := rows.Scan(&noteID, &id, &author, &own); err != nil {
 			return out, err
 		}
 		if noteID != note {
@@ -153,20 +179,30 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 		if own {
 			continue
 		}
-		b := &out.Buckets[bucketOf(pos)]
-		if toHim[id] {
-			b.ToHimChances++
-			if answered[id] {
-				b.ToHimAnswers++
-			}
-			continue
-		}
-		b.Chances++
+		countChance(&out.Buckets[bucketOf(pos)], toHim[id], answered[id])
+		countChance(&out.Familiar[bucketOfInt(prior[author], familiarBuckets)], toHim[id], answered[id])
 		if answered[id] {
-			b.Answers++
+			prior[author]++
 		}
 	}
 	return out, rows.Err()
+}
+
+// countChance — одна возможность в корзину. Обращённые к человеку реплики считаются
+// ОТДЕЛЬНО от прочих везде, где считаются вообще: они отличаются на порядок, и
+// смешанная доля не описывает ни тех, ни других.
+func countChance(b *RateBucket, toHim, answered bool) {
+	if toHim {
+		b.ToHimChances++
+		if answered {
+			b.ToHimAnswers++
+		}
+		return
+	}
+	b.Chances++
+	if answered {
+		b.Answers++
+	}
 }
 
 // rateThreads — последние треды, где человек участвовал.
@@ -209,11 +245,19 @@ func (s *Store) idSet(ctx context.Context, query string) (map[int64]bool, error)
 	return out, rows.Err()
 }
 
-func bucketOf(pos int) int {
-	for i, up := range rateBuckets {
-		if pos <= up {
+func bucketOf(pos int) int { return bucketOfInt(pos, rateBuckets) }
+
+func bucketOfInt(x int, edges []int) int {
+	for i, up := range edges {
+		if x <= up {
 			return i
 		}
 	}
-	return len(rateBuckets) - 1
+	return len(edges) - 1
+}
+
+// FamiliarRate — вероятность отклика на реплику человека, которому уже отвечал
+// prior раз. Второе значение — был ли это замер.
+func (r ReplyRate) FamiliarRate(prior int, toHim bool) (float64, bool) {
+	return rateIn(r.Familiar, prior, toHim)
 }

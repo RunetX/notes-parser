@@ -393,9 +393,17 @@ func round2(x float64) float64 { return math.Round(x*100) / 100 }
 // есть, включая пустые корзины: по ним видно, где замера не хватило, а
 // выброшенная пустая корзина выглядела бы как её отсутствие в природе.
 func rateFromArchive(r archive.ReplyRate) narod.ReplyRate {
-	out := narod.ReplyRate{Threads: r.Threads}
-	for _, b := range r.Buckets {
-		out.Buckets = append(out.Buckets, narod.RateBucket{
+	return narod.ReplyRate{
+		Threads:  r.Threads,
+		Buckets:  rateBucketsToCard(r.Buckets),
+		Familiar: rateBucketsToCard(r.Familiar),
+	}
+}
+
+func rateBucketsToCard(bs []archive.RateBucket) []narod.RateBucket {
+	out := make([]narod.RateBucket, 0, len(bs))
+	for _, b := range bs {
+		out = append(out, narod.RateBucket{
 			Upto: b.Upto, Chances: b.Chances, Answers: b.Answers,
 			ToHimChances: b.ToHimChances, ToHimAnswers: b.ToHimAnswers,
 		})

@@ -203,3 +203,39 @@ func TestNicks(t *testing.T) {
 		t.Errorf("ники каталога: %v", got)
 	}
 }
+
+// Знакомство накладывается МНОЖИТЕЛЕМ, а не готовой вероятностью: позиция в
+// треде и знакомство отвечают на разные вопросы, а обе готовые вероятности
+// содержат общую базу, которая учлась бы дважды.
+func TestFamiliarLift(t *testing.T) {
+	r := ReplyRate{Familiar: []RateBucket{
+		{Upto: 0, Chances: 1000, Answers: 5, ToHimChances: 100, ToHimAnswers: 55},
+		{Upto: 1 << 30, Chances: 1000, Answers: 15, ToHimChances: 100, ToHimAnswers: 60},
+	}}
+	// Среднее по обеим корзинам — 20/2000 = 1 %.
+	if lift, ok := r.FamiliarLift(0, false); !ok || lift != 0.5 {
+		t.Errorf("незнакомый: множитель %v (ok=%v), ожидалось 0.5", lift, ok)
+	}
+	if lift, ok := r.FamiliarLift(100, false); !ok || lift != 1.5 {
+		t.Errorf("свой: множитель %v (ok=%v), ожидалось 1.5", lift, ok)
+	}
+	// У прямого обращения замер показал почти ровную линию — множитель около
+	// единицы, и это правильно: знакомство решает, влезешь ли ты в ЧУЖОЙ
+	// разговор, а не ответишь ли, когда обратились к тебе.
+	lift, ok := r.FamiliarLift(0, true)
+	if !ok || lift < 0.9 || lift > 1.1 {
+		t.Errorf("обращение к незнакомому: множитель %v (ok=%v), ожидалось около 1", lift, ok)
+	}
+}
+
+// Без замера множитель РАВЕН ЕДИНИЦЕ и говорит об этом: подставить сюда ноль
+// значило бы молча запретить персонажу отвечать.
+func TestFamiliarLiftWithoutMeasurement(t *testing.T) {
+	if lift, ok := (ReplyRate{}).FamiliarLift(5, false); ok || lift != 1 {
+		t.Errorf("по пустому замеру множитель %v (ok=%v)", lift, ok)
+	}
+	thin := ReplyRate{Familiar: []RateBucket{{Upto: 1 << 30, Chances: 5, Answers: 1}}}
+	if lift, ok := thin.FamiliarLift(0, false); ok || lift != 1 {
+		t.Errorf("по тощей корзине множитель %v (ok=%v)", lift, ok)
+	}
+}

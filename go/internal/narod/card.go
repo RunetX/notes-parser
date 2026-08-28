@@ -358,6 +358,60 @@ func Nicks(cards []Card) []string {
 type ReplyRate struct {
 	Threads int          `json:"threads"`
 	Buckets []RateBucket `json:"buckets,omitempty"`
+
+	// Familiar — та же мера по ЗНАКОМСТВУ: сколько раз человек уже отвечал
+	// говорящему. Ею проверяется, вправе ли граф отношений двигать решение и
+	// насколько; без замера множитель за «своего» был бы такой же выдумкой, как
+	// прежнее «влезть в чужой разговор = 0.15».
+	Familiar []RateBucket `json:"familiar,omitempty"`
+}
+
+// FamiliarRate — вероятность отклика на реплику того, кому уже отвечал prior
+// раз. Второе значение — был ли это замер.
+func (r ReplyRate) FamiliarRate(prior int, toHim bool) (float64, bool) {
+	return rateIn(r.Familiar, prior, toHim)
+}
+
+// FamiliarLift — во сколько раз знакомство меняет вероятность отклика против
+// среднего по всем знакомствам.
+//
+// Множителем, а не готовой вероятностью, потому что вопросов два и они разные:
+// позиция в треде говорит «докуда дошёл разговор», знакомство — «кто говорит».
+// Перемножить две готовые вероятности нельзя (обе содержат общую базу и она
+// учлась бы дважды), поэтому вторая берётся ОТНОСИТЕЛЬНО собственного среднего.
+//
+// Замер 28.08.2026 по трём слепкам: у реплики, обращённой мимо человека,
+// знакомство поднимает отклик в 2,8–4,7 раза (у ДВ с 0,20 % до 0,95 %), а у
+// реплики, обращённой К НЕМУ, не меняет почти ничего (54→59 %, 57→45 %,
+// 57→61 %). То есть знакомство решает, влезешь ли ты в ЧУЖОЙ разговор, и не
+// решает ничего, когда обратились лично к тебе. Множитель, наложенный на оба
+// случая разом, был бы выдумкой ровно там, где её видно.
+func (r ReplyRate) FamiliarLift(prior int, toHim bool) (float64, bool) {
+	got, ok := r.FamiliarRate(prior, toHim)
+	if !ok {
+		return 1, false
+	}
+	avg, ok := averageRate(r.Familiar, toHim)
+	if !ok || avg <= 0 {
+		return 1, false
+	}
+	return got / avg, true
+}
+
+// averageRate — отклик по всем корзинам разом: знаменатель множителя.
+func averageRate(buckets []RateBucket, toHim bool) (float64, bool) {
+	var chances, answers int
+	for _, b := range buckets {
+		if toHim {
+			chances, answers = chances+b.ToHimChances, answers+b.ToHimAnswers
+			continue
+		}
+		chances, answers = chances+b.Chances, answers+b.Answers
+	}
+	if chances < RateMinChances {
+		return 0, false
+	}
+	return float64(answers) / float64(chances), true
 }
 
 // RateBucket — отклик в одной корзине позиций. Хранятся ЧИСЛА, а не готовая
@@ -376,8 +430,12 @@ const RateMinChances = 30
 // Rate — вероятность отклика на реплику в позиции pos. Второе значение — был ли
 // это замер: пустую корзину нельзя ни подставить в кубик, ни назвать нулём.
 func (r ReplyRate) Rate(pos int, toHim bool) (float64, bool) {
-	for _, b := range r.Buckets {
-		if pos > b.Upto {
+	return rateIn(r.Buckets, pos, toHim)
+}
+
+func rateIn(buckets []RateBucket, x int, toHim bool) (float64, bool) {
+	for _, b := range buckets {
+		if x > b.Upto {
 			continue
 		}
 		chances, answers := b.Chances, b.Answers

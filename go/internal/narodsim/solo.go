@@ -50,6 +50,11 @@ type DecisionPoint struct {
 	Addressed bool
 	Seen      int // сколько реплик уже прозвучало
 	Said      int // сколько раз житель уже говорил в этом треде
+	// Familiarity — сколько раз житель УЖЕ отвечал этому говорящему. Та самая
+	// величина, которую копит граф мира (narod.Edge.Familiarity), и та самая, по
+	// которой снят замер: знакомство поднимает готовность влезть в чужой
+	// разговор втрое-впятеро и почти не трогает ответ на прямое обращение.
+	Familiarity int
 }
 
 // Decision — что решил житель.
@@ -166,6 +171,16 @@ type SoloOpts struct {
 	// потолка, и это осознанно опасно: тред на тысячу реплик с говорливым
 	// участником — это сотни платных вызовов. Отчёт называет пропущенное.
 	MaxSpeak int
+
+	// Familiar — сколько раз житель уже отвечал каждому, НАКОПЛЕННОЕ ПО ХОДУ
+	// прогона. Карту передаёт зовущий и держит её между тредами: знакомство
+	// живёт дольше одного разговора, а в бою его помнит граф мира.
+	//
+	// Заполняется по настоящим репликам донора, и это не утечка ответа:
+	// знакомство — свойство ПРОШЛОГО, доступное решению до его принятия, в
+	// отличие от того, ответил ли он на эту реплику сейчас. Карта может быть
+	// nil — тогда все встречные считаются незнакомыми.
+	Familiar map[int64]int
 }
 
 // RunSolo прогоняет слепок на месте участника архивного треда.
@@ -205,6 +220,11 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 			if err := speak(ctx, run, o, sc, i, c); err != nil {
 				return nil, err
 			}
+			// Знакомство копится по НАСТОЯЩИМ ответам донора: к моменту
+			// следующей точки решения он этого собеседника уже знает настолько.
+			if o.Familiar != nil && c.TargetID != 0 {
+				o.Familiar[c.TargetID]++
+			}
 			continue
 		}
 		// Said — сколько раз заговорил САМ ЖИТЕЛЬ, а не донор. Разница
@@ -216,6 +236,7 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 			Now: c.PublishedAt, Actor: o.Actor, TriggerID: c.ID, Trigger: c.Text,
 			Author: c.AuthorID, Nick: c.AuthorNick, Addressed: c.TargetID == o.Actor,
 			Seen: i + 1, Said: run.Matrix.TP + run.Matrix.FP,
+			Familiarity: o.Familiar[c.AuthorID],
 		}, answered, c.ID); err != nil {
 			return nil, err
 		}

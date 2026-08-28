@@ -29,6 +29,11 @@ type CardDecider struct {
 	Seed uint64
 }
 
+// MaxChance — потолок вероятности отклика. Единицы здесь быть не может:
+// человек, отвечающий ВСЕГДА, — это не характер, а автоответчик, и на любом
+// сочетании множителей такое должно оставаться невозможным.
+const MaxChance = 0.9
+
 // Decide бросает монетку на одной точке.
 func (d *CardDecider) Decide(_ context.Context, p DecisionPoint) (Decision, error) {
 	dice := d.Card.Dice
@@ -71,7 +76,13 @@ func chanceOf(card narod.Card, p DecisionPoint) (float64, narod.Dist) {
 		return dice.ComeToNote, lat.ToThreadSec
 	}
 	if r, ok := card.Rate.Rate(p.Seen, p.Addressed); ok {
-		return r, lat.ToReplySec
+		// Знакомство накладывается МНОЖИТЕЛЕМ поверх позиции: вопросы разные —
+		// «докуда дошёл разговор» и «кто говорит», — и обе готовые вероятности
+		// содержат общую базу, которая учлась бы дважды.
+		if lift, ok := card.Rate.FamiliarLift(p.Familiarity, p.Addressed); ok {
+			r *= lift
+		}
+		return min(r, MaxChance), lat.ToReplySec
 	}
 	if p.Addressed {
 		return dice.ReplyMention, lat.ToReplySec
