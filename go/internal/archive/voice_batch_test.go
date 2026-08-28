@@ -124,12 +124,12 @@ func TestLengthBandFollowsTarget(t *testing.T) {
 	}
 	// Длинный жребий прежней рамкой был бы забракован, новой — принят.
 	lo, hi = lengthBand(sh, VoiceRequest{TargetRunes: 400})
-	if lo != 160 || hi != 1000 {
-		t.Errorf("на задании 400 рамка %d–%d, ожидалась 160–1000", lo, hi)
+	if lo != 280 || hi != 1000 {
+		t.Errorf("на задании 400 рамка %d–%d, ожидалась 280–1000", lo, hi)
 	}
 	// И короткий тоже: 30 знаков в прежнюю рамку попадали, но допуск теперь свой.
-	if lo, hi = lengthBand(sh, VoiceRequest{TargetRunes: 30}); lo != 12 || hi != 75 {
-		t.Errorf("на задании 30 рамка %d–%d, ожидалась 12–75", lo, hi)
+	if lo, hi = lengthBand(sh, VoiceRequest{TargetRunes: 30}); lo != 21 || hi != 75 {
+		t.Errorf("на задании 30 рамка %d–%d, ожидалась 21–75", lo, hi)
 	}
 	// Пустой замер рамки не даёт вовсе — проверять нечем.
 	if lo, hi = lengthBand(VoiceShape{}, VoiceRequest{}); lo != 0 || hi != 0 {
