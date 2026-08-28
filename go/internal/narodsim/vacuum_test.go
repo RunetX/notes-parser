@@ -320,3 +320,40 @@ func sc0() *archive.ThreadScript {
 	sc.Comments = nil
 	return sc
 }
+
+// Размер треда решает ЧИСЛО ЖИТЕЛЕЙ, а не качество кубика, и мерка этому —
+// «во что разрастается реплика»: сколько всего сказано на одну реплику,
+// пришедшую в саму заметку.
+//
+// Тест закрепляет обе половины замера 29.08.2026. Первая — арифметика: корни
+// считаются отдельно от ответов, иначе величина не считается вовсе. Вторая —
+// сам вывод: пока эта величина меньше единицы, тред затухает за два-три круга
+// при любом содержании реплик, и объяснять его размер промптом, потолками или
+// вероятностями бессмысленно. У десяти конфликтных заметок оригинала она
+// вышла 0.82, у наших двенадцати жителей — 0.52.
+func TestBranchingCountsRootsApart(t *testing.T) {
+	t0 := time.Date(2016, 5, 12, 9, 0, 0, 0, time.UTC)
+	at := func(m int) time.Time { return t0.Add(time.Duration(m) * time.Minute) }
+	// Трое пришли в заметку, двое ответили друг другу: пять реплик на три корня.
+	cs := []archive.ScriptComment{
+		{ID: 1, AuthorID: 2, PublishedAt: at(1), ReplyTo: 0, TargetID: 1},
+		{ID: 2, AuthorID: 9, PublishedAt: at(2), ReplyTo: 0, TargetID: 1},
+		{ID: 3, AuthorID: 7, PublishedAt: at(3), ReplyTo: 0, TargetID: 1},
+		{ID: 4, AuthorID: 9, PublishedAt: at(4), ReplyTo: 1, TargetID: 2},
+		{ID: 5, AuthorID: 2, PublishedAt: at(5), ReplyTo: 4, TargetID: 9},
+	}
+	sh := shapeOf(cs, map[int64]bool{2: true, 9: true, 7: true}, t0)
+	if sh.Roots != 3 {
+		t.Errorf("корней %d, ожидалось 3", sh.Roots)
+	}
+	if got := branching(sh.Replies, sh.Roots); got < 0.39 || got > 0.41 {
+		t.Errorf("разрастание %.2f, ожидалось 0.40 (5 реплик на 3 корня)", got)
+	}
+	// Тред, куда все только пришли и никто никому не ответил, не разрастается
+	// вовсе — и это ноль, а не «мало данных».
+	flat := cs[:3]
+	sh = shapeOf(flat, map[int64]bool{2: true, 9: true, 7: true}, t0)
+	if got := branching(sh.Replies, sh.Roots); got != 0 {
+		t.Errorf("разрастание пустого треда %.2f, ожидался ноль", got)
+	}
+}

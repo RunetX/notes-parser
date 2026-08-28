@@ -124,6 +124,14 @@ type VacuumRun struct {
 	// настоящем разговоре — первое, что нужно знать, чтобы верить остальным числам.
 	OrigReplies int `json:"orig_replies"`
 
+	// OrigRoots — корней в ПОЛНОМ оригинале, и мериться разрастание реплики
+	// обязано именно на нём. У суженного треда эта величина не считается вовсе:
+	// вырезав четыре пятых участников, мы превращаем всякий ответ вырезанному в
+	// «пришёл в заметку», и разговор с настоящими 0.82 печатается как 0.06.
+	// Поймано это было отчётом в тот же день, 29.08.2026, — то же правило, что и
+	// у Жаккара по парам: суженный оригинал годится не для каждого вопроса.
+	OrigRoots int `json:"orig_roots"`
+
 	Thread   *archive.ThreadScript `json:"-"` // сгенерированный разговор целиком
 	Speeches int                   `json:"speeches"`
 	Rejected int                   `json:"rejected"`
@@ -157,6 +165,7 @@ type VacuumShape struct {
 	SpanSec int          `json:"span_sec"` // от заметки до последней реплики
 	InBurst int          `json:"in_burst"` // реплик в первые vacuumBurst
 	Depth   int          `json:"depth"`    // самая длинная цепочка ответов
+	Roots   int          `json:"roots"`    // реплик В ЗАМЕТКУ, а не в ответ кому-то
 }
 
 // vacEvent — намеченная реплика.
@@ -200,6 +209,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 
 	t0 := sc.Note.PublishedAt
 	run := &VacuumRun{NoteID: sc.NoteID, Cast: cast, OrigReplies: len(sc.Comments)}
+	run.OrigRoots = rootsOf(sc.Comments)
 	got := &archive.ThreadScript{NoteID: sc.NoteID, Note: sc.Note, Edges: map[string]int{}}
 	run.Thread = got
 
@@ -446,6 +456,8 @@ func shapeOf(cs []archive.ScriptComment, cast map[int64]bool, t0 time.Time) Vacu
 		d := 1
 		if p, ok := depth[c.ReplyTo]; ok {
 			d = p + 1
+		} else {
+			sh.Roots++
 		}
 		depth[c.ID] = d
 		sh.Depth = max(sh.Depth, d)
@@ -573,6 +585,22 @@ func (st *vacState) tempo(at time.Time) int {
 			break
 		}
 		n++
+	}
+	return n
+}
+
+// rootsOf — сколько реплик пришло В САМУ ЗАМЕТКУ, а не в ответ кому-то.
+// Считается по ПОЛНОМУ треду, без сужения до состава: см. VacuumRun.OrigRoots.
+func rootsOf(cs []archive.ScriptComment) int {
+	in := make(map[int64]bool, len(cs))
+	for _, c := range cs {
+		in[c.ID] = true
+	}
+	n := 0
+	for _, c := range cs {
+		if !in[c.ReplyTo] {
+			n++
+		}
 	}
 	return n
 }

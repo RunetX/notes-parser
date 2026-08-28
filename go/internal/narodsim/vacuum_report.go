@@ -294,6 +294,8 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 	burst, judged, paired := 0, 0, 0
 	gotPairs, wantPairs := 0, 0
 	var firsts, gaps, wfirsts, wgaps []int
+	byDepth := map[uint64]int{}
+	origReplies, origRoots := 0, 0
 	seeds := map[uint64]bool{}
 	for _, r := range rep.Runs {
 		seeds[r.Seed] = true
@@ -306,8 +308,23 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		if r.Seed == rep.Runs[0].Seed {
 			want.Replies += r.Want.Replies
 		}
-		got.Depth = max(got.Depth, r.Got.Depth)
+		// Глубина берётся МАКСИМУМОМ внутри зерна, а сравнивается медианой по
+		// зёрнам. Максимум по всем прогонам сразу сравнивать с оригиналом
+		// нельзя: у оригинала десять заметок, а у нас те же десять, помноженные
+		// на число зёрен, — и максимум полусотни бросков больше максимума
+		// десяти просто потому, что бросков больше. Ровно так 28.08.2026
+		// «цепочка 20 против 4» оказалась лучшим из пяти зёрен (12, 20, 11, 8,
+		// 4), а не мерой, — то же правило, что и у прочих чисел прогона.
+		byDepth[r.Seed] = max(byDepth[r.Seed], r.Got.Depth)
 		want.Depth = max(want.Depth, r.Want.Depth)
+		got.Roots += r.Got.Roots
+		// Оригинал для этой величины берётся ЦЕЛИКОМ, а не суженным до состава:
+		// у сужения всякий ответ вырезанному человеку становится «пришёл в
+		// заметку», и разрастание 0.82 печатается как 0.06.
+		if r.Seed == rep.Runs[0].Seed {
+			origReplies += r.OrigReplies
+			origRoots += r.OrigRoots
+		}
 		if r.Got.BurstOnly() {
 			burst++
 		}
@@ -354,7 +371,19 @@ func writeVacuumShapes(b *strings.Builder, rep *VacuumReport) {
 		float64(archive.NewDist(firsts).Median)/60, float64(archive.NewDist(wfirsts).Median)/60)
 	fmt.Fprintf(b, "| пауза между репликами, мин | %.0f | %.0f |\n",
 		float64(archive.NewDist(gaps).Median)/60, float64(archive.NewDist(wgaps).Median)/60)
-	fmt.Fprintf(b, "| самая длинная цепочка ответов | %d | %d |\n\n", got.Depth, want.Depth)
+	// Цепочка сравнивается МЕДИАНОЙ по зёрнам, а не максимумом по всем
+	// прогонам: у оригинала десять заметок, а у нас те же десять, помноженные
+	// на число зёрен, — и лучший из полусотни бросков больше лучшего из десяти
+	// просто потому, что бросков больше. Ровно так 28.08.2026 «цепочка 20
+	// против 4» оказалась лучшим из пяти зёрен (12, 20, 11, 8, 4), а не мерой.
+	depths := make([]int, 0, len(byDepth))
+	for _, d := range byDepth {
+		depths = append(depths, d)
+	}
+	fmt.Fprintf(b, "| самая длинная цепочка ответов (медиана по зёрнам) | %d | %d |\n",
+		archive.NewDist(depths).Median, want.Depth)
+	fmt.Fprintf(b, "| во что разрастается реплика (оригинал — тред целиком) | %.2f | %.2f |\n\n",
+		branching(got.Replies, got.Roots), branching(origReplies, origRoots))
 
 	if got.Replies == 0 {
 		b.WriteString("**Жители не сказали ни слова.** Согласие с оригиналом при таком " +
@@ -416,4 +445,28 @@ func writeVacuumVoices(b *strings.Builder, rep *VacuumReport) {
 		}
 		writeVoice(b, a.Voice)
 	}
+}
+
+// branching — во что разрастается одна реплика: сколько всего сказано на одну
+// реплику, сказанную В ЗАМЕТКУ. Число это и решает размер треда, а вовсе не
+// качество кубика, и стоит оно в отчёте потому, что без него размер объясняют
+// чем угодно другим — я потратил на такие объяснения час 29.08.2026.
+//
+// Разговор в треде есть ветвящийся процесс: пришедший в заметку говорит, его
+// реплика становится точкой решения для остальных, часть из них отвечает, и
+// так далее. Если на одну реплику в среднем рождается меньше одной, тред
+// затухает за два-три круга при ЛЮБОМ содержании; если больше одной — растёт,
+// пока не упрётся в потолки. Здесь считается ровно эта величина, и считается
+// она по факту, а не по вероятностям: у ветвящегося процесса всего потомства
+// выходит «корней / (1 − m)», откуда m = 1 − корни/всего.
+//
+// Замер 29.08.2026 на десяти конфликтных заметках: у оригинала m = 0.82, у нас
+// на двенадцати жителях 0.52 — и это ВСЁ объяснение разрыва «7 реплик против
+// 95». Растёт m с числом жителей почти прямой (0.045 на жителя), потому что
+// каждый новый житель — это ещё одна пара глаз на каждой чужой реплике.
+func branching(total, roots int) float64 {
+	if total <= 0 || roots <= 0 {
+		return 0
+	}
+	return 1 - float64(roots)/float64(total)
 }
