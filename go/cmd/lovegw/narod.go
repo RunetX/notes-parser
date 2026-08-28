@@ -223,5 +223,57 @@ func narodWorld(ctx context.Context, path string) error {
 		}
 		fmt.Printf("  %-16s %-8s анкета %-14s %s\n", a.ID, a.Kind, anketa, a.Nick)
 	}
+	return worldGraph(ctx, w, actors)
+}
+
+// worldGraph печатает то, ради чего мир и заводился: отношения и поводы.
+//
+// Список акторов сам по себе не отвечает ни на один вопрос эмуляции — он
+// показывает, кого завели, а спрашивают всегда «ушёл ли мир от старта». Поэтому
+// рядом с рёбрами стоят ЭПИЗОДЫ: шкала помнит итог, но не повод, а сообщество
+// состоит как раз из поводов.
+func worldGraph(ctx context.Context, w *narod.World, actors []narod.Actor) error {
+	nick := make(map[string]string, len(actors))
+	for _, a := range actors {
+		nick[a.ID] = a.Nick
+	}
+	edges, err := w.Edges(ctx)
+	if err != nil {
+		return err
+	}
+	var moved int
+	for _, e := range edges {
+		if e.Sympathy != 0 || e.Irritation != 0 {
+			moved++
+		}
+	}
+	fmt.Printf("\nрёбер %d, из них сдвинуто отношением %d "+
+		"(знакомство копится и без модели — оно считается)\n", len(edges), moved)
+	for _, e := range edges {
+		if e.Sympathy == 0 && e.Irritation == 0 {
+			continue
+		}
+		fmt.Printf("  %-22s → %-22s симпатия %+5.1f  раздражение %+5.1f  виделись %.0f\n",
+			nick[e.Src], nick[e.Dst], e.Sympathy, e.Irritation, e.Familiarity)
+		eps, err := w.EpisodesOf(ctx, e.Src, e.Dst, 3)
+		if err != nil {
+			return err
+		}
+		for _, ep := range eps {
+			fmt.Printf("      %s %s: %s\n", ep.At.Format("02.01.2006"), ep.Kind, ep.Summary)
+		}
+	}
+	fmt.Printf("\nчто случилось с жителями вне площадки (последнее):\n")
+	for _, a := range actors {
+		inner, err := w.RecallKind(ctx, a.ID, narod.JournalInner, 1)
+		if err != nil {
+			return err
+		}
+		if len(inner) == 0 {
+			continue
+		}
+		fmt.Printf("  %-22s %s  %s\n", a.Nick,
+			inner[0].At.Format("02.01.2006"), inner[0].Text)
+	}
 	return nil
 }
