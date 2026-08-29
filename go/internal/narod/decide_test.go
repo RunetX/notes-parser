@@ -1,22 +1,20 @@
-package narodsim
+package narod
 
 import (
 	"context"
 	"math"
 	"testing"
 	"time"
-
-	"lovegw/internal/narod"
 )
 
-func testCard() narod.Card {
-	return narod.Card{
-		Dice: narod.DiceParams{
+func testCard() Card {
+	return Card{
+		Dice: DiceParams{
 			ComeToNote: 0.3, ReplyMention: 0.9, ReplyOther: 0.1, MaxPerThread: 3,
 		},
-		Latency: narod.LatencyDist{
-			ToThreadSec: narod.Dist{P10: 60, Median: 600, P90: 3600, Max: 20000},
-			ToReplySec:  narod.Dist{P10: 30, Median: 120, P90: 900, Max: 7200},
+		Latency: LatencyDist{
+			ToThreadSec: Dist{P10: 60, Median: 600, P90: 3600, Max: 20000},
+			ToReplySec:  Dist{P10: 30, Median: 120, P90: 900, Max: 7200},
 		},
 	}
 }
@@ -166,7 +164,7 @@ func TestCardDeciderStopsAtThreadCap(t *testing.T) {
 
 // Задержка восстанавливается по квантилям и остаётся в пределах замера.
 func TestSampleDist(t *testing.T) {
-	d := narod.Dist{P10: 60, Median: 600, P90: 3600, Max: 20000}
+	d := Dist{P10: 60, Median: 600, P90: 3600, Max: 20000}
 	cases := []struct {
 		u    float64
 		want time.Duration
@@ -194,7 +192,7 @@ func TestSampleDist(t *testing.T) {
 		t.Errorf("хвост вылез за максимум замера: %v", got)
 	}
 	// Пустой замер не должен выдумывать задержку.
-	if got := sampleDist(narod.Dist{}, 0.5); got != 0 {
+	if got := sampleDist(Dist{}, 0.5); got != 0 {
 		t.Errorf("по пустому распределению получено %v", got)
 	}
 }
@@ -221,7 +219,7 @@ func TestChanceOfPicksRightDistribution(t *testing.T) {
 // на 298 реплик кубик приходил 71 раз мимо при одном попадании.
 func TestChanceOfPrefersMeasuredRate(t *testing.T) {
 	c := testCard()
-	c.Rate = narod.ReplyRate{Threads: 300, Buckets: []narod.RateBucket{
+	c.Rate = ReplyRate{Threads: 300, Buckets: []RateBucket{
 		{Upto: 10, Chances: 1000, Answers: 30, ToHimChances: 100, ToHimAnswers: 70},
 		{Upto: 1 << 30, Chances: 1000, Answers: 10, ToHimChances: 100, ToHimAnswers: 50},
 	}}
@@ -246,7 +244,7 @@ func TestChanceOfPrefersMeasuredRate(t *testing.T) {
 // за характер. Тогда работает число карточки.
 func TestChanceOfFallsBackOnThinBucket(t *testing.T) {
 	c := testCard()
-	c.Rate = narod.ReplyRate{Buckets: []narod.RateBucket{
+	c.Rate = ReplyRate{Buckets: []RateBucket{
 		{Upto: 1 << 30, Chances: 5, Answers: 5, ToHimChances: 4, ToHimAnswers: 4},
 	}}
 	if p, _ := chanceOf(c, DecisionPoint{TriggerID: 5, Seen: 3}); p != 0.1 {
@@ -259,14 +257,14 @@ func TestChanceOfFallsBackOnThinBucket(t *testing.T) {
 
 // rootCard — карточка с ЗАМЕРЕННЫМ повторным заходом и нулевым откликом:
 // отвечать житель не будет никогда, значит всё, что он скажет, — корни.
-func rootCard(p float64) narod.Card {
+func rootCard(p float64) Card {
 	c := testCard()
 	c.Dice.MaxPerThread = 0
 	c.Dice.ReplyOther, c.Dice.ReplyMention = 0, 0
-	c.Rate = narod.ReplyRate{Buckets: []narod.RateBucket{
+	c.Rate = ReplyRate{Buckets: []RateBucket{
 		{Upto: 1 << 30, Chances: 10000, Answers: 0, ToHimChances: 10000, ToHimAnswers: 0},
 	}}
-	c.Roots = narod.RootRate{Buckets: []narod.RateBucket{
+	c.Roots = RootRate{Buckets: []RateBucket{
 		{Upto: 1 << 30, Chances: 10000, Answers: int(p * 10000)},
 	}}
 	return c
@@ -325,7 +323,7 @@ func TestCardDeciderRootNeedsAVoiceInTheThread(t *testing.T) {
 // немедленно завелась бы вторая выдумка вроде прежнего «влезть = 0.15».
 func TestCardDeciderRootHasNoFallback(t *testing.T) {
 	c := rootCard(0.9)
-	c.Roots = narod.RootRate{}
+	c.Roots = RootRate{}
 	d := &CardDecider{Card: c, Seed: 7}
 	for i := 0; i < 500; i++ {
 		got, _ := d.Decide(context.Background(), DecisionPoint{
@@ -348,7 +346,7 @@ func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
 	// заметку этой долей значило бы назначить ей их судьбу заранее.
 	// Личная доля вшестеро выше типичной — значит и на площадке этот житель
 	// заходит охотнее большинства.
-	c.Come = narod.ComeRate{Days: 300, Chances: 4000, Came: 600, LiveChances: 1000, LiveCame: 600}
+	c.Come = ComeRate{Days: 300, Chances: 4000, Came: 600, LiveChances: 1000, LiveCame: 600}
 	d := &CardDecider{Card: c, Seed: 7}
 	came := 0
 	for i := 0; i < 2000; i++ {
@@ -368,7 +366,7 @@ func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
 		t.Errorf("зашёл в %.3f заметок — замер 0.60 не вытеснил выдумку 0.05", share)
 	}
 	// Пустой замер — запасной путь, а не ноль.
-	c.Come = narod.ComeRate{Days: 300, Chances: 4000, Came: 600, LiveChances: 5, LiveCame: 3}
+	c.Come = ComeRate{Days: 300, Chances: 4000, Came: 600, LiveChances: 5, LiveCame: 3}
 	d = &CardDecider{Card: c, Seed: 7}
 	came = 0
 	for i := 0; i < 2000; i++ {
@@ -390,8 +388,8 @@ func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
 // архивные годы их выходило 8–28 в день, у нашей площадки одна.
 func TestComeRateScalesPersonalShareToOurNoteDensity(t *testing.T) {
 	// Житель ровно типичной охоты обязан дать базу и ничего сверх неё: личная
-	// доля здесь равна narod.ComeTypical.
-	c := narod.ComeRate{Chances: 1000, Came: 141, LiveChances: 1000, LiveCame: 141}
+	// доля здесь равна ComeTypical.
+	c := ComeRate{Chances: 1000, Came: 141, LiveChances: 1000, LiveCame: 141}
 	got, ok := c.Rate()
 	if !ok || got < 0.34 || got > 0.36 {
 		t.Errorf("типичный житель дал %.3f (замер %v), ожидалась база 0.35", got, ok)
@@ -418,11 +416,11 @@ func TestComeRateScalesPersonalShareToOurNoteDensity(t *testing.T) {
 func TestCardDeciderAnswersTheOtherSexMoreOften(t *testing.T) {
 	c := testCard()
 	c.Persona.Gender = "male"
-	c.Rate = narod.ReplyRate{
-		Buckets: []narod.RateBucket{{Upto: 1 << 30, Chances: 10000, Answers: 200}},
+	c.Rate = ReplyRate{
+		Buckets: []RateBucket{{Upto: 1 << 30, Chances: 10000, Answers: 200}},
 		// Женщине отвечает вчетверо чаще, чем мужчине.
-		ToMale:   narod.RateBucket{Chances: 5000, Answers: 40},
-		ToFemale: narod.RateBucket{Chances: 5000, Answers: 160},
+		ToMale:   RateBucket{Chances: 5000, Answers: 40},
+		ToFemale: RateBucket{Chances: 5000, Answers: 160},
 	}
 	d := &CardDecider{Card: c, Seed: 7}
 	count := func(g string) int {

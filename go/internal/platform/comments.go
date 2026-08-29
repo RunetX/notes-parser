@@ -703,9 +703,10 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	var (
 		locked bool
 		status Status
+		stage  bool
 	)
-	err = tx.QueryRow(ctx, `SELECT locked, status FROM notes WHERE id = $1`, in.NoteID).
-		Scan(&locked, &status)
+	err = tx.QueryRow(ctx, `SELECT locked, status, stage FROM notes WHERE id = $1`, in.NoteID).
+		Scan(&locked, &status, &stage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("заметка %d: %w", in.NoteID, ErrNotFound)
 	}
@@ -719,6 +720,17 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	}
 	if locked {
 		return 0, ErrThreadLocked
+	}
+	// ПЕСОЧНИЦА: читают все, пишут только жители и администратор — и жители не
+	// пишут больше нигде (обе стороны правила — в stageGuard).
+	//
+	// Правило стоит в ЯДРЕ, а не в форме, по общей конвенции проекта: писать
+	// можно и мостом из мессенджера, а второй список правил рядом с этим
+	// однажды разошёлся бы. Отказ при этом не притворяется отсутствием заметки —
+	// в отличие от скрытой, песочница не тайна: она видна в ленте, помечена
+	// значком и объяснена в справке, и человеку честнее сказать, почему нельзя.
+	if err := stageGuard(ctx, tx, in.AuthorID, stage); err != nil {
+		return 0, err
 	}
 
 	var id int64

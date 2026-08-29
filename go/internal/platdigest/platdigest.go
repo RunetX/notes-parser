@@ -64,6 +64,23 @@ func authorKey(id *int64) string {
 	return strconv.FormatInt(*id, 10)
 }
 
+// notNarod — «эта заметка не песочница» и «эта реплика не из песочницы»
+// (эпик «народ»).
+//
+// Условие ОДНО на оба случая, и это следствие инварианта ядра: житель пишет
+// только в песочнице (platform.stageGuard). Значит спрашивать про автора не надо
+// нигде — ни в окне комментариев, ни в «новых лицах», — и недельная сводка не
+// обзаводится join'ом к users там, где его не было.
+//
+// Почему выпуск обязан их не видеть: сводка рассказывает СООБЩЕСТВУ, что у него
+// за неделю случилось. Машинный разговор в песочнице — не то, что случилось у
+// сообщества, а «рекорд недели», поставленный жителями, был бы прямым обманом
+// читателя. Тот же довод, по которому в выпуск не идёт скрытое.
+const (
+	notStageNote    = ` AND NOT n.stage`
+	notStageComment = ` AND NOT EXISTS (SELECT 1 FROM notes sn WHERE sn.id = c.note_id AND sn.stage)`
+)
+
 // commentColumns — общая выборка комментария. Ник берётся ТЕКУЩИЙ из users, а
 // author_display остаётся фолбэком: у зеркального комментатора без ссылки на
 // анкету другого имени нет.
@@ -87,7 +104,8 @@ const noteColumns = `
 const commentsWindowQuery = `
 	SELECT ` + commentColumns + `
 	FROM comments c LEFT JOIN users u ON u.id = c.author_id
-	WHERE c.status = 0 AND c.published_at > $1 AND c.published_at <= $2
+	WHERE c.status = 0 AND c.published_at > $1 AND c.published_at <= $2` +
+	notStageComment + `
 	ORDER BY c.note_id, c.id`
 
 // CommentsBetween — комментарии окна (start, end].
@@ -135,7 +153,7 @@ func (s *Source) NotesByIDs(ctx context.Context, ids []string) (map[string]diges
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+noteColumns+`
 		FROM notes n LEFT JOIN users u ON u.id = n.author_id
-		WHERE n.status = 0 AND n.id = ANY($1)`, nums)
+		WHERE n.status = 0 AND n.id = ANY($1)`+notStageNote, nums)
 	if err != nil {
 		return nil, fmt.Errorf("шапки заметок: %w", err)
 	}
@@ -154,7 +172,7 @@ func (s *Source) NotesPublishedBetween(ctx context.Context, start, end time.Time
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+noteColumns+`
 		FROM notes n LEFT JOIN users u ON u.id = n.author_id
-		WHERE n.status = 0 AND n.published_at > $1 AND n.published_at <= $2
+		WHERE n.status = 0 AND n.published_at > $1 AND n.published_at <= $2`+notStageNote+`
 		ORDER BY n.published_at`, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("заметки окна: %w", err)
@@ -167,7 +185,7 @@ func (s *Source) ActiveNotesSince(ctx context.Context, since time.Time) ([]diges
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+noteColumns+`
 		FROM notes n LEFT JOIN users u ON u.id = n.author_id
-		WHERE n.status = 0 AND n.last_comment_at > $1
+		WHERE n.status = 0 AND n.last_comment_at > $1`+notStageNote+`
 		ORDER BY n.last_comment_at DESC`, since)
 	if err != nil {
 		return nil, fmt.Errorf("живые заметки: %w", err)
@@ -203,7 +221,8 @@ const commenterHistoryQuery = `
 		SELECT c.author_id, count(*) AS cnt, min(c.published_at) AS first_in_win
 		FROM comments c
 		WHERE c.status = 0 AND c.author_id IS NOT NULL
-		  AND c.published_at > $1 AND c.published_at <= $2
+		  AND c.published_at > $1 AND c.published_at <= $2` +
+	notStageComment + `
 		GROUP BY c.author_id)
 	SELECT w.author_id, COALESCE(NULLIF(u.nick, ''), ''), w.cnt, w.first_in_win, prev.published_at
 	FROM win w
@@ -252,7 +271,7 @@ func (s *Source) NoteAuthorHistory(ctx context.Context, start, end time.Time) ([
 			SELECT n.author_id, count(*) AS cnt
 			FROM notes n
 			WHERE n.status = 0 AND NOT n.anonymous AND n.author_id IS NOT NULL
-			  AND n.published_at > $1 AND n.published_at <= $2
+			  AND n.published_at > $1 AND n.published_at <= $2`+notStageNote+`
 			GROUP BY n.author_id)
 		SELECT w.author_id, COALESCE(NULLIF(u.nick, ''), ''), w.cnt, prev.published_at
 		FROM win w
@@ -293,7 +312,7 @@ func (s *Source) NoteTotals(ctx context.Context, since time.Time) ([]digest.Note
 		       count(DISTINCT c.author_id),
 		       min(c.published_at), max(c.published_at)
 		FROM comments c JOIN notes n ON n.id = c.note_id
-		WHERE c.status = 0 AND n.status = 0
+		WHERE c.status = 0 AND n.status = 0`+notStageNote+`
 		  AND c.published_at >= $1 AND n.published_at >= $1
 		GROUP BY c.note_id, n.published_at
 		ORDER BY n.published_at`, since)
@@ -325,10 +344,10 @@ func (s *Source) PeakCommentHour(ctx context.Context, since time.Time) (time.Tim
 		n      int
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT note_id, date_trunc('hour', published_at) AS h, count(*) AS n
-		FROM comments
-		WHERE status = 0 AND published_at >= $1
-		GROUP BY note_id, h
+		SELECT c.note_id, date_trunc('hour', c.published_at) AS h, count(*) AS n
+		FROM comments c
+		WHERE c.status = 0 AND c.published_at >= $1`+notStageComment+`
+		GROUP BY c.note_id, h
 		ORDER BY n DESC, h DESC
 		LIMIT 1`, since).Scan(&noteID, &hour, &n)
 	if err != nil {

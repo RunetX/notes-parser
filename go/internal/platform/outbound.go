@@ -80,6 +80,7 @@ const outNoteQuery = `
 	       LIMIT 1
 	  ) img ON true
 	 WHERE n.id > $1 AND n.id < $3 AND n.status = 0
+	   AND NOT n.stage AND NOT coalesce(u.persona, false)
 	 ORDER BY n.id
 	 LIMIT $2`
 
@@ -89,6 +90,13 @@ const outNoteQuery = `
 // автором, в канал уходить не должна. Обратная сторона — заметка, снятая и
 // возвращённая до того, как её забрал обход, в канал не попадёт уже никогда;
 // это осознанный размен в пользу «снятое не всплывает».
+//
+// ПЕСОЧНИЦА не уходит в каналы никогда (эпик «народ»): решение эпика — из
+// песочницы наружу не идёт ничего. Рядом стоит `NOT u.persona`, и это не дубль,
+// а СТРАХОВКА на то будущее, где песочницу откроют аудитории: ядро гарантирует
+// «житель пишет только в песочнице» (stageGuard), но снимать это условие будут
+// правкой в ядре, а канал обязан остаться без машинных реплик, пока их туда не
+// пустят отдельным решением. Обходу она стоит одного уже сделанного join'а.
 func (p *Platform) OutboundNotes(ctx context.Context, afterID int64, limit int) ([]OutNote, error) {
 	rows, err := p.pool.Query(ctx, outNoteQuery, floorNative(afterID), clampLimit(limit), RestoredIDBase)
 	if err != nil {
@@ -144,12 +152,19 @@ const outCommentQuery = `
 	  LEFT JOIN users u ON u.id = c.author_id
 	  LEFT JOIN media m ON m.sha256 = u.avatar_sha
 	 WHERE c.id > $1 AND c.id < $4 AND c.status = 0 AND c.published_at < $3
+	   AND NOT coalesce(u.persona, false)
+	   AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = c.note_id AND n.stage)
 	 ORDER BY c.id
 	 LIMIT $2`
 
 // OutboundComments — нативные комментарии после afterID, от старых к новым.
 // Порядок здесь не украшение: в треде мессенджера реплика обязана появиться
 // после того, на что отвечает, иначе цитировать будет нечего.
+//
+// Песочница отсекается ПОДЗАПРОСОМ к заметке, а не join'ом: заметок-песочниц
+// единицы, а join к notes на каждый такт обхода — это лишнее чтение самой
+// горячей таблицы площадки ради условия, которое почти всегда истинно. Рядом,
+// как и у заметок, страховка `NOT u.persona` — join к users здесь и так есть.
 func (p *Platform) OutboundComments(ctx context.Context, afterID int64, limit int) ([]OutComment, error) {
 	rows, err := p.pool.Query(ctx, outCommentQuery, floorNative(afterID), clampLimit(limit),
 		time.Now().Add(-OutboundDelay), RestoredIDBase)

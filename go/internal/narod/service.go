@@ -1,0 +1,740 @@
+package narod
+
+// Оркестратор: тот, кто крутит мир в реальном времени.
+//
+// Устроен он ровно как реплей, только часы настоящие, а сцена — площадка вместо
+// архивного треда. Это не совпадение и не экономия: калибровка обязана мерить ТУ
+// ЖЕ механику, которая потом работает, — поэтому кубик, память, настроение и
+// летописец здесь те же самые объекты, а различаются только Clock и Stage.
+//
+// Такта два, и разведены они не ради параллелизма, а потому что отвечают на
+// разные вопросы:
+//
+//	СМОТР (scan) — «что нового на сцене»: заметки-песочницы и чужие реплики.
+//	  На каждое новое событие каждый житель бросает монетку РОВНО ОДИН РАЗ
+//	  (ключ dice), и выпавшее «прийти» превращается в план с отложенным сроком.
+//	РАБОТА (work) — «у кого срок настал»: план берётся CAS'ом, генерируется
+//	  текст, ставится реплика.
+//
+// Слей их в один — и служба либо ждала бы генерации, не читая сцену (а значит,
+// пропускала бы точки решения), либо перечитывала бы сцену на каждую реплику.
+//
+// РЕЖИМОВ ДВА. В live реплика уходит на площадку; в dry-run — никуда, но МИР
+// ДВИЖЕТСЯ: журнал, знакомство, отношения и расход считаются так же. Это и есть
+// смысл сухого прогона — посмотреть на поведение целиком, не публикуя ни строки;
+// shadow-режима из брифа при этом нет вовсе, его заменила сама песочница.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"time"
+)
+
+// Режимы службы.
+const (
+	ModeDryRun = "dry-run"
+	ModeLive   = "live"
+)
+
+// Ключи курсоров.
+const (
+	cursorStageNote = "stage_note" // докуда прочитаны заметки-песочницы
+)
+
+// Сорта событий, на которые бросается монетка.
+const (
+	eventNote  = "note"
+	eventReply = "reply"
+)
+
+// Config — настройки службы. Все умолчания названы в Defaults вместе с доводом:
+// число без довода через месяц никто не сможет ни поднять, ни опустить.
+type Config struct {
+	Mode      string
+	ScanEvery time.Duration
+	WorkEvery time.Duration
+
+	// Потолки СВОИ, консервативнее платформенных: у площадки они защищают от
+	// шторма, здесь — от каскада «житель отвечает жителю», который умеет
+	// разгоняться сам и тратит деньги на каждом шаге.
+	PerPersonaHour int
+	PerPersonaDay  int
+	PerThread      int
+
+	// ThreadCloseAfter — сколько тишины означает, что разговор кончен. После
+	// этого тред закрывается и его читает летописец.
+	ThreadCloseAfter time.Duration
+	// PlanCap — сколько живёт неисполненное намерение. Всё, что старше,
+	// снимается: ответ через двое суток это уже не ответ.
+	PlanCap time.Duration
+	// DayCalls — потолок обращений к модели за сутки. Ноль — без потолка, и это
+	// состояние для стенда, а не для боя.
+	DayCalls int
+}
+
+// Defaults — умолчания с доводами.
+func Defaults() Config {
+	return Config{
+		Mode: ModeDryRun,
+		// Смотр раз в полминуты: задержка ответа у жителей берётся из замера и
+		// меряется минутами (Latency.ToReplySec, медиана 2–20 мин у доноров), то
+		// есть полминуты теряются внутри неё целиком.
+		ScanEvery: 30 * time.Second,
+		// Работа чаще смотра: план, созревший между тактами, обязан уйти близко
+		// к своему сроку — иначе замеренная задержка превращается в замеренную
+		// задержку плюс случайный хвост такта.
+		WorkEvery: 10 * time.Second,
+		// Два в час и восемь в сутки: у самого разговорчивого донора замер даёт
+		// 22 реплики на тред, но тред у него занимает часы, а не минуты.
+		PerPersonaHour: 2,
+		PerPersonaDay:  8,
+		// Шесть на тред — не про характер (характер меряет Dice.MaxPerThread из
+		// карточки), а про деньги: в песочнице жителей десятки, и без общего
+		// потолка один тред способен выбрать суточный бюджет целиком.
+		PerThread: 6,
+		// Двенадцать часов тишины: замер затухания (archive.MineDecay) говорит,
+		// что после двенадцати разговор продолжается в пяти процентах случаев, —
+		// то есть дальше ждать уже нечего.
+		ThreadCloseAfter: 12 * time.Hour,
+		PlanCap:          48 * time.Hour,
+		DayCalls:         100,
+	}
+}
+
+// Validate — проверка настроек. Отказ на СБОРКЕ, а не на первом такте: служба,
+// молча не работающая из-за опечатки в режиме, выглядит как выключенная.
+func (c Config) Validate() error {
+	if c.Mode != ModeDryRun && c.Mode != ModeLive {
+		return fmt.Errorf("режим %q: бывает %s или %s", c.Mode, ModeDryRun, ModeLive)
+	}
+	if c.ScanEvery <= 0 || c.WorkEvery <= 0 {
+		return errors.New("такты службы должны быть положительными")
+	}
+	return nil
+}
+
+// Player — житель на сцене: карточка плюс анкета, под которой он публикуется.
+type Player struct {
+	Card   *Card
+	UserID int64 // анкета на площадке; 0 — житель ещё не заведён (narod enroll)
+}
+
+// Service — служба народа.
+type Service struct {
+	cfg     Config
+	world   *World
+	stage   Stage
+	gen     JSONGenerator
+	players []Player
+	clock   Clock
+	seed    uint64
+	log     *slog.Logger
+
+	// enabled — рантайм-тумблер. Живёт он НЕ в конфиге и не в мире, а в боевой
+	// базе демона: выключатель обязан работать и тогда, когда мир не открылся, а
+	// конфиг в контейнер монтируется файлом снаружи и правкой не переключается.
+	enabled func(context.Context) bool
+	// model — как назвать модель в журнале. Служба не спрашивает её у клиента:
+	// у llm и rullm это разные вещи, а в gen_runs должна стоять одна строка.
+	model    string
+	provider string
+}
+
+// NewService собирает службу. Карточки ПРОВЕРЯЮТСЯ здесь же: в live выходят
+// только композиты, и это второе из двух мест, где записано правило (первое —
+// сборка конфигурации). Дублирование намеренное: цена ошибки не поломка, а
+// публикация под манерой письма живого человека.
+func NewService(cfg Config, w *World, stage Stage, gen JSONGenerator,
+	players []Player, log *slog.Logger) (*Service, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if w == nil {
+		return nil, errors.New("народ: мир не открыт")
+	}
+	cards := make([]Card, 0, len(players))
+	for _, p := range players {
+		if p.Card == nil {
+			return nil, errors.New("народ: житель без карточки")
+		}
+		cards = append(cards, *p.Card)
+	}
+	if cfg.Mode == ModeLive {
+		if stage == nil {
+			return nil, errors.New("народ: в живом режиме нужна сцена")
+		}
+		if err := CheckLive(cards); err != nil {
+			return nil, err
+		}
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Service{
+		cfg: cfg, world: w, stage: stage, gen: gen, players: players,
+		clock: RealClock{}, seed: 1, log: log,
+		enabled: func(context.Context) bool { return true },
+	}, nil
+}
+
+// SetClock подменяет часы (реплей и тесты).
+func (s *Service) SetClock(c Clock) { s.clock = c }
+
+// SetSeed задаёт зерно броска. Одно на службу: монетка выводится из (зерно,
+// житель, событие), поэтому перезапуск с тем же зерном повторяет решения — это
+// нужно не тестам, а разбору жалоб.
+func (s *Service) SetSeed(seed uint64) { s.seed = seed }
+
+// SetGate вешает рантайм-тумблер.
+func (s *Service) SetGate(f func(context.Context) bool) {
+	if f != nil {
+		s.enabled = f
+	}
+}
+
+// SetModel называет модель и провайдера для журнала.
+func (s *Service) SetModel(provider, model string) { s.provider, s.model = provider, model }
+
+// Run крутит оба такта до отмены. Ошибка одного такта службу не роняет: народ —
+// служба некритическая, и уронить ею зеркало значило бы поменять местами цену
+// вопроса. В лог она при этом идёт всегда.
+func (s *Service) Run(ctx context.Context) error {
+	scan := time.NewTicker(s.cfg.ScanEvery)
+	work := time.NewTicker(s.cfg.WorkEvery)
+	defer scan.Stop()
+	defer work.Stop()
+
+	s.log.Info("народ запущен", "режим", s.cfg.Mode, "жителей", len(s.players))
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-scan.C:
+			if !s.enabled(ctx) {
+				continue
+			}
+			if err := s.Scan(ctx); err != nil {
+				s.log.Error("народ: смотр", "err", err)
+			}
+		case <-work.C:
+			if !s.enabled(ctx) {
+				continue
+			}
+			if err := s.Work(ctx); err != nil {
+				s.log.Error("народ: работа", "err", err)
+			}
+		}
+	}
+}
+
+// Scan — один проход смотра: новые заметки, новые реплики, затихшие треды.
+func (s *Service) Scan(ctx context.Context) error {
+	if err := s.scanNotes(ctx); err != nil {
+		return err
+	}
+	if err := s.scanThreads(ctx); err != nil {
+		return err
+	}
+	return s.closeStale(ctx)
+}
+
+// scanNotes — заметки-песочницы, которых служба ещё не видела.
+func (s *Service) scanNotes(ctx context.Context) error {
+	after, err := s.world.Cursor(ctx, cursorStageNote)
+	if err != nil {
+		return err
+	}
+	notes, err := s.stage.StageNotesSince(ctx, after, 20)
+	if err != nil {
+		return err
+	}
+	now := s.clock.Now()
+	for _, n := range notes {
+		if _, err := s.world.TouchThread(ctx, n.ID, false, n.PublishedAt); err != nil {
+			return err
+		}
+		for _, p := range s.players {
+			// Автор заметки монетку не бросает: «прийти в новую заметку» — это
+			// про чужую, а под своей человек появляется, отвечая пришедшим.
+			if p.UserID == n.AuthorID {
+				continue
+			}
+			pt := DecisionPoint{
+				Now: now, Actor: p.UserID, NoteID: n.ID,
+				TriggerID: 0, Trigger: n.Body,
+				Author: n.AuthorID, Nick: n.AuthorNick,
+			}
+			if err := s.roll(ctx, p, eventKey(eventNote, n.ID), pt, n.ID, 0, ""); err != nil {
+				return err
+			}
+		}
+		if err := s.world.SetCursor(ctx, cursorStageNote, n.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// scanThreads — новые реплики в живых тредах.
+//
+// Тред читается ЦЕЛИКОМ, а не с курсора, и это не расточительство: кубику нужен
+// НОМЕР реплики по порядку (замер отклика снят по позиции в треде), а знать его
+// можно только видя тред от начала. Дороговизны здесь нет — песочниц единицы, а
+// перебрасывать монетку по уже виденным репликам не даёт ключ dice.
+func (s *Service) scanThreads(ctx context.Context) error {
+	live, err := s.world.StaleThreads(ctx, s.clock.Now().Add(time.Hour), 50)
+	if err != nil {
+		return err
+	}
+	for _, th := range live {
+		if err := s.scanThread(ctx, th.NoteID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) scanThread(ctx context.Context, noteID int64) error {
+	note, thread, err := s.look(ctx, noteID)
+	if err != nil {
+		return err
+	}
+	if note.Locked {
+		return s.world.CloseThread(ctx, noteID)
+	}
+	mine, err := s.world.SpokeInThread(ctx, noteID)
+	if err != nil {
+		return err
+	}
+	now := s.clock.Now()
+	for i, c := range thread {
+		for _, p := range s.players {
+			// Сам себе точкой решения реплика не бывает — ни своя, ни чужая,
+			// сказанная за него службой.
+			if c.AuthorID == p.UserID || mine[c.ID] == p.Card.ID {
+				continue
+			}
+			pt := DecisionPoint{
+				Now: now, Actor: p.UserID, NoteID: noteID,
+				TriggerID: c.ID, Trigger: c.Body,
+				Author: c.AuthorID, Nick: c.AuthorNick,
+				Addressed: c.ReplyTo != 0 && s.authorOf(thread, c.ReplyTo) == p.UserID,
+				Seen:      i + 1,
+			}
+			said, err := s.world.SaidInThread(ctx, p.Card.ID, noteID)
+			if err != nil {
+				return err
+			}
+			pt.Said = said
+			if err := s.roll(ctx, p, eventKey(eventReply, c.ID), pt, noteID, c.ID, c.AuthorNick); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// authorOf — чья это реплика. Линейным поиском намеренно: тред песочницы
+// короткий, а карта на каждый такт стоила бы больше самого поиска.
+func (s *Service) authorOf(thread []StageReply, id int64) int64 {
+	for _, c := range thread {
+		if c.ID == id {
+			return c.AuthorID
+		}
+	}
+	return 0
+}
+
+// roll — бросок монетки и, если выпало говорить, намерение в очередь.
+//
+// Монетка записывается ДО того, как что-то произойдёт, и ключом (житель,
+// событие): пятнадцать процентов, спрошенные десять раз за десять тактов,
+// превращаются в восемьдесят — урок оплачен амвоном. Здесь он важнее вдвое:
+// такт смотра перечитывает тред целиком каждые полминуты.
+func (s *Service) roll(ctx context.Context, p Player, event string, pt DecisionPoint,
+	noteID, replyTo int64, target string) error {
+	if p.UserID == 0 {
+		return nil // житель ещё не заведён на площадке: играть ему нечем
+	}
+	if _, err := s.world.DiceOf(ctx, p.Card.ID, event); err == nil {
+		return nil // уже бросали
+	}
+	d := &CardDecider{Card: *p.Card, Seed: s.seed}
+	got, err := d.Decide(ctx, pt)
+	if err != nil {
+		return err
+	}
+	verdict := DiceSkip
+	if got.Speak {
+		verdict = DiceCome
+	}
+	if _, fresh, err := s.world.Roll(ctx, Dice{
+		ActorID: p.Card.ID, EventID: event, Verdict: verdict, At: pt.Now,
+	}); err != nil || !fresh {
+		return err
+	}
+	if !got.Speak {
+		return nil
+	}
+	// Корневая реплика адресата не имеет: житель вернулся в заметку, а не
+	// ответил тому, кто его сюда позвал.
+	if got.Root {
+		replyTo, target = 0, ""
+	}
+	_, _, err = s.world.PlanReply(ctx, Plan{
+		ActorID: p.Card.ID, EventID: event, NoteID: noteID,
+		ReplyTo: replyTo, Target: target,
+		DueAt: pt.Now.Add(got.After),
+	}, pt.Now)
+	return err
+}
+
+// Work — один проход работы: созревшие планы.
+func (s *Service) Work(ctx context.Context) error {
+	now := s.clock.Now()
+	plans, err := s.world.DuePlans(ctx, now, 5)
+	if err != nil {
+		return err
+	}
+	for _, pl := range plans {
+		if now.Sub(pl.CreatedAt) > s.cfg.PlanCap {
+			// Протухшее намерение снимается молча: ответ через двое суток это
+			// уже не ответ, а археология.
+			if err := s.world.FinishPlan(ctx, pl.ID, PlanDropped, "намерение протухло"); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.execute(ctx, pl); err != nil {
+			s.log.Error("народ: реплика", "житель", pl.ActorID, "заметка", pl.NoteID, "err", err)
+			if err := s.world.FinishPlan(ctx, pl.ID, PlanDropped, err.Error()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// execute доводит один план до реплики.
+func (s *Service) execute(ctx context.Context, pl Plan) error {
+	// CAS ДО генерации и отправки: строка, застрявшая в posting, не
+	// переотправляется никогда — площадка могла реплику и принять, ответив
+	// ошибкой, а вторая копия под тем же именем хуже пропавшей.
+	if err := s.world.TakePlan(ctx, pl.ID); err != nil {
+		if errors.Is(err, ErrPlanTaken) {
+			return nil
+		}
+		return err
+	}
+	p, ok := s.playerOf(pl.ActorID)
+	if !ok {
+		return s.world.FinishPlan(ctx, pl.ID, PlanDropped, "жителя нет в каталоге")
+	}
+	if why, err := s.overCap(ctx, p, pl); err != nil {
+		return err
+	} else if why != "" {
+		return s.drop(ctx, pl, GenSkipped, why)
+	}
+
+	note, thread, err := s.look(ctx, pl.NoteID)
+	if err != nil {
+		return err
+	}
+	if note.Locked {
+		return s.drop(ctx, pl, GenSkipped, "тред заперт")
+	}
+	point, err := s.compose(ctx, p, pl, note, thread)
+	if err != nil {
+		return err
+	}
+	if s.gen == nil {
+		return s.drop(ctx, pl, GenSkipped, "модель не подключена")
+	}
+	draft, err := Write(ctx, s.gen, point, s.seed^uint64(pl.ID))
+	if _, spendErr := s.world.AddSpend(ctx, s.clock.Now(), max(draft.Attempts, 1), 0, 0); spendErr != nil {
+		return spendErr
+	}
+	if err != nil {
+		return err // сеть или модель: это авария, и она пишется в журнал выше
+	}
+	if draft.Skip {
+		if _, err := s.world.RecordGenRun(ctx, s.genRun(pl, draft, GenSkipped, draft.Reason)); err != nil {
+			return err
+		}
+		return s.world.FinishPlan(ctx, pl.ID, PlanDone, "промолчал: "+draft.Reason)
+	}
+	return s.publish(ctx, p, pl, draft)
+}
+
+// publish кладёт реплику на сцену и в память жителя.
+//
+// В ЖУРНАЛ ПИШЕТСЯ ДО ПУБЛИКАЦИИ, и порядок этот обратный привычному: реплика,
+// ушедшая на площадку и не попавшая в журнал, делает жителя противоречащим
+// самому себе, а починить это потом нечем — текст уже стоит. Обратная цена
+// (запись в журнале о реплике, которой на странице нет) дешевле: она сделает
+// жителя молчаливее, а не безумнее.
+func (s *Service) publish(ctx context.Context, p Player, pl Plan, d Draft) error {
+	now := s.clock.Now()
+	entry := JournalEntry{
+		ActorID: p.Card.ID, At: now, Kind: JournalComment,
+		NoteID: pl.NoteID, Text: d.Text,
+	}
+	jid, err := s.world.Remember(ctx, entry)
+	if err != nil {
+		return err
+	}
+	if s.cfg.Mode == ModeDryRun {
+		if _, err := s.world.RecordGenRun(ctx, s.genRun(pl, d, GenSkipped, "сухой прогон: на площадку не ушло")); err != nil {
+			return err
+		}
+		return s.world.FinishPlan(ctx, pl.ID, PlanDone, "сухой прогон")
+	}
+	id, err := s.stage.StagePost(ctx, p.UserID, pl.NoteID, pl.ReplyTo, d.Text)
+	if err != nil {
+		return err
+	}
+	if err := s.world.SetJournalComment(ctx, jid, id); err != nil {
+		return err
+	}
+	if _, err := s.world.TouchThread(ctx, pl.NoteID, true, now); err != nil {
+		return err
+	}
+	if _, err := s.world.RecordGenRun(ctx, s.genRun(pl, d, GenPosted, "")); err != nil {
+		return err
+	}
+	return s.world.FinishPlan(ctx, pl.ID, PlanDone, "")
+}
+
+// compose собирает всё, из чего пишется реплика: память, настроение, жребии.
+func (s *Service) compose(ctx context.Context, p Player, pl Plan,
+	note StageNote, thread []StageReply) (WritePoint, error) {
+	point := WritePoint{Card: p.Card, Note: note, Thread: thread}
+	for _, c := range thread {
+		if c.ID == pl.ReplyTo {
+			point.ReplyTo = c
+		}
+	}
+	peers := s.peersOf(ctx, note, thread)
+	memory, err := WriteMemory(ctx, s.world, p.Card.ID, peers)
+	if err != nil {
+		return WritePoint{}, err
+	}
+	point.Memory = memory
+
+	mood := MoodPoint{Card: *p.Card, Heat: heatOf(thread, p.UserID, point.ReplyTo.AuthorID)}
+	if point.ReplyTo.ID != 0 {
+		mood.Peer = point.ReplyTo.AuthorNick
+		if peer, ok := s.playerByUser(point.ReplyTo.AuthorID); ok {
+			mood.PeerGender = peer.Card.Persona.Gender
+		}
+		if a, ok, err := s.world.ActorByPlatformUser(ctx, point.ReplyTo.AuthorID); err == nil && ok {
+			e, err := s.world.EdgeOf(ctx, p.Card.ID, a.ID)
+			if err != nil {
+				return WritePoint{}, err
+			}
+			mood.Tone = e.Tone()
+		}
+	}
+	point.Mood = WriteMood(mood)
+
+	// Жребии длины и эмодзи бросаются ЗДЕСЬ, а не в промпте: обе величины живут
+	// МЕЖДУ репликами, и модель, прочитавшая долю, решает за весь прогон разом.
+	rng := rand.New(rand.NewPCG(s.seed^uint64(pl.ID), uint64(pl.NoteID)+1))
+	point.TargetRunes = int(QuantileAt(p.Card.Register.Runes, rng.Float64()) + 0.5)
+	if r := p.Card.Register.EmojiRate; r > 0 {
+		want := rng.Float64() < r
+		point.Emoji = &want
+	}
+	return point, nil
+}
+
+// peersOf — про кого житель вспоминает. Только те, кто в разговоре УЖЕ говорил:
+// память про человека, ещё не сказавшего ни слова, — это подсказка о том, кто
+// сейчас придёт, и реплика начала бы отвечать на несказанное.
+func (s *Service) peersOf(ctx context.Context, note StageNote, thread []StageReply) []MemoryPeer {
+	seen := map[int64]bool{}
+	var out []MemoryPeer
+	add := func(userID int64, nick string) {
+		if userID == 0 || seen[userID] {
+			return
+		}
+		seen[userID] = true
+		a, ok, err := s.world.ActorByPlatformUser(ctx, userID)
+		if err != nil || !ok {
+			return
+		}
+		out = append(out, MemoryPeer{ActorID: a.ID, Nick: nick})
+	}
+	add(note.AuthorID, note.AuthorNick)
+	for _, c := range thread {
+		add(c.AuthorID, c.AuthorNick)
+	}
+	return out
+}
+
+// heatOf — сколько раз пара уже обменялась репликами в этом треде.
+func heatOf(thread []StageReply, me, peer int64) int {
+	if me == 0 || peer == 0 {
+		return 0
+	}
+	byID := make(map[int64]int64, len(thread))
+	for _, c := range thread {
+		byID[c.ID] = c.AuthorID
+	}
+	n := 0
+	for _, c := range thread {
+		to := byID[c.ReplyTo]
+		if (c.AuthorID == me && to == peer) || (c.AuthorID == peer && to == me) {
+			n++
+		}
+	}
+	return n
+}
+
+// overCap — упёрся ли житель в потолок. Возвращает ПРИЧИНУ словами: она едет и
+// в журнал, и в отчёт, и «промолчал» без причины через месяц не объяснить.
+func (s *Service) overCap(ctx context.Context, p Player, pl Plan) (string, error) {
+	now := s.clock.Now()
+	if n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-time.Hour)); err != nil {
+		return "", err
+	} else if s.cfg.PerPersonaHour > 0 && n >= s.cfg.PerPersonaHour {
+		return fmt.Sprintf("потолок часа: уже %d реплик", n), nil
+	}
+	if n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-24*time.Hour)); err != nil {
+		return "", err
+	} else if s.cfg.PerPersonaDay > 0 && n >= s.cfg.PerPersonaDay {
+		return fmt.Sprintf("потолок суток: уже %d реплик", n), nil
+	}
+	th, err := s.world.ThreadOf(ctx, pl.NoteID)
+	if err != nil {
+		return "", err
+	}
+	if s.cfg.PerThread > 0 && th.PersonaN >= s.cfg.PerThread {
+		return fmt.Sprintf("потолок треда: народ сказал уже %d реплик", th.PersonaN), nil
+	}
+	if s.cfg.DayCalls > 0 {
+		spent, err := s.world.SpentOn(ctx, now)
+		if err != nil {
+			return "", err
+		}
+		if spent >= s.cfg.DayCalls {
+			return fmt.Sprintf("суточный бюджет модели выбран (%d вызовов)", spent), nil
+		}
+	}
+	return "", nil
+}
+
+// closeStale закрывает затихшие треды.
+func (s *Service) closeStale(ctx context.Context) error {
+	stale, err := s.world.StaleThreads(ctx, s.clock.Now().Add(-s.cfg.ThreadCloseAfter), 20)
+	if err != nil {
+		return err
+	}
+	for _, th := range stale {
+		res, err := s.chronicle(ctx, th.NoteID)
+		if err != nil {
+			// Летопись — не публикация: сорвавшийся разбор не повод оставлять
+			// тред открытым навсегда. Закрываем и говорим в лог; знакомство
+			// при этом уже посчитано, оно идёт первым и без модели.
+			s.log.Error("народ: летопись", "заметка", th.NoteID, "err", err)
+		}
+		if err := s.world.CloseThread(ctx, th.NoteID); err != nil {
+			return err
+		}
+		moved, episodes := 0, 0
+		if res != nil {
+			moved, episodes = len(res.Edges), len(res.Episodes)
+		}
+		s.log.Info("народ: тред затих", "заметка", th.NoteID,
+			"реплик народа", th.PersonaN, "рёбер", moved, "эпизодов", episodes)
+	}
+	return nil
+}
+
+// chronicle — разбор закончившегося треда: что он изменил между людьми.
+//
+// Зовётся ОДИН раз на тред, в момент закрытия, и это единственное место эпика,
+// где модель судит не о ТЕКСТЕ, а о ЛЮДЯХ. Границы её власти держит код
+// (narod.Chronicle): дельта с потолком, закрытый список видов эпизода, имена по
+// участникам треда; модели остаются знак и повод.
+//
+// Знакомство при этом считается ПО ТРЕДУ и потому копится даже в сухом прогоне,
+// где слов нет вовсе, — то же деление, что у голоса: бесплатное меряет кубик,
+// платное двигает мир.
+func (s *Service) chronicle(ctx context.Context, noteID int64) (*ChronicleResult, error) {
+	note, thread, err := s.look(ctx, noteID)
+	if err != nil {
+		return nil, err
+	}
+	th := ChronicleThread{
+		NoteID: noteID, NoteText: note.Body, NoteBy: note.AuthorNick,
+		At: s.clock.Now(),
+	}
+	byUser := map[int64]string{}
+	for _, p := range s.players {
+		if p.UserID != 0 {
+			byUser[p.UserID] = p.Card.ID
+		}
+	}
+	for _, c := range thread {
+		r := ChronicleReply{
+			ID: c.ID, ActorID: byUser[c.AuthorID], Nick: c.AuthorNick,
+			Text: c.Body, ReplyTo: c.ReplyTo,
+		}
+		if c.ReplyTo != 0 {
+			r.Target = byUser[s.authorOf(thread, c.ReplyTo)]
+		}
+		th.Replies = append(th.Replies, r)
+	}
+	return Chronicle(ctx, s.world, s.gen, th)
+}
+
+// look — заметка и её тред одним вопросом: их всегда спрашивают вместе.
+func (s *Service) look(ctx context.Context, noteID int64) (StageNote, []StageReply, error) {
+	notes, err := s.stage.StageNotesSince(ctx, noteID-1, 1)
+	if err != nil {
+		return StageNote{}, nil, err
+	}
+	if len(notes) == 0 || notes[0].ID != noteID {
+		return StageNote{}, nil, fmt.Errorf("заметки %d на сцене нет", noteID)
+	}
+	thread, err := s.stage.StageThread(ctx, noteID)
+	return notes[0], thread, err
+}
+
+func (s *Service) playerOf(cardID string) (Player, bool) {
+	for _, p := range s.players {
+		if p.Card.ID == cardID {
+			return p, true
+		}
+	}
+	return Player{}, false
+}
+
+func (s *Service) playerByUser(userID int64) (Player, bool) {
+	for _, p := range s.players {
+		if p.UserID == userID && userID != 0 {
+			return p, true
+		}
+	}
+	return Player{}, false
+}
+
+func (s *Service) genRun(pl Plan, d Draft, verdict, reason string) GenRun {
+	return GenRun{
+		PlanID: pl.ID, ActorID: pl.ActorID, At: s.clock.Now(),
+		Provider: s.provider, Model: s.model, Drafts: d.Attempts,
+		Verdict: verdict, Reason: reason, Text: d.Text, Rejects: d.Rejects,
+	}
+}
+
+// drop — «не сказал, и вот почему»: одной записью в оба журнала.
+func (s *Service) drop(ctx context.Context, pl Plan, verdict, reason string) error {
+	if _, err := s.world.RecordGenRun(ctx, s.genRun(pl, Draft{}, verdict, reason)); err != nil {
+		return err
+	}
+	return s.world.FinishPlan(ctx, pl.ID, PlanDone, reason)
+}

@@ -113,6 +113,18 @@ type VacuumOpts struct {
 	// (тесты, чужая машина), и знать про SQLite ему незачем. nil — реплика
 	// пишется по одному разговору.
 	Recall func(ctx context.Context, actor int64, peers []int64) (string, error)
+
+	// Mood — с каким чувством житель пишет ЭТУ реплику: больное место из карточки,
+	// ступень разговора с адресатом, регистр. Замыканием по той же причине, что и
+	// память: собирает блок тот, у кого на руках карточки, а харнесс обязан
+	// гоняться и без них. nil — реплика пишется без настроения вовсе.
+	//
+	// Накал (heat) сюда подаётся ЧИСЛОМ, а словами его называет уже narod: у
+	// кубика от него ничего не зависит — «продолжить обмен» замерено плоским
+	// (55 % после первого, 56 % после десятого) и уже сидит в Rate(pos, toHim), а
+	// вход третьих лиц в горячий тред замерен отдельно (TempoLift, втрое реже).
+	// Прибавить сюда ещё один множитель значило бы посчитать замеренное дважды.
+	Mood func(actor, peer int64, heat int, tone float64) string
 }
 
 const vacuumMaxReplies = 300
@@ -252,7 +264,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 	st := &vacState{
 		run: run, got: got, o: o, byActor: byActor, nick: nick,
 		familiar: familiar, gender: gender, said: map[int64]int{}, pending: map[int64]int{},
-		byID: map[int64]archive.ScriptComment{},
+		byID: map[int64]archive.ScriptComment{}, pair: map[[2]int64]int{},
 	}
 
 	// Первый круг — сама заметка. Автора её пропускаем: «прийти в новую заметку»
@@ -338,8 +350,21 @@ type vacState struct {
 	// проходят проверку «сколько я уже сказал».
 	pending map[int64]int
 	byID    map[int64]archive.ScriptComment
-	q       Queue[vacEvent]
-	nextID  int64
+	// pair — сколько раз двое УЖЕ обменялись репликами в этом треде. Ключ
+	// неупорядоченный: сцепленность у пары одна на двоих, и считать её порознь по
+	// направлениям значило бы, что молчащий в ответ собеседник понижает накал
+	// тому, кто ему пишет.
+	pair   map[[2]int64]int
+	q      Queue[vacEvent]
+	nextID int64
+}
+
+// pairKey — неупорядоченный ключ пары.
+func pairKey(a, b int64) [2]int64 {
+	if a > b {
+		a, b = b, a
+	}
+	return [2]int64{a, b}
 }
 
 // roll — одна точка решения: бросок кубика и, если выпало говорить, намерение в
@@ -398,6 +423,9 @@ func (st *vacState) say(ctx context.Context, at time.Time, ev vacEvent, t0 time.
 			st.familiar[ev.actor] = map[int64]int{}
 		}
 		st.familiar[ev.actor][c.TargetID]++
+		// Накал пары растёт ПОСЛЕ реплики: та, что пишется сейчас, видит ступень,
+		// на которой разговор стоял до неё.
+		st.pair[pairKey(ev.actor, c.TargetID)]++
 	}
 
 	// Каскад: сказанное слышат все, кроме сказавшего.
@@ -439,7 +467,7 @@ func (st *vacState) speak(ctx context.Context, c *archive.ScriptComment, at time
 	}
 	s, err := sp.Speak(ctx, SpeechPoint{
 		Now: at, Actor: c.AuthorID, Script: st.got, Upto: len(st.got.Comments),
-		Slot: c.ID, ReplyTo: c.ReplyTo, Memory: memory,
+		Slot: c.ID, ReplyTo: c.ReplyTo, Memory: memory, Mood: st.mood(c),
 	})
 	if err != nil {
 		return fmt.Errorf("реплика %d жителя %d: %w", c.ID, c.AuthorID, err)
@@ -451,6 +479,26 @@ func (st *vacState) speak(ctx context.Context, c *archive.ScriptComment, at time
 	c.Text = s.Got
 	st.run.Speeches++
 	return nil
+}
+
+// mood — с каким чувством пишется эта реплика.
+//
+// У реплики в саму заметку адресата нет, и накала с ним быть не может: пары
+// ещё нет. Настроение при этом остаётся — больное место человек приносит с
+// собой, — поэтому замыкание зовётся и здесь, с нулевым собеседником.
+func (st *vacState) mood(c *archive.ScriptComment) string {
+	if st.o.Mood == nil {
+		return ""
+	}
+	peer := c.TargetID
+	if peer == 0 {
+		peer = st.got.Note.AuthorID
+	}
+	heat := 0
+	if c.TargetID != 0 {
+		heat = st.pair[pairKey(c.AuthorID, c.TargetID)]
+	}
+	return st.o.Mood(c.AuthorID, c.TargetID, heat, st.o.Feel[c.AuthorID][peer])
 }
 
 // recall — что житель помнит про тех, кто в этом разговоре уже говорил.

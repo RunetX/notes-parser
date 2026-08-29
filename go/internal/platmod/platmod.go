@@ -33,6 +33,7 @@ import (
 
 	"lovegw/internal/alerts"
 	"lovegw/internal/platform"
+	"lovegw/internal/profanity"
 )
 
 // Store — что автомату нужно от ядра. Интерфейсом, а не *platform.Platform:
@@ -209,7 +210,7 @@ func applyMat(items []platform.Pending, verdicts []*platform.VerdictRecord) {
 		if v != nil && v.Verdict != platform.VerdictClean && v.Category != platform.CatProfanity {
 			continue
 		}
-		quote := FindMat(items[i].Body)
+		quote := profanity.FindMat(items[i].Body)
 		if quote == "" {
 			continue
 		}

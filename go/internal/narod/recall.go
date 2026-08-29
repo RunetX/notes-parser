@@ -34,6 +34,11 @@ const memoryEpisodes = 2
 // memoryInner — сколько своих последних событий житель держит в голове.
 const memoryInner = 3
 
+// memoryGossip — про скольких отсутствующих житель помнит, садясь писать.
+// Один: сплетня — то, что всплывает к слову, а список из троих превращает
+// реплику в обзор чужих дел.
+const memoryGossip = 1
+
 // WriteMemory собирает блок памяти жителя про участников этого разговора.
 //
 // Пустая строка — законный и частый ответ: в мире, который только начался,
@@ -60,7 +65,11 @@ func WriteMemory(ctx context.Context, w *World, actorID string, peers []MemoryPe
 	if err != nil {
 		return "", err
 	}
-	if len(lines) == 0 && inner == "" {
+	away, err := gossipLines(ctx, w, actorID, peers)
+	if err != nil {
+		return "", err
+	}
+	if len(lines) == 0 && inner == "" && len(away) == 0 {
 		return "", nil
 	}
 
@@ -69,6 +78,13 @@ func WriteMemory(ctx context.Context, w *World, actorID string, peers []MemoryPe
 	if len(lines) > 0 {
 		b.WriteString("Про тех, кто здесь говорит:\n")
 		for _, l := range lines {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
+	}
+	if len(away) > 0 {
+		b.WriteString("Про тех, кого здесь нет:\n")
+		for _, l := range away {
 			b.WriteString(l)
 			b.WriteString("\n")
 		}
@@ -108,6 +124,28 @@ func peerMemory(ctx context.Context, w *World, actorID string, p MemoryPeer) (st
 		fmt.Fprintf(&b, " Он(а) — %s: %s.", ep.Kind, ep.Summary)
 	}
 	return b.String(), nil
+}
+
+// gossipLines — случаи с теми, кого в этом треде нет.
+//
+// Отдельным разделом, а не вперемешку с присутствующими, и это не оформление:
+// человек, про которого говорят при нём, и человек, про которого говорят за
+// глаза, — разное поведение, и модель обязана видеть, кто из них кто.
+func gossipLines(ctx context.Context, w *World, actorID string, peers []MemoryPeer) ([]string, error) {
+	present := make([]string, 0, len(peers))
+	for _, p := range peers {
+		present = append(present, p.ActorID)
+	}
+	items, err := w.Gossip(ctx, actorID, present, memoryGossip)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, g := range items {
+		out = append(out, fmt.Sprintf("— %s (здесь его(её) нет): ты — %s: %s.",
+			g.Nick, g.Kind, g.Summary))
+	}
+	return out, nil
 }
 
 // innerMemory — свои последние события: то, что случилось вне площадки.

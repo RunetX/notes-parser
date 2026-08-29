@@ -36,7 +36,11 @@ const MorningReasonSendFailed = "send_failed"
 
 // Ключи рантайм-флагов утренней заметки (таблица settings, та же, что у амвона).
 const (
-	FlagMorningEnabled   = "morning.enabled"
+	FlagMorningEnabled = "morning.enabled"
+	// FlagNarodEnabled — тумблер народа (эпик «народ»). Стоит рядом с утренним,
+	// потому что устроен так же: конфиг решает, есть ли служба вообще, а этот
+	// флаг — работает ли она сейчас; отсутствие значит «включена».
+	FlagNarodEnabled     = "narod.enabled"
 	FlagMorningOffReason = "morning.off_reason"
 	FlagMorningOffAt     = "morning.off_at"
 	FlagMorningOffBy     = "morning.off_by"

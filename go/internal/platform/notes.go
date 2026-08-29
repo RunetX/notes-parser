@@ -54,7 +54,8 @@ const noteViewColumns = `
 	CASE WHEN n.anonymous THEN 0     ELSE coalesce(u.gender, 0) END,
 	CASE WHEN n.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
 	coalesce(n.author_id = $1, false),
-	n.pinned_at IS NOT NULL`
+	n.pinned_at IS NOT NULL,
+	n.stage`
 
 const noteViewFrom = `
 	FROM notes n
@@ -73,7 +74,7 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 	)
 	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.Locked, &v.CommentCount,
 		&v.PublishedAt, &v.PublishedExact, &v.LastCommentAt, &v.EditedAt,
-		&author, &nick, &sha, &mime, &gender, &shadow, &v.Own, &v.Pinned)
+		&author, &nick, &sha, &mime, &gender, &shadow, &v.Own, &v.Pinned, &v.Stage)
 	v.Author = Author{
 		ID: idOf(author), Nick: strOf(nick),
 		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
@@ -407,11 +408,16 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	if err := enforceRate(ctx, tx, notesRecentQuery, in.AuthorID, time.Now(), noteRates); err != nil {
 		return 0, err
 	}
+	// То же правило, что у комментария, и той же функцией: песочницу заводит
+	// администратор или житель, а житель заводит ТОЛЬКО песочницу.
+	if err := stageGuard(ctx, tx, in.AuthorID, in.Stage); err != nil {
+		return 0, err
+	}
 	var id int64
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO notes (id, author_id, anonymous, body, published_at, published_exact)
-		VALUES (nextval('notes_native_seq'), $1, $2, $3, now(), true)
-		RETURNING id`, in.AuthorID, in.Anonymous, body).Scan(&id); err != nil {
+		INSERT INTO notes (id, author_id, anonymous, body, published_at, published_exact, stage)
+		VALUES (nextval('notes_native_seq'), $1, $2, $3, now(), true, $4)
+		RETURNING id`, in.AuthorID, in.Anonymous, body, in.Stage).Scan(&id); err != nil {
 		return 0, fmt.Errorf("публикация заметки: %w", err)
 	}
 	// Иллюстрация — той же транзакцией: «заметка вышла, а картинка к ней не

@@ -79,6 +79,19 @@ func (w *World) Remember(ctx context.Context, e JournalEntry) (int64, error) {
 	return res.LastInsertId()
 }
 
+// SetJournalComment проставляет записи номер реплики, под которым она встала на
+// площадке.
+//
+// Вторым шагом, а не одной вставкой, и это прямое следствие порядка «журнал ДО
+// публикации»: до отправки номера ещё нет и быть не может. Запись без номера —
+// рабочее состояние, а не брак: житель помнит, ЧТО сказал, даже когда неизвестно,
+// доехало ли это до страницы.
+func (w *World) SetJournalComment(ctx context.Context, id, commentID int64) error {
+	_, err := w.db.ExecContext(ctx,
+		`UPDATE journal SET comment_id = ? WHERE id = ?`, commentID, id)
+	return err
+}
+
 // Recall — последние n записей персонажа, от новых к старым.
 func (w *World) Recall(ctx context.Context, actorID string, n int) ([]JournalEntry, error) {
 	rows, err := w.db.QueryContext(ctx, `
@@ -307,6 +320,61 @@ func (w *World) EpisodesOf(ctx context.Context, src, dst string, n int) ([]Episo
 		e.Compressed = compressed != 0
 		_ = json.Unmarshal([]byte(ids), &e.CommentIDs)
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// GossipItem — случай с тем, кого в этом разговоре НЕТ.
+//
+// Сплетня — не новая механика, а недостающий выход у старой: эпизоды копятся с
+// самого начала мира, но в промпт уходили только про тех, кто здесь говорит, —
+// и «а помнишь, что она в прошлый раз выдала» сказать было некому. Ровно это
+// и отличает сообщество от набора попарных разговоров: люди обсуждают
+// отсутствующих.
+type GossipItem struct {
+	ActorID string
+	Nick    string
+	Kind    string
+	Summary string
+}
+
+// Gossip — последние случаи жителя с теми, кого в треде нет.
+//
+// По одному на человека: две строки про одного и того же — это уже досье, а не
+// то, что всплывает к слову. Свёрнутые выжимки не годятся вовсе — «сцепились 4 с
+// марта по май» пересказать в реплике нельзя, а повод нужен конкретный.
+func (w *World) Gossip(ctx context.Context, src string, present []string, n int) ([]GossipItem, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	here := map[string]bool{src: true}
+	for _, id := range present {
+		here[id] = true
+	}
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT e.dst, a.nick, e.kind, e.summary
+		  FROM episodes e JOIN actors a ON a.id = e.dst
+		 WHERE e.src = ? AND e.compressed = 0 AND e.kind <> ?
+		 ORDER BY e.id DESC LIMIT 200`, src, EpisodeDigest)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var out []GossipItem
+	for rows.Next() {
+		var g GossipItem
+		if err := rows.Scan(&g.ActorID, &g.Nick, &g.Kind, &g.Summary); err != nil {
+			return nil, err
+		}
+		if here[g.ActorID] || seen[g.ActorID] {
+			continue
+		}
+		seen[g.ActorID] = true
+		out = append(out, g)
+		if len(out) == n {
+			break
+		}
 	}
 	return out, rows.Err()
 }

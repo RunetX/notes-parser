@@ -1,4 +1,4 @@
-package platmod
+package profanity
 
 import "testing"
 

@@ -1,6 +1,7 @@
 package narod
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -173,5 +174,107 @@ func TestInnerTickIsIdempotentPerDay(t *testing.T) {
 	}
 	if gen.calls != calls {
 		t.Fatalf("повтор сходил к модели ещё %d раз", gen.calls-calls)
+	}
+}
+
+// gossipWorld — трое: житель, собеседник в треде и ТРЕТИЙ, которого здесь нет.
+func gossipWorld(t *testing.T) (*World, context.Context) {
+	t.Helper()
+	w, ctx := testWorld(t)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	if err := w.UpsertActor(ctx, Actor{ID: "pyotr", Kind: ActorPersona, Nick: "Пётр"}, now); err != nil {
+		t.Fatal(err)
+	}
+	return w, ctx
+}
+
+// Сплетня — эпизод про того, кого в разговоре НЕТ. Без неё эпизоды копились
+// вхолостую: сказать «а помнишь, что она в прошлый раз выдала» было некому.
+func TestMemoryCarriesGossipAboutTheAbsent(t *testing.T) {
+	w, ctx := gossipWorld(t)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	if _, err := w.AddEpisode(ctx, Episode{Src: "ivan", Dst: "pyotr", At: now,
+		Kind: EpisodeFight, Summary: "разругались из-за дачи"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := WriteMemory(ctx, w, "ivan", []MemoryPeer{{ActorID: "olga", Nick: "Ольга"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "Пётр") || !strings.Contains(got, "разругались из-за дачи") {
+		t.Fatalf("случай с отсутствующим не попал в память:\n%s", got)
+	}
+	if !strings.Contains(got, "кого здесь нет") {
+		t.Fatalf("сплетня не отделена от разговора при свидетеле:\n%s", got)
+	}
+}
+
+// Про того, кто в треде, за глаза не говорят: он стоит в своём разделе, а
+// сплетни о нём быть не может по определению.
+func TestGossipSkipsThosePresent(t *testing.T) {
+	w, ctx := gossipWorld(t)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	for _, dst := range []string{"olga", "pyotr"} {
+		if _, err := w.AddEpisode(ctx, Episode{Src: "ivan", Dst: dst, At: now,
+			Kind: EpisodeTease, Summary: "поддел про " + dst}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := w.Gossip(ctx, "ivan", []string{"olga"}, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ActorID != "pyotr" {
+		t.Fatalf("в сплетни попал кто-то из присутствующих: %+v", items)
+	}
+}
+
+// По одному случаю на человека: две строки про одного и того же — это досье, а
+// не то, что всплывает к слову.
+func TestGossipOnePerPerson(t *testing.T) {
+	w, ctx := gossipWorld(t)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	for i := range 3 {
+		if _, err := w.AddEpisode(ctx, Episode{Src: "ivan", Dst: "pyotr",
+			At: now.Add(time.Duration(i) * time.Hour), Kind: EpisodeTease,
+			Summary: "поддел номер " + string(rune('1'+i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := w.Gossip(ctx, "ivan", nil, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("про одного человека вышло %d строк", len(items))
+	}
+	if !strings.Contains(items[0].Summary, "3") {
+		t.Fatalf("взят не последний случай: %q", items[0].Summary)
+	}
+}
+
+// Свёрнутая выжимка в сплетню не идёт: «сцепились 4 с марта по май» пересказать
+// в реплике нельзя, а повод нужен конкретный.
+func TestGossipSkipsCompacted(t *testing.T) {
+	w, ctx := gossipWorld(t)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	for i := range EpisodeCap + 3 {
+		if _, err := w.AddEpisode(ctx, Episode{Src: "ivan", Dst: "pyotr",
+			At: now.Add(time.Duration(i) * time.Hour), Kind: EpisodeTease,
+			Summary: "случай"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.CompactEpisodes(ctx, "ivan", "pyotr", now); err != nil {
+		t.Fatal(err)
+	}
+	items, err := w.Gossip(ctx, "ivan", nil, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range items {
+		if g.Kind == EpisodeDigest {
+			t.Fatalf("выжимка ушла в сплетню: %+v", g)
+		}
 	}
 }

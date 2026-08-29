@@ -98,10 +98,9 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 	// Общей части (шапка, тема, колокольчик) здесь нет намеренно: во фрагменте
 	// её некуда девать, а запрос непрочитанного она стоит на каждую реплику.
 	p := notePage{
-		Note:   note,
-		Linear: strings.EqualFold(r.URL.Query().Get("view"), "linear"),
-		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil &&
-			!note.Locked && note.Status == platform.StatusVisible,
+		Note:        note,
+		Linear:      strings.EqualFold(r.URL.Query().Get("view"), "linear"),
+		CanWrite:    canWriteIn(note, me, signedIn, s.wr != nil),
 		CanModerate: canMod,
 		// Реакций у только что появившейся реплики нет ни у кого, и спрашивать
 		// их отдельным запросом незачем: первое же нажатие перерисует коробку

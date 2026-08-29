@@ -94,6 +94,7 @@ func (s *VoiceSpeaker) Speak(ctx context.Context, p SpeechPoint) (Speech, error)
 	req.TargetRunes = s.targetRunes(p.Slot)
 	req.Emoji = s.wantEmoji(p.Slot)
 	req.Memory = p.Memory
+	req.Mood = p.Mood
 
 	run, err := s.Store.GenerateVoice(ctx, s.Gen, s.Card, req, p.Now)
 	if err != nil {

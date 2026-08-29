@@ -85,9 +85,8 @@ func (s *Server) handleReplyForm(w http.ResponseWriter, r *http.Request) {
 	// ровно тем, чего мы и избегаем. Общей части страницы (шапка, тема,
 	// колокольчик) здесь нет: во фрагменте её некуда девать.
 	p := notePage{
-		Note: note,
-		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil &&
-			!note.Locked && note.Status == platform.StatusVisible,
+		Note:      note,
+		CanWrite:  canWriteIn(note, me, signedIn, s.wr != nil),
 		Linear:    linear,
 		ReplyBase: noteURL(id, linear, pageParam(r.URL.Query().Get("page"))),
 		Compose:   compose{ReplyTo: to},

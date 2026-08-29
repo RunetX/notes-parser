@@ -117,6 +117,7 @@ func TestValidate(t *testing.T) {
 		{"вероятность вне [0,1]", func(c *Card) { c.Dice.ComeToNote = 1.4 }},
 		{"образцы у композита", func(c *Card) { c.Samples = []Sample{{Text: "чужая фраза"}} }},
 		{"отрицательная частота ошибки", func(c *Card) { c.Errors[0].Rate = -1 }},
+		{"фрустрация не из списка", func(c *Card) { c.Persona.Frustration = "лёгкая грусть" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +128,29 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("принята карточка: %s", tc.name)
 			}
 		})
+	}
+}
+
+// Фрустрация — величина БЕЗ замера, и потому список её видов закрыт: свободная
+// строка через десяток жителей даёт «взаимное уважение с оттенком иронии», и
+// сравнивать миры между собой становится нечем. Тот же довод, что у EpisodeKinds.
+func TestFrustrationIsAClosedList(t *testing.T) {
+	good, err := LoadCard(filepath.Join(fixtureDir, "zavhoz.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range FrustrationKinds {
+		c := good
+		c.Persona.Frustration = k
+		if err := c.Validate(); err != nil {
+			t.Errorf("вид %q из собственного списка отвергнут: %v", k, err)
+		}
+	}
+	// Пусто — законно: человек без больного места тоже человек.
+	c := good
+	c.Persona.Frustration = ""
+	if err := c.Validate(); err != nil {
+		t.Errorf("карточка без больного места отвергнута: %v", err)
 	}
 }
 

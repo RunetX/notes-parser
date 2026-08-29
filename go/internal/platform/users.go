@@ -107,6 +107,31 @@ func (p *Platform) CreateNativeUser(ctx context.Context, nick string) (int64, er
 	return id, nil
 }
 
+// CreatePersonaUser заводит ЖИТЕЛЯ — анкету, реплики которой пишет машина
+// (эпик «народ»).
+//
+// Устроен он как обычный нативный участник плюс признак, и это не экономия:
+// житель обязан быть неотличим от участника ВЕЗДЕ, кроме двух мест — согласий
+// (он их не подписывает, см. consentGuard) и песочницы (ему в ней можно
+// писать). Заведи мы третий kind — и различие пришлось бы поддерживать в
+// десятке запросов, где оно не значит ничего, а забытый там житель однажды
+// выпал бы из ленты или из очереди модерации.
+//
+// В очередь модерации его реплики идут наравне со всеми, и это тоже намеренно:
+// автомат — второй забор, а не украшение, и молчаливое исключение жителя из-под
+// него означало бы, что на площадке есть автор, которого никто не проверяет.
+func (p *Platform) CreatePersonaUser(ctx context.Context, nick string) (int64, error) {
+	var id int64
+	err := p.pool.QueryRow(ctx, `
+		INSERT INTO users (id, nick, kind, persona)
+		VALUES (nextval('users_native_seq'), $1, $2, true)
+		RETURNING id`, nick, KindMember).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("создание жителя %q: %w", nick, err)
+	}
+	return id, nil
+}
+
 // Promote переводит тень в участники: человек доказал, что анкета его.
 // Идемпотентна.
 func (p *Platform) Promote(ctx context.Context, id int64) error {

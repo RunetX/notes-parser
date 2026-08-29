@@ -179,6 +179,9 @@ func (d *Bot) SetPulpit(svc PulpitControl, adminID int64) { d.logic.SetPulpit(sv
 // SetMorning подключает ручку утренней заметки админом (/morning).
 func (d *Bot) SetMorning(svc MorningControl, adminID int64) { d.logic.SetMorning(svc, adminID) }
 
+// SetNarod подключает ручку народа админом (/narod).
+func (d *Bot) SetNarod(svc NarodControl, adminID int64) { d.logic.SetNarod(svc, adminID) }
+
 // AskTalksScan спрашивает согласия читать личную переписку (зовёт поллер talks,
 // увидев сайт-аккаунт без согласия).
 func (d *Bot) AskTalksScan(ctx context.Context, userID int64, alsoElsewhere bool) {

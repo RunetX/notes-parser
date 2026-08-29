@@ -20,6 +20,38 @@ const linearPageSize = 30
 const viewCookie = "thread"
 
 // compose — состояние формы ответа на странице заметки. Живёт отдельно от
+// canWriteIn — показывать ли под этой заметкой форму ответа.
+//
+// Правило вынесено в одно место, потому что мест ПОКАЗА три: сама страница,
+// форма ответа, приезжающая без перезагрузки, и живой добор. Разъехавшись, они
+// дали бы худшее из возможного — кнопку, которая отвечает отказом; тот же довод,
+// по которому NoteView.Editable считается один раз на ядро и страницу.
+//
+// Три причины молчания, и все три разные:
+//
+//   - СКРЫТАЯ заметка: формы нет ни у кого, включая модератора, — ядро такой
+//     комментарий не примет, для пишущего скрытая заметка просто отсутствует;
+//   - ЗАМОК: разговор кончен для всех;
+//   - ПЕСОЧНИЦА (эпик «народ»): разговор идёт, но не с нами — в ней говорят
+//     жители, и участник её только читает. Администратор может: он вправе войти
+//     в разговор своих жителей, не открывая песочницу всем, и то же самое
+//     говорит ядро (platform.stageGuard). Модератору при этом нельзя — он решает
+//     про слова, а не участвует.
+//
+// Формы гость не получает ни при какой причине, а вот ОБЪЯСНЕНИЕ получает:
+// молчащее место под тредом читается поломкой (см. parts/reply.gohtml).
+func canWriteIn(n platform.NoteView, me platform.User, signedIn, hasWriter bool) bool {
+	switch {
+	case !signedIn || !hasWriter || me.Kind != platform.KindMember:
+		return false
+	case n.Locked || n.Status != platform.StatusVisible:
+		return false
+	case n.Stage && me.Role < platform.RoleAdmin:
+		return false
+	}
+	return true
+}
+
 // notePage, потому что приходит с двух сторон: из адреса (нажали «Ответить») и
 // из отказа при публикации (тогда в ней ещё и набранный текст).
 type compose struct {
@@ -48,6 +80,7 @@ type notePage struct {
 	Pager     pager
 	// CanWrite — форма ответа показывается вошедшему участнику. Гостю вместо неё
 	// приглашение войти: «читать можно всем» не значит «писать могут все».
+	// Считается одной функцией canWriteIn на все три места показа.
 	CanWrite bool
 	// CanModerate — под каждой репликой видны кнопки «скрыть» / «вернуть», а в
 	// дереве — уже скрытое. Модератор работает там, где читает: решать по цитате
@@ -150,24 +183,20 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		return
 	}
 	p := notePage{
-		page:    s.newPage(r, noteTitle(note)),
-		Note:    note,
-		Images:  images,
-		Linear:  linear,
-		TreeURL: noteURL(id, false, 1),
-		FlatURL: noteURL(id, true, 1),
-		// Под СКРЫТОЙ заметкой формы ответа нет ни у кого, включая модератора:
-		// ядро такой комментарий не примет (для пишущего скрытая заметка просто
-		// отсутствует), а форма, отвечающая отказом, хуже её отсутствия.
-		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil &&
-			!note.Locked && note.Status == platform.StatusVisible,
+		page:        s.newPage(r, noteTitle(note)),
+		Note:        note,
+		Images:      images,
+		Linear:      linear,
+		TreeURL:     noteURL(id, false, 1),
+		FlatURL:     noteURL(id, true, 1),
+		CanWrite:    canWriteIn(note, me, signedIn, s.wr != nil),
 		CanModerate: canMod,
 		Editable:    note.Editable(time.Now()),
 		// У ЛЮБОЙ заметки, включая зеркальную: текст копии не правится, но
 		// картинку администратор ставит и ей (27.08.2026). Что именно откроется
 		// в форме, решает editTarget, а подпись ссылке — modNote.
 		AdminEdit: me.Role >= platform.RoleAdmin && s.mod != nil,
-		Compose: form,
+		Compose:   form,
 
 		Reactions: reactions,
 		ReactOpen: reactTarget(r),

@@ -263,7 +263,12 @@ type fanRule struct {
 //   - обезличенному не говорят ничего: его больше нет;
 //   - сам себе повода не бывает — ответивший на свою же реплику молчания и ждёт;
 //   - скрытая публикация поводов не порождает вовсе (status = 0), поэтому
-//     автомат модерации, успевший сработать до раздачи, гасит и уведомление.
+//     автомат модерации, успевший сработать до раздачи, гасит и уведомление;
+//   - ЖИТЕЛЮ (эпик «народ») поводов не раздаётся: колокольчика у него нет, читать
+//     их некому, а служба узнаёт о новом своим курсором по журналу фактов —
+//     напрямую, тем же путём, что и живой канал морды. Без этого условия
+//     `notifications` копила бы строки, которые никто никогда не прочтёт, и
+//     каждая реплика в песочнице раздавала бы поводы всем её участникам.
 var fanOutRules = []fanRule{{
 	name:   "ответ на реплику",
 	reason: ReasonReplyToComment,
@@ -276,7 +281,7 @@ var fanOutRules = []fanRule{{
 	        JOIN users    u ON u.id = p.author_id
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3) AND c.status = 0
 	         AND p.author_id IS DISTINCT FROM c.author_id
-	         AND u.kind = $4 AND u.anonymized_at IS NULL
+	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	      ON CONFLICT DO NOTHING`,
 }, {
 	// Автору заметки — только про ответы САМОЙ ЗАМЕТКЕ, а не про весь тред.
@@ -295,7 +300,7 @@ var fanOutRules = []fanRule{{
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3) AND c.status = 0
 	         AND c.reply_to_id IS NULL
 	         AND n.author_id IS DISTINCT FROM c.author_id
-	         AND u.kind = $4 AND u.anonymized_at IS NULL
+	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	      ON CONFLICT DO NOTHING`,
 }, {
 	// Упоминание. Ник ищется СЛОВОМ (текст разбирает Postgres), а не подстрокой:
@@ -322,7 +327,7 @@ var fanOutRules = []fanRule{{
 	        JOIN users u ON lower(u.nick) = w.word
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3) AND c.status = 0
 	         AND u.id IS DISTINCT FROM c.author_id
-	         AND u.kind = $4 AND u.anonymized_at IS NULL
+	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	         AND char_length(w.word) >= $5
 	         AND (EXISTS (SELECT 1 FROM comments q
 	                       WHERE q.note_id = c.note_id AND q.author_id = u.id AND q.status = 0)
@@ -342,7 +347,7 @@ var fanOutRules = []fanRule{{
 	        FROM events e JOIN users u ON u.id = e.subject_user_id
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3) AND e.subject_user_id IS NOT NULL
 	         AND e.actor_id IS DISTINCT FROM e.subject_user_id
-	         AND u.kind = $4 AND u.anonymized_at IS NULL
+	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	      ON CONFLICT DO NOTHING`,
 }, {
 	name:   "реакция",
@@ -356,7 +361,7 @@ var fanOutRules = []fanRule{{
 	        JOIN users u ON u.id = coalesce(c.author_id, n.author_id)
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3)
 	         AND coalesce(c.status, n.status, 1) = 0
-	         AND u.kind = $4 AND u.anonymized_at IS NULL
+	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	      ON CONFLICT DO NOTHING`,
 }}
 

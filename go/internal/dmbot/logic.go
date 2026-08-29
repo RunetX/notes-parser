@@ -60,6 +60,8 @@ type Logic struct {
 	// morning — ручка утренней заметки (/morning), тоже админская и тоже не в
 	// списке. Интерфейс объявлен здесь по той же причине, что и PulpitControl.
 	morning MorningControl
+	// narod — ручка народа (/narod), тоже админская и тоже не в списке команд.
+	narod   NarodControl
 	adminID int64
 	log     *slog.Logger
 	// talksOnly — движок бота переписки: из команд живут только /start,
@@ -218,6 +220,8 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		l.handleNews(ctx, userID)
 	case "/pulpit":
 		l.handlePulpit(ctx, userID, nil)
+	case "/narod":
+		l.handleNarod(ctx, userID, nil)
 	case "/morning":
 		l.handleMorning(ctx, userID, nil)
 	case "/cancel":

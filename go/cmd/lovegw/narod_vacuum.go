@@ -90,6 +90,10 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 	}
 	defer world.Close()
 
+	// Настроение собирается один раз на весь прогон: карточки от зерна не
+	// зависят, а замыкание держит лишь их.
+	mood := moodFn(cast)
+
 	var runs []*narodsim.VacuumRun
 	for i := range seedCount(o) {
 		seed := uint64(o.seed) + uint64(i)
@@ -123,6 +127,7 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 			opts := narodsim.VacuumOpts{
 				Actors: actors, MaxReplies: o.maxReply, MaxSpeak: o.maxSpeak,
 				Topics: topics[sc.NoteID], Familiar: familiar, Hazard: fade.Hazard,
+				Mood: mood,
 			}
 			if w != nil {
 				if err := w.live(ctx, sc.Note.PublishedAt); err != nil {
@@ -192,6 +197,30 @@ type vacActor struct {
 	// band — годится ли мерить голос этого жителя. Спрашивается ДО первого
 	// запроса и в отчёт едет как есть: непригодная встаёт ВМЕСТО чисел.
 	band archive.VoiceBand
+}
+
+// moodFn — «с каким чувством пишет этот житель этому собеседнику».
+//
+// Живёт в cmd, а не в харнессе, по тому же правилу, что и остальной перевод:
+// narodsim знает про точки решения и очередь, а карточки жителей ему подаёт
+// зовущий. Здесь же сходятся оба конца — состав и `narod.WriteMood`.
+func moodFn(cast []*vacActor) func(actor, peer int64, heat int, tone float64) string {
+	cards := make(map[int64]*narod.Card, len(cast))
+	for _, c := range cast {
+		cards[c.userID] = c.card
+	}
+	return func(actor, peer int64, heat int, tone float64) string {
+		me := cards[actor]
+		if me == nil {
+			return ""
+		}
+		p := narod.MoodPoint{Card: *me, Tone: tone, Heat: heat}
+		if other := cards[peer]; other != nil {
+			p.Peer = other.Persona.Nick
+			p.PeerGender = other.Persona.Gender
+		}
+		return narod.WriteMood(p)
+	}
 }
 
 // speaker отдаёт говорящего так, чтобы nil-интерфейс не притворялся живым:

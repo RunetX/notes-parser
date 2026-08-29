@@ -1,0 +1,224 @@
+package platform
+
+// Жители и песочница (эпик «народ», миграция 0018) против настоящего Postgres.
+//
+// Подделкой это не проверить: правило песочницы живёт в транзакции публикации и
+// читает две колонки из двух таблиц, а исключение по согласиям — вопрос о том,
+// какой строки в `consents` НЕТ.
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+// mustPersona — заведённый житель. Согласий ему не подписывают НАМЕРЕННО: в этом
+// вся суть исключения, и подписать их «на всякий случай» значило бы проверить не
+// то правило.
+func mustPersona(t *testing.T, p *Platform, nick string) int64 {
+	t.Helper()
+	id, err := p.CreatePersonaUser(context.Background(), nick)
+	if err != nil {
+		t.Fatalf("житель %q: %v", nick, err)
+	}
+	return id
+}
+
+// mustStageNote — заметка-песочница от администратора.
+func mustStageNote(t *testing.T, p *Platform, admin int64) int64 {
+	t.Helper()
+	id, err := p.CreateNote(context.Background(), NewNote{
+		AuthorID: admin, Body: "о чём поговорим", Stage: true,
+	})
+	if err != nil {
+		t.Fatalf("песочница: %v", err)
+	}
+	return id
+}
+
+// mustAdmin — участник с правами администратора.
+func mustAdmin(t *testing.T, p *Platform, nick string) int64 {
+	t.Helper()
+	id := mustUser(t, p, nick)
+	if err := p.SetRole(context.Background(), Viewer{UserID: id, Role: RoleAdmin}, id, RoleAdmin); err != nil {
+		t.Fatalf("права администратора: %v", err)
+	}
+	return id
+}
+
+// ЖИТЕЛЬ ПУБЛИКУЕТ БЕЗ СОГЛАСИЙ, и это не послабление, а единственный возможный
+// ответ: согласие на обработку персональных данных даёт СУБЪЕКТ, а у персонажа
+// персональных данных нет. Строка от его имени в `consents` была бы записью о
+// согласии, которого никто не давал.
+func TestPersonaPublishesWithoutConsents(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	note := mustStageNote(t, p, admin)
+	persona := mustPersona(t, p, "Кедрачъ")
+
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: persona, Body: "а по-моему всё наоборот",
+	}); err != nil {
+		t.Fatalf("житель не смог написать в песочнице: %v", err)
+	}
+	// И согласий у него по-прежнему НЕТ: право дал признак, а не подпись.
+	var signed int
+	if err := p.pool.QueryRow(ctx,
+		`SELECT count(*) FROM consents WHERE user_id = $1`, persona).Scan(&signed); err != nil {
+		t.Fatal(err)
+	}
+	if signed != 0 {
+		t.Errorf("за жителя подписано %d согласий — подделка доказательственной таблицы", signed)
+	}
+	// А обычному участнику без согласий по-прежнему нельзя: исключение точечное.
+	plain, err := p.CreateNativeUser(ctx, "Новичок")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: plain, Body: "а мне можно?",
+	}); !errors.Is(err, ErrConsentOutdated) && !errors.Is(err, ErrStageClosed) {
+		t.Errorf("участник без согласий написал в песочнице: %v", err)
+	}
+}
+
+// Песочница ЧИТАЕТСЯ всеми, но пишут в неё двое: житель и администратор. У
+// обычного участника отказ ИМЕННО про песочницу, а не «нет такой заметки»:
+// песочница не тайна — она в ленте, помечена значком и объяснена в справке.
+func TestStageIsClosedToMembers(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	note := mustStageNote(t, p, admin)
+	member := mustUser(t, p, "Читатель")
+
+	_, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: member, Body: "влезу"})
+	if !errors.Is(err, ErrStageClosed) {
+		t.Fatalf("участник написал в песочнице: %v", err)
+	}
+	// Администратор может: садовник вправе войти в разговор своих жителей, не
+	// открывая песочницу всем.
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: admin, Body: "а вот это интересно",
+	}); err != nil {
+		t.Errorf("администратор не смог написать в своей песочнице: %v", err)
+	}
+	// Модератору — нельзя: он решает про СЛОВА, а участвовать в разговоре не его
+	// роль, и его реплика в песочнице выглядела бы служебной.
+	mod := mustUser(t, p, "Модератор")
+	if err := p.SetRole(ctx, Viewer{UserID: admin, Role: RoleAdmin}, mod, RoleModerator); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: mod, Body: "и я скажу",
+	}); !errors.Is(err, ErrStageClosed) {
+		t.Errorf("модератор написал в песочнице: %v", err)
+	}
+}
+
+// Вторая половина того же правила: ЖИТЕЛЬ ПИШЕТ ТОЛЬКО В ПЕСОЧНИЦЕ.
+//
+// Ради неё правило и собрано в одном месте: благодаря ей «машинная реплика» и
+// «песочница» перестают быть разными вопросами, и всё, что ниже по течению
+// (каналы, недельная сводка, поводы шины), вправе спрашивать про ОДНУ заметку
+// вместо join'а к users на десяти миллионах комментариев.
+func TestPersonaCannotWriteOffStage(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Человек")
+	plain, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "обычная заметка"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persona := mustPersona(t, p, "Кедрачъ")
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: plain, AuthorID: persona, Body: "а я и тут скажу",
+	}); !errors.Is(err, ErrPersonaOffStage) {
+		t.Fatalf("житель заговорил вне песочницы: %v", err)
+	}
+	// И заметку он заводит только со сценой.
+	if _, err := p.CreateNote(ctx, NewNote{AuthorID: persona, Body: "моя заметка"}); !errors.Is(err, ErrPersonaOffStage) {
+		t.Errorf("житель завёл обычную заметку: %v", err)
+	}
+	if _, err := p.CreateNote(ctx, NewNote{AuthorID: persona, Body: "моя сцена", Stage: true}); err != nil {
+		t.Errorf("житель не смог завести песочницу: %v", err)
+	}
+}
+
+// Песочницу и жителей не видит НИ ОДИН исходящий обход в каналы: решение эпика —
+// наружу из песочницы не идёт ничего.
+func TestOutboundSkipsStage(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	stage := mustStageNote(t, p, admin)
+	persona := mustPersona(t, p, "Кедрачъ")
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: stage, AuthorID: persona, Body: "реплика жителя",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Обычную заметку пишет ДРУГОЙ человек: у заметки потолок 1/5 мин, а садовник
+	// только что завёл песочницу.
+	neighbour := mustUser(t, p, "Сосед")
+	plain, err := p.CreateNote(ctx, NewNote{AuthorID: neighbour, Body: "объявление площадки"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notes, err := p.OutboundNotes(ctx, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range notes {
+		if n.ID == stage {
+			t.Error("песочница ушла в исходящий обход")
+		}
+	}
+	if len(notes) == 0 || notes[len(notes)-1].ID != plain {
+		t.Error("обычная заметка из обхода пропала вместе с песочницей")
+	}
+	comments, err := p.OutboundComments(ctx, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range comments {
+		if c.NoteID == stage {
+			t.Error("реплика из песочницы ушла в исходящий обход")
+		}
+	}
+}
+
+// Поводов жителю не раздаётся: колокольчика у него нет, читать их некому, а
+// служба узнаёт о новом своим курсором. Без этого условия `notifications` копила
+// бы строки, которые никто никогда не прочтёт.
+func TestFanOutSkipsPersona(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	note := mustStageNote(t, p, admin)
+	persona := mustPersona(t, p, "Кедрачъ")
+
+	first, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: persona, Body: "начну"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Администратор отвечает жителю: живому такой ответ дал бы повод.
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: admin, ReplyToID: first, Body: "отвечаю",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.FanOut(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	var pokes int
+	if err := p.pool.QueryRow(ctx,
+		`SELECT count(*) FROM notifications WHERE user_id = $1`, persona).Scan(&pokes); err != nil {
+		t.Fatal(err)
+	}
+	if pokes != 0 {
+		t.Errorf("жителю роздано %d поводов — их некому читать", pokes)
+	}
+}

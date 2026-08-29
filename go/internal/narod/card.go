@@ -79,6 +79,54 @@ type Bio struct {
 	Job    string   `json:"job,omitempty"`
 	Family string   `json:"family,omitempty"`
 	Facts  []string `json:"facts,omitempty"` // жёсткие факты: с ними сверяется реплика
+	// Frustration — чем житель уязвлён; вид из закрытого списка FrustrationKinds.
+	// Пусто — законно: человек без больного места тоже человек.
+	Frustration string `json:"frustration,omitempty"`
+}
+
+// Виды фрустрации — ЧЕМ житель задет. Список закрытый и живёт ЗДЕСЬ по тому же
+// доводу, что EpisodeKinds: величину без замера ещё можно сравнивать между
+// мирами, пока у неё конечное число значений, — а свободная строка через десяток
+// жителей даёт «лёгкую грусть по несбывшемуся», и сравнивать становится нечем.
+//
+// Замера у неё нет и быть не может, и сказано об этом прямо: в архиве видно,
+// ЧТО человек написал, и не видно, чем он задет. Поэтому вид не смешивается из
+// доноров, как числовые цели, а пишется владельцем в рецепте — рядом с ником и
+// биографией, то есть там, где авторские решения и живут.
+//
+// Нужна она затем, что без неё житель входит в тред эмоционально пустым: есть
+// КАК он пишет, ЧТО ему интересно и К КОМУ как относится — и ничего про то, из-за
+// чего он вообще ввязывается. Разговор от этого выходит рафинированным (жалоба
+// владельца 29.08.2026): люди на сайте годами носят своё и находят ему выход в
+// чужой заметке.
+const (
+	FrustLonely   = "одиночество"
+	FrustUnseen   = "обесценивание"
+	FrustBody     = "тело и возраст"
+	FrustMoney    = "деньги и статус"
+	FrustChildren = "дети"
+	FrustBetrayal = "измена"
+	FrustUnwanted = "невостребованность"
+)
+
+// FrustrationKinds — весь список, в порядке от самого частого к редкому.
+var FrustrationKinds = []string{
+	FrustLonely, FrustUnseen, FrustBody, FrustMoney,
+	FrustChildren, FrustBetrayal, FrustUnwanted,
+}
+
+// KnownFrustration — из списка ли вид. Пустой считается известным: поле
+// необязательное.
+func KnownFrustration(kind string) bool {
+	if kind == "" {
+		return true
+	}
+	for _, k := range FrustrationKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // Register — механика письма: как человек ставит знаки, а не что говорит.
@@ -273,6 +321,10 @@ func (c Card) Validate() error {
 	}
 	if c.Kind == KindComposite && len(c.Samples) > 0 {
 		return fmt.Errorf("%s: у композита есть дословные образцы донора — это и есть та утечка, ради которой он заводился", c.ID)
+	}
+	if !KnownFrustration(c.Persona.Frustration) {
+		return fmt.Errorf("%s: фрустрация %q не из списка (%s) — свободная строка сделала бы миры несравнимыми",
+			c.ID, c.Persona.Frustration, strings.Join(FrustrationKinds, ", "))
 	}
 	for _, e := range c.Errors {
 		if e.Rate < 0 {

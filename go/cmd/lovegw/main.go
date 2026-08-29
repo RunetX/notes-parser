@@ -49,6 +49,7 @@ import (
 	"lovegw/internal/love"
 	"lovegw/internal/maxx"
 	"lovegw/internal/mirror"
+	"lovegw/internal/narod"
 	"lovegw/internal/news"
 	"lovegw/internal/platbus"
 	"lovegw/internal/platdigest"
@@ -297,6 +298,7 @@ type daemon struct {
 
 	asrSvc     *asr.Service
 	plat       *platform.Platform // площадка: пул Postgres, закрывается в run
+	narodWorld *narod.World       // мир жителей: своя SQLite, закрывается в run
 	dm         *dmbot.Bot         // Telegram: бот команд (РюмкинЪ)
 	tgTalks    *dmbot.Bot         // Telegram: бот переписки (talks_token), иначе = dm
 	tg         *tgx.Mirror
@@ -353,6 +355,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 		return err
 	}
 	if err := d.setupMorning(); err != nil {
+		return err
+	}
+	// Народ — последним: ему нужна поднятая площадка (сцена) и ЛС-боты (ручка
+	// /narod), то есть всё, что собирается выше.
+	if err := d.setupNarod(); err != nil {
 		return err
 	}
 	return d.run(ctx)
@@ -1057,6 +1064,9 @@ func (d *daemon) run(ctx context.Context) error {
 	cfg, log := d.cfg, d.log
 	if d.plat != nil {
 		defer d.plat.Close()
+	}
+	if d.narodWorld != nil {
+		defer d.narodWorld.Close()
 	}
 	mir := mirror.New(d.st, d.client, d.sinks, mirror.Config{
 		NotesLimit:   cfg.NotesLimit,

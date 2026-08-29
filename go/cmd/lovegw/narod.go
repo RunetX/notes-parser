@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"lovegw/internal/archive"
+	"lovegw/internal/config"
 	"lovegw/internal/narod"
 )
 
@@ -31,7 +32,7 @@ var defaultCardsDir = filepath.Join("data", "narod", "cards")
 func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
-		"scout": true,
+		"scout": true, "enroll": true, "seed": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -65,6 +66,8 @@ func cmdNarod(ctx context.Context, args []string) error {
 	outDir := fs.String("out", filepath.Join("data", "narod", "replay"), "replay: куда класть отчёты")
 	cfgPath := fs.String("config", "config.json", "replay: конфиг (нужен только с -speak)")
 	model := fs.String("model", "", "replay: модель (пусто — из секции llm)")
+	body := fs.String("body", "", "seed: файл с текстом заметки-песочницы (- — stdin)")
+	from := fs.Int64("from", 0, "seed: поднять архивную заметку с этим номером")
 	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
@@ -88,6 +91,18 @@ func cmdNarod(ctx context.Context, args []string) error {
 		})
 	case "world":
 		return narodWorld(ctx, *worldPath)
+	case "enroll":
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return err
+		}
+		return narodEnroll(ctx, cfg, *cardsDir, *worldPath, fs.Args())
+	case "seed":
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return err
+		}
+		return narodSeed(ctx, cfg, *body, *from)
 	case "replay":
 		opts := replayOpts{
 			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir, mode: *mode,
@@ -106,7 +121,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 			return fmt.Errorf("narod replay: -mode бывает %s или %s, а не %q", modeSolo, modeVacuum, *mode)
 		}
 	default:
-		return fmt.Errorf("narod: нужна подкоманда (scout|card|compose|show|world|replay)")
+		return fmt.Errorf("narod: нужна подкоманда (scout|card|compose|show|world|replay|enroll|seed)")
 	}
 }
 
@@ -207,6 +222,19 @@ func writeCardFile(path string, card narod.Card) error {
 // Без аргумента показывается весь каталог: список жителей нигде в коде не
 // записан, и единственный способ узнать, кто сегодня живёт на площадке, — это
 // прочитать каталог.
+// otherGender — пол «собеседника» для показа настроения: противоположный, чтобы
+// строка про разнополый разговор попала в пример. Неизвестный пол так и остаётся
+// неизвестным — тогда её в примере не будет, и это правда о такой карточке.
+func otherGender(g string) string {
+	switch g {
+	case "male":
+		return "female"
+	case "female":
+		return "male"
+	}
+	return ""
+}
+
 func narodShow(dir string, args []string) error {
 	var cards []narod.Card
 	if len(args) > 0 {
@@ -239,6 +267,15 @@ func narodShow(dir string, args []string) error {
 		if err := narod.WriteCardBrief(os.Stdout, c); err != nil {
 			return err
 		}
+		// Настроение — второй блок промпта, и печатать его обязательно: команда
+		// обещает показать карточку РОВНО так, как её увидит модель, а больное
+		// место, регистр и запрет мата живут не в брифе, а здесь. Пример берётся
+		// самый горячий из возможных (разнополая пара, неприязнь, разговор уже на
+		// третьей ступени) — иначе половина блока не показалась бы вовсе.
+		fmt.Print(narod.WriteMood(narod.MoodPoint{
+			Card: c, Peer: "собеседник", PeerGender: otherGender(c.Persona.Gender),
+			Tone: -0.5, Heat: 2,
+		}))
 	}
 	if len(args) == 0 {
 		if err := narod.CheckLive(cards); err != nil {

@@ -439,3 +439,80 @@ func TestVacuumSilenceEndsTheThread(t *testing.T) {
 			braked.Got.SpanSec)
 	}
 }
+
+// moodSpeaker запоминает настроение каждой реплики: тест меряет не текст, а то,
+// что до модели вообще доехало.
+type moodSpeaker struct {
+	moods []string
+	heats []int
+}
+
+func (s *moodSpeaker) Speak(_ context.Context, p SpeechPoint) (Speech, error) {
+	s.moods = append(s.moods, p.Mood)
+	return Speech{Got: "реплика"}, nil
+}
+
+// Накал пары считает КОД и даром: у каждой реплики известны автор и адресат, а
+// «сцепились» — это ровно длина их непрерывного обмена. Растёт он ПОСЛЕ реплики,
+// поэтому пишущий видит ступень, на которой разговор стоял до него.
+func TestVacuumCountsPairHeat(t *testing.T) {
+	sp := &moodSpeaker{}
+	card := testCard()
+	card.Dice.ComeToNote = 1
+	card.Dice.ReplyMention = 1
+	card.Dice.ReplyOther = 1
+	actors := vacCast(3, card, 7)
+	for i := range actors {
+		actors[i].Speaker = sp
+	}
+	seen := map[string]bool{}
+	_, err := RunVacuum(context.Background(), sc0(), VacuumOpts{
+		Actors: actors, MaxReplies: 40,
+		Mood: func(actor, peer int64, heat int, tone float64) string {
+			sp.heats = append(sp.heats, heat)
+			return fmt.Sprintf("накал %d", heat)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sp.moods) == 0 {
+		t.Fatal("настроение не спросили ни разу")
+	}
+	for _, m := range sp.moods {
+		seen[m] = true
+	}
+	if !seen["накал 0"] {
+		t.Fatalf("первая реплика паре пришла не с нулевого накала: %v", seen)
+	}
+	if len(seen) < 2 {
+		t.Fatalf("накал не растёт вовсе: %v", seen)
+	}
+	for _, h := range sp.heats {
+		if h < 0 {
+			t.Fatalf("отрицательный накал %d", h)
+		}
+	}
+}
+
+// Молчащее замыкание — законное состояние: харнесс обязан гоняться там, где
+// карточек нет вовсе, и настроение тогда просто не подаётся.
+func TestVacuumWithoutMoodIsSilent(t *testing.T) {
+	sp := &moodSpeaker{}
+	card := testCard()
+	card.Dice.ComeToNote = 1
+	actors := vacCast(2, card, 11)
+	for i := range actors {
+		actors[i].Speaker = sp
+	}
+	if _, err := RunVacuum(context.Background(), sc0(), VacuumOpts{
+		Actors: actors, MaxReplies: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range sp.moods {
+		if m != "" {
+			t.Fatalf("без замыкания приехало настроение %q", m)
+		}
+	}
+}

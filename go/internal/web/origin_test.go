@@ -11,11 +11,11 @@ import (
 )
 
 func TestOriginMarksBothSides(t *testing.T) {
-	mirror := originOf(312811)
+	mirror := originOf(312811, false)
 	if mirror.Label != "НГС" {
 		t.Errorf("зеркальная помечена как %q", mirror.Label)
 	}
-	own := originOf(platform.NativeIDBase + 7)
+	own := originOf(platform.NativeIDBase+7, false)
 	if own.Label != SiteName {
 		t.Errorf("нативная помечена как %q, ожидалось %q", own.Label, SiteName)
 	}
@@ -30,8 +30,26 @@ func TestOriginMarksBothSides(t *testing.T) {
 // Значков ДВА, а не три: восстановленное из чужих зеркал читателю ничем не
 // отличается от свежего зеркала.
 func TestRestoredLooksLikeMirror(t *testing.T) {
-	if o := originOf(platform.RestoredIDBase + 5); o.Label != "НГС" {
+	if o := originOf(platform.RestoredIDBase+5, false); o.Label != "НГС" {
 		t.Errorf("восстановленная помечена как %q: значков должно быть два, а не три", o.Label)
+	}
+}
+
+// Песочница (эпик «народ») — ТРЕТИЙ значок, и он сильнее «своей»: обе написаны
+// здесь, но у песочницы к этому добавлено единственное, что читателю нужно знать
+// заранее, — ответить в ней он не сможет.
+func TestStageOverridesOwnMark(t *testing.T) {
+	id := platform.NativeIDBase + 7
+	own, stage := originOf(id, false), originOf(id, true)
+	if stage.Icon == own.Icon {
+		t.Fatalf("у песочницы тот же значок, что у обычной своей заметки (%q)", stage.Icon)
+	}
+	if stage.Title == "" {
+		t.Error("метка песочницы не объясняет себя заголовком (правило Ш5з)")
+	}
+	// Имён жителей метка не называет — решение эпика.
+	if stage.Label == "" {
+		t.Error("у метки песочницы нет имени для читалки")
 	}
 }
 

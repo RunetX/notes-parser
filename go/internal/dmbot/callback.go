@@ -58,6 +58,10 @@ const (
 
 	verbMorningAsk = "mornask" // аргумент — argMorningOn (что подтверждаем)
 	verbMorningSet = "mornset" // аргумент — argMorningOn/argMorningOff
+
+	// У народа глагол ОДИН: подтверждения у включения нет — предохранителя, из-за
+	// которого оно заведено у соседей, у него нет вовсе (см. dmbot/narod.go).
+	verbNarodSet = "narodset" // аргумент — argNarodOn/argNarodOff
 	// Подписка по заметке. Первый глагол приезжает с кнопки под постом канала —
 	// он единственный публичный (см. поле public); остальные два уже из ЛС.
 	verbSubscribe   = kbd.VerbSubscribe // аргумент — id заметки
@@ -84,6 +88,9 @@ const (
 
 	argMorningOn  = "on"
 	argMorningOff = "off"
+
+	argNarodOn  = "on"
+	argNarodOff = "off"
 )
 
 const (
@@ -137,6 +144,7 @@ var callbackVerbs = map[string]verbHandler{
 	verbPulpitSet:   {ack: "Переключаю…", fn: (*Logic).cbPulpitSet},
 	verbMorningAsk:  {fn: (*Logic).cbMorningAsk},
 	verbMorningSet:  {ack: "Переключаю…", fn: (*Logic).cbMorningSet},
+	verbNarodSet:    {ack: "Переключаю…", fn: (*Logic).cbNarodSet},
 	verbSubscribe:   {ack: "Открыл выбор в личке", public: true, fn: (*Logic).cbSubscribe},
 	verbSubAuthor:   {ack: "Подписал", fn: (*Logic).cbSubAuthor},
 	verbSubComments: {ack: "Подписал", fn: (*Logic).cbSubComments},
@@ -383,6 +391,10 @@ func (l *Logic) cbMorningAsk(ctx context.Context, userID int64, cb kbd.Callback,
 // cbMorningSet переключает тумблер утренней заметки.
 func (l *Logic) cbMorningSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
 	l.setMorning(ctx, userID, cb, arg)
+}
+
+func (l *Logic) cbNarodSet(ctx context.Context, userID int64, cb kbd.Callback, arg string) {
+	l.setNarod(ctx, userID, cb, arg)
 }
 
 func (l *Logic) cbCancel(ctx context.Context, userID int64, cb kbd.Callback, _ string) {

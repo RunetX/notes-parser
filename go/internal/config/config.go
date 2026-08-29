@@ -210,6 +210,53 @@ type Morning struct {
 	FuseMisses       int      `json:"fuse_misses"` // столько «заметки нет в ленте» подряд = выключаемся
 }
 
+// Narod — жители площадки (эпик «народ»): персонажи, реплики которых пишет
+// модель.
+//
+// Дефолт выключен, и режим по умолчанию СУХОЙ. Оба умолчания выбраны так, чтобы
+// забытая секция не могла ничего опубликовать: `enabled: false` не поднимает
+// службу вовсе, а `dry-run` крутит мир целиком, но на площадку не отправляет ни
+// строки. Рантайм-тумблер живёт не здесь, а в БД (settings['narod.enabled']) —
+// по образцу амвона и утренней заметки: конфиг монтируется в контейнер файлом и
+// правкой не переключается, а выключатель обязан работать всегда.
+type Narod struct {
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"` // dry-run | live
+	// CardsDir — каталог карточек. Добавить жителя значит положить файл: список
+	// нигде в коде не перечислен (DoD брифа).
+	CardsDir string `json:"cards_dir"`
+	DBPath   string `json:"db_path"` // своя SQLite мира
+	Seed     int64  `json:"seed"`    // зерно бросков; 0 — единица
+	// Model — модель Claude-ветки. Пусто — умолчание llm.
+	Model string `json:"model"`
+	// Live — российская модель для того будущего, где песочницу откроют
+	// аудитории: с этого дня в промпт попадают тексты живых участников, а
+	// согласие обещает не вывозить их за пределы России. Пусто — берётся секция
+	// platform.moderation, у которой ключ и каталог уже настроены.
+	Live NarodLive `json:"live"`
+
+	ScanEveryS int `json:"scan_every_s"`
+	WorkEveryS int `json:"work_every_s"`
+	// Потолки СВОИ, консервативнее платформенных: у площадки они держат шторм, а
+	// здесь — каскад «житель отвечает жителю», который разгоняется сам и тратит
+	// деньги на каждом шаге.
+	PerPersonaHour int `json:"per_persona_hour"`
+	PerPersonaDay  int `json:"per_persona_day"`
+	PerThread      int `json:"per_thread"`
+	ThreadCloseH   int `json:"thread_close_h"`
+	PlanCapH       int `json:"plan_cap_h"`
+	// DayCalls — потолок обращений к модели за сутки. Прямая единица счёта денег,
+	// как daily_requests у модерации.
+	DayCalls int `json:"day_calls"`
+}
+
+// NarodLive — российский провайдер для контекста с живыми текстами.
+type NarodLive struct {
+	APIKey   string `json:"api_key,omitempty"`
+	FolderID string `json:"folder_id,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
 // Platform — собственная площадка «Зазеркалье» (эпик E): Postgres, SSR и API.
 // Секция гейтит саму службу; «работает ли она сейчас» решается не здесь.
 //
@@ -360,6 +407,7 @@ type Config struct {
 	ASR           ASR         `json:"asr"`
 	Pulpit        Pulpit      `json:"pulpit"`
 	Morning       Morning     `json:"morning"`
+	Narod         Narod       `json:"narod"`
 	Platform      Platform    `json:"platform"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
@@ -514,6 +562,24 @@ func Load(path string) (*Config, error) {
 			SourceTimeoutS:   20,
 			FuseMisses:       2,
 		},
+		// Народ по умолчанию выключен и сух. Числа тактов и потолков названы с
+		// доводами в narod.Defaults — здесь они повторены, потому что конфиг
+		// читает человек, а не служба, и лезть за умолчанием в чужой пакет он не
+		// должен.
+		Narod: Narod{
+			Mode:           "dry-run",
+			CardsDir:       "data/narod/cards",
+			DBPath:         "data/narod.db",
+			Seed:           1,
+			ScanEveryS:     30,
+			WorkEveryS:     10,
+			PerPersonaHour: 2,
+			PerPersonaDay:  8,
+			PerThread:      6,
+			ThreadCloseH:   12,
+			PlanCapH:       48,
+			DayCalls:       100,
+		},
 		// Площадка по умолчанию выключена. Слушает только петлю контейнера:
 		// наружу её выпускает реверс-прокси, у самого приложения портов быть
 		// не должно.
@@ -572,6 +638,9 @@ func Load(path string) (*Config, error) {
 	if err := cfg.applyPulpitEnv(); err != nil {
 		return nil, err
 	}
+	if err := cfg.applyNarodEnv(); err != nil {
+		return nil, err
+	}
 	if err := cfg.applyMorningEnv(); err != nil {
 		return nil, err
 	}
@@ -620,6 +689,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("pulpit.min_runes (%d) больше pulpit.max_runes (%d) — ни одна реплика не пройдёт валидатор",
 			c.Pulpit.MinRunes, c.Pulpit.MaxRunes)
 	}
+	// Режим народа проверяется на СБОРКЕ, а не на первом такте: служба, молча
+	// не работающая из-за опечатки в слове «dry-run», выглядит выключенной, и
+	// разбираться в этом придётся по пустой песочнице.
+	if c.Narod.Enabled && c.Narod.Mode != "dry-run" && c.Narod.Mode != "live" {
+		return fmt.Errorf("narod.mode: ожидалось dry-run или live, получено %q", c.Narod.Mode)
+	}
 	// Полноту секции platform здесь НЕ проверяем, хотя соблазн есть. Конфиг
 	// один на все команды одного образа, а площадка нужна троим из семи: у
 	// modwatch, guests и activity её `enabled` — просто чужая строка в общем
@@ -648,7 +723,28 @@ func (c *Config) collectWarnings() {
 		c.Warnings = append(c.Warnings,
 			"digest.auto_publish=true без llm.api_key — LLM-рубрики заполнить нечем, выпуск уйдёт админу на полуручной цикл")
 	}
+	if c.Narod.Enabled && !c.Platform.Enabled {
+		c.Warnings = append(c.Warnings,
+			"narod.enabled=true при platform.enabled=false — жителям негде играть, служба не поднимется")
+	}
+	if c.Narod.Enabled && c.Narod.Mode == "live" && c.LLM.APIKey == "" {
+		c.Warnings = append(c.Warnings,
+			"narod.mode=live без llm.api_key — реплики писать нечем, жители будут молчать")
+	}
 	sort.Strings(c.Warnings) // порядок map'а иначе гуляет от запуска к запуску
+}
+
+// applyNarodEnv накладывает env-переопределения секции narod. Их ровно три, и
+// список закрыт намеренно: env нужен для того, что различается между стендом и
+// боем (включён ли, в каком режиме, какой моделью), а потолки и такты — это
+// настройка поведения, и ей место в файле, где рядом с числом стоит довод.
+func (c *Config) applyNarodEnv() error {
+	if err := envBool(&c.Narod.Enabled, "LOVEGW_NAROD_ENABLED"); err != nil {
+		return err
+	}
+	envString(&c.Narod.Mode, "LOVEGW_NAROD_MODE")
+	envString(&c.Narod.Model, "LOVEGW_NAROD_MODEL")
+	return nil
 }
 
 // applyASREnv накладывает env-переопределения секции asr.
