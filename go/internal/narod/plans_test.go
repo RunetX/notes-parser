@@ -202,3 +202,33 @@ func TestReopenThreadStartsTheClockAnew(t *testing.T) {
 		t.Error("оживлён тред, которого в мире нет")
 	}
 }
+
+// Множитель задержки сжимает время СТЕНДА и по умолчанию не делает ничего:
+// единица — человеческий темп, и отступать от него можно только осознанно.
+func TestLatencyScaleBendsOnlyWhenAsked(t *testing.T) {
+	base := Defaults()
+	if base.LatencyScale != 1 {
+		t.Fatalf("умолчание %v, а должно быть человеческим темпом", base.LatencyScale)
+	}
+	s := &Service{cfg: base}
+	if got := s.slowdown(time.Hour); got != time.Hour {
+		t.Errorf("при единице задержка стала %v", got)
+	}
+	fast := base
+	fast.LatencyScale = 0.1
+	s = &Service{cfg: fast}
+	if got := (&Service{cfg: fast}).slowdown(9 * time.Hour); got != 54*time.Minute {
+		t.Errorf("девять часов сжались в %v, а ждали 54 минуты", got)
+	}
+	// Ноль и отрицательное — это забытое поле, а не «мгновенно»: молчаливое
+	// обнуление задержки выдало бы машину сразу и целиком.
+	broken := base
+	broken.LatencyScale = 0
+	if err := broken.Validate(); err == nil {
+		t.Error("нулевой множитель принят")
+	}
+	if got := (&Service{cfg: broken}).slowdown(time.Hour); got != time.Hour {
+		t.Errorf("при нуле задержка стала %v — жители заговорили бы разом", got)
+	}
+	_ = s
+}

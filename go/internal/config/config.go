@@ -245,6 +245,12 @@ type Narod struct {
 	PerThread      int `json:"per_thread"`
 	ThreadCloseH   int `json:"thread_close_h"`
 	PlanCapH       int `json:"plan_cap_h"`
+	// LatencyScale — множитель замеренной задержки ответа. Единица (умолчание) —
+	// человеческий темп из карточки, и его длинный хвост как раз и не даёт
+	// принять жителей за ботов. Меньше единицы — сжатое время СТЕНДА: смотреть
+	// вживую на разговор, который дозревает до утра, невозможно. Это
+	// сознательное отступление от замера, а не его настройка.
+	LatencyScale float64 `json:"latency_scale"`
 	// DayCalls — потолок обращений к модели за сутки. Прямая единица счёта денег,
 	// как daily_requests у модерации.
 	DayCalls int `json:"day_calls"`
@@ -578,6 +584,7 @@ func Load(path string) (*Config, error) {
 			PerThread:      6,
 			ThreadCloseH:   12,
 			PlanCapH:       48,
+			LatencyScale:   1,
 			DayCalls:       100,
 		},
 		// Площадка по умолчанию выключена. Слушает только петлю контейнера:
@@ -694,6 +701,9 @@ func (c *Config) validate() error {
 	// разбираться в этом придётся по пустой песочнице.
 	if c.Narod.Enabled && c.Narod.Mode != "dry-run" && c.Narod.Mode != "live" {
 		return fmt.Errorf("narod.mode: ожидалось dry-run или live, получено %q", c.Narod.Mode)
+	}
+	if c.Narod.LatencyScale < 0 {
+		return fmt.Errorf("narod.latency_scale: ожидалось число больше нуля, получено %v", c.Narod.LatencyScale)
 	}
 	// Полноту секции platform здесь НЕ проверяем, хотя соблазн есть. Конфиг
 	// один на все команды одного образа, а площадка нужна троим из семи: у

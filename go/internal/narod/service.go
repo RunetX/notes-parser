@@ -70,6 +70,15 @@ type Config struct {
 	// PlanCap — сколько живёт неисполненное намерение. Всё, что старше,
 	// снимается: ответ через двое суток это уже не ответ.
 	PlanCap time.Duration
+	// LatencyScale — множитель ЗАДЕРЖКИ ответа, и это единственное место службы,
+	// которое сознательно ОТСТУПАЕТ от замера. Единица — человеческий темп из
+	// карточки (Latency.ToReplySec): у него длинный хвост, кто-то отвечает через
+	// минуту, а кто-то через девять часов, — и ровно этот хвост не даёт принять
+	// жителей за ботов. Он же мертвит СТЕНД: садовник, глядящий на песочницу
+	// вживую, видит две реплики и тишину до утра. Значение меньше единицы сжимает
+	// время; названо оно отступлением, а не настройкой, потому что задержка —
+	// замер, и подкручивая её, мы меняем не число, а правдоподобие.
+	LatencyScale float64
 	// DayCalls — потолок обращений к модели за сутки. Ноль — без потолка, и это
 	// состояние для стенда, а не для боя.
 	DayCalls int
@@ -100,7 +109,10 @@ func Defaults() Config {
 		// то есть дальше ждать уже нечего.
 		ThreadCloseAfter: 12 * time.Hour,
 		PlanCap:          48 * time.Hour,
-		DayCalls:         100,
+		// Единица — темп живых. Сжимать его можно только осознанно и только на
+		// стенде, поэтому умолчание не «поудобнее», а «как у людей».
+		LatencyScale: 1,
+		DayCalls:     100,
 	}
 }
 
@@ -109,6 +121,9 @@ func Defaults() Config {
 func (c Config) Validate() error {
 	if c.Mode != ModeDryRun && c.Mode != ModeLive {
 		return fmt.Errorf("режим %q: бывает %s или %s", c.Mode, ModeDryRun, ModeLive)
+	}
+	if c.LatencyScale <= 0 {
+		return fmt.Errorf("множитель задержки %v: должен быть больше нуля", c.LatencyScale)
 	}
 	if c.ScanEvery <= 0 || c.WorkEvery <= 0 {
 		return errors.New("такты службы должны быть положительными")
@@ -395,7 +410,7 @@ func (s *Service) roll(ctx context.Context, p Player, event string, pt DecisionP
 	_, _, err = s.world.PlanReply(ctx, Plan{
 		ActorID: p.Card.ID, EventID: event, NoteID: noteID,
 		ReplyTo: replyTo, Target: target,
-		DueAt: pt.Now.Add(got.After),
+		DueAt: pt.Now.Add(s.slowdown(got.After)),
 	}, pt.Now)
 	return err
 }
@@ -745,4 +760,14 @@ func (s *Service) drop(ctx context.Context, pl Plan, verdict, reason string) err
 		return err
 	}
 	return s.world.FinishPlan(ctx, pl.ID, PlanDone, reason)
+}
+
+// slowdown растягивает или сжимает замеренную задержку ответа. Отдельной
+// функцией, а не выражением на месте, чтобы отступление от замера было видно
+// поимённо: искать по имени — значит найти все места, где темп неправдив.
+func (s *Service) slowdown(d time.Duration) time.Duration {
+	if s.cfg.LatencyScale <= 0 || s.cfg.LatencyScale == 1 {
+		return d
+	}
+	return time.Duration(float64(d) * s.cfg.LatencyScale)
 }

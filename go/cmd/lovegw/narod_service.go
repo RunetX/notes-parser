@@ -133,6 +133,9 @@ func narodConfig(cfg *config.Config) narod.Config {
 	if n.PlanCapH > 0 {
 		c.PlanCap = time.Duration(n.PlanCapH) * time.Hour
 	}
+	if n.LatencyScale > 0 {
+		c.LatencyScale = n.LatencyScale
+	}
 	if n.DayCalls > 0 {
 		c.DayCalls = n.DayCalls
 	}
