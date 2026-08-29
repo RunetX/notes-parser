@@ -70,6 +70,15 @@ type Config struct {
 	// PlanCap — сколько живёт неисполненное намерение. Всё, что старше,
 	// снимается: ответ через двое суток это уже не ответ.
 	PlanCap time.Duration
+	// GeneralizeRate — доля реплик, в которых случай выносится на ВЕСЬ ПОЛ
+	// («все бабы такие»). ЗАМЕР по 10,8 млн реплик архива: прямое обобщение стоит
+	// в 0,198 % реплик вообще и в 0,48 % там, где оно в треде звучит хоть раз
+	// (таких тредов 30 % от всех длиннее двадцати). Умолчание — условная доля:
+	// песочницу засевают материалом про отношения, то есть ровно тем, где живые
+	// обобщают. Невод замера ловит ЗАУЧЕННУЮ ФОРМУЛУ, а не поведение, поэтому
+	// число это ПОЛ, а не потолок; поднимать его выше замера — авторское решение,
+	// и оно должно называться таковым.
+	GeneralizeRate float64
 	// LatencyScale — множитель ЗАДЕРЖКИ ответа, и это единственное место службы,
 	// которое сознательно ОТСТУПАЕТ от замера. Единица — человеческий темп из
 	// карточки (Latency.ToReplySec): у него длинный хвост, кто-то отвечает через
@@ -109,6 +118,7 @@ func Defaults() Config {
 		// то есть дальше ждать уже нечего.
 		ThreadCloseAfter: 12 * time.Hour,
 		PlanCap:          48 * time.Hour,
+		GeneralizeRate:   0.0048,
 		// Единица — темп живых. Сжимать его можно только осознанно и только на
 		// стенде, поэтому умолчание не «поудобнее», а «как у людей».
 		LatencyScale: 1,
@@ -121,6 +131,9 @@ func Defaults() Config {
 func (c Config) Validate() error {
 	if c.Mode != ModeDryRun && c.Mode != ModeLive {
 		return fmt.Errorf("режим %q: бывает %s или %s", c.Mode, ModeDryRun, ModeLive)
+	}
+	if c.GeneralizeRate < 0 || c.GeneralizeRate > 1 {
+		return fmt.Errorf("доля вбросов %v: бывает от нуля до единицы", c.GeneralizeRate)
 	}
 	if c.LatencyScale <= 0 {
 		return fmt.Errorf("множитель задержки %v: должен быть больше нуля", c.LatencyScale)
@@ -547,7 +560,17 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	}
 	point.Memory = memory
 
-	mood := MoodPoint{Card: *p.Card, Heat: heatOf(thread, p.UserID, point.ReplyTo.AuthorID)}
+	// Жребии бросаются ЗДЕСЬ, до сборки настроения: длина, эмодзи, приём
+	// задевания и вброс — величины, живущие МЕЖДУ репликами, и модель, увидевшая
+	// их списком или долей, решает за весь прогон разом (оплачено дважды: длиной
+	// 28.08.2026 и комплиментом-суффиксом 29.08.2026).
+	rng := rand.New(rand.NewPCG(s.seed^uint64(pl.ID), uint64(pl.NoteID)+1))
+	mood := MoodPoint{
+		Card:       *p.Card,
+		Heat:       heatOf(thread, p.UserID, point.ReplyTo.AuthorID),
+		Jab:        rng.IntN(len(jabWays)),
+		Generalize: rng.Float64() < s.cfg.GeneralizeRate,
+	}
 	if point.ReplyTo.ID != 0 {
 		mood.Peer = point.ReplyTo.AuthorNick
 		if peer, ok := s.playerByUser(point.ReplyTo.AuthorID); ok {
@@ -563,9 +586,6 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	}
 	point.Mood = WriteMood(mood)
 
-	// Жребии длины и эмодзи бросаются ЗДЕСЬ, а не в промпте: обе величины живут
-	// МЕЖДУ репликами, и модель, прочитавшая долю, решает за весь прогон разом.
-	rng := rand.New(rand.NewPCG(s.seed^uint64(pl.ID), uint64(pl.NoteID)+1))
 	point.TargetRunes = int(QuantileAt(p.Card.Register.Runes, rng.Float64()) + 0.5)
 	if r := p.Card.Register.EmojiRate; r > 0 {
 		want := rng.Float64() < r

@@ -245,6 +245,12 @@ type Narod struct {
 	PerThread      int `json:"per_thread"`
 	ThreadCloseH   int `json:"thread_close_h"`
 	PlanCapH       int `json:"plan_cap_h"`
+	// GeneralizeRate — доля реплик, где случай выносится на весь пол («все бабы
+	// такие»). Умолчание — ЗАМЕР по архиву (0,48 % в тредах, где обобщение
+	// звучит хоть раз; 0,198 % по всему корпусу). Невод замера ловит заученную
+	// формулу, а не поведение, поэтому число это пол, а не потолок: поднимая его,
+	// вы принимаете авторское решение, а не уточняете замер.
+	GeneralizeRate float64 `json:"generalize_rate"`
 	// LatencyScale — множитель замеренной задержки ответа. Единица (умолчание) —
 	// человеческий темп из карточки, и его длинный хвост как раз и не даёт
 	// принять жителей за ботов. Меньше единицы — сжатое время СТЕНДА: смотреть
@@ -584,6 +590,7 @@ func Load(path string) (*Config, error) {
 			PerThread:      6,
 			ThreadCloseH:   12,
 			PlanCapH:       48,
+			GeneralizeRate: 0.0048,
 			LatencyScale:   1,
 			DayCalls:       100,
 		},
@@ -701,6 +708,9 @@ func (c *Config) validate() error {
 	// разбираться в этом придётся по пустой песочнице.
 	if c.Narod.Enabled && c.Narod.Mode != "dry-run" && c.Narod.Mode != "live" {
 		return fmt.Errorf("narod.mode: ожидалось dry-run или live, получено %q", c.Narod.Mode)
+	}
+	if c.Narod.GeneralizeRate < 0 || c.Narod.GeneralizeRate > 1 {
+		return fmt.Errorf("narod.generalize_rate: ожидалась доля от 0 до 1, получено %v", c.Narod.GeneralizeRate)
 	}
 	if c.Narod.LatencyScale < 0 {
 		return fmt.Errorf("narod.latency_scale: ожидалось число больше нуля, получено %v", c.Narod.LatencyScale)
