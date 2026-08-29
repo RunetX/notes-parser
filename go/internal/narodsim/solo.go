@@ -69,6 +69,10 @@ type DecisionPoint struct {
 	// оно в замере (archive.tempoWindow), а кубик обязан работать и там, где
 	// архива нет вовсе, — тот же приём, что у тем заметки.
 	Tempo int
+	// Gender — пол того, кто сказал реплику ("male"/"female"; пусто — неизвестен).
+	// Подаёт его зовущий, как темы и накал: пол живёт в анкете, а кубик обязан
+	// работать и там, где ни архива, ни площадки нет вовсе.
+	Gender string
 	// Tone — как житель относится к говорящему: [-1..+1] из графа мира
 	// (narod.Edge.Tone). Ноль значит и «безразличен», и «незнаком» — для
 	// решения это одно и то же, а различает их соседнее поле.
@@ -249,10 +253,18 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 			o.Actor, sc.NoteID)
 	}
 
+	// Пол участников — из сценария: разговор у живых структурно разнополый, и без
+	// этого solo мерил бы кубик, у которого рычаг выключен, а в вакууме включён.
+	gender := make(map[int64]string, len(sc.Participants))
+	for _, a := range sc.Participants {
+		gender[a.UserID] = a.Gender
+	}
+
 	// Заметка — тоже точка решения: ответ первого уровня приходит на неё.
 	if err := step(ctx, run, o, sc, DecisionPoint{
 		Now: sc.Note.PublishedAt, Actor: o.Actor, NoteID: sc.NoteID, Topics: o.Topics, TriggerID: 0,
 		Trigger: sc.Note.Text, Author: sc.Note.AuthorID, Nick: sc.Note.AuthorNick,
+		Gender: gender[sc.Note.AuthorID],
 	}, answered, 0); err != nil {
 		return nil, err
 	}
@@ -279,7 +291,8 @@ func RunSolo(ctx context.Context, sc *archive.ThreadScript, o SoloOpts) (*SoloRu
 		if err := step(ctx, run, o, sc, DecisionPoint{
 			Now: c.PublishedAt, Actor: o.Actor, NoteID: sc.NoteID, TriggerID: c.ID, Trigger: c.Text,
 			Author: c.AuthorID, Nick: c.AuthorNick, Addressed: c.TargetID == o.Actor,
-			Seen: i + 1, Said: run.Matrix.TP + run.Matrix.FP,
+			Gender: gender[c.AuthorID],
+			Seen:   i + 1, Said: run.Matrix.TP + run.Matrix.FP,
 			Familiarity: o.Familiar[c.AuthorID],
 		}, answered, c.ID); err != nil {
 			return nil, err

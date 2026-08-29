@@ -196,6 +196,12 @@ func chanceOf(card narod.Card, p DecisionPoint) (float64, narod.Dist) {
 		if lift, ok := card.Rate.TempoLift(p.Tempo, p.Addressed); ok {
 			r *= lift
 		}
+		// Пол собеседника: разговор у живых структурно РАЗНОПОЛЫЙ — мужчина
+		// отвечает мужчине вдвое реже случайного и почти втрое реже, чем женщине.
+		// Множитель по замеру, а не по вкусу; неизвестный пол рычага не даёт.
+		if lift, ok := card.Rate.GenderLift(p.Gender, p.Addressed); ok {
+			r *= lift
+		}
 		r *= relationLift(card, p)
 		return min(r, MaxChance), lat.ToReplySec
 	}

@@ -288,3 +288,35 @@ func TestComposeCarriesRawComeShare(t *testing.T) {
 		t.Errorf("в кубик пошло %.3f (замер %v), ожидалось %.3f", got, ok, want)
 	}
 }
+
+// Замер по полу собеседника обязан доехать до жителя: без него разговор выходит
+// ровным там, где у живых он расслаивается (мужчина отвечает мужчине вдвое реже
+// случайного). Проверяется ДОЛЯ, а не наличие поля, — счётчики у доноров
+// разного порядка.
+func TestComposeCarriesTheGenderAxis(t *testing.T) {
+	r, donors := twoDonorRecipe()
+	donors[0].Rate = narod.ReplyRate{
+		ToMale:   narod.RateBucket{Chances: 100000, Answers: 1000}, // 1 %
+		ToFemale: narod.RateBucket{Chances: 100000, Answers: 3000}, // 3 %
+	}
+	donors[1].Rate = narod.ReplyRate{
+		ToMale:   narod.RateBucket{Chances: 1000, Answers: 30}, // 3 %
+		ToFemale: narod.RateBucket{Chances: 1000, Answers: 50}, // 5 %
+	}
+	card, err := composeCard(r, donors, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// (1 % + 3 %) / 2 = 2 % мужчинам, (3 % + 5 %) / 2 = 4 % женщинам.
+	m, ok := card.Rate.GenderLift("male", false)
+	if !ok {
+		t.Fatal("у композита нет замера по полу — житель выбирает собеседника вслепую")
+	}
+	f, _ := card.Rate.GenderLift("female", false)
+	if ratio := f / m; ratio < 1.8 || ratio > 2.2 {
+		t.Errorf("женщинам против мужчин ×%.2f (%.2f и %.2f), ожидалось 2", ratio, f, m)
+	}
+	if _, ok := card.Rate.GenderLift("", false); ok {
+		t.Error("неизвестный пол выдал себя за замер")
+	}
+}

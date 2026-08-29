@@ -14,7 +14,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"lovegw/internal/archive"
 	"lovegw/internal/narod"
@@ -38,6 +42,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	seed := fs.Int64("seed", 1, "card: зерно выборки образцов; replay: зерно кубика")
 	verify := fs.Bool("verify", false, "compose: только проверить близость к донорам, карточку не писать")
 
+	jobs := fs.Int("j", 0, "card: сколько слепков снимать разом (0 — по ядрам, до восьми)")
 	seeds := fs.Int("seeds", 5, "replay: сколько зёрен прогнать (одно зерно — бросок, а не замер; модель зовут только на первом)")
 	with := fs.String("with", "", "scout: состав, вокруг которого искать соседей (u<id> через запятую)")
 	minComments := fs.Int("min-comments", scoutMinComments, "scout: корпус кандидата, ниже которого слепок не снять")
@@ -68,7 +73,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	case "card":
 		opts := defaultSnapshotOpts()
 		opts.Recent, opts.NormSample, opts.Seed = *recent, *normSample, *seed
-		return narodCardBuild(ctx, *dbPath, *cardsDir, fs.Args(), opts)
+		return narodCardBuild(ctx, *dbPath, *cardsDir, fs.Args(), opts, *jobs)
 	case "compose":
 		if len(fs.Args()) != 1 {
 			return fmt.Errorf("narod compose: нужен файл рецепта")
@@ -106,7 +111,23 @@ func cmdNarod(ctx context.Context, args []string) error {
 }
 
 // narodCardBuild снимает слепки доноров и кладёт их в каталог.
-func narodCardBuild(ctx context.Context, dbPath, dir string, tokens []string, opts snapshotOpts) error {
+// narodCardBuild снимает слепки доноров.
+//
+// Доноров бывает много: под один состав их девяносто, и после каждого нового
+// замера все они снимаются заново — четверть часа, при двенадцати простаивающих
+// ядрах.
+//
+// ПАРАЛЛЕЛЬНОСТЬ ЭТОГО НЕ ЛЕЧИТ, и это замерено, а не предположено (29.08.2026):
+// восемь слепков в один поток идут 75 с, в восемь потоков — 76. Упирается замер
+// не в ядра, а в одну базу SQLite, и добавление потоков только делит её же.
+// Ключ -j оставлен не ради скорости: он даёт счётчик «[k/N]» на долгом
+// пересъёме, а поднимать его имеет смысл только если однажды переедет узкое
+// место. Прежде чем снова ускорять ЭТО — сперва замерить, где время.
+//
+// Бриф печатается только у ОДНОГО донора: `narod card <один>` — это стенд, на
+// котором человек смотрит слепок глазами, а `narod card <много>` — пересъём, и
+// девяносто брифов подряд читать некому.
+func narodCardBuild(ctx context.Context, dbPath, dir string, tokens []string, opts snapshotOpts, jobs int) error {
 	if len(tokens) == 0 {
 		return fmt.Errorf("narod card: нужен донор (p<id>|u<id>|user_id)")
 	}
@@ -120,23 +141,51 @@ func narodCardBuild(ctx context.Context, dbPath, dir string, tokens []string, op
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	if jobs <= 0 {
+		jobs = defaultCardJobs()
+	}
+	jobs = min(jobs, len(tokens))
 	now := time.Now()
+
+	var (
+		mu   sync.Mutex
+		done int
+		one  narod.Card // бриф печатается только у единственного донора
+	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(jobs)
 	for _, token := range tokens {
-		card, err := buildSnapshotCard(ctx, ar, token, opts, now)
-		if err != nil {
-			return err
-		}
-		path := filepath.Join(dir, card.ID+narod.CardExt)
-		if err := writeCardFile(path, card); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "слепок %s → %s\n", token, path)
-		if err := narod.WriteCardBrief(os.Stdout, card); err != nil {
-			return err
-		}
+		g.Go(func() error {
+			card, err := buildSnapshotCard(gctx, ar, token, opts, now)
+			if err != nil {
+				return fmt.Errorf("слепок %s: %w", token, err)
+			}
+			path := filepath.Join(dir, card.ID+narod.CardExt)
+			if err := writeCardFile(path, card); err != nil {
+				return err
+			}
+			mu.Lock()
+			done++
+			one = card
+			fmt.Fprintf(os.Stderr, "[%d/%d] слепок %s → %s\n", done, len(tokens), token, path)
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	if len(tokens) == 1 {
+		return narod.WriteCardBrief(os.Stdout, one)
 	}
 	return nil
 }
+
+// defaultCardJobs — сколько слепков снимать разом по умолчанию.
+//
+// По ядрам, но не больше восьми. Числа эти на скорость почти не влияют (см.
+// выше: замер упирается в саму базу), и восемь тут просто разумный потолок.
+func defaultCardJobs() int { return min(runtime.NumCPU(), 8) }
 
 // writeCardFile пишет карточку через временный файл: оборванная запись оставила
 // бы каталог с полукарточкой, а загрузчик читает его целиком при каждом старте.

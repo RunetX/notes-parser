@@ -425,7 +425,14 @@ func rateFromArchive(r archive.ReplyRate) narod.ReplyRate {
 		Buckets:  rateBucketsToCard(r.Buckets),
 		Familiar: rateBucketsToCard(r.Familiar),
 		Tempo:    rateBucketsToCard(r.Tempo),
+		ToMale:   rateBucketToCard(r.ToMale),
+		ToFemale: rateBucketToCard(r.ToFemale),
 	}
+}
+
+func rateBucketToCard(b archive.RateBucket) narod.RateBucket {
+	return narod.RateBucket{Upto: b.Upto, Chances: b.Chances, Answers: b.Answers,
+		ToHimChances: b.ToHimChances, ToHimAnswers: b.ToHimAnswers}
 }
 
 func rateBucketsToCard(bs []archive.RateBucket) []narod.RateBucket {

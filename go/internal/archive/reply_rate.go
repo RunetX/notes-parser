@@ -103,6 +103,25 @@ type ReplyRate struct {
 	// поймала перевёрнутую догадку — на глаз угадывается частое и не угадывается
 	// редкое, и это уже второй раз на одном и том же кубике.
 	Tempo []RateBucket `json:"tempo,omitempty"`
+
+	// ToMale/ToFemale — отклик по ПОЛУ говорящего.
+	//
+	// Замер 29.08.2026 по 300 тыс. рёбер: разговор структурно РАЗНОПОЛЫЙ.
+	// Наблюдённое против случайного выбора адресата — мужчина женщине ×1,36,
+	// женщина мужчине ×1,31, женщина женщине ×0,82, а мужчина мужчине ×0,47,
+	// то есть вдвое реже случайного. Отношение между «мужчина женщине» и
+	// «мужчина мужчине» почти втрое.
+	//
+	// Мера завелась под задачу про склоки, и она же оказалась про них: у живых
+	// сцепившаяся пара чаще разнополая, значит и подтекст, и «мужчины с
+	// женщинами друг друга не понимают» — не украшение поверх ссоры, а её
+	// естественная среда.
+	//
+	// Корзин две, а не список: пол в архиве известен у 801 человека, но они дают
+	// 91 % всех реплик, и третьего значения у меры нет — неизвестный пол это
+	// отсутствие наблюдения, а не состояние.
+	ToMale   RateBucket `json:"to_male"`
+	ToFemale RateBucket `json:"to_female"`
 }
 
 // tempoWindow — за какое время считается накал.
@@ -193,6 +212,16 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 		return out, err
 	}
 
+	// Пол спрашивается ДО того, как открыт курсор треда, и это не вкусовщина:
+	// второй запрос при открытом курсоре берёт из пула НОВОЕ соединение, а оно
+	// открывает базу на 4,7 ГБ заново и переставляет journal_mode, пока первое
+	// держит чтение. Замер карточки от такой вложенности вырос с десяти секунд
+	// до девяти с лишним минут (поймано 29.08.2026 на живом архиве).
+	gender, err := s.genderOf(ctx)
+	if err != nil {
+		return out, err
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT note_id, id, author_id, author_id IN (`+in+`), published_at
 		  FROM comments
@@ -260,6 +289,12 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 		countChance(&out.Buckets[bucketOf(pos)], toHim[id], answered[id])
 		countChance(&out.Familiar[bucketOfInt(prior[author], familiarBuckets)], toHim[id], answered[id])
 		countChance(&out.Tempo[bucketOfInt(tempo, tempoBuckets)], toHim[id], answered[id])
+		switch gender[author] {
+		case "male":
+			countChance(&out.ToMale, toHim[id], answered[id])
+		case "female":
+			countChance(&out.ToFemale, toHim[id], answered[id])
+		}
 		if answered[id] {
 			prior[author]++
 		}
@@ -339,4 +374,30 @@ func bucketOfInt(x int, edges []int) int {
 // prior раз. Второе значение — был ли это замер.
 func (r ReplyRate) FamiliarRate(prior int, toHim bool) (float64, bool) {
 	return rateIn(r.Familiar, prior, toHim)
+}
+
+// genderOf — пол ВСЕХ, у кого он известен.
+//
+// Без соединения с `comments`, и это не мелочь: пол снят у 801 анкеты, а у иных
+// из них по 138 тысяч реплик, — планировщик, получив джойн, идёт от `users` и
+// перебирает эти сотни тысяч строк. Замер карточки от такого запроса вырос с
+// пятнадцати секунд до трёх с лишним минут (поймано 29.08.2026). Здесь же
+// таблица целиком помещается в память: восемьсот строк.
+func (s *Store) genderOf(ctx context.Context) (map[int64]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, gender FROM users WHERE gender IN ('male','female')`)
+	if err != nil {
+		return nil, fmt.Errorf("замер отклика, пол: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]string)
+	for rows.Next() {
+		var id int64
+		var g string
+		if err := rows.Scan(&id, &g); err != nil {
+			return nil, err
+		}
+		out[id] = g
+	}
+	return out, rows.Err()
 }

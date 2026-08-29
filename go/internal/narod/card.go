@@ -398,6 +398,19 @@ type ReplyRate struct {
 	// очередь ответов подряд между двумя, и при неизменной доле в проценты она не
 	// заводится никогда (замер 28.08.2026, второй платный прогон).
 	Tempo []RateBucket `json:"tempo,omitempty"`
+
+	// ToMale/ToFemale — отклик по ПОЛУ говорящего. Замер, и крупный: разговор
+	// структурно РАЗНОПОЛЫЙ. Наблюдённое против случайного выбора адресата —
+	// мужчина женщине ×1,36, женщина мужчине ×1,31, женщина женщине ×0,82,
+	// мужчина мужчине ×0,47 (вдвое реже случайного, и почти втрое реже, чем тот
+	// же мужчина отвечает женщине; 300 тыс. рёбер, 29.08.2026).
+	//
+	// Кубик о поле адресата не знал ничего и выбирал вслепую. А величина эта
+	// прямо про то, ради чего замер и делался: у живых сцепившаяся пара чаще
+	// разнополая — значит и подтекст, и «мужчины с женщинами друг друга не
+	// понимают» не украшение поверх ссоры, а её среда.
+	ToMale   RateBucket `json:"to_male"`
+	ToFemale RateBucket `json:"to_female"`
 }
 
 // FamiliarRate — вероятность отклика на реплику того, кому уже отвечал prior
@@ -757,4 +770,33 @@ func (c ComeRate) AllRate() (float64, bool) {
 		return 0, false
 	}
 	return float64(c.Came) / float64(c.Chances), true
+}
+
+// GenderLift — во сколько раз ПОЛ говорящего двигает готовность откликнуться
+// против среднего по замеру. Второе значение — был ли это замер.
+//
+// Множителем, а не готовой долей, по той же причине, что у знакомства и накала:
+// пол и позиция в треде описывают разное, а обе готовые доли содержат общую
+// базу, которая учлась бы дважды. Неизвестный пол рычага не даёт вовсе —
+// отсутствие наблюдения не есть третье состояние.
+func (r ReplyRate) GenderLift(gender string, toHim bool) (float64, bool) {
+	var b RateBucket
+	switch gender {
+	case "male":
+		b = r.ToMale
+	case "female":
+		b = r.ToFemale
+	default:
+		return 1, false
+	}
+	got, ok := rateIn([]RateBucket{{Upto: 1 << 30, Chances: b.Chances, Answers: b.Answers,
+		ToHimChances: b.ToHimChances, ToHimAnswers: b.ToHimAnswers}}, 0, toHim)
+	if !ok {
+		return 1, false
+	}
+	avg, ok := averageRate([]RateBucket{r.ToMale, r.ToFemale}, toHim)
+	if !ok || avg <= 0 {
+		return 1, false
+	}
+	return got / avg, true
 }

@@ -489,6 +489,13 @@ func blendRate(donors []narod.Card, w []float64) narod.ReplyRate {
 		Familiar: blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Rate.Familiar }),
 		Tempo:    blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Rate.Tempo }),
 	}
+	// Пол собеседника — те же ДОЛИ: у одного донора корпус в полсотни раз
+	// больше, и сумма счётчиков отдала бы ему обе корзины независимо от весов.
+	if g := blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket {
+		return []narod.RateBucket{c.Rate.ToMale, c.Rate.ToFemale}
+	}); len(g) == 2 {
+		out.ToMale, out.ToFemale = g[0], g[1]
+	}
 	for i, d := range donors {
 		out.Threads += int(w[i] * float64(d.Rate.Threads))
 	}

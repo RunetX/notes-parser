@@ -41,9 +41,13 @@ import (
 
 // VacuumActor — житель на сцене.
 type VacuumActor struct {
-	UserID  int64
-	Nick    string
-	CardID  string
+	UserID int64
+	Nick   string
+	CardID string
+	// Gender — пол жителя ("male"/"female"/""). Отдельным полем, а не через
+	// карточку: кубику нужен пол ЧУЖОЙ реплики, то есть соседа, а карточка у
+	// решающего своя.
+	Gender  string
 	Decider Decider
 	// Speaker — чем пишется текст. nil означает разговор БЕЗ слов: реплики
 	// встают на свои места и в свои минуты, а тела у них нет. Это рабочий режим,
@@ -210,6 +214,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 	}
 	byActor := make(map[int64]VacuumActor, len(o.Actors))
 	nick := map[int64]string{sc.Note.AuthorID: sc.Note.AuthorNick}
+	gender := map[int64]string{}
 	cast := make([]int64, 0, len(o.Actors))
 	for _, a := range o.Actors {
 		if a.UserID == 0 {
@@ -220,6 +225,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 		}
 		byActor[a.UserID] = a
 		nick[a.UserID] = a.Nick
+		gender[a.UserID] = a.Gender
 		cast = append(cast, a.UserID)
 	}
 	sort.Slice(cast, func(i, j int) bool { return cast[i] < cast[j] })
@@ -245,7 +251,7 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 
 	st := &vacState{
 		run: run, got: got, o: o, byActor: byActor, nick: nick,
-		familiar: familiar, said: map[int64]int{}, pending: map[int64]int{},
+		familiar: familiar, gender: gender, said: map[int64]int{}, pending: map[int64]int{},
 		byID: map[int64]archive.ScriptComment{},
 	}
 
@@ -258,7 +264,8 @@ func RunVacuum(ctx context.Context, sc *archive.ThreadScript, o VacuumOpts) (*Va
 		if err := st.roll(ctx, byActor[id], DecisionPoint{
 			Now: t0, Actor: id, NoteID: sc.NoteID, Topics: o.Topics, TriggerID: 0, Trigger: sc.Note.Text,
 			Author: sc.Note.AuthorID, Nick: sc.Note.AuthorNick,
-			Tone: o.Feel[id][sc.Note.AuthorID],
+			Gender: gender[sc.Note.AuthorID],
+			Tone:   o.Feel[id][sc.Note.AuthorID],
 		}, t0); err != nil {
 			return nil, err
 		}
@@ -323,6 +330,7 @@ type vacState struct {
 	byActor  map[int64]VacuumActor
 	nick     map[int64]string
 	familiar map[int64]map[int64]int
+	gender   map[int64]string
 	said     map[int64]int
 	// pending — намеченное, но ещё не сказанное. Считается вместе со сказанным,
 	// иначе потолок реплик на тред не ограничивает НИЧЕГО: житель успевает
@@ -400,6 +408,7 @@ func (st *vacState) say(ctx context.Context, at time.Time, ev vacEvent, t0 time.
 		if err := st.roll(ctx, st.byActor[id], DecisionPoint{
 			Now: at, Actor: id, NoteID: st.got.NoteID, TriggerID: c.ID, Trigger: c.Text,
 			Author: c.AuthorID, Nick: c.AuthorNick,
+			Gender:      st.gender[c.AuthorID],
 			Addressed:   c.TargetID == id,
 			Tone:        st.o.Feel[id][c.AuthorID],
 			Seen:        len(st.got.Comments),

@@ -407,3 +407,44 @@ func TestComeRateScalesPersonalShareToOurNoteDensity(t *testing.T) {
 		t.Errorf("доля по всем заметкам %.3f (замер %v), ожидалось 0.141", all, ok)
 	}
 }
+
+// Пол собеседника двигает готовность откликнуться, и двигает по ЗАМЕРУ.
+//
+// Замер 29.08.2026 по 300 тыс. рёбер: разговор структурно разнополый — мужчина
+// отвечает мужчине вдвое реже случайного и почти втрое реже, чем женщине.
+// Кубик о поле не знал ничего, и это ловится только таким тестом: без него
+// житель выбирает собеседника вслепую, а разговор выходит ровным там, где у
+// живых он расслаивается.
+func TestCardDeciderAnswersTheOtherSexMoreOften(t *testing.T) {
+	c := testCard()
+	c.Persona.Gender = "male"
+	c.Rate = narod.ReplyRate{
+		Buckets: []narod.RateBucket{{Upto: 1 << 30, Chances: 10000, Answers: 200}},
+		// Женщине отвечает вчетверо чаще, чем мужчине.
+		ToMale:   narod.RateBucket{Chances: 5000, Answers: 40},
+		ToFemale: narod.RateBucket{Chances: 5000, Answers: 160},
+	}
+	d := &CardDecider{Card: c, Seed: 7}
+	count := func(g string) int {
+		n := 0
+		for i := 0; i < 4000; i++ {
+			got, _ := d.Decide(context.Background(), DecisionPoint{
+				Actor: 9, NoteID: 500, TriggerID: int64(3000 + i), Seen: 20, Gender: g})
+			if got.Speak {
+				n++
+			}
+		}
+		return n
+	}
+	toMale, toFemale := count("male"), count("female")
+	if toMale == 0 {
+		t.Fatal("мужчине не ответил ни разу — рычаг не множитель, а запрет")
+	}
+	if ratio := float64(toFemale) / float64(toMale); ratio < 2.5 || ratio > 5.5 {
+		t.Errorf("женщине против мужчины %.2f (%d против %d), замер говорит 4", ratio, toFemale, toMale)
+	}
+	// Неизвестный пол рычага не даёт: отсутствие наблюдения не третье состояние.
+	if got := count(""); got < toMale || got > toFemale {
+		t.Errorf("при неизвестном поле заговорил %d раз — вне полосы [%d, %d]", got, toMale, toFemale)
+	}
+}

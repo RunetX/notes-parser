@@ -103,6 +103,7 @@ func narodVacuum(ctx context.Context, o replayOpts) error {
 			}
 			actors = append(actors, narodsim.VacuumActor{
 				UserID: c.userID, Nick: c.card.Persona.Nick, CardID: c.card.ID,
+				Gender:  c.card.Persona.Gender,
 				Decider: &narodsim.CardDecider{Card: *c.card, Seed: seed},
 				Speaker: sp,
 			})

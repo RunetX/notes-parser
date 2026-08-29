@@ -73,6 +73,10 @@ type ScriptActor struct {
 	Nick     string
 	Comments int
 	First    time.Time // когда впервые заговорил в этом треде
+	// Gender — "male" | "female" | "" (неизвестен). Нужен кубику: разговор у
+	// живых структурно разнополый, и мужчина отвечает мужчине вдвое реже
+	// случайного (замер 29.08.2026). Пустой пол рычага не даёт вовсе.
+	Gender string
 }
 
 // scriptRow — строка треда до разрешения рёбер.
@@ -103,6 +107,9 @@ func (s *Store) LoadThreadScript(ctx context.Context, noteID int64) (*ThreadScri
 		return nil, err
 	}
 	sc.Participants = participantsOf(sc.Comments)
+	if err := s.fillScriptGenders(ctx, sc); err != nil {
+		return nil, err
+	}
 	return sc, nil
 }
 
@@ -474,4 +481,44 @@ func parseArchiveTime(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("не разобрано время %q", s)
+}
+
+// fillScriptGenders проставляет пол участникам.
+//
+// Отдельным запросом после участников, а не полем в общем SELECT: пол есть
+// свойство ЧЕЛОВЕКА, а не реплики, и спрашивать его на каждую из сотен строк
+// треда значило бы повторять один ответ. Неизвестный пол остаётся пустым — в
+// архиве он снят у 801 анкеты, и это не пробел, а граница обхода: те же 801
+// дают 91 % всех реплик.
+func (s *Store) fillScriptGenders(ctx context.Context, sc *ThreadScript) error {
+	if len(sc.Participants) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(sc.Participants))
+	for _, a := range sc.Participants {
+		ids = append(ids, a.UserID)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, gender FROM users
+		 WHERE id IN (`+intList(ids)+`) AND gender IN ('male','female')`)
+	if err != nil {
+		return fmt.Errorf("пол участников треда %d: %w", sc.NoteID, err)
+	}
+	defer rows.Close()
+	byID := make(map[int64]string, len(ids))
+	for rows.Next() {
+		var id int64
+		var g string
+		if err := rows.Scan(&id, &g); err != nil {
+			return err
+		}
+		byID[id] = g
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range sc.Participants {
+		sc.Participants[i].Gender = byID[sc.Participants[i].UserID]
+	}
+	return nil
 }
