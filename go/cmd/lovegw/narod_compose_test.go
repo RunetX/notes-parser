@@ -261,3 +261,30 @@ func TestComposeCarriesTheRootRate(t *testing.T) {
 			card.Roots.Firsts, card.Roots.Repeats)
 	}
 }
+
+// Готовность зайти в заметку смешивается СЫРОЙ долей, а не той, что идёт в
+// кубик. Поймано по живому 29.08.2026: `blendCome` брал `Rate()`, уже
+// переведённую в плотность нашей площадки, и житель получал перевод второй раз
+// — личная доля выходила 50 % при донорских двадцати, а кубик упирался в
+// потолок вероятности у всего состава разом.
+func TestComposeCarriesRawComeShare(t *testing.T) {
+	r, donors := twoDonorRecipe()
+	donors[0].Come = narod.ComeRate{Days: 300, Chances: 4000, Came: 400,
+		LiveChances: 4000, LiveCame: 400} // 10 %
+	donors[1].Come = narod.ComeRate{Days: 100, Chances: 1000, Came: 200,
+		LiveChances: 1000, LiveCame: 200} // 20 %
+	card, err := composeCard(r, donors, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := card.Come.PersonalShare()
+	if !ok || raw < 0.145 || raw > 0.155 {
+		t.Errorf("сырая доля жителя %.3f (замер %v), ожидалось 0.15", raw, ok)
+	}
+	// А в кубик она попадает переведённой РОВНО ОДИН раз.
+	got, ok := card.Come.Rate()
+	want := narod.ComeBase * 0.15 / narod.ComeTypical
+	if !ok || got < want-0.02 || got > want+0.02 {
+		t.Errorf("в кубик пошло %.3f (замер %v), ожидалось %.3f", got, ok, want)
+	}
+}

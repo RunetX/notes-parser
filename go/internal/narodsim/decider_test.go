@@ -343,7 +343,12 @@ func TestCardDeciderRootHasNoFallback(t *testing.T) {
 func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
 	c := testCard()
 	c.Dice.ComeToNote = 0.05 // выдумка, которую замер обязан вытеснить
-	c.Come = narod.ComeRate{Days: 300, Chances: 1000, Came: 600}
+	// Живой знаменатель — тот, что идёт в кубик: по ВСЕМ заметкам дня человек
+	// заходит редко, потому что большинство заметок мёртвые, и мерить нашу
+	// заметку этой долей значило бы назначить ей их судьбу заранее.
+	// Личная доля вшестеро выше типичной — значит и на площадке этот житель
+	// заходит охотнее большинства.
+	c.Come = narod.ComeRate{Days: 300, Chances: 4000, Came: 600, LiveChances: 1000, LiveCame: 600}
 	d := &CardDecider{Card: c, Seed: 7}
 	came := 0
 	for i := 0; i < 2000; i++ {
@@ -363,7 +368,7 @@ func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
 		t.Errorf("зашёл в %.3f заметок — замер 0.60 не вытеснил выдумку 0.05", share)
 	}
 	// Пустой замер — запасной путь, а не ноль.
-	c.Come = narod.ComeRate{Days: 300, Chances: 5, Came: 3}
+	c.Come = narod.ComeRate{Days: 300, Chances: 4000, Came: 600, LiveChances: 5, LiveCame: 3}
 	d = &CardDecider{Card: c, Seed: 7}
 	came = 0
 	for i := 0; i < 2000; i++ {
@@ -376,5 +381,29 @@ func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
 	}
 	if share := float64(came) / 2000; share > 0.15 {
 		t.Errorf("тощий замер принят за 0.60: доля %.3f", share)
+	}
+}
+
+// Личная доля идёт в кубик ОТНОШЕНИЕМ к типичной, а не сама по себе. Правило
+// стоит тестом, потому что подмена незаметна по поведению: обе величины
+// осмысленны и отличаются втрое, а мерились при разной плотности заметок — в
+// архивные годы их выходило 8–28 в день, у нашей площадки одна.
+func TestComeRateScalesPersonalShareToOurNoteDensity(t *testing.T) {
+	// Житель ровно типичной охоты обязан дать базу и ничего сверх неё: личная
+	// доля здесь равна narod.ComeTypical.
+	c := narod.ComeRate{Chances: 1000, Came: 141, LiveChances: 1000, LiveCame: 141}
+	got, ok := c.Rate()
+	if !ok || got < 0.34 || got > 0.36 {
+		t.Errorf("типичный житель дал %.3f (замер %v), ожидалась база 0.35", got, ok)
+	}
+	// Вдвое охотнее типичного — вдвое выше базы: личная доля переносится
+	// ОТНОШЕНИЕМ, иначе она притащила бы с собой чужую плотность заметок.
+	c.LiveCame = 282
+	if got, ok := c.Rate(); !ok || got < 0.69 || got > 0.71 {
+		t.Errorf("вдвое охотнее типичного дал %.3f (замер %v), ожидалось 0.70", got, ok)
+	}
+	// А доля по всем заметкам остаётся как была — она свидетельство, не рычаг.
+	if all, ok := c.AllRate(); !ok || all < 0.13 || all > 0.15 {
+		t.Errorf("доля по всем заметкам %.3f (замер %v), ожидалось 0.141", all, ok)
 	}
 }

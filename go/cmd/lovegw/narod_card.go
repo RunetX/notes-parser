@@ -147,7 +147,8 @@ func buildSnapshotCard(ctx context.Context, st *archive.Store, token string, opt
 	if err != nil {
 		return narod.Card{}, err
 	}
-	card.Come = narod.ComeRate{Days: come.Days, Chances: come.Chances, Came: come.Came}
+	card.Come = narod.ComeRate{Days: come.Days, Chances: come.Chances, Came: come.Came,
+		LiveChances: come.LiveChances, LiveCame: come.LiveCame}
 
 	if err := card.Validate(); err != nil {
 		return narod.Card{}, fmt.Errorf("слепок %s: %w", voice.Identity, err)

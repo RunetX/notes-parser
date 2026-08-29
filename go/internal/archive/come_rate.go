@@ -46,15 +46,42 @@ type ComeRate struct {
 	Chances int `json:"chances"`
 	// Came — в скольких из них он оказался КОРНЕМ (пришёл сам).
 	Came int `json:"came"`
+
+	// LiveChances/LiveCame — то же самое, но только по заметкам, У КОТОРЫХ РАЗГОВОР
+	// СОСТОЯЛСЯ (не меньше liveThread реплик).
+	//
+	// Две меры, а не одна, потому что знаменатель обязан совпадать с тем, к чему
+	// меру прикладывают. По ВСЕМ заметкам дня человек заходит в 14 %, но в
+	// знаменателе там и мёртвые — те, где не написал никто и никогда; по живым он
+	// заходит в 35 %. Разница ровно в доле живых заметок, и числа сходятся.
+	//
+	// Прикладывается это к заметке, которую пишет владелец или сам житель, — то
+	// есть к той, ради которой всё и затевалось. Брать сюда среднее по всем
+	// заметкам НГС значило бы заранее назначить большинству наших заметок судьбу
+	// мёртвых, а замер по живым не выдумка: 35 % — настоящая доля зашедших в
+	// заметку, у которой разговор получился.
+	LiveChances int `json:"live_chances"`
+	LiveCame    int `json:"live_came"`
 }
 
 // comeMinChances — ниже этого замером не считается. Порог тот же, что у отклика,
 // и по той же причине: доля по трём случаям — это отсутствие данных.
 const comeMinChances = 30
 
-// Rate — доля заметок своего дня, в которые человек зашёл. Второе значение —
-// был ли это ЗАМЕР.
+// Rate — личная доля заметок своего дня, в которые человек зашёл. Второе
+// значение — был ли это замер. В кубик она идёт НЕ НАПРЯМУЮ (см. narod.ComeRate):
+// мерилась она там, где в день выходило от восьми до двадцати восьми заметок, а
+// у нашей площадки заметка в день одна, и внимание ни с чем не делится.
 func (c ComeRate) Rate() (float64, bool) {
+	if c.LiveChances < comeMinChances {
+		return 0, false
+	}
+	return float64(c.LiveCame) / float64(c.LiveChances), true
+}
+
+// AllRate — то же по ВСЕМ заметкам дня, включая мёртвые. В кубик не идёт, но
+// стоит в карточке: по паре чисел видно, насколько редка живая заметка вообще.
+func (c ComeRate) AllRate() (float64, bool) {
 	if c.Chances < comeMinChances {
 		return 0, false
 	}
@@ -124,5 +151,34 @@ func (s *Store) MineComeRate(ctx context.Context, accIDs []int64, maxDays int) (
 		   AND n.published_at IS NOT NULL AND date(n.published_at) IN (`+marks+`)`, args...).Scan(&out.Came); err != nil {
 		return out, fmt.Errorf("замер первого захода, приходы: %w", err)
 	}
+
+	// То же по ЖИВЫМ заметкам — тем, где разговор состоялся. Знаменатель обязан
+	// совпадать с тем, к чему меру прикладывают: мёртвая заметка не выбор
+	// человека, а её собственное свойство, и держать её в знаменателе значило бы
+	// назначить нашей заметке чужую судьбу заранее.
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM notes n
+		 WHERE n.published_at IS NOT NULL AND date(n.published_at) IN (`+marks+`)
+		   AND (SELECT COUNT(*) FROM comments c WHERE c.note_id = n.id) >= `+liveThreadSQL,
+		args...).Scan(&out.LiveChances); err != nil {
+		return out, fmt.Errorf("замер первого захода, живые заметки: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT c.note_id)
+		  FROM comments c
+		  JOIN notes n ON n.id = c.note_id
+		  LEFT JOIN comment_reply r ON r.comment_id = c.id
+		 WHERE c.author_id IN (`+in+`) AND r.comment_id IS NULL
+		   AND n.author_id NOT IN (`+in+`)
+		   AND n.published_at IS NOT NULL AND date(n.published_at) IN (`+marks+`)
+		   AND (SELECT COUNT(*) FROM comments c2 WHERE c2.note_id = n.id) >= `+liveThreadSQL,
+		args...).Scan(&out.LiveCame); err != nil {
+		return out, fmt.Errorf("замер первого захода, приходы в живые: %w", err)
+	}
 	return out, nil
 }
+
+// liveThreadSQL — сколько реплик делает заметку «живой». Двадцать: ниже этого
+// разговора не было вовсе, и промах «был на сайте, а не зашёл» там объясняется
+// не человеком, а самой заметкой.
+const liveThreadSQL = "20"

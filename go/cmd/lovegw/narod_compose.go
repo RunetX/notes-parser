@@ -566,7 +566,10 @@ func blendCome(donors []narod.Card, w []float64) narod.ComeRate {
 	for i, d := range donors {
 		out.Days += int(w[i] * float64(d.Come.Days))
 		out.Chances += int(w[i] * float64(d.Come.Chances))
-		if r, ok := d.Come.Rate(); ok {
+		out.LiveChances += int(w[i] * float64(d.Come.LiveChances))
+		// СЫРАЯ доля, а не Rate: та уже переведена в плотность нашей площадки, и
+		// собранный из неё композит получил бы перевод второй раз.
+		if r, ok := d.Come.PersonalShare(); ok {
 			p += w[i] * r
 			weight += w[i]
 		}
@@ -574,6 +577,7 @@ func blendCome(donors []narod.Card, w []float64) narod.ComeRate {
 	if weight > 0 {
 		// Счётчик восстанавливается под смешанную долю: по нему решается, замер
 		// это или три случая, и терять его нельзя.
+		out.LiveCame = int(p / weight * float64(out.LiveChances))
 		out.Came = int(p / weight * float64(out.Chances))
 	}
 	return out
