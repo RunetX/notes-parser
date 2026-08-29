@@ -32,7 +32,7 @@ var defaultCardsDir = filepath.Join("data", "narod", "cards")
 func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
-		"scout": true, "enroll": true, "seed": true,
+		"scout": true, "enroll": true, "seed": true, "stage": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -68,6 +68,9 @@ func cmdNarod(ctx context.Context, args []string) error {
 	model := fs.String("model", "", "replay: модель (пусто — из секции llm)")
 	body := fs.String("body", "", "seed: файл с текстом заметки-песочницы (- — stdin)")
 	from := fs.Int64("from", 0, "seed: поднять архивную заметку с этим номером")
+	stageNote := fs.Int64("id", 0, "stage: номер уже стоящей в ленте заметки")
+	stageOff := fs.Bool("off", false, "stage: вернуть заметку людям")
+	reason := fs.String("reason", "", "stage: пометка в журнал")
 	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
@@ -103,6 +106,12 @@ func cmdNarod(ctx context.Context, args []string) error {
 			return err
 		}
 		return narodSeed(ctx, cfg, *body, *from)
+	case "stage":
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return err
+		}
+		return narodStage(ctx, cfg, *stageNote, *stageOff, *reason)
 	case "replay":
 		opts := replayOpts{
 			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir, mode: *mode,

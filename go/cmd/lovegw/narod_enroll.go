@@ -183,3 +183,37 @@ func archiveNoteBody(ctx context.Context, p *platform.Platform, id int64) (strin
 	return body + "\n\n(разговор поднят заново, оригинал — /n/" +
 		fmt.Sprint(id) + ")", nil
 }
+
+// narodStage переводит уже стоящую в ленте заметку в песочницу и обратно.
+//
+// Нужна потому, что материал для песочницы чаще всего УЖЕ написан: своя
+// заметка, которую никто не подхватил, — готовая сцена, и копия её текста
+// новой записью означала бы тот же текст дважды в одной ленте.
+//
+// Правило «только пока никто не говорил» держит ядро, а не команда: причина
+// там же, где и проверка (см. platform.SetNoteStageAsAdmin).
+func narodStage(ctx context.Context, cfg *config.Config, noteID int64, off bool, reason string) error {
+	if noteID == 0 {
+		return fmt.Errorf("narod stage: назовите заметку (-note <id>)")
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	actor, err := adminViewer(ctx, p)
+	if err != nil {
+		return err
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, actor, noteID, !off, reason); err != nil {
+		return err
+	}
+	if off {
+		fmt.Printf("заметка %d возвращена людям: %s/n/%d\n", noteID, cfg.Platform.BaseURL, noteID)
+		return nil
+	}
+	fmt.Printf("заметка %d стала песочницей: %s/n/%d\n", noteID, cfg.Platform.BaseURL, noteID)
+	fmt.Println("жители придут сами, когда служба увидит её очередным смотром")
+	return nil
+}

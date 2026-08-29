@@ -222,3 +222,123 @@ func TestFanOutSkipsPersona(t *testing.T) {
 		t.Errorf("жителю роздано %d поводов — их некому читать", pokes)
 	}
 }
+
+// Своя заметка становится песочницей — и ровно до тех пор, пока в ней никто не
+// сказал ни слова. Материал для сцены чаще всего уже лежит в ленте, и копия
+// текста новой записью означала бы тот же текст дважды.
+func TestNoteBecomesStageWhileSilent(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	viewer := Viewer{UserID: admin, Role: RoleAdmin}
+	note, err := p.CreateNote(ctx, NewNote{AuthorID: admin, Body: "третье свидание"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persona := mustPersona(t, p, "Кедрачъ")
+	// До перевода житель туда не может: заметка обычная.
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: persona, Body: "рано",
+	}); !errors.Is(err, ErrPersonaOffStage) {
+		t.Fatalf("житель заговорил в обычной заметке: %v", err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, viewer, note, true, "первая сцена"); err != nil {
+		t.Fatalf("перевод в песочницу: %v", err)
+	}
+	// После перевода — может, а обычный участник больше нет.
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: persona, Body: "а по-моему наоборот",
+	}); err != nil {
+		t.Fatalf("житель не смог написать в переведённой заметке: %v", err)
+	}
+	member := mustUser(t, p, "Читатель")
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: member, Body: "влезу",
+	}); !errors.Is(err, ErrStageClosed) {
+		t.Errorf("участник написал в переведённой заметке: %v", err)
+	}
+	// Повторный перевод — не действие, а состояние: путать их нельзя.
+	if err := p.SetNoteStageAsAdmin(ctx, viewer, note, true, ""); !errors.Is(err, ErrNothingToDo) {
+		t.Errorf("повторный перевод сошёл за действие: %v", err)
+	}
+	// И журнал: «кто здесь вправе говорить» — такая же часть истории, как «кого
+	// скрыли».
+	entries, err := p.AuditTail(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, e := range entries {
+		if e.Action == ActionStage {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("перевод в песочницу не попал в журнал")
+	}
+}
+
+// Заговорили — поздно, и правило симметрично. Вперёд оно бережёт участников
+// живого треда (после перевода они не смогли бы ответить в разговоре, который
+// сами вели), назад — обещание «наружу из песочницы не уходит ничего».
+func TestStageFlagFrozenOnceSomeoneSpoke(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	viewer := Viewer{UserID: admin, Role: RoleAdmin}
+	member := mustUser(t, p, "Человек")
+	note, err := p.CreateNote(ctx, NewNote{AuthorID: member, Body: "живой разговор"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: member, Body: "сам себе отвечу",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, viewer, note, true, ""); !errors.Is(err, ErrStageHasThread) {
+		t.Fatalf("живой тред отдан жителям: %v", err)
+	}
+
+	// И обратно — тоже нельзя: сказанное жителями ушло бы в ленту, в каналы и в
+	// недельную сводку.
+	stage := mustStageNote(t, p, admin)
+	persona := mustPersona(t, p, "Кедрачъ")
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: stage, AuthorID: persona, Body: "сказал",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, viewer, stage, false, ""); !errors.Is(err, ErrStageHasThread) {
+		t.Errorf("песочница с репликами выпущена наружу: %v", err)
+	}
+}
+
+// Дверь администраторская, и зеркальную копию она не открывает.
+func TestStageFlagDoorAndBand(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	note, err := p.CreateNote(ctx, NewNote{AuthorID: admin, Body: "своя заметка"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := mustUser(t, p, "Модератор")
+	if err := p.SetRole(ctx, Viewer{UserID: admin, Role: RoleAdmin}, mod, RoleModerator); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: mod, Role: RoleModerator}, note, true, ""); !errors.Is(err, ErrNotAdmin) {
+		t.Errorf("модератор отдал заметку жителям: %v", err)
+	}
+	// Зеркальная строка — копия страницы НГС: её тред наполняет зеркало, и
+	// машинные реплики встали бы под чужими словами.
+	if _, err := p.pool.Exec(ctx, `
+		INSERT INTO users (id, nick) VALUES (777001, 'сНГС');
+		INSERT INTO notes (id, author_id, body, published_at)
+		VALUES (777002, 777001, 'заметка с сайта', now())`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: admin, Role: RoleAdmin}, 777002, true, ""); !errors.Is(err, ErrNotNative) {
+		t.Errorf("зеркальная заметка отдана жителям: %v", err)
+	}
+}
