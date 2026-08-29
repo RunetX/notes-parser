@@ -249,3 +249,28 @@ func scanPlan(rows *sql.Rows) (Plan, error) {
 	p.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return p, nil
 }
+
+// ReopenThread возвращает затихший тред в живые.
+//
+// Затухание — ЗАМЕР (после двенадцати часов тишины разговор продолжается в пяти
+// процентах случаев), и служба закрывает тред сама. Но песочница вдобавок СТЕНД:
+// садовник вправе позвать жителей обратно, ничего не выдумывая про них, — и
+// именно поэтому часы заводятся заново, а не подкручиваются назад. Монетки,
+// брошенные в прошлой жизни треда, лежат на месте: ключ броска — событие, а не
+// заход, и второй раз по той же реплике никто не решает.
+func (w *World) ReopenThread(ctx context.Context, noteID int64, now time.Time) error {
+	res, err := w.db.ExecContext(ctx, `
+		UPDATE threads SET state = ?, last_activity_at = ? WHERE note_id = ?`,
+		ThreadLive, fmtTime(now), noteID)
+	if err != nil {
+		return fmt.Errorf("тред %d: %w", noteID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("тред %d: в мире его нет — служба его ещё не видела", noteID)
+	}
+	return nil
+}

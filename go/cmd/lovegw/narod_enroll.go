@@ -217,3 +217,22 @@ func narodStage(ctx context.Context, cfg *config.Config, noteID int64, off bool,
 	fmt.Println("жители придут сами, когда служба увидит её очередным смотром")
 	return nil
 }
+
+// narodWake возвращает затихший тред в живые. Площадка при этом не трогается
+// вовсе: «затих» — состояние МИРА, а не заметки, и на странице ничего не
+// меняется, пока житель снова не заговорит.
+func narodWake(ctx context.Context, worldPath string, noteID int64) error {
+	if noteID == 0 {
+		return fmt.Errorf("narod wake: назовите заметку (-id <номер>)")
+	}
+	world, err := narod.OpenWorld(ctx, worldPath)
+	if err != nil {
+		return err
+	}
+	defer world.Close()
+	if err := world.ReopenThread(ctx, noteID, time.Now()); err != nil {
+		return err
+	}
+	fmt.Printf("тред %d снова живой — жители вернутся очередным смотром\n", noteID)
+	return nil
+}

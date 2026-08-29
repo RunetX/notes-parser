@@ -32,7 +32,7 @@ var defaultCardsDir = filepath.Join("data", "narod", "cards")
 func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
-		"scout": true, "enroll": true, "seed": true, "stage": true,
+		"scout": true, "enroll": true, "seed": true, "stage": true, "wake": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -112,6 +112,8 @@ func cmdNarod(ctx context.Context, args []string) error {
 			return err
 		}
 		return narodStage(ctx, cfg, *stageNote, *stageOff, *reason)
+	case "wake":
+		return narodWake(ctx, *worldPath, *stageNote)
 	case "replay":
 		opts := replayOpts{
 			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir, mode: *mode,

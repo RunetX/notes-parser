@@ -157,3 +157,48 @@ func TestStaleThreads(t *testing.T) {
 		t.Errorf("закрытый тред остался затихшим: %+v (%v)", stale, err)
 	}
 }
+
+// Затихший тред возвращается в живые, и часы у него идут ЗАНОВО, а не
+// подкручиваются назад: садовник зовёт жителей в настоящий момент, а не делает
+// вид, что разговор не прерывался.
+func TestReopenThreadStartsTheClockAnew(t *testing.T) {
+	w, ctx := testWorld(t)
+	vchera := time.Now().Add(-30 * time.Hour)
+	if _, err := w.TouchThread(ctx, 700, false, vchera); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.CloseThread(ctx, 700); err != nil {
+		t.Fatal(err)
+	}
+	// Пока закрыт — обходу он не виден, даже если спрашивать про будущее.
+	stale, err := w.StaleThreads(ctx, time.Now().Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, th := range stale {
+		if th.NoteID == 700 {
+			t.Fatal("закрытый тред попал в живые")
+		}
+	}
+
+	now := time.Now()
+	if err := w.ReopenThread(ctx, 700, now); err != nil {
+		t.Fatalf("оживление: %v", err)
+	}
+	th, err := w.ThreadOf(ctx, 700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if th.State != ThreadLive {
+		t.Errorf("состояние %q, а ждали живой", th.State)
+	}
+	// Часы заново: по вчерашней отметке тред тут же объявили бы затихшим снова.
+	if th.LastActive.Before(now.Add(-time.Minute)) {
+		t.Errorf("часы остались на %v — оживлённый тред умрёт следующим же тактом", th.LastActive)
+	}
+	// Треда, которого мир не видел, не оживить: молчаливое заведение строки
+	// означало бы живой тред у заметки, которой, может быть, и нет.
+	if err := w.ReopenThread(ctx, 701, now); err == nil {
+		t.Error("оживлён тред, которого в мире нет")
+	}
+}
