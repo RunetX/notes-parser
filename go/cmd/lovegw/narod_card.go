@@ -28,6 +28,7 @@ type snapshotOpts struct {
 	TopWords    int // характерных слов
 	TopEdges    int // собеседников в стартовые отношения
 	RateThreads int // последних тредов в замер отклика
+	ComeDays    int // последних своих дней в замер первого захода
 	LiftNotes   int // заметок в замер перекоса по темам
 	Seed        int64
 }
@@ -37,7 +38,7 @@ func defaultSnapshotOpts() snapshotOpts {
 	// возможностей ответить даже у скромного участника, а хвост в тринадцать лет
 	// утянул бы кривую к тому, каким человек был когда-то.
 	return snapshotOpts{Recent: 2000, NormSample: 100000, TopWords: 40, TopEdges: 12,
-		RateThreads: 300, LiftNotes: 20000, Seed: 1}
+		RateThreads: 300, ComeDays: 300, LiftNotes: 20000, Seed: 1}
 }
 
 // buildSnapshotCard снимает слепок реального участника архива.
@@ -135,6 +136,18 @@ func buildSnapshotCard(ctx context.Context, st *archive.Store, token string, opt
 		return narod.Card{}, err
 	}
 	card.Rate = rateFromArchive(rate)
+
+	roots, err := st.MineRootRate(ctx, accIDs, opts.RateThreads)
+	if err != nil {
+		return narod.Card{}, err
+	}
+	card.Roots = rootsFromArchive(roots)
+
+	come, err := st.MineComeRate(ctx, accIDs, opts.ComeDays)
+	if err != nil {
+		return narod.Card{}, err
+	}
+	card.Come = narod.ComeRate{Days: come.Days, Chances: come.Chances, Came: come.Came}
 
 	if err := card.Validate(); err != nil {
 		return narod.Card{}, fmt.Errorf("слепок %s: %w", voice.Identity, err)
@@ -472,3 +485,16 @@ func withTopicLift(triggers []narod.Topic, lifts []archive.TopicLift) []narod.To
 // попасть в карточку темой, которой в речи не было. Полтора: ниже этого разница
 // не переживает разброс выборки, а список тем читает человек и модель.
 const topicLiftNotable = 1.5
+
+// rootsFromArchive переносит кривую повторного захода. Firsts/Repeats едут
+// вместе с корзинами намеренно: без них ноль в корзине читался бы как «никогда
+// не начинает новую ветку», а не как «в замеренных тредах он заходил по разу».
+func rootsFromArchive(r archive.RootRate) narod.RootRate {
+	return narod.RootRate{
+		Threads: r.Threads,
+		Buckets: rateBucketsToCard(r.Buckets),
+		Tempo:   rateBucketsToCard(r.Tempo),
+		Firsts:  r.Firsts,
+		Repeats: r.Repeats,
+	}
+}

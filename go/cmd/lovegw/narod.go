@@ -44,7 +44,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	scoutLimit := fs.Int("top", 40, "scout: сколько кандидатов показать")
 	mode := fs.String("mode", modeSolo, "replay: solo (слепок среди настоящих) | vacuum (разговор с нуля)")
 	actor := fs.String("actor", "", "replay: слепок, на месте которого играем (u<id>); в вакууме — состав через запятую")
-	maxReply := fs.Int("max-replies", 60, "replay -mode vacuum: потолок реплик в треде")
+	maxReply := fs.Int("max-replies", 400, "replay -mode vacuum: потолок реплик в треде")
 	notes := fs.String("note", "", "replay: id заметок через запятую; пусто — подобрать по донору")
 	threads := fs.Int("threads", 5, "replay: сколько тредов подобрать")
 	minSaid := fs.Int("min-said", 5, "replay: сколько реплик донора нужно в треде")

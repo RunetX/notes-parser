@@ -233,3 +233,31 @@ func TestComposeCarriesTheReplyRate(t *testing.T) {
 		t.Error("тредов в замере ноль — по ним читают, насколько замеру верить")
 	}
 }
+
+// Замер повторного захода обязан доехать до жителя ровно так же, как отклик:
+// без него кубик снова упрётся в «один корень на жителя за всю жизнь заметки»,
+// а это и был потолок, из-за которого тред выходил вчетверо короче живого.
+func TestComposeCarriesTheRootRate(t *testing.T) {
+	r, donors := twoDonorRecipe()
+	// Корпуса разные на два порядка, доли — 2 % и 6 %, веса поровну.
+	donors[0].Roots = narod.RootRate{Threads: 300, Firsts: 400, Repeats: 100,
+		Buckets: []narod.RateBucket{{Upto: 1 << 30, Chances: 100000, Answers: 2000}}}
+	donors[1].Roots = narod.RootRate{Threads: 100, Firsts: 40, Repeats: 60,
+		Buckets: []narod.RateBucket{{Upto: 1 << 30, Chances: 1000, Answers: 60}}}
+	card, err := composeCard(r, donors, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := card.Roots.Rate(1)
+	if !ok {
+		t.Fatal("у композита нет замера повторного захода — житель зайдёт в заметку один раз за её жизнь")
+	}
+	// (2 % + 6 %) / 2 = 4 %, а не 2.04 %, куда утянул бы крупный донор.
+	if got < 0.039 || got > 0.041 {
+		t.Errorf("повторный заход %.4f, ожидалось 0.04 — доля съехала к большому корпусу", got)
+	}
+	if card.Roots.Firsts == 0 || card.Roots.Repeats == 0 {
+		t.Errorf("свидетельство замера потеряно: первых %d, повторных %d",
+			card.Roots.Firsts, card.Roots.Repeats)
+	}
+}

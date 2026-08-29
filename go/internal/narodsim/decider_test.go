@@ -256,3 +256,125 @@ func TestChanceOfFallsBackOnThinBucket(t *testing.T) {
 		t.Errorf("на тощей корзине обращения p=%v, ожидалось 0.9 из карточки", p)
 	}
 }
+
+// rootCard — карточка с ЗАМЕРЕННЫМ повторным заходом и нулевым откликом:
+// отвечать житель не будет никогда, значит всё, что он скажет, — корни.
+func rootCard(p float64) narod.Card {
+	c := testCard()
+	c.Dice.MaxPerThread = 0
+	c.Dice.ReplyOther, c.Dice.ReplyMention = 0, 0
+	c.Rate = narod.ReplyRate{Buckets: []narod.RateBucket{
+		{Upto: 1 << 30, Chances: 10000, Answers: 0, ToHimChances: 10000, ToHimAnswers: 0},
+	}}
+	c.Roots = narod.RootRate{Buckets: []narod.RateBucket{
+		{Upto: 1 << 30, Chances: 10000, Answers: int(p * 10000)},
+	}}
+	return c
+}
+
+// Заговоривший в треде возвращается В ЗАМЕТКУ, а не только отвечает. Без этого
+// «прийти в заметку» бросалось один раз за её жизнь, и корней у тридцати
+// жителей не могло стать больше двадцати девяти ни при какой вероятности.
+func TestCardDeciderComesBackToTheNote(t *testing.T) {
+	d := &CardDecider{Card: rootCard(0.3), Seed: 7}
+	roots, replies := 0, 0
+	for i := 0; i < 2000; i++ {
+		got, err := d.Decide(context.Background(), DecisionPoint{
+			Actor: 9, NoteID: 500, TriggerID: int64(3000 + i), Said: 1, Seen: 20,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case got.Speak && got.Root:
+			roots++
+		case got.Speak:
+			replies++
+		}
+	}
+	if replies != 0 {
+		t.Errorf("при нулевом отклике житель ответил %d раз", replies)
+	}
+	// Доля обязана держаться замера, а не быть «хоть сколько-нибудь».
+	if share := float64(roots) / 2000; share < 0.26 || share > 0.34 {
+		t.Errorf("повторных заходов %.3f, замер говорит 0.30", share)
+	}
+	// Задержка идёт от ЭТОЙ реплики, а не от публикации заметки: возможность
+	// создала она.
+	got, _ := d.Decide(context.Background(), DecisionPoint{
+		Actor: 9, NoteID: 500, TriggerID: 3001, Said: 1, Seen: 20})
+	if got.Speak && got.After > time.Duration(rootCard(0.3).Latency.ToReplySec.Max)*time.Second {
+		t.Errorf("задержка %s взята не из ToReplySec", got.After)
+	}
+}
+
+// Первый заход этой мерой НЕ покрыт: в архиве видно, куда человек пришёл, и не
+// видно, что он пролистал. Молчавший в треде корня не даёт, сколько ни бросай.
+func TestCardDeciderRootNeedsAVoiceInTheThread(t *testing.T) {
+	d := &CardDecider{Card: rootCard(0.9), Seed: 7}
+	for i := 0; i < 500; i++ {
+		got, _ := d.Decide(context.Background(), DecisionPoint{
+			Actor: 9, NoteID: 500, TriggerID: int64(3000 + i), Said: 0, Seen: 20})
+		if got.Root {
+			t.Fatalf("житель, ни разу не сказавший в треде, вернулся в заметку (точка %d)", i)
+		}
+	}
+}
+
+// Пустой замер запасного числа не имеет намеренно: иначе рядом с замером
+// немедленно завелась бы вторая выдумка вроде прежнего «влезть = 0.15».
+func TestCardDeciderRootHasNoFallback(t *testing.T) {
+	c := rootCard(0.9)
+	c.Roots = narod.RootRate{}
+	d := &CardDecider{Card: c, Seed: 7}
+	for i := 0; i < 500; i++ {
+		got, _ := d.Decide(context.Background(), DecisionPoint{
+			Actor: 9, NoteID: 500, TriggerID: int64(3000 + i), Said: 3, Seen: 20})
+		if got.Root {
+			t.Fatalf("без замера житель всё равно вернулся в заметку (точка %d)", i)
+		}
+	}
+}
+
+// Готовность зайти в новую заметку берётся из ЗАМЕРА, а придуманное число
+// карточки остаётся запасным путём. Порядок тот же, что у отклика, и по той же
+// причине: замер знает про человека то, чего не угадать, — у одного это каждая
+// вторая заметка, у другого одна из двадцати.
+func TestCardDeciderPrefersMeasuredComeRate(t *testing.T) {
+	c := testCard()
+	c.Dice.ComeToNote = 0.05 // выдумка, которую замер обязан вытеснить
+	c.Come = narod.ComeRate{Days: 300, Chances: 1000, Came: 600}
+	d := &CardDecider{Card: c, Seed: 7}
+	came := 0
+	for i := 0; i < 2000; i++ {
+		got, err := d.Decide(context.Background(), DecisionPoint{
+			Actor: 9, NoteID: int64(500 + i), TriggerID: 0,
+			Now: time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Speak {
+			came++
+		}
+	}
+	// Час суток здесь ещё домножает, поэтому проверяется не точная доля, а то,
+	// что замер вытеснил выдумку: 5 % не дали бы и трети от этого.
+	if share := float64(came) / 2000; share < 0.25 {
+		t.Errorf("зашёл в %.3f заметок — замер 0.60 не вытеснил выдумку 0.05", share)
+	}
+	// Пустой замер — запасной путь, а не ноль.
+	c.Come = narod.ComeRate{Days: 300, Chances: 5, Came: 3}
+	d = &CardDecider{Card: c, Seed: 7}
+	came = 0
+	for i := 0; i < 2000; i++ {
+		got, _ := d.Decide(context.Background(), DecisionPoint{
+			Actor: 9, NoteID: int64(500 + i), TriggerID: 0,
+			Now: time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)})
+		if got.Speak {
+			came++
+		}
+	}
+	if share := float64(came) / 2000; share > 0.15 {
+		t.Errorf("тощий замер принят за 0.60: доля %.3f", share)
+	}
+}

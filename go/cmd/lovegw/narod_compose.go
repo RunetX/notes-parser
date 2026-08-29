@@ -110,6 +110,8 @@ func composeCard(r composeRecipe, donors []narod.Card, now time.Time) (narod.Car
 	card.Triggers = r.Triggers
 	card.Dice = blendDice(donors, w)
 	card.Rate = blendRate(donors, w)
+	card.Roots = blendRoots(donors, w)
+	card.Come = blendCome(donors, w)
 	if r.Dice != nil {
 		card.Dice = *r.Dice
 	}
@@ -533,6 +535,46 @@ func blendBuckets(donors []narod.Card, w []float64, pick func(narod.Card) []naro
 			out[i].ToHimChances = int(himChances + 0.5)
 			out[i].ToHimAnswers = int(himChances*(himP/himW) + 0.5)
 		}
+	}
+	return out
+}
+
+// blendRoots смешивает ЗАМЕР ПОВТОРНОГО ЗАХОДА — по тем же правилам, что и
+// отклик, и заведён он тем же заходом, что сам замер (29.08.2026). Firsts и
+// Repeats складываются взвешенно как свидетельство о замере: житель, у которого
+// все доноры заходили в тред по разу, обязан говорить об этом числами, а не
+// нулевой корзиной.
+func blendRoots(donors []narod.Card, w []float64) narod.RootRate {
+	out := narod.RootRate{
+		Buckets: blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Roots.Buckets }),
+		Tempo:   blendBuckets(donors, w, func(c narod.Card) []narod.RateBucket { return c.Roots.Tempo }),
+	}
+	for i, d := range donors {
+		out.Threads += int(w[i] * float64(d.Roots.Threads))
+		out.Firsts += int(w[i] * float64(d.Roots.Firsts))
+		out.Repeats += int(w[i] * float64(d.Roots.Repeats))
+	}
+	return out
+}
+
+// blendCome смешивает готовность зайти в новую заметку — ДОЛЯМИ, как и всё
+// остальное: у одного донора дней на сайте втрое больше, и сумма счётчиков
+// отдала бы меру ему независимо от весов рецепта.
+func blendCome(donors []narod.Card, w []float64) narod.ComeRate {
+	var p, weight float64
+	var out narod.ComeRate
+	for i, d := range donors {
+		out.Days += int(w[i] * float64(d.Come.Days))
+		out.Chances += int(w[i] * float64(d.Come.Chances))
+		if r, ok := d.Come.Rate(); ok {
+			p += w[i] * r
+			weight += w[i]
+		}
+	}
+	if weight > 0 {
+		// Счётчик восстанавливается под смешанную долю: по нему решается, замер
+		// это или три случая, и терять его нельзя.
+		out.Came = int(p / weight * float64(out.Chances))
 	}
 	return out
 }
