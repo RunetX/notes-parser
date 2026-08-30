@@ -60,10 +60,11 @@ func applyParens(s string, runs map[string]float64, rng *rand.Rand) string {
 	if len(runs) == 0 {
 		return s
 	}
+	// Бросок делается ВСЕГДА, а не только когда модель уже что-то поставила:
+	// доли в замере — это доли ВСЕХ реплик, и постпроцессор, умеющий лишь
+	// урезать, недодаёт ровно настолько, насколько скупа модель. Поймано на
+	// втором прогоне: у жителей скобки замерены в 32 % реплик, а вышло 8,8 %.
 	body := strings.TrimRight(s, ")")
-	if body == s {
-		return s // модель скобок не поставила — сама по себе это не ошибка
-	}
 	u, acc, want := rng.Float64(), 0.0, 0
 	for i, k := range parenOrder {
 		acc += runs[k]
@@ -78,20 +79,32 @@ func applyParens(s string, runs map[string]float64, rng *rand.Rand) string {
 	return body + strings.Repeat(")", want)
 }
 
-// applyEnding решает судьбу точки в конце ОДНИМ броском: убрать, растянуть в
-// многоточие или оставить. Тремя бросками подряд получилось бы «убрал и тут же
-// растянул», то есть поведение, которого нет ни у кого.
+// applyEnding решает судьбу конца реплики ОДНИМ броском: без знака, многоточие
+// или как написано. Тремя бросками подряд получилось бы «убрал точку и тут же
+// растянул её в многоточие», то есть поведение, которого нет ни у кого.
+//
+// Работает и там, где модель точку НЕ поставила, — иначе многоточие не появится
+// никогда: замер второго прогона дал 0 % при живых 28,9 % ровно потому, что
+// прежняя версия цеплялась за точку, а модель кончает реплику словом.
+// Вопросительный и восклицательный не трогаются: они несут смысл, а не привычку.
 func applyEnding(s string, noFinal, ellipsis float64, rng *rand.Rand) string {
 	body := strings.TrimRight(s, ")")
 	tail := s[len(body):]
-	if !strings.HasSuffix(body, ".") || strings.HasSuffix(body, "..") {
+	if body == "" || strings.HasSuffix(body, "..") {
+		return s
+	}
+	if last := body[len(body)-1:]; last == "?" || last == "!" {
+		return s
+	}
+	bare := strings.TrimRight(body, ".")
+	if bare == "" {
 		return s
 	}
 	switch u := rng.Float64(); {
 	case u < noFinal:
-		return strings.TrimRight(body, ".") + tail
+		return bare + tail
 	case u < noFinal+ellipsis:
-		return body + ".." + tail
+		return bare + "..." + tail
 	}
 	return s
 }
