@@ -47,7 +47,7 @@
      самой формой, а не в справке: у переехавшего с НГС номер участника равен
      номеру его анкеты, и весь прежний след станет его собственным. */}}
 <p class="fine">«Кому» — номер участника на площадке; у пришедших с НГС он равен
-номеру анкеты (он же стоит в адресе карточки участника, /mod/u/…).
+номеру анкеты (он же стоит в адресе карточки участника, /u/…).
 Тогда пришедший получит СВОЙ прежний след: заметки, реплики и подписи «Ник, » в
 чужих ответах станут его. Пусто — человек заведётся с нуля и сам назовёт ник.</p>
 
@@ -60,14 +60,14 @@
   <li class="mitem{{if not .Live}} mhid{{end}}">
     <div class="mhead">
       {{if .BindUser}}
-        <a class="mlink" href="/mod/u/{{.BindUser}}">{{if .BindNick}}{{.BindNick}}{{else}}№{{.BindUser}}{{end}}</a>
+        <a class="mlink" href="/u/{{.BindUser}}">{{if .BindNick}}{{.BindNick}}{{else}}№{{.BindUser}}{{end}}</a>
         <span class="mtag">{{if eq .BindKind 1}}участник{{else}}тень зеркала{{end}}</span>
       {{else}}
         <span class="mtag">без привязки</span>
       {{end}}
       {{if .UsedAt}}
         <span class="mtag">использовано {{when .UsedAt true}}</span>
-        {{if .UsedBy}}<a class="mlink" href="/mod/u/{{.UsedBy}}">{{if .UsedNick}}{{.UsedNick}}{{else}}№{{.UsedBy}}{{end}}</a>{{end}}
+        {{if .UsedBy}}<a class="mlink" href="/u/{{.UsedBy}}">{{if .UsedNick}}{{.UsedNick}}{{else}}№{{.UsedBy}}{{end}}</a>{{end}}
       {{else if .Live}}
         <span class="fine">действует до {{when .ExpiresAt true}}</span>
       {{else}}
@@ -89,4 +89,53 @@
   </li>
 {{end}}
 </ul>
+
+{{/* ЖИТЕЛИ (эпик «народ»). Здесь они по тому же доводу, что роли и приглашения:
+     это решения о том, КТО здесь говорит, а не о словах, — и потому дверь
+     администраторская, а модератору раздела не существует вовсе.
+
+     Правится одно — ФОТО. Ник, биография и характер живут в карточке рядом с
+     демоном (data/narod/cards), а на площадку их приносит `narod enroll`:
+     заведи им вторую дверь здесь — и через месяц никто не скажет, где
+     настоящий житель.
+
+     Фото файлом — единственное на площадке место, кроме картинки к заметке, и
+     причина у него одна: у персонажа нет анкеты НГС, откуда его берут людям. */}}
+<h2 class="sub">Жители</h2>
+{{if .Told}}<p class="fine">{{.Told}}</p>{{end}}
+{{if not .Personas}}
+<p class="empty">Жителей ещё не заводили. Заводит их команда <code>narod enroll</code>.</p>
+{{else}}
+<ul class="plist">
+{{range .Personas}}
+  <li class="pitem">
+    <div class="author">{{template "avatar" (av .AvatarURL .Gender false)}}</div>
+    <div class="pbody">
+      <div class="mhead">
+        <a class="mlink" href="/u/{{.ID}}">{{if .Nick}}{{.Nick}}{{else}}№{{.ID}}{{end}}</a>
+        <span class="fine">№{{.ID}}</span>
+      </div>
+      {{if .Bio}}<div class="mwhy">{{.Bio}}</div>
+      {{else}}<div class="mwhy fine">Биографии нет — её приносит <code>narod enroll</code> из карточки.</div>{{end}}
+      {{if $.CanShot}}
+      {{/* Своя форма на каждого: файл едет телом, и одна форма на всех
+           отправляла бы его тому, у кого поле оказалось заполнено последним. */}}
+      <form method="post" action="/mod/admin/avatar" class="mdec" enctype="multipart/form-data">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="back" value="{{$.Back}}">
+        <input type="hidden" name="id" value="{{.ID}}">
+        <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp">
+        <input class="mreason" name="reason" maxlength="500" placeholder="Зачем (увидят модераторы в журнале)">
+        <button type="submit" name="do" value="avatar" class="mbtn">Поставить фото</button>
+        {{if .AvatarURL}}<button type="submit" name="do" value="avatar_off" class="mbtn danger">Убрать фото</button>{{end}}
+      </form>
+      {{end}}
+    </div>
+  </li>
+{{end}}
+</ul>
+<p class="fine">Одна картинка, не больше 10 МБ; длинная сторона будет уменьшена до 300 точек,
+а данные съёмки снимаются. Файл остаётся в хранилище и после «убрать»: имя файла есть
+его содержимое, и на ту же картинку вправе ссылаться чужие строки.</p>
+{{end}}
 {{end}}

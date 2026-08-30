@@ -35,7 +35,7 @@
   <div class="note notebox{{if ne $n.Status 0}} nhid{{end}}">
     <div class="author">
       {{template "avatar" (av $n.Author.AvatarURL $n.Author.Gender $n.Anonymous)}}
-      <span class="nick {{$n.Author.Gender.Class}}{{if $n.Anonymous}} anon{{end}}">{{$n.Name}}</span>
+      {{template "nick" (nk $n.Author $n.Name $n.Anonymous .SignedIn)}}
     </div>
     <div class="nbody">
       <div class="text">{{body $n}}</div>

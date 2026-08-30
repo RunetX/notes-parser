@@ -1041,6 +1041,37 @@ span.rxb { cursor: default; }
 }
 .issued .code { text-align: center; }
 
+/* ---------------------------------------------------------------- страница участника
+
+   Шапка повторяет колонку автора у заметки: то же квадратное фото слева, то же
+   имя рядом. Своего вида профиль не заводит намеренно — иначе он оказался бы
+   чужим той самой странице, с которой на него приходят.
+
+   Список публикаций — строки, а не карточки: это «чем человек занят», а не
+   вторая лента, и карточка с телом заметки превратила бы двадцать строк в
+   двадцать экранов. */
+
+.uhead { display: flex; gap: 16px; align-items: flex-start; margin: 0 0 14px; }
+.umeta { min-width: 0; }
+.umeta .ttl { margin: 0 0 4px; }
+.ucnt { margin: 6px 0 0; color: var(--meta); }
+.ubio { margin: 0 0 14px; }
+.ubio .text { margin: 8px 0 0; }
+.mdecs { margin: 0 0 18px; }
+
+.upub { list-style: none; margin: 0 0 18px; padding: 0; }
+.upub li {
+  border-top: 1px solid var(--rule); padding: 8px 0;
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
+}
+.upub a { overflow-wrap: anywhere; }
+
+/* Жители в панели администратора: фото слева, как везде, чтобы менять его
+   глядя ровно на то, что меняешь. */
+.plist { list-style: none; margin: 0; padding: 0; }
+.pitem { border-top: 1px solid var(--rule); padding: 12px 0; display: flex; gap: 16px; }
+.pbody { min-width: 0; flex: 1; }
+
 .modlog { list-style: none; margin: 0; padding: 0; }
 .lgi {
   border-top: 1px solid var(--rule); padding: 6px 0; font-size: 13px;

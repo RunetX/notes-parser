@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"lovegw/internal/platform"
 )
@@ -85,6 +86,116 @@ func TestOrdinaryNoteStillHasTheForm(t *testing.T) {
 	}
 	if strings.Contains(body, "/help#narod") {
 		t.Error("обычная заметка объявила себя песочницей")
+	}
+}
+
+// ------------------------------------------------- отдать жителям готовую заметку
+
+// silentMirrorNote — ЗЕРКАЛЬНАЯ заметка без единой реплики: старая запись с
+// НГС, под которой разговора не случилось. Ради таких песочница и правится на
+// форме (владелец 30.08.2026: «хочу со временем заполнить старые заметки и те,
+// что удаляют без дискуссии»).
+func silentMirrorNote() *fakeStore {
+	st := noteStore()
+	st.note.ID = 312811 // полоса НГС: id строки равен номеру заметки на сайте
+	st.note.Own = false
+	st.note.CommentCount = 0
+	st.note.PublishedAt = time.Now().Add(-72 * time.Hour)
+	return st
+}
+
+// Пустой заметке песочницу предлагают, заметке с разговором — нет: правило
+// держит ядро, а форма не показывает кнопку, которая ответит отказом.
+func TestПесочницуПредлагаютТолькоМолчащейЗаметке(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		st   *fakeStore
+		want bool
+	}{
+		{"молчащая зеркальная", silentMirrorNote(), true},
+		{"с разговором", foreignNativeNote(), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _, token := modServerOn(t, c.st, platform.RoleAdmin)
+			path := "/n/" + itoa64(c.st.note.ID) + "/edit"
+			body := do(h, as(guest(t, "GET", path), token)).Body.String()
+			if got := strings.Contains(body, `name="stage"`); got != c.want {
+				t.Errorf("галочка песочницы: %v, ожидалось %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Модератор решает про СЛОВА: кто в заметке вправе говорить — не его вопрос, и
+// формы правки ему не существует вовсе.
+func TestПесочницаНаПравкеЗакрытаОтМодератора(t *testing.T) {
+	st := silentMirrorNote()
+	h, _, token := modServerOn(t, st, platform.RoleModerator)
+	w := do(h, as(guest(t, "GET", "/n/"+itoa64(st.note.ID)+"/edit"), token))
+	if w.Code == http.StatusOK && strings.Contains(w.Body.String(), `name="stage"`) {
+		t.Error("модератору предложили перевести заметку в песочницу")
+	}
+}
+
+// Выбор доходит до ядра — и доходит вместе с причиной, которая уйдёт в журнал.
+// Снятие тоже: правило симметрично, пока в заметке не говорили.
+func TestПесочницаСФормыПравкиДоходитДоЯдра(t *testing.T) {
+	st := silentMirrorNote()
+	h, mod, token := modServerOn(t, st, platform.RoleAdmin)
+	path := "/n/" + itoa64(st.note.ID) + "/edit"
+
+	w := do(h, postAs(t, path, url.Values{
+		"stage": {"1"}, "reason": {"сцена для жителей"},
+	}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d", w.Code)
+	}
+	if !mod.stageSet || mod.stageNote != st.note.ID || !mod.stageOn {
+		t.Fatalf("до ядра дошло %d/%v (звали=%v)", mod.stageNote, mod.stageOn, mod.stageSet)
+	}
+	if mod.stageWhy != "сцена для жителей" {
+		t.Errorf("причина не дошла: %q", mod.stageWhy)
+	}
+
+	// Уже песочница — и галочку сняли: ядро зовут снять признак.
+	st2 := silentMirrorNote()
+	st2.note.Stage = true
+	h2, mod2, token2 := modServerOn(t, st2, platform.RoleAdmin)
+	if w := do(h2, postAs(t, path, url.Values{}, token2)); w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d", w.Code)
+	}
+	if !mod2.stageSet || mod2.stageOn {
+		t.Errorf("снятие не дошло: звали=%v, значение=%v", mod2.stageSet, mod2.stageOn)
+	}
+}
+
+// Ничего не менялось — ядро не зовут вовсе: администратор мог открыть форму
+// ради картинки и не трогать признак.
+func TestНеТронутуюПесочницуЯдруНеШлют(t *testing.T) {
+	st := silentMirrorNote()
+	h, mod, token := modServerOn(t, st, platform.RoleAdmin)
+
+	if w := do(h, postAs(t, "/n/"+itoa64(st.note.ID)+"/edit", url.Values{}, token)); w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d", w.Code)
+	}
+	if mod.stageSet {
+		t.Error("ядро позвали, хотя признак не менялся")
+	}
+}
+
+// Отказ «в заметке уже говорили» объясняется словами и правилом, а не
+// пятисоткой: администратор должен понять, что дело не в правах, а во времени.
+func TestОтказПесочницыОбъясняется(t *testing.T) {
+	st := silentMirrorNote()
+	h, mod, token := modServerOn(t, st, platform.RoleAdmin)
+	mod.stageErr = platform.ErrStageHasThread
+
+	w := do(h, postAs(t, "/n/"+itoa64(st.note.ID)+"/edit", url.Values{"stage": {"1"}}, token))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("код %d, ожидался честный отказ", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "уже есть реплики") {
+		t.Errorf("отказ не объяснён:\n%s", tailOf(w.Body.String()))
 	}
 }
 

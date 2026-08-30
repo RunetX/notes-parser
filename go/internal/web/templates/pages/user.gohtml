@@ -1,0 +1,69 @@
+{{define "content"}}
+{{$m := .Member}}
+<section class="uprof">
+  {{/* Колонка автора — та же, что у заметки: квадратное фото, имя рядом. Это
+       первое, по чему постоянный читатель узнаёт страницу, и заводить здесь
+       второй вид карточки значило бы сделать профиль чужим самому себе. */}}
+  <div class="uhead">
+    <div class="author">{{template "avatar" (av $m.AvatarURL $m.Gender false)}}</div>
+    <div class="umeta">
+      <h1 class="ttl">{{if $m.Nick}}{{$m.Nick}}{{else}}Участник №{{$m.ID}}{{end}}</h1>
+      <p class="fine">{{kindword $m}}
+        {{- if lt $m.ID 100000000000}} · анкета НГС №{{$m.ID}}{{else}} · №{{$m.ID}}{{end}}
+        {{- if eq $m.Role 1}} · модератор{{else if eq $m.Role 2}} · администратор{{end}}
+        {{- if not $m.AnonymizedAt}} · здесь с {{when $m.CreatedAt false}}{{end}}</p>
+      {{/* Счётчики без анонимных заметок и без скрытого — ровно то же, что
+           стоит в списках ниже. Разойдись они, страница сама себе противоречила
+           бы: «заметок 5», а показано три. */}}
+      <p class="ucnt">Заметок {{$m.Notes}} · реплик {{$m.Comments}}</p>
+    </div>
+  </div>
+
+  {{if $m.Persona}}
+  {{/* Биографию сочинил оператор, и сказано об этом прямо. Всё, что здесь
+       написано, — выдумка: у персонажа нет ни персональных данных, ни согласий,
+       которые он мог бы подписать, а отвечает за его слова тот, кто его завёл. */}}
+  <div class="ubio">
+    <p class="warn">Это житель площадки: его реплики пишет машина. <a href="/help#narod">Подробнее</a></p>
+    {{if $m.Bio}}<p class="text">{{$m.Bio}}</p>{{end}}
+  </div>
+  {{end}}
+
+  {{if .Banned}}
+  <p class="warn">Публикации запрещены до {{when $m.BannedUntil true}}.
+  {{if $m.BanReason}}Причина: {{$m.BanReason}}{{end}}</p>
+  {{end}}
+
+  {{if and .CanModerate (not .Me)}}{{template "moddec" (udec .)}}{{end}}
+  {{if .Me}}<p class="fine">Это ваша страница. Ник, фото и согласия — на <a href="/me">«Моей странице»</a>.</p>{{end}}
+
+  {{/* Показано ПОСЛЕДНЕЕ, а не всё: страница отвечает на вопрос «чем человек
+       занят», а не «что он говорил за тринадцать лет». Полную выгрузку отдаёт
+       `platform export`, и отдаёт её самому человеку по его требованию. */}}
+  {{if .Notes}}
+  <h2 class="sub">Последние заметки</h2>
+  <ul class="upub">
+    {{range .Notes}}
+    <li><a href="/n/{{.ID}}">{{.Excerpt}}</a>
+      <span class="fine">{{when .At .Exact}}{{if .Stage}} · песочница{{end}}</span></li>
+    {{end}}
+  </ul>
+  {{end}}
+
+  {{if .Comments}}
+  <h2 class="sub">Последние реплики</h2>
+  <ul class="upub">
+    {{range .Comments}}
+    {{/* Ссылка — на саму реплику в треде (#c<id>), а рядом начало заметки: без
+         него реплика нечитаема, а один номер заметки не говорит ничего. */}}
+    <li><a href="/n/{{.NoteID}}#c{{.ID}}">{{.Excerpt}}</a>
+      <span class="fine">{{when .At true}} · в заметке «{{.Note}}»</span></li>
+    {{end}}
+  </ul>
+  {{end}}
+
+  {{if and (not .Notes) (not .Comments)}}
+  <p class="fine">Здесь пока ничего не написано.</p>
+  {{end}}
+</section>
+{{end}}

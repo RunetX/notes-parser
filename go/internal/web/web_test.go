@@ -72,6 +72,33 @@ type fakeStore struct {
 	movedErr   error
 
 	pingErr error
+
+	// Страница участника: карточка и то, что он написал.
+	profile    platform.Profile
+	profileErr error
+	pubNotes   []platform.PubNote
+	pubComs    []platform.PubComment
+}
+
+func (f *fakeStore) UserProfile(_ context.Context, id int64) (platform.Profile, error) {
+	if f.profileErr != nil {
+		return platform.Profile{}, f.profileErr
+	}
+	if f.profile.ID == 0 {
+		return platform.Profile{}, platform.ErrNotFound
+	}
+	if f.profile.ID != id {
+		return platform.Profile{}, platform.ErrNotFound
+	}
+	return f.profile, nil
+}
+
+func (f *fakeStore) AuthorNotes(context.Context, int64, int) ([]platform.PubNote, error) {
+	return f.pubNotes, nil
+}
+
+func (f *fakeStore) AuthorComments(context.Context, int64, int) ([]platform.PubComment, error) {
+	return f.pubComs, nil
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }

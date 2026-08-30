@@ -18,7 +18,7 @@
          попавшемуся админу было бы враньём именно там, где врать нельзя. */}}
     <span class="lgwho">{{if .Nick}}{{.Nick}}{{else if .Actor}}№{{.Actor}}{{else}}автомат{{end}}</span>
     {{if eq .Subject.Kind "user"}}
-      <a class="mlink" href="/mod/u/{{.Subject.ID}}">участник {{.Subject.ID}}</a>
+      <a class="mlink" href="/u/{{.Subject.ID}}">участник {{.Subject.ID}}</a>
     {{else if eq .Subject.Kind "note"}}
       <a class="mlink" href="/n/{{.Subject.ID}}">заметка {{.Subject.ID}}</a>
     {{else}}

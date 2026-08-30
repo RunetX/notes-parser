@@ -20,7 +20,7 @@
   <div class="cava">{{template "avatar" (av $c.Author.AvatarURL $c.Author.Gender $c.Anonymous)}}</div>
   <div class="cbody">
     <div class="chead">
-      <span class="nick {{$c.Author.Gender.Class}}{{if $c.Anonymous}} anon{{end}}">{{$c.Name}}</span>
+      {{template "nick" (nk $c.Author $c.Name $c.Anonymous .Page.SignedIn)}}
       <a class="anchor" href="#c{{$c.ID}}" title="Ссылка на этот комментарий">#</a>
       <div class="cdate">{{when $c.PublishedAt true}}</div>
     </div>

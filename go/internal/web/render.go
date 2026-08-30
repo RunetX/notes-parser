@@ -54,6 +54,7 @@ func mustTZ() *time.Location {
 var funcs = template.FuncMap{
 	"asset":       assetURL,
 	"av":          newAvatar,
+	"nk":          nickOf,
 	"body":        noteBodyHTML,
 	"doc":         docHTML,
 	"commentBody": commentBodyHTML,
@@ -72,6 +73,8 @@ var funcs = template.FuncMap{
 	"ci":          commentItem,
 	"ni":          noteItem,
 	"dec":         decisionArg,
+	"udec":        userDecisionsOf,
+	"kindword":    kindWord,
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
 	"smilelist":   smileList,
@@ -91,6 +94,41 @@ func replyURL(base string, commentID int64) template.URL {
 	// нажавший «Ответить», обязан увидеть, КОМУ отвечает. Заодно :target
 	// подсвечивает реплику и разворачивает свёрнутую простыню.
 	return template.URL(base + "&reply=" + id + "#c" + id)
+}
+
+// nickArg — подпись автора: имя, его класс по полу и то, ведёт ли имя на
+// страницу человека.
+//
+// Ссылкой ник стал 30.08.2026 по решению владельца: на НГС имя под фотографией
+// кликабельно, и отдельная кнопка «автор» в полоске модератора была тем же
+// переходом, но видным одному модератору и стоящим не там, где на него смотрят.
+//
+// Ведёт она только у ВОШЕДШЕГО: страницы участников закрыты от гостя и от
+// поисковика (решение владельца). Гостю ник остаётся текстом, а не ссылкой,
+// уводящей на вход, — по общему правилу морды: не показывать кнопку, которая
+// ответит отказом.
+type nickArg struct {
+	ID    int64
+	Name  string
+	Class string
+	Link  bool
+}
+
+// nickOf собирает подпись. Решение «ссылка или текст» живёт в Go, а не в
+// шаблоне, потому что мест показа три (лента, страница заметки, реплика) и
+// условие у них общее: у анонима автора нет вовсе, у зеркального анонима НГС нет
+// даже строки в users, а гостю страница не откроется.
+func nickOf(a platform.Author, name string, anonymous, signedIn bool) nickArg {
+	class := a.Gender.Class()
+	if anonymous {
+		class += " anon"
+	}
+	return nickArg{
+		ID:    a.ID,
+		Name:  name,
+		Class: class,
+		Link:  signedIn && !anonymous && a.ID != 0,
+	}
 }
 
 // avatarArg — что показать на месте аватара: адрес картинки и признак того, что

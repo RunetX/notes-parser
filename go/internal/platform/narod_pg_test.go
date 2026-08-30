@@ -315,7 +315,7 @@ func TestStageFlagFrozenOnceSomeoneSpoke(t *testing.T) {
 }
 
 // Дверь администраторская, и зеркальную копию она не открывает.
-func TestStageFlagDoorAndBand(t *testing.T) {
+func TestStageFlagDoorAndSilence(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
 	admin := mustAdmin(t, p, "Садовник")
@@ -330,15 +330,28 @@ func TestStageFlagDoorAndBand(t *testing.T) {
 	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: mod, Role: RoleModerator}, note, true, ""); !errors.Is(err, ErrNotAdmin) {
 		t.Errorf("модератор отдал заметку жителям: %v", err)
 	}
-	// Зеркальная строка — копия страницы НГС: её тред наполняет зеркало, и
-	// машинные реплики встали бы под чужими словами.
+	// ЗЕРКАЛЬНУЮ ТОЖЕ, и это правка от 30.08.2026: старая заметка с НГС без
+	// единой реплики и есть готовая сцена. Признак копию не правит — текст,
+	// автор и дата остаются как были, меняется только то, кто вправе говорить
+	// ЗДЕСЬ. Строку заводим сырым INSERT'ом: полоса НГС нативным путём не
+	// заводится вовсе.
 	if _, err := p.pool.Exec(ctx, `
-		INSERT INTO users (id, nick) VALUES (777001, 'сНГС');
+		INSERT INTO users (id, nick) VALUES (777001, 'Тень');
 		INSERT INTO notes (id, author_id, body, published_at)
-		VALUES (777002, 777001, 'заметка с сайта', now())`); err != nil {
+		VALUES (777002, 777001, 'зеркальная молчащая', now()),
+		       (777003, 777001, 'зеркальная с разговором', now())`); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: admin, Role: RoleAdmin}, 777002, true, ""); !errors.Is(err, ErrNotNative) {
-		t.Errorf("зеркальная заметка отдана жителям: %v", err)
+	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: admin, Role: RoleAdmin}, 777002, true, ""); err != nil {
+		t.Errorf("молчащую зеркальную не отдали жителям: %v", err)
+	}
+	// А вот там, где уже говорили, правило прежнее — и оно одно на обе полосы.
+	if _, err := p.pool.Exec(ctx, `
+		INSERT INTO comments (id, note_id, author_id, body, path, depth, published_at)
+		VALUES (777004, 777003, 777001, 'первое слово', '0000000777004', 0, now())`); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: admin, Role: RoleAdmin}, 777003, true, ""); !errors.Is(err, ErrStageHasThread) {
+		t.Errorf("зеркальную с разговором отдали жителям: %v", err)
 	}
 }

@@ -25,7 +25,7 @@
     <div class="mhead">
       <a class="mlink" href="/n/{{.NoteID}}{{if not (eq .Subject.Kind "note")}}#c{{.Subject.ID}}{{end}}">
         {{if eq .Subject.Kind "note"}}заметка{{else}}комментарий{{end}} {{.Subject.ID}}</a>
-      {{if .AuthorID}}<a class="mlink" href="/mod/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
+      {{if .AuthorID}}<a class="mlink" href="/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
       <span class="fine">{{when .QueuedAt true}}</span>
       {{if .Appealed}}<span class="mtag warnbadge">просит пересмотра</span>{{end}}
       {{if .Hidden}}<span class="mtag">сейчас скрыто</span>{{end}}
@@ -63,7 +63,7 @@
     <div class="mhead">
       <a class="mlink" href="/n/{{.NoteID}}{{if not (eq .Subject.Kind "note")}}#c{{.Subject.ID}}{{end}}">
         {{if eq .Subject.Kind "note"}}заметка{{else}}комментарий{{end}} {{.Subject.ID}}</a>
-      {{if .AuthorID}}<a class="mlink" href="/mod/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
+      {{if .AuthorID}}<a class="mlink" href="/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
       <span class="fine">{{if .CheckedAt}}{{when .CheckedAt true}}{{end}}</span>
       {{if .Appealed}}<span class="mtag warnbadge">просит пересмотра</span>{{end}}
     </div>

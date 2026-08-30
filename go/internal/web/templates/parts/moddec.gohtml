@@ -1,0 +1,57 @@
+{{/* Решения об участнике: запрет писать и роли.
+
+     Стоят они на СТРАНИЦЕ ЧЕЛОВЕКА, а не на отдельной под /mod, и довод тот же,
+     что у полоски под репликой: модератор работает там, где читает. Прежняя
+     карточка /mod/u/<id> осталась одним переходом сюда — двум страницам про
+     одного человека нечего делить, а разъехались бы они на первом же новом поле.
+
+     Формы шлют на /mod/u/<id>, и это не пережиток: действие меняет состояние, а
+     адрес действия обязан жить под /mod — там, где стоят все остальные, и куда
+     посторонний не попадает вовсе.
+
+     Аргумент — userDecisions (см. user.go). */}}
+{{define "moddec"}}
+{{- $d := .}}
+<div class="mdecs">
+  {{if $d.Banned}}
+  <form method="post" action="/mod/u/{{$d.ID}}" class="mdec">
+    <input type="hidden" name="csrf" value="{{$d.CSRF}}">
+    <input type="hidden" name="back" value="{{$d.Back}}">
+    <input class="mreason" name="reason" maxlength="500" placeholder="Почему снимаем">
+    <button type="submit" name="do" value="unban" class="mbtn">Снять запрет</button>
+  </form>
+  {{else}}
+  {{/* Запрет писать, а не выход из учётной записи: чтение на площадке открыто
+       всем, и выкинув человека, мы отняли бы у него ровно ту страницу, где
+       написано, за что и до какого числа. Тридцать суток по умолчанию — не наша
+       выдумка, ровно такой срок ставит НГС. */}}
+  <form method="post" action="/mod/u/{{$d.ID}}" class="mdec">
+    <input type="hidden" name="csrf" value="{{$d.CSRF}}">
+    <input type="hidden" name="back" value="{{$d.Back}}">
+    <label class="fine" for="days">Суток</label>
+    <input id="days" class="mdays" name="days" type="number" min="1" max="365" value="30">
+    <input class="mreason" name="reason" maxlength="500" placeholder="Причина (увидит он сам)">
+    <button type="submit" name="do" value="ban" class="mbtn danger">Запретить писать</button>
+  </form>
+  {{end}}
+
+  {{if $d.CanAdmin}}
+  <form method="post" action="/mod/u/{{$d.ID}}" class="mdec">
+    <input type="hidden" name="csrf" value="{{$d.CSRF}}">
+    <input type="hidden" name="back" value="{{$d.Back}}">
+    <select name="role" class="mrole">
+      <option value="user"{{if eq $d.Role 0}} selected{{end}}>участник</option>
+      <option value="moderator"{{if eq $d.Role 1}} selected{{end}}>модератор</option>
+      <option value="admin"{{if eq $d.Role 2}} selected{{end}}>администратор</option>
+    </select>
+    <button type="submit" name="do" value="role" class="mbtn">Назначить</button>
+  </form>
+  <p class="fine">Право скрывать чужие слова выдаёт только администратор, и выдача
+  пишется в журнал: «кто дал» — часть этого права.</p>
+  {{end}}
+
+  <p class="fine">Обезличивание и выгрузку данных по требованию человека делает
+  администратор командой на сервере: обе операции проходят по всем его публикациям
+  разом и в срок веб-запроса не укладываются, а обезличивание вдобавок необратимо.</p>
+</div>
+{{end}}

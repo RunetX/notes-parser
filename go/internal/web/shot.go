@@ -110,6 +110,17 @@ func isMultipart(r *http.Request) bool {
 // готово (картинка, ""). Поломки уходят в третий вид отказа — с текстом, а не
 // пятисоткой: чужой файл, который не понравился ffmpeg, это не наша авария.
 func (s *Server) takeShot(ctx context.Context, r *http.Request) (*Shot, string) {
+	return s.takeShotSide(ctx, r, imgconv.MaxSide)
+}
+
+// avatarSide — потолок длинной стороны у ФОТО. Триста, как у силуэтов НГС
+// (male300px.png): на странице это квадрат 100×100, то есть тройная плотность
+// экрана телефона с запасом. Полторы тысячи, как у картинки к заметке, здесь
+// были бы двадцатью полноразмерными файлами на одну страницу ленты.
+const avatarSide = 300
+
+// takeShotSide — тот же приём файла, но со своим потолком стороны.
+func (s *Server) takeShotSide(ctx context.Context, r *http.Request, maxSide int) (*Shot, string) {
 	if s.shots == nil || r.MultipartForm == nil {
 		return nil, ""
 	}
@@ -132,7 +143,7 @@ func (s *Server) takeShot(ctx context.Context, r *http.Request) (*Shot, string) 
 		return nil, "Файл не дочитался. Попробуйте отправить ещё раз."
 	}
 
-	res, err := s.shots.Convert(ctx, data)
+	res, err := s.shots.ConvertTo(ctx, data, maxSide)
 	if err != nil {
 		return nil, shotProblem(err)
 	}

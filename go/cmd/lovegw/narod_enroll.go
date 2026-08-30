@@ -72,12 +72,23 @@ func narodEnroll(ctx context.Context, cfg *config.Config, cardsDir, worldPath st
 		if a, err := worldActor(ctx, world, card.ID); err != nil {
 			return err
 		} else if a.PlatformUserID != 0 {
-			fmt.Printf("%s уже заведён: анкета %d\n", card.ID, a.PlatformUserID)
+			// Заведён — но биографию всё равно перекладываем: карточку правят, и
+			// правка обязана доехать до страницы. Ради этого одного повторный
+			// enroll и остаётся осмысленным.
+			if err := p.SetPersonaBio(ctx, a.PlatformUserID, narod.PublicBio(card.Persona)); err != nil {
+				return fmt.Errorf("биография жителя %s: %w", card.ID, err)
+			}
+			fmt.Printf("%s уже заведён: анкета %d, биография обновлена\n", card.ID, a.PlatformUserID)
 			continue
 		}
 		id, err := p.CreatePersonaUser(ctx, card.Persona.Nick)
 		if err != nil {
 			return fmt.Errorf("житель %s: %w", card.ID, err)
+		}
+		// Биография — то, что человек прочтёт на /u/<id>. Кладётся сразу: анкета
+		// без неё это житель, про которого на площадке не сказано ничего.
+		if err := p.SetPersonaBio(ctx, id, narod.PublicBio(card.Persona)); err != nil {
+			return fmt.Errorf("биография жителя %s: %w", card.ID, err)
 		}
 		// Пол ставится сразу и из карточки: без него страница нарисует
 		// нейтральный силуэт, а житель у нас всегда мужчина или женщина — это

@@ -55,6 +55,17 @@ type adminPage struct {
 	InviteURL string
 	Days      int
 	Problem   string
+	// Personas — жители площадки. Правится здесь одно: ФОТО. Ник и биографию
+	// пишет владелец в карточке (data/narod/cards), а на площадку их приносит
+	// `narod enroll` — редактировать характер из веб-формы значило бы завести
+	// второе место, где он живёт.
+	Personas []platform.PersonaRow
+	// CanShot — площадка сейчас принимает файлы. Нет перекодировщика — нет и
+	// поля выбора: кнопка, ведущая к отказу, хуже её отсутствия.
+	CanShot bool
+	// Told — что сделано с фото: короткая строка над списком. Отдельно от
+	// Problem, потому что это удача, а не отказ.
+	Told string
 }
 
 // inviteRow — строка списка. Обёртка над platform.Invite, потому что странице
@@ -100,6 +111,18 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int,
 		p.Days = inviteDays
 	}
 	p.InviteURL = strings.TrimSuffix(s.cfg.BaseURL, "/") + "/login/invite"
+	p.CanShot = s.takesShots()
+	// Отказ списка жителей страницу не рушит и — главное — не отменяет только
+	// что выданный код: он в этом ответе единственный раз. Тот же довод, что у
+	// приглашений строкой ниже.
+	people, err := s.mod.Personas(r.Context())
+	if err != nil {
+		s.log.Error("список жителей", "err", err)
+		if p.Problem == "" {
+			p.Problem = "Список жителей прочитать не удалось — это про список, а не про остальное."
+		}
+	}
+	p.Personas = people
 	list, err := s.mod.Invites(r.Context(), platform.InviteListLimit)
 	if err != nil {
 		// Отказ списка — не повод потерять только что выданный код: он в этом
@@ -120,6 +143,74 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int,
 		})
 	}
 	s.render(w, r, status, "mod_admin.gohtml", p)
+}
+
+// handleAdminAvatar — фото жителя: поставить или снять.
+//
+// Своим маршрутом, а не веткой в handleAdminAct, по устройству net/http: форма
+// с файлом приезжает multipart, а ParseForm на нём выходит без ошибки, оставляя
+// r.Form пустой картой, — то есть общий вход для обеих форм не «менее удобен»,
+// а сломан молча (см. postUpload).
+func (s *Server) handleAdminAvatar(w http.ResponseWriter, r *http.Request) {
+	u, ok := s.admin(w, r)
+	if !ok {
+		return
+	}
+	// Слот перекодирования занимается ДО чтения тела, как и у публикации:
+	// память в контейнере одна на всех, и кто прислал файл — участник или
+	// администратор, — ей безразлично.
+	release, ok := s.takeShotSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	if !s.postUpload(w, r) {
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	id, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.fail(w, r, http.StatusBadRequest, "Непонятно, кому меняем фото.")
+		return
+	}
+	actor := platform.Viewer{UserID: u.ID, Role: u.Role}
+	if r.FormValue("do") == "avatar_off" {
+		s.afterAvatar(w, r, s.mod.SetPersonaAvatar(r.Context(), actor, id, nil, r.FormValue("reason")), "Фото снято.")
+		return
+	}
+	shot, problem := s.takeShotSide(r.Context(), r, avatarSide)
+	switch {
+	case problem != "":
+		s.renderAdmin(w, r, http.StatusBadRequest, adminPage{Problem: problem})
+		return
+	case shot == nil:
+		s.renderAdmin(w, r, http.StatusBadRequest, adminPage{Problem: "Файл не выбран."})
+		return
+	}
+	s.afterAvatar(w, r, s.mod.SetPersonaAvatar(r.Context(), actor, id, shot, r.FormValue("reason")), "Фото поставлено.")
+}
+
+// afterAvatar — общий ответ обеих кнопок. Страницей, а не переходом: список
+// жителей на ней и есть подтверждение, а отказ надо показать словами.
+func (s *Server) afterAvatar(w http.ResponseWriter, r *http.Request, err error, told string) {
+	switch {
+	case err == nil:
+		s.renderAdmin(w, r, http.StatusOK, adminPage{Told: told})
+	case errors.Is(err, platform.ErrNotPersona):
+		s.renderAdmin(w, r, http.StatusForbidden, adminPage{
+			Problem: "Это анкета живого человека. Фото ему ставит он сам — со своей страницы, из анкеты НГС."})
+	case errors.Is(err, platform.ErrNotFound):
+		s.renderAdmin(w, r, http.StatusNotFound, adminPage{Problem: "Такого жителя нет."})
+	case errors.Is(err, platform.ErrNotAdmin):
+		s.fail(w, r, http.StatusForbidden, "Фото жителям ставит администратор.")
+	default:
+		s.oops(w, r, "фото жителя", err)
+	}
 }
 
 // handleAdminAct — выдать или отозвать приглашение.

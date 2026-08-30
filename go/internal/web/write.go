@@ -269,6 +269,18 @@ func (s *Server) editForm(r *http.Request, note platform.NoteView, mode editMode
 		Problem:    problem,
 		CanShot:    admin && s.takesShots(),
 		HasShot:    has && (mode == editOwn || platform.IsNative(note.ID)),
+		Stage:      note.Stage,
+		// Песочницу предлагаем только там, где ядро согласится: пока под
+		// заметкой не сказано ни слова. Заметка ЛЮБАЯ, в том числе зеркальная,
+		// — старая запись с НГС без единой реплики и есть готовая сцена.
+		//
+		// Счётчик считает ВИДИМОЕ, а ядро — все реплики подряд, поэтому у
+		// заметки, где единственная реплика скрыта модератором, галочка
+		// покажется и ответит отказом. Случай редкий, и отказ у него внятный
+		// (ErrStageHasThread): выбирать между этим и запросом «а есть ли
+		// скрытые» на каждую форму правки — размен в пользу запроса, которого
+		// нет.
+		CanStage: admin && note.CommentCount == 0,
 	}
 }
 
@@ -327,12 +339,20 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 	// на две транзакции, и отказ второй оставит человека с закрытым навсегда
 	// окном и с картинкой, которую он снимал.
 	dropShot := r.FormValue("drop_shot") != ""
+	// Песочница — решение администратора и только его. У автора в своём окне
+	// поля нет вовсе, поэтому чужое значение из формы здесь не читается: тот же
+	// приём, что и с телом зеркальной заметки строкой выше.
+	stage := note.Stage
+	if mode != editOwn {
+		stage = r.FormValue("stage") != ""
+	}
 
 	shot, draft, problem := s.pickShot(r.Context(), r, u.ID)
 	if problem != "" {
 		// Ничего не меняется вовсе: сохранить текст молча, без картинки, значит
 		// решить за того, кто её осознанно прикладывал.
 		page := s.editForm(r, note, mode, body, problem)
+		page.Stage = stage
 		page.LostShot = hadFilePart(r)
 		s.render(w, r, http.StatusBadRequest, composePageName, page)
 		return
@@ -360,6 +380,15 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 				err = s.mod.SetNoteImageAsAdmin(r.Context(), actor, note.ID, shot, r.FormValue("reason"))
 			}
 		}
+		// Песочница — третье отдельное действие ядра и третья запись в журнале,
+		// по тому же доводу, что и картинка: у неё своя дверь (заметка ЛЮБАЯ, но
+		// только пока в ней не говорили) и свой отказ. Последней в цепочке,
+		// потому что она решает не про текст, а про то, кто в этой заметке
+		// вправе говорить, — и отказ здесь не должен отменять уже сохранённых
+		// слов и картинки.
+		if stage != note.Stage && (err == nil || errors.Is(err, platform.ErrNothingToDo)) {
+			err = s.mod.SetNoteStageAsAdmin(r.Context(), actor, note.ID, stage, r.FormValue("reason"))
+		}
 	}
 	// «Текст и так такой» отказом не считается: администратор мог открыть форму
 	// и закрыть её, ничего не изменив, — то же правило, что у кнопок модерации.
@@ -370,6 +399,7 @@ func (s *Server) handleUpdateNote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page := s.editForm(r, note, mode, body, problem)
+		page.Stage = stage
 		page.LostShot = hadFilePart(r) && draft == ""
 		page.Draft = draftView(shot, draft)
 		s.render(w, r, status, composePageName, page)
@@ -601,6 +631,11 @@ func writeProblem(err error) (int, string) {
 		return http.StatusBadRequest, "Такой реакции нет."
 	case errors.Is(err, platform.ErrNotYours):
 		return http.StatusForbidden, "Это не ваша запись."
+	case errors.Is(err, platform.ErrStageHasThread):
+		return http.StatusForbidden,
+			"В заметке уже есть реплики — песочницу из неё больше не сделать и обратно не вернуть. " +
+				"Правило одно на обе стороны: разговор, который начали люди, не отдают жителям, " +
+				"а сказанное жителями не выпускают наружу."
 	case errors.Is(err, platform.ErrStageClosed):
 		return http.StatusForbidden, "Завести песочницу может только администратор."
 	case errors.Is(err, platform.ErrNotAdmin):

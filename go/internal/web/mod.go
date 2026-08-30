@@ -74,6 +74,17 @@ type Moderator interface {
 	// hsmedia.ru), и поставить файл — единственный способ её вернуть. Снять
 	// иллюстрацию у зеркальной ядро откажет (см. SetNoteImageAsAdmin).
 	SetNoteImageAsAdmin(ctx context.Context, actor platform.Viewer, noteID int64, shot *Shot, reason string) error
+	// SetNoteStageAsAdmin — отдать заметку жителям (эпик «народ») или вернуть
+	// её людям. Ядро пускает сюда ЛЮБУЮ заметку, включая зеркальную, но только
+	// пока под ней никто не сказал ни слова.
+	SetNoteStageAsAdmin(ctx context.Context, actor platform.Viewer, noteID int64, stage bool, reason string) error
+	// Personas и SetPersonaAvatar — жители площадки (эпик «народ») в панели
+	// администратора. Здесь они потому же, почему здесь роли и приглашения: это
+	// решения о том, КТО здесь говорит, а не о словах. Фото жителю ставит
+	// только администратор — у персонажа нет анкеты НГС, и взять его больше
+	// неоткуда; shot == nil означает «снять».
+	Personas(ctx context.Context) ([]platform.PersonaRow, error)
+	SetPersonaAvatar(ctx context.Context, actor platform.Viewer, id int64, shot *Shot, reason string) error
 	IssueInvite(ctx context.Context, actor platform.Viewer, bindUser int64, note string, ttl time.Duration) (string, error)
 	Invites(ctx context.Context, limit int) ([]platform.Invite, error)
 	RevokeInvite(ctx context.Context, actor platform.Viewer, issuedAt time.Time) error
@@ -228,24 +239,22 @@ func (s *Server) afterModAction(w http.ResponseWriter, r *http.Request, err erro
 
 // ---------------------------------------------------------------- участник
 
-type modUserPage struct {
-	page
-	Member platform.User
-	Banned bool
-	// Admin — смотрящий вправе раздавать роли. Право скрывать чужие слова не
-	// должно размножаться само, поэтому выдаёт его только администратор.
-	Admin bool
-}
-
-// handleModUser — карточка участника: запрет писать и права.
+// handleModUser — переход на страницу участника.
 //
-// Отдельной страницы участника у площадки нет вовсе (на НГС её роль играет
-// анкета, а своей мы не заводили), поэтому карточка живёт под /mod и видна
-// только модератору. Показывать её всем значило бы завести профиль, которого в
-// эпике E нет, — а заодно выставить напоказ запреты и роли.
+// Карточки под /mod больше нет: 30.08.2026 запреты и роли переехали на саму
+// страницу человека (/u/<id>), по тому же доводу, что и полоска под репликой, —
+// модератор работает там, где читает. Двум страницам про одного человека нечего
+// делить, и разъехались бы они на первом же новом поле.
+//
+// Переход, а не удаление адреса: на него ведут ссылки из очереди, журнала и
+// прошлых писем, а мёртвая ссылка в журнале — это потерянная нить.
+//
+// Право спрашивается ДО перехода и осталось прежним: постороннему этой двери не
+// существует, потому что существование закрытой двери — само по себе сведения.
+// POST остаётся здесь же: адрес действия обязан жить под /mod, где стоят все
+// остальные.
 func (s *Server) handleModUser(w http.ResponseWriter, r *http.Request) {
-	me, ok := s.moderator(w, r)
-	if !ok {
+	if _, ok := s.moderator(w, r); !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -253,21 +262,7 @@ func (s *Server) handleModUser(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusNotFound, "Такого участника нет.")
 		return
 	}
-	member, err := s.mod.UserByID(r.Context(), id)
-	if errors.Is(err, platform.ErrNotFound) {
-		s.fail(w, r, http.StatusNotFound, "Такого участника нет.")
-		return
-	}
-	if err != nil {
-		s.oops(w, r, "карточка участника", err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "mod_user.gohtml", modUserPage{
-		page:   s.newPage(r, "Участник"),
-		Member: member,
-		Banned: member.Banned(time.Now()),
-		Admin:  me.Role >= platform.RoleAdmin,
-	})
+	http.Redirect(w, r, "/u/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // banDays — на сколько суток запрещаем писать по умолчанию. Тридцать — не наша

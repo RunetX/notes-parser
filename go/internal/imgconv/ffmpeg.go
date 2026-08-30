@@ -101,11 +101,20 @@ func (f *FFmpeg) Probe(ctx context.Context) error {
 
 // Convert приводит присланное к тому, что мы храним.
 func (f *FFmpeg) Convert(ctx context.Context, in []byte) (Result, error) {
+	return f.ConvertTo(ctx, in, MaxSide)
+}
+
+// ConvertTo — то же самое, но со своим потолком длинной стороны.
+//
+// Понадобился он аватару (30.08.2026): 1600 — это ширина колонки ЗАМЕТКИ, а
+// фото человека показывается в квадрате 100×100, и лента из двадцати заметок
+// тянула бы двадцать полноразмерных картинок ради двадцати пятаков.
+func (f *FFmpeg) ConvertTo(ctx context.Context, in []byte, maxSide int) (Result, error) {
 	src, err := Inspect(in)
 	if err != nil {
 		return Result{}, err
 	}
-	w, h := Fit(src)
+	w, h := FitTo(src, maxSide)
 	if w == 0 || h == 0 {
 		return Result{}, ErrNotImage
 	}

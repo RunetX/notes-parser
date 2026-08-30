@@ -47,6 +47,20 @@ type fakeMod struct {
 	// пятисоткой.
 	pinnedFull bool
 	fail       error
+
+	// Песочница: что дошло до ядра при переводе заметки.
+	stageNote int64
+	stageOn   bool
+	stageWhy  string
+	stageSet  bool
+	stageErr  error
+
+	// Жители: список и то, что дошло до ядра при смене фото.
+	personas   []platform.PersonaRow
+	avatarFor  int64
+	avatarShot *Shot
+	avatarWhy  string
+	avatarErr  error
 }
 
 func newFakeMod() *fakeMod {
@@ -56,6 +70,29 @@ func newFakeMod() *fakeMod {
 func (f *fakeMod) note(what string) error {
 	f.acts = append(f.acts, what)
 	return f.fail
+}
+
+// Жители: список и фото. avatarShot остаётся тем, что дошло до «ядра», —
+// половина проверок раздела именно про это: nil означает «снять».
+// stage — что дошло до ядра при переводе заметки в песочницу и обратно.
+func (f *fakeMod) SetNoteStageAsAdmin(_ context.Context, _ platform.Viewer, noteID int64, stage bool, reason string) error {
+	f.stageNote, f.stageOn, f.stageWhy, f.stageSet = noteID, stage, reason, true
+	if f.stageErr != nil {
+		return f.stageErr
+	}
+	return f.note("stage " + itoa64(noteID))
+}
+
+func (f *fakeMod) Personas(context.Context) ([]platform.PersonaRow, error) {
+	return f.personas, f.fail
+}
+
+func (f *fakeMod) SetPersonaAvatar(_ context.Context, _ platform.Viewer, id int64, shot *Shot, reason string) error {
+	f.avatarFor, f.avatarShot, f.avatarWhy = id, shot, reason
+	if f.avatarErr != nil {
+		return f.avatarErr
+	}
+	return f.note("avatar " + itoa64(id))
 }
 
 func (f *fakeMod) ReviewQueue(context.Context, int) ([]platform.ReviewItem, error) {
@@ -223,7 +260,6 @@ func TestКнопкиМодерацииВЛенте(t *testing.T) {
 		`value="restore"`, // вернуть — под скрытой
 		`value="pin"`,     // закрепление это решение о МЕСТЕ В ЛЕНТЕ
 		`value="lock"`,
-		"/mod/u/", // и дорога к автору
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в ленте модератора нет %q", want)
@@ -254,7 +290,6 @@ func TestКнопкиМодератораНазываютСебя(t *testing.T) 
 		`<span class="lbl">Вернуть</span>`,
 		`<span class="lbl">Закрыть обсуждение</span>`,
 		`<span class="lbl">Закрепить наверху</span>`,
-		`<span class="lbl">Автор</span>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("у кнопки нет подписи %q — со значком она станет безымянной", want)
@@ -326,7 +361,7 @@ func TestЛентаЧитателяБезКнопок(t *testing.T) {
 	h, _, token := modServerOn(t, hiddenFeed(), platform.RoleUser)
 
 	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
-	for _, no := range []string{`value="hide"`, `value="pin"`, `value="lock"`, "/mod/u/", "Пожаловаться"} {
+	for _, no := range []string{`value="hide"`, `value="pin"`, `value="lock"`, "Пожаловаться"} {
 		if strings.Contains(body, no) {
 			t.Errorf("в ленте участника есть %q", no)
 		}
@@ -462,8 +497,10 @@ func TestКнопкиПодРепликами(t *testing.T) {
 	if !strings.Contains(body, `value="lock"`) {
 		t.Error("нет кнопки замка треда")
 	}
-	if !strings.Contains(body, "/mod/u/") {
-		t.Error("нет ссылки на карточку автора")
+	// Дорога к автору — его ИМЯ, а не кнопка в полоске (30.08.2026): переход
+	// стоит там, куда смотрят, и виден не одному модератору.
+	if !strings.Contains(body, `href="/u/`) {
+		t.Error("имя автора не ведёт на его страницу")
 	}
 }
 

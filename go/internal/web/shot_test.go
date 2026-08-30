@@ -30,13 +30,20 @@ type fakeShots struct {
 	// seen — что дали на вход последним. По нему проверяется, что до
 	// перекодирования доезжают именно байты файла, а не части формы.
 	seen []byte
+	// side — с каким потолком стороны звали. У фото он свой (300, а не 1600):
+	// на странице это квадрат, а не колонка заметки.
+	side int
 }
 
 func (f *fakeShots) Codec() string { return f.codec }
 
-func (f *fakeShots) Convert(_ context.Context, in []byte) (imgconv.Result, error) {
+func (f *fakeShots) Convert(ctx context.Context, in []byte) (imgconv.Result, error) {
+	return f.ConvertTo(ctx, in, imgconv.MaxSide)
+}
+
+func (f *fakeShots) ConvertTo(_ context.Context, in []byte, maxSide int) (imgconv.Result, error) {
 	f.calls++
-	f.seen = in
+	f.seen, f.side = in, maxSide
 	if f.err != nil {
 		return imgconv.Result{}, f.err
 	}

@@ -111,6 +111,10 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 		Replies: map[int64]int{},
 		PageNum: 1,
 	}
+	// SignedIn нужен подписи автора: у вошедшего имя — ссылка на его страницу.
+	// Без этой строки дописанная реплика отличалась бы от нарисованной
+	// обновлением, то есть ровно тем, чего живой добор и должен избежать.
+	p.SignedIn = signedIn
 	if signedIn {
 		p.CSRF = csrfToken(s.session(r))
 	}
@@ -210,6 +214,7 @@ func (s *Server) handleFreshFeed(w http.ResponseWriter, r *http.Request) {
 		CanEdit:     me.Role >= platform.RoleAdmin && s.mod != nil,
 		Shots:       s.thumbs(ctx, notes),
 	}
+	p.SignedIn = signedIn // подпись автора: у вошедшего имя — ссылка
 	if signedIn {
 		p.CSRF = csrfToken(s.session(r))
 		p.Back = "/"

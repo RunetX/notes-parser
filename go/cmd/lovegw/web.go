@@ -206,6 +206,29 @@ func (w webWriter) SetNoteImageAsAdmin(ctx context.Context, actor platform.Viewe
 	return w.Platform.SetNoteImageAsAdmin(ctx, actor, noteID, img, reason)
 }
 
+// SetPersonaAvatar — фото ЖИТЕЛЯ решением администратора.
+//
+// Порядок тот же, что у картинки к заметке, и по той же причине: байты ложатся
+// на диск ДО транзакции, потому что строка без файла — это битая картинка на
+// каждой реплике этого жителя, то есть поломка ВИДИМАЯ, а файл без строки не
+// виден никому. Цена та же и названа так же: откатилась транзакция — файл
+// остался, уборки каталога у площадки нет вовсе.
+//
+// sourceURL пуст: качать было неоткуда, картинку принесли. У жителя её и не
+// откуда взять — анкеты НГС у персонажа нет, и это единственная причина, по
+// которой площадка вообще принимает фото файлом.
+func (w webWriter) SetPersonaAvatar(ctx context.Context, actor platform.Viewer, id int64, shot *web.Shot, reason string) error {
+	var img *platform.Media
+	if shot != nil {
+		m, err := w.media.PutSized(ctx, shot.Data, "", shot.Width, shot.Height)
+		if err != nil {
+			return err
+		}
+		img = &m
+	}
+	return w.Platform.SetPersonaAvatarAsAdmin(ctx, actor, id, img, reason)
+}
+
 // operatorOf — реквизиты оператора персональных данных для текстов согласий.
 func operatorOf(cfg *config.Config) platform.Operator {
 	return platform.Operator{Name: cfg.Platform.Operator, Contact: cfg.Platform.Contact}

@@ -69,6 +69,10 @@ type Result struct {
 // целиком — тот же приём и та же причина, что у asr.Converter.
 type Converter interface {
 	Convert(ctx context.Context, in []byte) (Result, error)
+	// ConvertTo — то же со своим потолком длинной стороны: у аватара она своя
+	// (квадрат на странице), и меняться вместе с шириной колонки заметки не
+	// должна.
+	ConvertTo(ctx context.Context, in []byte, maxSide int) (Result, error)
 	// Codec — что умеет эта сборка: "webp", "jpeg" или "" (не умеет ничего).
 	// Спрашивается один раз, при поднятии морды.
 	Codec() string
@@ -81,7 +85,15 @@ func Swapped(orientation int) bool { return orientation >= 5 && orientation <= 8
 //
 // Увеличения не бывает никогда: растянутая картинка хуже маленькой, а место
 // занимает большее.
-func Fit(src Source) (w, h int) {
+func Fit(src Source) (w, h int) { return FitTo(src, MaxSide) }
+
+// FitTo — то же со своим потолком. Нужен аватару: у фото человека своя мера
+// (квадрат 100×100 на странице), и она не обязана меняться вместе с шириной
+// колонки заметки.
+func FitTo(src Source, maxSide int) (w, h int) {
+	if maxSide <= 0 {
+		maxSide = MaxSide
+	}
 	w, h = src.Width, src.Height
 	if Swapped(src.Orientation) {
 		w, h = h, w
@@ -93,17 +105,17 @@ func Fit(src Source) (w, h int) {
 	if h > long {
 		long = h
 	}
-	if long <= MaxSide {
+	if long <= maxSide {
 		return w, h
 	}
 	// Считаем от длинной стороны, а не по двум независимым отношениям: так
 	// пропорция сохраняется точно, а длинная сторона выходит ровно MaxSide.
 	if w >= h {
-		h = h * MaxSide / w
-		w = MaxSide
+		h = h * maxSide / w
+		w = maxSide
 	} else {
-		w = w * MaxSide / h
-		h = MaxSide
+		w = w * maxSide / h
+		h = maxSide
 	}
 	if w < 1 {
 		w = 1

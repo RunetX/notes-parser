@@ -115,6 +115,15 @@ type Store interface {
 	// полем в CommentView: реакции меняются чаще самих реплик и читаются одним
 	// запросом на страницу, а не по одному на строку.
 	NoteReactions(ctx context.Context, viewerID, noteID int64) (map[int64][]platform.Reaction, error)
+	// UserProfile, AuthorNotes и AuthorComments — страница участника (user.go).
+	// Три метода, а не один: карточка нужна и сама по себе (её спрашивает
+	// заголовок вкладки), а списки читаются по своим индексам и своими
+	// потолками — сложив их в один вызов, мы получили бы «дай мне всё про
+	// человека», то есть ровно тот проход, из-за которого выгрузка живёт
+	// командой, а не кнопкой.
+	UserProfile(ctx context.Context, id int64) (platform.Profile, error)
+	AuthorNotes(ctx context.Context, id int64, limit int) ([]platform.PubNote, error)
+	AuthorComments(ctx context.Context, id int64, limit int) ([]platform.PubComment, error)
 }
 
 // Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:
@@ -315,6 +324,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /consent", s.handleConsentGrant)
 	mux.HandleFunc("POST /consent/refuse", s.handleConsentRefuse)
 	mux.HandleFunc("GET /me", s.handleMe)
+	mux.HandleFunc("GET /u/{id}", s.handleUser)
 	mux.HandleFunc("POST /me/consent", s.handleMeConsent)
 	mux.HandleFunc("POST /me/nick", s.handleNick)
 	mux.HandleFunc("POST /me/avatar", s.handleAvatar)
@@ -361,6 +371,7 @@ func (s *Server) routes() http.Handler {
 	// потому что закрыто от роботов оно тем же списком.
 	mux.HandleFunc("GET /mod/admin", s.handleAdmin)
 	mux.HandleFunc("POST /mod/admin", s.handleAdminAct)
+	mux.HandleFunc("POST /mod/admin/avatar", s.handleAdminAvatar)
 	mux.HandleFunc("GET /report", s.handleReport)
 	mux.HandleFunc("POST /report", s.handleReportSubmit)
 	mux.HandleFunc("POST /appeal", s.handleAppeal)
@@ -479,8 +490,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // privateRoots — разделы, которых в поиске быть не должно. Три рода, и все три
 // закрыты по своей причине:
 //
-//	личное      — /me, /events: это страница ОДНОГО человека, и в чужом кэше ей
-//	              не место, даже если робот дошёл до неё без сессии;
+//	личное      — /me, /events, /u: страница ОДНОГО человека, и в чужом кэше ей
+//	              не место, даже если робот дошёл до неё без сессии. У /u довод
+//	              свой: заметки и реплики открыты поиску по отдельности, а
+//	              страница участника собирает их в одно место — и собранное
+//	              закрыто (решение владельца 30.08.2026);
 //	служебное   — /login, /consent, /report, /mod: страницы действия, а не
 //	              чтения; в выдаче от них один вред («вход на Зазеркалье» первой
 //	              ссылкой вместо самой площадки);
@@ -490,7 +504,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // Совпадение считается по СЕГМЕНТАМ, а не по префиксу строки: «/consent» не
 // должен закрывать «/consents» — это опубликованные документы, и их читать
 // можно и нужно всем.
-var privateRoots = []string{"/me", "/events", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz", "/shot"}
+var privateRoots = []string{"/me", "/u", "/events", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz", "/shot"}
 
 // privatePath — этот адрес роботам закрыт.
 func privatePath(p string) bool {

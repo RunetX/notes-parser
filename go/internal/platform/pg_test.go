@@ -830,6 +830,14 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		// другое — что это не перебор: запрос идёт на каждое «Ответить», а в
 		// таблице 10,7 млн строк.
 		{"одна реплика", commentQuery, []any{int64(0), int64(200002), int64(500001)}, "", 1},
+		// Страница участника. Счётчики в profileQuery идут по тем же частичным
+		// индексам, что и списки: у самого говорливого участника площадки 138
+		// тысяч реплик, и перебор здесь был бы тем самым проходом на пятьдесят
+		// секунд, из-за которого выгрузка живёт командой, а не кнопкой.
+		{"карточка участника", profileQuery, []any{int64(1)}, "comments_author_time", 1},
+		{"карточка участника: заметки", profileQuery, []any{int64(1)}, "notes_author", 1},
+		{"заметки участника", authorNotesQuery, []any{int64(1), pubLimit}, "notes_author", 1},
+		{"реплики участника", authorCommentsQuery, []any{int64(1), pubLimit}, "comments_author_time", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
