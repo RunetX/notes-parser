@@ -159,3 +159,33 @@ func TestУВозрастаЕстьСледНаЛице(t *testing.T) {
 		}
 	}
 }
+
+// АНГЛИЙСКИЙ ПРОМПТА — И ЕСТЬ ПРОДУКТ, поэтому его склейка проверяется так же,
+// как проверялась бы разметка страницы. Первый же прогон по боевым карточкам
+// дал три огреха разом, и все три родились на стыке кода и таблицы: артикль
+// внутри «Plain a soft off-white background», развилка «his or her age» и
+// строчная буква после точки, потому что клауза модели приклеивалась хвостом к
+// готовому предложению.
+func TestПромптСклеенПоАнглийски(t *testing.T) {
+	look := Look{
+		Person:   "a very tall, heavy-set man with a broad flat face",
+		Clothing: "a worn dark blue work jacket",
+	}
+	for _, slug := range []string{"dyadyastepa", "beret", "kedrach", "koshka", "kostik", "irma"} {
+		got := Portrait(sevaBio(), slug, 1, look, false)
+		for _, bad := range []string{"Plain a ", "his or her", ". a ", ". an "} {
+			if strings.Contains(got, bad) {
+				t.Errorf("%s: в промпте %q:\n%s", slug, bad, got)
+			}
+		}
+	}
+	// Местоимение согласовано с полом, а не выбирается генератором.
+	if !strings.Contains(Portrait(sevaBio(), "dyadyastepa", 1, look, false), "He looks his age") {
+		t.Error("мужчине не досталось своего местоимения")
+	}
+	w := sevaBio()
+	w.Gender = "female"
+	if !strings.Contains(Portrait(w, "beret", 1, look, false), "She looks her age") {
+		t.Error("женщине не досталось своего местоимения")
+	}
+}

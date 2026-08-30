@@ -148,12 +148,14 @@ var (
 		"Even diffused light with no strong shadows",
 		"Low late-afternoon sun through a window",
 	}
+	// Без артикля: строка встаёт в «Plain %s background», и «a» посреди неё
+	// давала «Plain a soft off-white background».
 	portraitBack = []string{
-		"a plain warm grey",
-		"a plain cool grey",
-		"a soft off-white",
-		"a muted blue-grey",
-		"a dark neutral",
+		"warm grey",
+		"cool grey",
+		"soft off-white",
+		"muted blue-grey",
+		"dark neutral",
 	}
 )
 
@@ -192,7 +194,11 @@ func Portrait(b Bio, slug string, seed uint64, look Look, midjourney bool) strin
 	// сходства с реальным лицом, и просто правда.
 	b1.WriteString("Photorealistic portrait photograph of a fictional person — not a real individual, not a celebrity.\n\n")
 
-	fmt.Fprintf(&b1, "Subject: %s. %s.\n", subjectLine(f), person)
+	fmt.Fprintf(&b1, "Subject: %s.\n", subjectLine(f))
+	// Внешность — СВОЕЙ строкой с подписью, а не хвостом к Subject: клауза
+	// модели сама начинается с «a tall man», и приклеенная давала
+	// «...Russian man. a tall man...».
+	fmt.Fprintf(&b1, "Build and face: %s.\n", trimDot(person))
 	fmt.Fprintf(&b1, "Wearing %s.\n", trimDot(clothing))
 	if d := strings.TrimSpace(look.Detail); d != "" {
 		fmt.Fprintf(&b1, "%s.\n", trimDot(upperFirst(d)))
@@ -201,8 +207,8 @@ func Portrait(b Bio, slug string, seed uint64, look Look, midjourney bool) strin
 	// Возраст на лице просим отдельной строкой и всегда: генераторы молодят и
 	// прихорашивают, а тридцать красивых лиц подряд выдают машину раньше любой
 	// стилистики.
-	b1.WriteString("\n")
-	fmt.Fprintf(&b1, "Ordinary-looking, not a model: natural skin texture with pores and blemishes, %s, no retouching, no makeup styling.\n", agingLine(f.Age))
+	b1.WriteString("\nOrdinary-looking, not a model — natural skin texture with pores and blemishes, no retouching, no makeup styling.\n")
+	fmt.Fprintf(&b1, "%s\n", agingLine(f.Age, f.Gender))
 
 	b1.WriteString("\n")
 	fmt.Fprintf(&b1, "Head and shoulders, %s, %s. %s. Plain %s background, softly out of focus.\n",
@@ -251,16 +257,25 @@ func subjectLine(f portraitFacts) string {
 }
 
 // agingLine — насколько лицу положено быть пожившим.
-func agingLine(age int) string {
+func agingLine(age int, gender string) string {
+	// Местоимение берётся по полу, а не «his or her»: промпт читает генератор,
+	// и развилка в тексте — лишний повод ему усомниться, кого рисовать.
+	he, his := "They look", "their"
+	switch gender {
+	case "male":
+		he, his = "He looks", "his"
+	case "female":
+		he, his = "She looks", "her"
+	}
 	switch {
 	case age >= 55:
-		return "clearly his or her age: deep lines, grey hair, sagging skin under the eyes"
+		return he + " " + his + " age: deep lines, grey hair, sagging skin under the eyes."
 	case age >= 45:
-		return "clearly his or her age: visible lines, greying hair, tired eyes"
+		return he + " " + his + " age: visible lines, greying hair, tired eyes."
 	case age >= 35:
-		return "clearly his or her age: the first lines around the eyes, skin that has seen weather"
+		return he + " " + his + " age: the first lines around the eyes, skin that has seen weather."
 	default:
-		return "an everyday face, slightly uneven features"
+		return "An everyday face, slightly uneven features."
 	}
 }
 
