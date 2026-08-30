@@ -70,6 +70,15 @@ type Config struct {
 	// PlanCap — сколько живёт неисполненное намерение. Всё, что старше,
 	// снимается: ответ через двое суток это уже не ответ.
 	PlanCap time.Duration
+	// OneThoughtRate — доля реплик, написанных ОДНОЙ фразой. ЗАМЕР по 111 тыс.
+	// реплик архива: 75,6 % (у живого треда на ту же тему — 78 %). У нас без этого
+	// жребия выходило 15,6 %: модель строит каждую реплику как сетап и панч, и
+	// двухчастность узнаётся раньше содержания. Число КОРПУСНОЕ, а не донорское —
+	// в карточке замера пока нет, и сказано это здесь, а не подразумевается.
+	OneThoughtRate float64
+	// EllipsisRate — доля реплик с многоточием. Тоже корпусный замер (22,5 %; у
+	// живого треда на ту же тему 28,9 %), у нас было ноль.
+	EllipsisRate float64
 	// GeneralizeRate — доля реплик, в которых случай выносится на ВЕСЬ ПОЛ
 	// («все бабы такие»). ЗАМЕР по 10,8 млн реплик архива: прямое обобщение стоит
 	// в 0,198 % реплик вообще и в 0,48 % там, где оно в треде звучит хоть раз
@@ -118,6 +127,8 @@ func Defaults() Config {
 		// то есть дальше ждать уже нечего.
 		ThreadCloseAfter: 12 * time.Hour,
 		PlanCap:          48 * time.Hour,
+		OneThoughtRate:   0.756,
+		EllipsisRate:     0.225,
 		GeneralizeRate:   0.0048,
 		// Единица — темп живых. Сжимать его можно только осознанно и только на
 		// стенде, поэтому умолчание не «поудобнее», а «как у людей».
@@ -587,6 +598,8 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	point.Mood = WriteMood(mood)
 
 	point.TargetRunes = int(QuantileAt(p.Card.Register.Runes, rng.Float64()) + 0.5)
+	point.OneThought = rng.Float64() < s.cfg.OneThoughtRate
+	point.Ellipsis = s.cfg.EllipsisRate
 	if r := p.Card.Register.EmojiRate; r > 0 {
 		want := rng.Float64() < r
 		point.Emoji = &want
