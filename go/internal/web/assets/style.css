@@ -780,22 +780,41 @@ span.rxb { cursor: default; }
    100×100 и БЕЗ подписей: имя всплывает при наведении (на сайте это qtip, у
    нас title — он же работает без JS).
 
-   Ряд ОБРЕЗАН по ширине, а не ездит вбок и не переносится: «visible-part» в
-   оригинале называется ровно этим, а тридцать лиц в три этажа над лентой — уже
-   не лента, а стена. Кого видно, решает порядок (кто говорил последним), так
-   что полоса обновляет себя сама. Обрезанное с краю лицо — не огрех, а
-   единственная примета того, что там есть ещё: на НГС на этом месте стояли
-   тень и стрелка, но двигал их скрипт, а кнопку, мёртвую без JS, мы не рисуем.
+   Ряд НЕ ПЕРЕНОСИТСЯ на второй этаж: тридцать лиц в три ряда над лентой — уже
+   не лента, а стена. Листается он при этом по-настоящему — пальцем на
+   телефоне, тачпадом и стрелками на десктопе, — а вот ПОЛОСЫ ПРОКРУТКИ не
+   видно: она разрезала бы ряд лиц пополам, и на НГС её тоже не было (там ряд
+   двигали тень со стрелкой). Прячется полоса тремя разными свойствами, потому
+   что браузеры договориться о ней так и не смогли.
 
    Ширина и поля — как у .main, потому что полоса ему СОСЕДКА, а не часть: на
    сайте она тоже стоит над блоком, а не внутри него. */
-.faceband { width: 100%; max-width: 910px; margin: 10px auto 0; }
+.faceband { position: relative; width: 100%; max-width: 910px; margin: 10px auto 0; }
 .faces {
   display: flex; gap: 10px; list-style: none; margin: 0; padding: 0;
-  overflow: hidden;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
 }
+.faces::-webkit-scrollbar { width: 0; height: 0; }
 .faces li { flex: 0 0 auto; }
 .faces a { display: block; line-height: 0; }
+
+/* Стрелки листания — те самые lv-top-tape__nav с сайта: тень и стрелка у края.
+   Рисует их СКРИПТ, а не сервер, и по общему правилу площадки: без JS ряд
+   листается пальцем и тачпадом, а мёртвых кнопок на странице не бывает.
+   Показываются они по одной и только когда есть куда ехать.
+
+   [hidden] названо явно, потому что display: flex сильнее правила из таблицы
+   браузера — та же грабля, что со свёрнутой веткой в треде. */
+.tnav {
+  position: absolute; top: 0; bottom: 0; width: 44px; border: 0; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 26px; line-height: 1; cursor: pointer; color: var(--ink);
+}
+.tnav[hidden] { display: none; }
+.tprev { left: 0; background: linear-gradient(to right, var(--page) 55%, transparent); }
+.tnext { right: 0; background: linear-gradient(to left, var(--page) 55%, transparent); }
 
 /* Форма записи — одна на всё: новая заметка, правка, ответ в тред. */
 .wform { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 0; }

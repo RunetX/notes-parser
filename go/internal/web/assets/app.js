@@ -785,3 +785,52 @@ smilePanel(document);
     xhr.send(data);
   });
 })();
+
+// Мордолента: стрелки листания у краёв полосы.
+//
+// Полоса лиц листается и без скрипта — пальцем на телефоне, тачпадом и
+// стрелками на десктопе, — но полосы прокрутки у неё нет намеренно (она
+// разрезала бы ряд лиц пополам), а с обычной мышью без неё никуда не уехать.
+// На НГС ровно эту задачу решали тень со стрелкой у края (lv-top-tape__nav), и
+// здесь то же самое: скрипт рисует их сам — мёртвых кнопок на странице не
+// бывает, поэтому сервер их не печатает.
+//
+// Показываются они по одной и только когда есть куда ехать: полоса, помещающаяся
+// целиком, стрелок не получает вовсе.
+(function () {
+  'use strict';
+
+  var band = document.querySelector('.faceband');
+  var tape = band && band.querySelector('.faces');
+  if (!tape) return;
+
+  var slow = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function make(dir, sign, label) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tnav t' + dir;
+    b.setAttribute('aria-label', label);
+    b.textContent = sign;
+    b.addEventListener('click', function () {
+      // Шаг — экран без одного лица: так на новом месте остаётся то, на что
+      // человек смотрел, и ряд не «перепрыгивает» целиком.
+      var step = Math.max(tape.clientWidth - 110, 110);
+      tape.scrollBy({ left: dir === 'prev' ? -step : step, behavior: slow ? 'auto' : 'smooth' });
+    });
+    band.appendChild(b);
+    return b;
+  }
+
+  var prev = make('prev', '‹', 'Предыдущие жители');
+  var next = make('next', '›', 'Следующие жители');
+
+  function sync() {
+    var max = tape.scrollWidth - tape.clientWidth;
+    prev.hidden = tape.scrollLeft <= 1;
+    next.hidden = tape.scrollLeft >= max - 1;
+  }
+  tape.addEventListener('scroll', sync);
+  window.addEventListener('resize', sync);
+  sync();
+})();

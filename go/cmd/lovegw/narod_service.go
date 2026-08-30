@@ -175,8 +175,19 @@ func narodChronicler(cfg *config.Config) (narod.JSONGenerator, string, error) {
 	return gen, model, nil
 }
 
+// Кэш-точка на системный блок здесь ДОКАЗАНА замером, а не предположена
+// (30.08.2026): системных промптов у жителей всего два — writeSystemTop и
+// writeSystemReply, — и они не зависят ни от жителя, ни от заметки, ни от треда
+// (карточка, память, разговор и настроение идут в блок ЗАДАНИЯ). Замер по бою:
+// в час, когда песочница живёт, выходит 20–60 реплик, то есть запрос примерно
+// раз в минуту — впятеро чаще пятиминутного срока кэша. Промах стоит наценки в
+// четверть от восьмисот токенов и ничего не ломает, попадание снимает с них
+// девять десятых.
+//
+// Летописцу (narodChronicler) она НЕ ставится по тому же правилу: он зовётся раз
+// на закончившийся тред, и второго вызова в пятиминутном окне у него не бывает.
 func narodGenerator(cfg *config.Config) (narod.JSONGenerator, string, error) {
-	gen, err := llmClientFor(cfg, cfg.Narod.Model, "", 90*time.Second)
+	gen, err := llmClientFor(cfg, cfg.Narod.Model, "", 90*time.Second, withSystemCache())
 	if err != nil {
 		return nil, "", err
 	}
