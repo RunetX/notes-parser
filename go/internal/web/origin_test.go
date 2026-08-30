@@ -188,7 +188,7 @@ func TestUploadRouteHasItsOwnLimits(t *testing.T) {
 		t.Errorf("срок обычной записи %v, ожидался %v", got, requestBudget)
 	}
 	// GET на тот же адрес — это форма, а не приём файла.
-	if isNoteUpload(get) {
+	if isUpload(get) {
 		t.Error("GET /new принят за загрузку")
 	}
 }

@@ -178,7 +178,7 @@ func (s *Server) withGuard(next http.Handler) http.Handler {
 		if r.Method == http.MethodPost {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodyOf(r))
 		}
-		if isNoteUpload(r) {
+		if isUpload(r) {
 			// Дедлайны ставятся ПОРУЧНО, потому что ReadTimeout и WriteTimeout —
 			// поля http.Server, общие на все маршруты разом. Двадцать секунд
 			// чтения стоят там против slowloris, и снимать их ради одной формы
@@ -324,7 +324,7 @@ func costOf(r *http.Request) float64 {
 		return costLogin
 	// Публикация с картинкой стоит дороже всякой другой записи и потому стоит
 	// ПЕРЕД общим правилом «любой POST — это запись».
-	case isNoteUpload(r):
+	case isUpload(r):
 		return costUpload
 	case r.Method == http.MethodPost:
 		return costWrite
@@ -374,7 +374,7 @@ func longLived(r *http.Request) bool {
 	return r.URL.Path == "/live"
 }
 
-// isNoteUpload — пути площадки, принимающие файл.
+// isUpload и uploadPaths — пути площадки, принимающие файл.
 //
 // Список отдельной функцией, как longLived и goesToNGS, и ровно по той же
 // причине: с него сняты три общих потолка сразу — размер тела, срок запроса и
@@ -394,17 +394,51 @@ func longLived(r *http.Request) bool {
 // ровно один раз — правку добавили сюда и забыли там, — и картинка в 2,9 МБ
 // получала 413 от прокси, обрезанная на первом мегабайте. Тестом это не
 // ловится: Caddyfile гоняет только бой.
-func isNoteUpload(r *http.Request) bool {
+// uploadPaths — маршруты, принимающие ФАЙЛ, одним списком.
+//
+// Список ОБЯЗАН совпадать с матчером @shot в deploy/platform/Caddyfile: у Caddy
+// свой потолок тела, и путь, известный одному из них, получает потолок другого.
+// Разъезжались они дважды. 27.08.2026 правку заметки добавили в Go и забыли
+// здесь — честная картинка в 2,9 МБ ловила 413, обрезанная на первом мегабайте.
+// 30.08.2026 наоборот: завели фото жителю (/mod/admin/avatar), не тронув ни
+// одного из двух списков, — тело резалось потолком ТЕКСТОВОЙ формы в 64 КиБ, и
+// на экране это выглядело зависанием, а не отказом (сервер бросает читать тело,
+// пока браузер его ещё шлёт).
+//
+// Отсюда две правки против третьего раза. Строки записаны ТОЧНО так же, как в
+// Caddyfile, — и расхождение теперь ловится тестом, а не боем.
+//
+// Звёздочка бывает одна и в середине: у правки заметки там стоит её номер.
+var uploadPaths = []string{"/new", "/shot", "/n/*/edit", "/mod/admin/avatar"}
+
+// isUpload — принимает ли маршрут файл. Имя без «note» намеренно: пока функция
+// звалась isNoteUpload, форма фото ЖИТЕЛЯ выглядела не про неё, и путь в список
+// не попал.
+func isUpload(r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		return false
 	}
-	return r.URL.Path == "/new" || r.URL.Path == "/shot" ||
-		(strings.HasPrefix(r.URL.Path, "/n/") && strings.HasSuffix(r.URL.Path, "/edit"))
+	for _, pat := range uploadPaths {
+		if matchPath(pat, r.URL.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchPath — семантика пути Caddy для одной звёздочки: начало и конец.
+func matchPath(pat, path string) bool {
+	i := strings.IndexByte(pat, '*')
+	if i < 0 {
+		return pat == path
+	}
+	return len(path) >= len(pat)-1 &&
+		strings.HasPrefix(path, pat[:i]) && strings.HasSuffix(path, pat[i+1:])
 }
 
 // maxBodyOf — потолок тела запроса.
 func maxBodyOf(r *http.Request) int64 {
-	if isNoteUpload(r) {
+	if isUpload(r) {
 		return uploadMaxBytes
 	}
 	return maxFormBytes
@@ -415,7 +449,7 @@ func budgetOf(r *http.Request) time.Duration {
 	switch {
 	case goesToNGS(r):
 		return loginBudget
-	case isNoteUpload(r):
+	case isUpload(r):
 		return uploadBudget
 	}
 	return requestBudget
