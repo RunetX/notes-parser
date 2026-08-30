@@ -37,8 +37,8 @@ func TestМордолентаВедётНаСтраницыЖителей(t *tes
 		`class="faces"`,
 		`href="/u/` + itoa64(profUserID) + `"`,
 		`href="/u/` + itoa64(profUserID+1) + `"`,
-		"Механик Сева",
-		"ГердаИзСемейкиАддамс",
+		`title="Механик Сева"`,
+		`alt="ГердаИзСемейкиАддамс"`,
 		"/media/ab/cdef.webp",
 	} {
 		if !strings.Contains(body, want) {
@@ -50,18 +50,46 @@ func TestМордолентаВедётНаСтраницыЖителей(t *tes
 	}
 }
 
-// Полоса обязана СКАЗАТЬ, что перед читателем машина. Значок песочницы стои́т у
-// заметки, а полоса висит над лентой, где песочницы может не быть вовсе, — и
-// другого места объяснить себя у неё нет (правило Ш5з).
-func TestМордолентаНазываетСебя(t *testing.T) {
-	h := openServer(t, facesStore())
-	body := do(h, guest(t, "GET", "/")).Body.String()
+// Вид снят с оригинала, а не придуман: в записанной ленте НГС
+// (love/testdata/notes_feed.html) полоса — это section.lv-top-tape ПЕРЕД блоком
+// содержимого, внутри один ряд фотографий 100×100 и НИ ОДНОЙ подписи: имя живёт
+// в alt и всплывает при наведении (там qtip, у нас title — он работает без JS).
+func TestМордолентаБезПодписейИНадКарточкой(t *testing.T) {
+	body := do(openServer(t, facesStore()), guest(t, "GET", "/")).Body.String()
 
-	if !strings.Contains(body, "пишет машина") {
-		t.Error("полоса не говорит, что реплики жителей пишет машина")
+	// Полоса стои́т НАД карточкой, а не внутри: на сайте она сосед блока
+	// содержимого. Проверяем порядком в разметке — из вёрстки это единственное,
+	// что видно тесту.
+	band, main := strings.Index(body, `class="faceband"`), strings.Index(body, `<main class="main"`)
+	if band < 0 || main < 0 || band > main {
+		t.Errorf("полоса не над карточкой: faceband на %d, main на %d", band, main)
 	}
-	if !strings.Contains(body, "/help#narod") {
-		t.Error("от полосы нет дороги к объяснению в справке")
+	// Подписи текстом нет вовсе — имя только в title и alt.
+	tape := body[band:main]
+	if strings.Contains(tape, "<span") || strings.Contains(tape, "nick") {
+		t.Errorf("в полосе появилась подпись текстом:\n%s", tape)
+	}
+	// И никакого объявления про машину: подпись под полосой ломала сходство с
+	// оригиналом (решение владельца 30.08.2026). Сказано об этом значком
+	// песочницы у заметки, на странице жителя и в /help#narod.
+	if strings.Contains(tape, "пишет машина") {
+		t.Error("под полосой снова висит объявление про жителей")
+	}
+}
+
+// Горизонтальной прокрутки у полосы нет: на НГС ряд ОБРЕЗАН по ширине
+// («visible-part»), а не ездит вбок. Правило живёт в стилях, и проверить его
+// можно только там.
+func TestМордолентаНеЕздитВбок(t *testing.T) {
+	rule := cssRule(t, cssText(t), ".faces {")
+	if !strings.Contains(rule, "overflow: hidden") {
+		t.Errorf("ряд не обрезан по ширине: %s", rule)
+	}
+	if strings.Contains(rule, "overflow-x: auto") || strings.Contains(rule, "scroll") {
+		t.Errorf("у полосы завелась горизонтальная прокрутка: %s", rule)
+	}
+	if strings.Contains(rule, "flex-wrap") {
+		t.Errorf("полоса переносится на второй ряд: %s", rule)
 	}
 }
 

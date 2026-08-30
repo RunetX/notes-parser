@@ -773,34 +773,29 @@ span.rxb { cursor: default; }
 .newnote:hover { text-decoration: none; opacity: .9; }
 .editlink { font-size: 12px; margin-left: 14px; }
 
-/* Мордолента — полоса лиц жителей над лентой (faces.go; имя не выдумано, так её
-   звали на НГС). Лицо крупнее подписи и уже колонки автора: в ленте аватар
-   100×100 стои́т рядом с текстом, а здесь их три десятка в ряд, и ряд обязан
-   читаться одним взглядом.
+/* Мордолента — полоса лиц жителей НАД карточкой ленты (faces.go; имя не
+   выдумано, так её звали на НГС). Вид снят с записанной ленты сайта, а не
+   придуман: там это section.lv-top-tape перед блоком содержимого, внутри —
+   div.lv-top-tape__visible-part с одним рядом ul.lv-top-tape__list, фото
+   100×100 и БЕЗ подписей: имя всплывает при наведении (на сайте это qtip, у
+   нас title — он же работает без JS).
 
-   Едет она ВБОК, а не переносится: тридцать лиц в три ряда съедают экран над
-   лентой, ради которой человек и пришёл. Прокрутка живёт ВНУТРИ полосы —
-   страница вбок не ездит никогда (то же правило, что у широких таблиц и
-   блоков кода). overscroll-behavior не даёт докрученной до края полосе увести
-   за собой всю страницу: на телефоне это выглядело бы срывом. */
-.faceband { margin: 14px 0 0; }
-.faceband .fine { margin: 0 0 6px; }
+   Ряд ОБРЕЗАН по ширине, а не ездит вбок и не переносится: «visible-part» в
+   оригинале называется ровно этим, а тридцать лиц в три этажа над лентой — уже
+   не лента, а стена. Кого видно, решает порядок (кто говорил последним), так
+   что полоса обновляет себя сама. Обрезанное с краю лицо — не огрех, а
+   единственная примета того, что там есть ещё: на НГС на этом месте стояли
+   тень и стрелка, но двигал их скрипт, а кнопку, мёртвую без JS, мы не рисуем.
+
+   Ширина и поля — как у .main, потому что полоса ему СОСЕДКА, а не часть: на
+   сайте она тоже стоит над блоком, а не внутри него. */
+.faceband { width: 100%; max-width: 910px; margin: 10px auto 0; }
 .faces {
-  display: flex; gap: 12px; list-style: none; margin: 0; padding: 0 0 8px;
-  overflow-x: auto; overscroll-behavior-x: contain;
+  display: flex; gap: 10px; list-style: none; margin: 0; padding: 0;
+  overflow: hidden;
 }
-.faces li { flex: 0 0 auto; width: 72px; }
-.faces a { display: block; text-align: center; }
-.faces a:hover { text-decoration: none; }
-.faces a:hover .nick { text-decoration: underline; }
-.faces .ava { width: 72px; height: 72px; }
-/* Ник под лицом — в одну строку с многоточием: ники у жителей длинные
-   («ГердаИзСемейкиАддамс»), а перенос на вторую строку сделал бы полосу
-   рваной по высоте. Целиком имя показывает title на самой ссылке. */
-.faces .nick {
-  display: block; margin-top: 5px; font-size: 12px; line-height: 1.2;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.faces li { flex: 0 0 auto; }
+.faces a { display: block; line-height: 0; }
 
 /* Форма записи — одна на всё: новая заметка, правка, ответ в тред. */
 .wform { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 0; }

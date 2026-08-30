@@ -90,10 +90,6 @@ type feedPage struct {
 	// завести в одном списке ровно ту разницу между чужим и своим, которой у
 	// картинки нет вовсе.
 	Shots map[int64]platform.Media
-	// Faces — мордолента: лица жителей над лентой (faces.go). Только на первой
-	// странице, поэтому пустой список здесь означает и «жителей с фото нет», и
-	// «это не первая страница» — показу разница безразлична.
-	Faces []platform.PersonaFace
 }
 
 // thumbs — иллюстрации показанных заметок. Отказ чтения не роняет ленту: без
@@ -159,8 +155,11 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		faces = s.faces(ctx)
 	}
 	me, signedIn := s.me(r)
+	// Мордолента живёт в общей части страницы: рисует её каркас, над карточкой.
+	p := s.newPage(r, "")
+	p.Faces = faces
 	s.render(w, r, http.StatusOK, "feed.gohtml", feedPage{
-		page:     s.newPage(r, ""),
+		page:     p,
 		Notes:    notes,
 		Pager:    newPager(num, pages, feedURL),
 		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil,
@@ -175,7 +174,6 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		FreshOK:    num == 1,
 		FreshAfter: fresh,
 		Shots:      s.thumbs(ctx, notes),
-		Faces:      faces,
 	})
 }
 
