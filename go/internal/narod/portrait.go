@@ -23,12 +23,18 @@ package narod
 //     набор, который не похож на паспортную серию, и даёт его ПОВТОРЯЕМО: тот
 //     же житель — тот же кадр, сколько раз ни перегенерируй.
 //
-//   - ЧЕЛОВЕК (сложение, лицо, одежда) спрашивается у МОДЕЛИ, и это не лень
-//     кода. «Рост под два метра, отсюда и ник» и «красит волосы в новый цвет
-//     каждые два месяца» — свободный русский текст, и превратить его в
-//     английскую строку про внешность значит понять, что там сказано. Ровно
-//     та работа, ради которой модель и зовут: там, где нужно суждение о
-//     СМЫСЛЕ, а не исполнение замера.
+//   - СЛОЖЕНИЕ — тоже КОД, и по тому же доводу, только оплачен он боем
+//     (30.08.2026, владелец: «почему они все какие-то упитанные»). Сперва его
+//     выбирала модель, и у пятерых жителей из пяти вышло полное: в задании ей
+//     стояло «дай настоящие лица: ВЕС, редеющие волосы, кривые зубы — это
+//     важнее всего остального», и она исполнила список буквально. Ровно как
+//     jabsLine с приёмами пассивной агрессии.
+//
+//   - ЛИЦО И ОДЕЖДА спрашиваются у МОДЕЛИ, и это не лень кода. «Рост под два
+//     метра, отсюда и ник» и «красит волосы в новый цвет каждые два месяца» —
+//     свободный русский текст, и превратить его в английскую строку про
+//     внешность значит понять, что там сказано. Ровно та работа, ради которой
+//     модель и зовут: там, где нужно суждение о СМЫСЛЕ, а не исполнение замера.
 //
 // ЧЕГО МОДЕЛЬ НЕ ВИДИТ, и это держит структура, а не дисциплина. В запрос идёт
 // не Bio, а portraitFacts — отдельный тип, собираемый одной функцией factsFor.
@@ -55,11 +61,17 @@ package narod
 // Значит вся тяжесть «читатель должен знать, что перед ним машина» ложится на
 // значок песочницы и раздел /help#narod, и снимать их нельзя.
 //
-// И ОТДЕЛЬНО ПРО «ОБЫЧНОЕ ЛИЦО». Промпт настойчиво просит человека невзрачного,
-// с возрастом на лице и несовершенной кожей. Это не украшение: генераторы
-// тянут к модельной внешности, и тридцать красивых лиц подряд выдают машину
-// РАНЬШЕ любой стилистики — на сайте знакомств так не выглядит никто. Тот же
-// урок, что с поверхностью речи: машину выдаёт не содержание, а ровность.
+// И ОТДЕЛЬНО ПРО «ОБЫЧНОЕ ЛИЦО» — почему просьба об этом стоит ОДИН раз.
+// Генераторы тянут к модельной внешности, и тридцать красивых лиц подряд выдают
+// машину раньше любой стилистики. Но поправка против этого НЕ ЗНАЕТ МЕРЫ, и
+// первая редакция промпта просила о ней ТРИЖДЫ — «не модель», «поры и пятна»,
+// «без ретуши», — да ещё и клала сверху возраст односторонним «на лице должны
+// быть годы». Просьбы сложились: у тридцатитрёхлетней воспитательницы вышло
+// лицо на сорок пять (жалоба владельца, 30.08.2026).
+//
+// Отсюда правило, общее с односложностью реплик: у поправки называются ОБЕ
+// стороны. Возраст теперь ЯКОРЬ — «ровно столько, не старше и не моложе», — а
+// про обычность сказано единожды.
 
 import (
 	"fmt"
@@ -76,9 +88,11 @@ const portraitSalt = 0xA24BAED4963EE407
 // местах, а пустая примета — законный случай (не у всякого жителя в фактах есть
 // что-то видимое глазом).
 type Look struct {
-	// Person — сложение, лицо, волосы: «a tall, heavy-set man with a broad
-	// face and short grey hair».
-	Person string `json:"person"`
+	// Face — ЛИЦО И ВОЛОСЫ, и только они: «a broad plain face with a crooked
+	// nose and short grey hair». Сложения здесь нет намеренно — его бросает
+	// жребий (portraitBuilds), потому что модель, которой доверили выбирать
+	// сложение, выбрала одно и то же пятерым из пяти.
+	Face string `json:"face"`
 	// Clothing — во что одет, без брендов и надписей.
 	Clothing string `json:"clothing"`
 	// Detail — ОДНА видимая примета из фактов, если она там есть. Пусто —
@@ -90,11 +104,11 @@ type Look struct {
 var PortraitSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"person":   map[string]any{"type": "string"},
+		"face":     map[string]any{"type": "string"},
 		"clothing": map[string]any{"type": "string"},
 		"detail":   map[string]any{"type": "string"},
 	},
-	"required":             []string{"person", "clothing", "detail"},
+	"required":             []string{"face", "clothing", "detail"},
 	"additionalProperties": false,
 }
 
@@ -148,6 +162,31 @@ var (
 		"Even diffused light with no strong shadows",
 		"Low late-afternoon sun through a window",
 	}
+	// СЛОЖЕНИЕ — тоже жребий, и это правка от 30.08.2026 по жалобе владельца
+	// («почему они все какие-то упитанные»). Раньше сложение выбирала МОДЕЛЬ, а
+	// в задании ей стояло «дай им настоящие лица: ВЕС, редеющие волосы, кривые
+	// зубы… это важнее всего остального» — и она послушалась буквально: у первых
+	// же пяти жителей вышли «soft belly», «thickening waist», «heavy-set»,
+	// «slight double chin», «slightly heavy build». Пять из пяти.
+	//
+	// Урок ровно тот, что записан в карте проекта дважды и который я тут
+	// повторил: величина, живущая МЕЖДУ портретами, назначается ЖРЕБИЕМ, а не
+	// просьбой. Список в промпте модель читает как рецепт и исполняет весь —
+	// та же грабля, что у jabsLine с приёмами пассивной агрессии.
+	//
+	// Веса АВТОРСКИЕ, замера у них нет и быть не может: повторы в таблице и есть
+	// вес. Полных двое из тринадцати — не потому, что столько в жизни, а потому
+	// что тридцать одинаковых силуэтов выдают машину так же, как тридцать
+	// одинаковых лиц.
+	portraitBuilds = []string{
+		"a thin build", "a thin build",
+		"a lean build", "a lean build",
+		"a wiry, slight build",
+		"an average build", "an average build", "an average build",
+		"an average build", "an average build",
+		"a stocky, solid build", "a stocky, solid build",
+		"a broad, heavy build",
+	}
 	// Без артикля: строка встаёт в «Plain %s background», и «a» посреди неё
 	// давала «Plain a soft off-white background».
 	portraitBack = []string{
@@ -180,9 +219,9 @@ func Portrait(b Bio, slug string, seed uint64, look Look, midjourney bool) strin
 	f := factsFor(b)
 	rng := portraitDie(seed, slug)
 
-	person := strings.TrimSpace(look.Person)
-	if person == "" {
-		person = "an ordinary, unremarkable face"
+	face := strings.TrimSpace(look.Face)
+	if face == "" {
+		face = "an ordinary, unremarkable face"
 	}
 	clothing := strings.TrimSpace(look.Clothing)
 	if clothing == "" {
@@ -194,21 +233,24 @@ func Portrait(b Bio, slug string, seed uint64, look Look, midjourney bool) strin
 	// сходства с реальным лицом, и просто правда.
 	b1.WriteString("Photorealistic portrait photograph of a fictional person — not a real individual, not a celebrity.\n\n")
 
-	fmt.Fprintf(&b1, "Subject: %s.\n", subjectLine(f))
-	// Внешность — СВОЕЙ строкой с подписью, а не хвостом к Subject: клауза
-	// модели сама начинается с «a tall man», и приклеенная давала
-	// «...Russian man. a tall man...».
-	fmt.Fprintf(&b1, "Build and face: %s.\n", trimDot(person))
+	// СЛОЖЕНИЕ — ЖРЕБИЙ, и стоит оно в той же строке, что возраст и пол: это
+	// свойство человека, а не просьба к модели.
+	fmt.Fprintf(&b1, "Subject: %s, %s.\n", subjectLine(f), pick(rng, portraitBuilds))
+	// Лицо — СВОЕЙ строкой с подписью, а не хвостом к Subject: клауза модели
+	// сама начинается с существительного, и приклеенная давала «...Russian man.
+	// a tall man...».
+	fmt.Fprintf(&b1, "Face and hair: %s.\n", trimDot(face))
 	fmt.Fprintf(&b1, "Wearing %s.\n", trimDot(clothing))
 	if d := strings.TrimSpace(look.Detail); d != "" {
 		fmt.Fprintf(&b1, "%s.\n", trimDot(upperFirst(d)))
 	}
 
-	// Возраст на лице просим отдельной строкой и всегда: генераторы молодят и
-	// прихорашивают, а тридцать красивых лиц подряд выдают машину раньше любой
-	// стилистики.
-	b1.WriteString("\nOrdinary-looking, not a model — natural skin texture with pores and blemishes, no retouching, no makeup styling.\n")
-	fmt.Fprintf(&b1, "%s\n", agingLine(f.Age, f.Gender))
+	// Про обычность лица говорим РОВНО ОДИН РАЗ. Раньше здесь стояло три
+	// синонимичных просьбы разом — «не модель», «поры и пятна», «без
+	// ретуши», — и вместе с возрастной поправкой и словом «weight» в задании
+	// модели они складывались: получалось не «обычный человек», а «потрёпанный».
+	b1.WriteString("\nOrdinary rather than glamorous — a real face, not a model's.\n")
+	fmt.Fprintf(&b1, "%s\n", ageAnchor(f.Age, f.Gender))
 
 	b1.WriteString("\n")
 	fmt.Fprintf(&b1, "Head and shoulders, %s, %s. %s. Plain %s background, softly out of focus.\n",
@@ -256,26 +298,40 @@ func subjectLine(f portraitFacts) string {
 	return s.String()
 }
 
-// agingLine — насколько лицу положено быть пожившим.
-func agingLine(age int, gender string) string {
+// ageAnchor — сколько лет лицу.
+//
+// ЯКОРЬ, А НЕ ТОЛЧОК, и переделано это 30.08.2026 по жалобе владельца: «даже
+// Лисёнок, несмотря на юный возраст, выглядит на все 45». Стояло здесь
+// одностороннее «клади на лицо возраст» — морщины, седина, усталые глаза, —
+// заведённое из верного наблюдения, что генераторы молодят. Но поправка НЕ
+// ЗНАЕТ МЕРЫ: возраст уже назван числом строкой выше, и вторая просьба про то
+// же самое кладётся поверх, а не вместо. У тридцатитрёхлетней воспитательницы
+// это дало «ruddy weathered skin» и лицо на сорок пять.
+//
+// Теперь названы ОБЕ стороны — «ровно столько, не старше и не моложе», — по
+// тому же доводу, что у односложности реплик: односторонняя инструкция
+// оставляет молчаливое умолчание, а оно сильнее просьбы. Возрастные приметы
+// остаются только там, где они и есть у живых людей, и подаются скупо.
+func ageAnchor(age int, gender string) string {
 	// Местоимение берётся по полу, а не «his or her»: промпт читает генератор,
 	// и развилка в тексте — лишний повод ему усомниться, кого рисовать.
-	he, his := "They look", "their"
+	who := "They look"
 	switch gender {
 	case "male":
-		he, his = "He looks", "his"
+		who = "He looks"
 	case "female":
-		he, his = "She looks", "her"
+		who = "She looks"
 	}
+	head := fmt.Sprintf("%s exactly %d — no older and no younger", who, age)
 	switch {
 	case age >= 55:
-		return he + " " + his + " age: deep lines, grey hair, sagging skin under the eyes."
+		return head + ": grey hair and clear lines, and nothing beyond that."
 	case age >= 45:
-		return he + " " + his + " age: visible lines, greying hair, tired eyes."
+		return head + ": light lines at the eyes, a little grey coming in."
 	case age >= 35:
-		return he + " " + his + " age: the first lines around the eyes, skin that has seen weather."
+		return head + ": at most the first faint lines, smooth skin otherwise."
 	default:
-		return "An everyday face, slightly uneven features."
+		return head + ": a young adult face, smooth skin, no ageing marks at all."
 	}
 }
 
@@ -304,18 +360,24 @@ Rules:
 - Write only what is VISIBLE in a head-and-shoulders photograph. Not the job
   itself, not the biography, not the mood — what a stranger would see.
 - The character sheet is in Russian; you answer in English.
-- Ordinary people, not models. Give them uneven, forgettable, real faces:
-  weight, thinning hair, bad haircuts, crooked teeth, weathered skin. This
-  matters more than anything else — a beautiful face is a wrong answer.
-- Let the job and the small facts show through the body and the clothes, not
-  through props: a bus driver's shoulders and a hairdresser's own haircut, not
-  a steering wheel and a pair of scissors.
+- BODY SIZE IS ALREADY DECIDED ELSEWHERE. Never mention weight, build, fat,
+  thinness, a double chin, a belly, jowls, heavy cheeks or shoulders. Describe
+  the FACE and the HAIR only. Height is the one exception, and only if the
+  character sheet states it.
+- AGE IS ALREADY STATED. Do not add ageing of your own: no wrinkles, no grey,
+  no weathered or leathery skin, no tired or sunken eyes, unless the person is
+  over fifty. A face that reads older than the stated age is a wrong answer.
+- Ordinary rather than glamorous — a real face, not a model's. One or two plain
+  imperfections are enough (an uneven nose, thin eyebrows, a crooked tooth, a
+  bad haircut). Do not pile them up.
+- Let the job and the small facts show through the hair and the clothes, not
+  through props: a hairdresser's own haircut, not a pair of scissors.
 - No text, logos, brands, uniforms with insignia, or writing of any kind.
 - Plain noun phrases, no sentences, no "the image shows", no adjectives of
-  praise. Each field at most 25 words.
+  praise. Each field at most 20 words.
 
 Fields:
-- person: build, face, hair, skin. Start with the body, end with the hair.
+- face: the face and the hair, in that order. No body, no age marks.
 - clothing: everyday clothes this person would actually wear, plainly named.
 - detail: ONE visible thing taken from the facts, if any of them is visible at
   all. If none is, return an empty string — do not invent one.`

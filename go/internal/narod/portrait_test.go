@@ -1,6 +1,7 @@
 package narod
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -112,12 +113,12 @@ func TestБезПолаПромптНеДодумывает(t *testing.T) {
 // Ответ модели встаёт на свои места, а пустая примета не оставляет дыры.
 func TestОтветМоделиВстаётВПромпт(t *testing.T) {
 	look := Look{
-		Person:   "a very tall, heavy-set man with a broad flat face and thinning grey hair",
+		Face:     "a broad flat face with a crooked nose and thinning grey hair",
 		Clothing: "a worn dark blue work jacket over a checked shirt",
 	}
 	got := Portrait(sevaBio(), "dyadyastepa", 1, look, false)
-	if !strings.Contains(got, look.Person) {
-		t.Error("внешность от модели не встала в промпт")
+	if !strings.Contains(got, look.Face) {
+		t.Error("лицо от модели не встало в промпт")
 	}
 	if !strings.Contains(got, "Wearing "+look.Clothing) {
 		t.Error("одежда от модели не встала в промпт")
@@ -140,52 +141,86 @@ func TestХвостMidjourneyТолькоПоФлагу(t *testing.T) {
 	}
 }
 
-// Возраст на лице просят ВСЕГДА и тем сильнее, чем человек старше: генераторы
-// молодят и прихорашивают, а тридцать красивых лиц подряд выдают машину раньше
-// любой стилистики.
-func TestУВозрастаЕстьСледНаЛице(t *testing.T) {
-	for _, c := range []struct {
-		age  int
-		want string
-	}{{27, "everyday face"}, {37, "first lines"}, {49, "greying"}, {57, "deep lines"}} {
+// ВОЗРАСТ — ЯКОРЬ В ОБЕ СТОРОНЫ, а не толчок в одну.
+//
+// Первая редакция просила только «клади на лицо годы», из верного наблюдения,
+// что генераторы молодят. Поправка не знала меры и складывалась с тремя другими
+// просьбами про невзрачность: у 33-летней воспитательницы вышло лицо на сорок
+// пять (жалоба владельца, 30.08.2026). Теперь названы ОБЕ стороны — по тому же
+// доводу, что у односложности реплик: где инструкции нет, модель делает то же,
+// что делала, и умолчание оказывается сильнее просьбы.
+func TestВозрастЗакреплёнВОбеСтороны(t *testing.T) {
+	for _, age := range []int{25, 33, 38, 47, 58} {
 		b := sevaBio()
-		b.Age = c.age
+		b.Age = age
 		got := Portrait(b, "dyadyastepa", 1, Look{}, false)
-		if !strings.Contains(got, c.want) {
-			t.Errorf("в %d лет промпт не просит %q", c.age, c.want)
+		want := fmt.Sprintf("exactly %d — no older and no younger", age)
+		if !strings.Contains(got, want) {
+			t.Errorf("в %d лет промпт не закрепляет возраст (%q):\n%s", age, want, got)
 		}
-		if !strings.Contains(got, "not a model") {
-			t.Errorf("в %d лет промпт не просит обычного лица", c.age)
+	}
+	// Молодому лицу возрастных примет не назначают вовсе.
+	young := sevaBio()
+	young.Age = 27
+	got := Portrait(young, "dyadyastepa", 1, Look{}, false)
+	for _, bad := range []string{"grey hair", "lines", "weathered"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("двадцатисемилетнему приписали %q:\n%s", bad, got)
+		}
+	}
+	// А про обычность лица сказано РОВНО ОДИН РАЗ: три синонимичные просьбы и
+	// дали «потрёпанного» вместо «обычного».
+	if n := strings.Count(got, "not a model"); n != 1 {
+		t.Errorf("про обычность лица сказано %d раз, ожидался один", n)
+	}
+	for _, gone := range []string{"pores and blemishes", "no retouching"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("лишняя просьба про невзрачность: %q", gone)
 		}
 	}
 }
 
-// АНГЛИЙСКИЙ ПРОМПТА — И ЕСТЬ ПРОДУКТ, поэтому его склейка проверяется так же,
-// как проверялась бы разметка страницы. Первый же прогон по боевым карточкам
-// дал три огреха разом, и все три родились на стыке кода и таблицы: артикль
-// внутри «Plain a soft off-white background», развилка «his or her age» и
-// строчная буква после точки, потому что клауза модели приклеивалась хвостом к
-// готовому предложению.
-func TestПромптСклеенПоАнглийски(t *testing.T) {
-	look := Look{
-		Person:   "a very tall, heavy-set man with a broad flat face",
-		Clothing: "a worn dark blue work jacket",
+// СЛОЖЕНИЕ БРОСАЕТ ЖРЕБИЙ, а не выбирает модель.
+//
+// Оплачено боем: в задании модели стояло «дай настоящие лица: ВЕС, редеющие
+// волосы, кривые зубы — это важнее всего остального», и у пятерых жителей из
+// пяти вышло полное сложение. Список в промпте модель читает как рецепт и
+// исполняет весь — та же грабля, что у jabsLine.
+func TestСложениеБросаетЖребий(t *testing.T) {
+	seen := map[string]int{}
+	slugs := []string{
+		"beret", "dyadyastepa", "gosha", "hlopushka", "irma", "kedrach",
+		"koshka", "kostik", "kuzmich", "lisenok", "mazay", "myatnaya",
+		"nyurka", "olgabat", "pelmen", "polkovnik", "professor", "prorab",
 	}
-	for _, slug := range []string{"dyadyastepa", "beret", "kedrach", "koshka", "kostik", "irma"} {
-		got := Portrait(sevaBio(), slug, 1, look, false)
-		for _, bad := range []string{"Plain a ", "his or her", ". a ", ". an "} {
-			if strings.Contains(got, bad) {
-				t.Errorf("%s: в промпте %q:\n%s", slug, bad, got)
+	for _, slug := range slugs {
+		got := Portrait(sevaBio(), slug, 1, Look{}, false)
+		for _, b := range portraitBuilds {
+			if strings.Contains(got, b) {
+				seen[b]++
+				break
 			}
 		}
 	}
-	// Местоимение согласовано с полом, а не выбирается генератором.
-	if !strings.Contains(Portrait(sevaBio(), "dyadyastepa", 1, look, false), "He looks his age") {
-		t.Error("мужчине не досталось своего местоимения")
+	if len(seen) < 4 {
+		t.Errorf("на восемнадцати жителях сложений всего %d: %v", len(seen), seen)
 	}
-	w := sevaBio()
-	w.Gender = "female"
-	if !strings.Contains(Portrait(w, "beret", 1, look, false), "She looks her age") {
-		t.Error("женщине не досталось своего местоимения")
+	// Полных не должно быть большинством — ровно то, с чего началась жалоба.
+	heavy := seen["a broad, heavy build"] + seen["a stocky, solid build"]
+	if heavy*2 > len(slugs) {
+		t.Errorf("плотных сложений %d из %d — это снова «все упитанные»", heavy, len(slugs))
+	}
+}
+
+// Модель про сложение не спрашивают вовсе, и запрет стоит в задании явно.
+func TestМоделиЗапрещеноСложение(t *testing.T) {
+	system, _ := PortraitRequest(sevaBio())
+	for _, want := range []string{"BODY SIZE IS ALREADY DECIDED", "AGE IS ALREADY STATED"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("в задании модели нет запрета %q", want)
+		}
+	}
+	if strings.Contains(system, "weight, thinning hair") {
+		t.Error("в задании модели остался список, из-за которого все вышли упитанными")
 	}
 }
