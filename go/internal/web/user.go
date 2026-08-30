@@ -91,7 +91,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
-		page:        s.newPage(r, userTitle(member)),
+		page:        s.readingPage(r, userTitle(member)),
 		Member:      member,
 		Banned:      member.Banned(time.Now()),
 		Notes:       notes,

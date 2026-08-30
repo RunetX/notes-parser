@@ -77,6 +77,7 @@ type fakeStore struct {
 	faces      []platform.PersonaFace
 	facesErr   error
 	facesLimit int
+	facesCalls int
 
 	// Страница участника: карточка и то, что он написал.
 	profile    platform.Profile
@@ -108,7 +109,7 @@ func (f *fakeStore) AuthorComments(context.Context, int64, int) ([]platform.PubC
 
 // Мордолента: что отдать и с каким потолком за ней пришли.
 func (f *fakeStore) PersonaFaces(_ context.Context, limit int) ([]platform.PersonaFace, error) {
-	f.facesLimit = limit
+	f.facesLimit, f.facesCalls = limit, f.facesCalls+1
 	return f.faces, f.facesErr
 }
 

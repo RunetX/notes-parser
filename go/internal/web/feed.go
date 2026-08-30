@@ -140,11 +140,14 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if len(notes) > 0 {
 		fresh = feedCursor(notes[0].PublishedAt, notes[0].ID)
 	}
-	// Закреплённое и мордолента — только на первой странице. На остальных они
-	// были бы шапкой, которая едет за читателем: он листает ленту как раз затем,
-	// чтобы уйти от начала. Лишних запросов на страницах 2…5933 при этом нет
-	// вовсе — ни того, ни другого.
-	var faces []platform.PersonaFace
+	// Закреплённое — только на первой странице. На остальных оно было бы
+	// шапкой, которая едет за читателем: он листает ленту как раз затем, чтобы
+	// уйти от начала. Лишнего запроса на страницах 2…5933 при этом нет вовсе.
+	//
+	// С мордолентой вышло иначе (просьба владельца 30.08.2026): она стоит на
+	// ВСЕХ страницах чтения, включая вторую страницу ленты, — на НГС это часть
+	// раздела, а не украшение его начала. Платы за это нет: полоса читается из
+	// кэша на полминуты (faces.go).
 	if num == 1 {
 		pinned, err := s.st.PinnedNotes(ctx, v)
 		if err != nil {
@@ -152,14 +155,10 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		notes = append(pinned, notes...)
-		faces = s.faces(ctx)
 	}
 	me, signedIn := s.me(r)
-	// Мордолента живёт в общей части страницы: рисует её каркас, над карточкой.
-	p := s.newPage(r, "")
-	p.Faces = faces
 	s.render(w, r, http.StatusOK, "feed.gohtml", feedPage{
-		page:     p,
+		page:     s.readingPage(r, ""),
 		Notes:    notes,
 		Pager:    newPager(num, pages, feedURL),
 		CanWrite: signedIn && me.Kind == platform.KindMember && s.wr != nil,

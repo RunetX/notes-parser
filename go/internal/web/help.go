@@ -39,7 +39,7 @@ type helpPage struct {
 func (s *Server) handleHelp(w http.ResponseWriter, r *http.Request) {
 	op := s.cfg.Operator.Public()
 	s.render(w, r, http.StatusOK, "help.gohtml", helpPage{
-		page:        s.newPage(r, "Справка и правила"),
+		page:        s.readingPage(r, "Справка и правила"),
 		Operator:    op.Name,
 		Contact:     op.Contact,
 		EditMinutes: int(platform.EditWindow / time.Minute),
