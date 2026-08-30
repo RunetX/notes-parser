@@ -167,6 +167,7 @@ type Service struct {
 	world   *World
 	stage   Stage
 	gen     JSONGenerator
+	chron   JSONGenerator // летописец: свой срок, тред читается целиком
 	players []Player
 	clock   Clock
 	seed    uint64
@@ -233,6 +234,15 @@ func (s *Service) SetGate(f func(context.Context) bool) {
 		s.enabled = f
 	}
 }
+
+// SetChronicler даёт летописцу СВОЙ клиент модели. Нужен он ровно из-за срока:
+// реплику пишут по двадцати последним строкам, а летопись читает ТРЕД ЦЕЛИКОМ —
+// на первой боевой песочнице это 112 реплик, — и один срок на двоих означает
+// либо слишком долгое ожидание у реплики, либо обрыв у летописи. Первая
+// песочница закрылась с нулём сдвинутых отношений при 68 посчитанных знакомствах,
+// и в отказах того же прогона лежит «context deadline exceeded» на реплике,
+// которая в разы короче. Пусто — летопись идёт тем же клиентом, что и реплики.
+func (s *Service) SetChronicler(gen JSONGenerator) { s.chron = gen }
 
 // SetModel называет модель и провайдера для журнала.
 func (s *Service) SetModel(provider, model string) { s.provider, s.model = provider, model }
@@ -745,7 +755,11 @@ func (s *Service) chronicle(ctx context.Context, noteID int64) (*ChronicleResult
 		}
 		th.Replies = append(th.Replies, r)
 	}
-	return Chronicle(ctx, s.world, s.gen, th)
+	gen := s.chron
+	if gen == nil {
+		gen = s.gen
+	}
+	return Chronicle(ctx, s.world, gen, th)
 }
 
 // look — заметка и её тред одним вопросом: их всегда спрашивают вместе.

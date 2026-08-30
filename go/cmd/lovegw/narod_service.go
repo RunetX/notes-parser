@@ -68,6 +68,15 @@ func (d *daemon) setupNarod() error {
 		d.narodWorld = nil
 		return fmt.Errorf("народ: %w", err)
 	}
+	// Летописцу — свой клиент с ДЛИННЫМ сроком: он читает тред целиком, а реплика
+	// пишется по двадцати последним строкам. Один срок на двоих означал бы либо
+	// долгое ожидание у реплики, либо обрыв у летописи (первая боевая песочница
+	// закрылась с нулём сдвинутых отношений).
+	if chron, _, err := narodChronicler(cfg); err == nil {
+		svc.SetChronicler(chron)
+	} else {
+		log.Warn("народ: летописец пойдёт общим клиентом", "err", err)
+	}
 	svc.SetSeed(uint64(max(cfg.Narod.Seed, 1)))
 	svc.SetModel("anthropic", model)
 	// Тумблер спрашивается У БАЗЫ на каждом такте, а не читается один раз: между
@@ -152,6 +161,20 @@ func narodConfig(cfg *config.Config) narod.Config {
 // жители и администратор), значит вывозить за пределы России нечего. Развилка
 // именно здесь: открывая песочницу аудитории, менять придётся ровно одну эту
 // функцию, а не искать по коду все места, где зовётся модель.
+// narodChronicler — клиент летописца. Отличается ровно сроком: пять минут против
+// девяноста секунд, потому что читает он тред целиком.
+func narodChronicler(cfg *config.Config) (narod.JSONGenerator, string, error) {
+	gen, err := llmClientFor(cfg, cfg.Narod.Model, "", 5*time.Minute)
+	if err != nil {
+		return nil, "", err
+	}
+	model := cfg.Narod.Model
+	if model == "" {
+		model = cfg.LLM.Model
+	}
+	return gen, model, nil
+}
+
 func narodGenerator(cfg *config.Config) (narod.JSONGenerator, string, error) {
 	gen, err := llmClientFor(cfg, cfg.Narod.Model, "", 90*time.Second)
 	if err != nil {
