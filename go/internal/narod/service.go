@@ -70,6 +70,10 @@ type Config struct {
 	// PlanCap — сколько живёт неисполненное намерение. Всё, что старше,
 	// снимается: ответ через двое суток это уже не ответ.
 	PlanCap time.Duration
+	// AskRate — доля реплик с вопросом. ЗАМЕР по 111 тыс. реплик архива: 19,0 %
+	// (живые треды на ту же тему дают 20,7 % и 21,2 %). Число КОРПУСНОЕ, как
+	// соседние: личного замера в карточке пока нет.
+	AskRate float64
 	// OneThoughtRate — доля реплик, написанных ОДНОЙ фразой. ЗАМЕР по 111 тыс.
 	// реплик архива: 75,6 % (у живого треда на ту же тему — 78 %). У нас без этого
 	// жребия выходило 15,6 %: модель строит каждую реплику как сетап и панч, и
@@ -127,6 +131,7 @@ func Defaults() Config {
 		// то есть дальше ждать уже нечего.
 		ThreadCloseAfter: 12 * time.Hour,
 		PlanCap:          48 * time.Hour,
+		AskRate:          0.19,
 		OneThoughtRate:   0.756,
 		EllipsisRate:     0.225,
 		GeneralizeRate:   0.0048,
@@ -609,6 +614,7 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 
 	point.TargetRunes = int(QuantileAt(p.Card.Register.Runes, rng.Float64()) + 0.5)
 	point.OneThought = rng.Float64() < s.cfg.OneThoughtRate
+	point.Asks = rng.Float64() < s.cfg.AskRate
 	point.Ellipsis = s.cfg.EllipsisRate
 	if r := p.Card.Register.EmojiRate; r > 0 {
 		want := rng.Float64() < r
