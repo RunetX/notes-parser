@@ -71,7 +71,17 @@ type composePage struct {
 	TextLocked bool
 	Body       string
 	Anonymous  bool
-	Problem    string
+	// Stage и CanStage — ПЕСОЧНИЦА (эпик «народ»): заметка, в которой говорят
+	// жители, а люди только читают. Галочка стоит на форме НОВОЙ заметки и
+	// только у администратора: заводить песочницу вправе он и сам житель
+	// (platform.stageGuard), а житель формой не пользуется вовсе.
+	//
+	// Полей два, а не одно, по тому же доводу, что у Anonymous рядом с CanShot:
+	// первое — что человек выбрал (и что обязано пережить отказ), второе —
+	// показывать ли этот выбор.
+	Stage    bool
+	CanStage bool
+	Problem  string
 	// CanShot — площадка сейчас принимает файлы (есть перекодировщик). Нет —
 	// поля файла в форме нет вовсе.
 	CanShot bool
@@ -95,9 +105,39 @@ func (s *Server) handleNewNote(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.writer(w, r); !ok {
 		return
 	}
-	s.render(w, r, http.StatusOK, composePageName, composePage{
-		page: s.newPage(r, "Новая заметка"), CanShot: s.takesShots(),
-	})
+	s.render(w, r, http.StatusOK, composePageName, s.newNoteForm(r, "", false, false))
+}
+
+// newNoteForm — форма новой заметки В ОДНОМ МЕСТЕ: её собирают и показ, и
+// каждый отказ. Тот же довод, что у editForm ниже, и он не про опрятность:
+// разойдясь, две копии разойдутся МОЛЧА — форму отказа видит не тот, кто её
+// писал, а тот, кому отказали.
+func (s *Server) newNoteForm(r *http.Request, body string, anon, stage bool) composePage {
+	return composePage{
+		page:      s.newPage(r, "Новая заметка"),
+		Body:      body,
+		Anonymous: anon,
+		Stage:     stage,
+		CanStage:  s.canStage(r),
+		CanShot:   s.takesShots(),
+	}
+}
+
+// canStage — вправе ли этот человек завести песочницу.
+//
+// Спрашивается ТОЛЬКО ради показа галочки, и настоящей проверкой не является:
+// та стоит в ядре (stageGuard) и идёт той же транзакцией, что и публикация.
+// Здесь же она повторена по общему правилу морды — не рисовать кнопку, которая
+// ответит отказом.
+//
+// Права модератора к этому отношения не имеют, поэтому и от s.mod показ не
+// зависит: песочница — вопрос о том, кто здесь ГОВОРИТ, а не о словах.
+func (s *Server) canStage(r *http.Request) bool {
+	u, ok := s.me(r)
+	if !ok {
+		return false
+	}
+	return platform.Viewer{UserID: u.ID, Role: u.Role}.CanAdmin()
 }
 
 // handleCreateNote — публикация заметки, с картинкой или без.
@@ -134,7 +174,7 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 			// значит форма перерисуется без набранного текста и без номера
 			// черновика. Читать десять мегабайт ради того, кому мы уже
 			// отказали, дороже — см. шапку MayPublishNote в ядре.
-			s.composeProblem(w, r, err, "", false, true, nil)
+			s.composeProblem(w, r, err, s.newNoteForm(r, "", false, false), true, nil)
 			return
 		}
 		release, ok := s.takeShotSlot(w, r)
@@ -154,23 +194,27 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 
 	body := r.FormValue("body")
 	anon := r.FormValue("anonymous") != ""
+	stage := r.FormValue("stage") != ""
 
 	shot, draft, problem := s.pickShot(r.Context(), r, u.ID)
 	if problem != "" {
 		// Заметка НЕ публикуется. Опубликовать текст молча, без картинки, значит
 		// решить за человека, который её осознанно прикладывал.
-		s.render(w, r, http.StatusBadRequest, composePageName, composePage{
-			page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon,
-			Problem: problem, LostShot: hadFilePart(r), CanShot: s.takesShots(),
-		})
+		form := s.newNoteForm(r, body, anon, stage)
+		form.Problem, form.LostShot = problem, hadFilePart(r)
+		s.render(w, r, http.StatusBadRequest, composePageName, form)
 		return
 	}
 
+	// Stage уходит в ядро КАК ЕСТЬ, без проверки прав здесь: её делает
+	// stageGuard той же транзакцией, что и саму публикацию. Подделанная
+	// страница получит оттуда честный отказ, а не тихо заведённую песочницу.
 	id, err := s.wr.CreateNote(r.Context(), platform.NewNote{
-		AuthorID: u.ID, Anonymous: anon, Body: body,
+		AuthorID: u.ID, Anonymous: anon, Body: body, Stage: stage,
 	}, shot)
 	if err != nil {
-		s.composeProblem(w, r, err, body, anon, hadFilePart(r) && draft == "", draftView(shot, draft))
+		s.composeProblem(w, r, err, s.newNoteForm(r, body, anon, stage),
+			hadFilePart(r) && draft == "", draftView(shot, draft))
 		return
 	}
 	// Черновик прожил ровно до заметки. Убирается ПОСЛЕ удачи, а не при чтении:
@@ -184,17 +228,14 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 // composeProblem перерисовывает форму с отказом, не теряя ни набранного текста,
 // ни приложенной картинки: предзагруженная возвращается карточкой, приехавшая
 // телом формы — увы, только словами о том, что её надо выбрать заново.
-func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err error, body string, anon, lost bool, draft *shotDraftView) {
+func (s *Server) composeProblem(w http.ResponseWriter, r *http.Request, err error, form composePage, lost bool, draft *shotDraftView) {
 	status, problem := writeProblem(err)
 	if problem == "" {
 		s.oops(w, r, "публикация заметки", err)
 		return
 	}
-	s.render(w, r, status, composePageName, composePage{
-		page: s.newPage(r, "Новая заметка"), Body: body, Anonymous: anon,
-		Problem: problem, LostShot: lost, CanShot: s.takesShots(),
-		Draft: draft,
-	})
+	form.Problem, form.LostShot, form.Draft = problem, lost, draft
+	s.render(w, r, status, composePageName, form)
 }
 
 // ---------------------------------------------------------------- правка заметки
@@ -560,6 +601,8 @@ func writeProblem(err error) (int, string) {
 		return http.StatusBadRequest, "Такой реакции нет."
 	case errors.Is(err, platform.ErrNotYours):
 		return http.StatusForbidden, "Это не ваша запись."
+	case errors.Is(err, platform.ErrStageClosed):
+		return http.StatusForbidden, "Завести песочницу может только администратор."
 	case errors.Is(err, platform.ErrNotAdmin):
 		return http.StatusForbidden, "Нужны права администратора."
 	case errors.Is(err, platform.ErrNotNative):

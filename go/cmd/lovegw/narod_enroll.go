@@ -194,7 +194,7 @@ func archiveNoteBody(ctx context.Context, p *platform.Platform, id int64) (strin
 // там же, где и проверка (см. platform.SetNoteStageAsAdmin).
 func narodStage(ctx context.Context, cfg *config.Config, noteID int64, off bool, reason string) error {
 	if noteID == 0 {
-		return fmt.Errorf("narod stage: назовите заметку (-note <id>)")
+		return fmt.Errorf("narod stage: назовите заметку (-id <номер>)")
 	}
 	p, err := platform.Open(ctx, cfg.Platform.DSN)
 	if err != nil {

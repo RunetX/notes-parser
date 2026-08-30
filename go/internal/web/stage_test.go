@@ -4,6 +4,8 @@ package web
 // объяснение вместо неё.
 
 import (
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -83,6 +85,86 @@ func TestOrdinaryNoteStillHasTheForm(t *testing.T) {
 	}
 	if strings.Contains(body, "/help#narod") {
 		t.Error("обычная заметка объявила себя песочницей")
+	}
+}
+
+// ------------------------------------------------------- завести песочницу
+
+// stageWriteServer — вошедший с заданной ролью и живой Writer. Модератора здесь
+// нет вовсе, и это часть проверки: песочница — вопрос о том, кто здесь ГОВОРИТ,
+// а не о словах, поэтому показ галочки от подключённой очереди не зависит.
+func stageWriteServer(t *testing.T, role platform.Role) (http.Handler, *fakeWriter, string) {
+	t.Helper()
+	auth, token := signedInAs(t, platform.User{
+		ID: testProfileID, Nick: testNick, Kind: platform.KindMember, Role: role,
+	})
+	wr := &fakeWriter{}
+	return newFullServer(t, noteStore(), auth, wr, nil, nil, Config{}), wr, token
+}
+
+// Галочку видит только администратор. Заводить песочницу вправе он и сам житель
+// (platform.stageGuard), но житель формой не пользуется вовсе — значит на
+// экране это дверь ровно для одного.
+func TestПесочницуПредлагаютТолькоАдминистратору(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		role platform.Role
+		want bool
+	}{
+		{"участник", platform.RoleUser, false},
+		{"модератор", platform.RoleModerator, false},
+		{"администратор", platform.RoleAdmin, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _, token := stageWriteServer(t, c.role)
+			body := do(h, as(guest(t, "GET", "/new"), token)).Body.String()
+			if got := strings.Contains(body, `name="stage"`); got != c.want {
+				t.Errorf("галочка песочницы: %v, ожидалось %v", got, c.want)
+			}
+		})
+	}
+}
+
+// Выбор доходит до ядра — и доходит ОТДЕЛЬНО от анонимности: вопросы разные, и
+// заметка бывает и той, и другой сразу. Не отмеченная галочка — обычная
+// заметка, а не «песочница по умолчанию».
+func TestПризнакПесочницыДоходитДоЯдра(t *testing.T) {
+	h, wr, token := stageWriteServer(t, platform.RoleAdmin)
+	w := do(h, postAs(t, "/new", url.Values{
+		"body": {"третье свидание"}, "stage": {"1"},
+	}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d", w.Code)
+	}
+	if !wr.note.Stage {
+		t.Error("до ядра не дошло, что это песочница")
+	}
+
+	h2, wr2, token2 := stageWriteServer(t, platform.RoleAdmin)
+	do(h2, postAs(t, "/new", url.Values{"body": {"обычная заметка"}}, token2))
+	if wr2.note.Stage {
+		t.Error("обычная заметка ушла в ядро песочницей")
+	}
+}
+
+// Отказ ядра объясняется словами, а не пятисоткой, и не теряет ни текста, ни
+// самой галочки: человек, у которого пропала заметка, второй раз её не напишет.
+func TestОтказПесочницыНеТеряетФорму(t *testing.T) {
+	h, wr, token := stageWriteServer(t, platform.RoleAdmin)
+	wr.fail = platform.ErrStageClosed
+
+	w := do(h, postAs(t, "/new", url.Values{
+		"body": {"третье свидание"}, "stage": {"1"},
+	}, token))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("код %d, ожидался честный отказ", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "третье свидание") {
+		t.Error("текст заметки потерян при отказе")
+	}
+	if !strings.Contains(body, `name="stage" value="1" checked`) {
+		t.Errorf("галочка не пережила отказ:\n%s", tailOf(body))
 	}
 }
 
