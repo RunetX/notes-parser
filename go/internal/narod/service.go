@@ -41,7 +41,19 @@ const (
 
 // Ключи курсоров.
 const (
-	cursorStageNote = "stage_note" // докуда прочитаны заметки-песочницы
+	// Курсора по id здесь БОЛЬШЕ НЕТ, и это не упрощение. Он читал песочницы
+	// «после номера N», то есть держался на том, что номер растёт со временем,
+	// — верно, пока песочницами были только НАТИВНЫЕ заметки. С 30.08.2026 ею
+	// становится и зеркальная, а её номер лежит в полосе НГС, то есть ВСЕГДА
+	// ниже любого нативного: курсор, ушедший к 100000000028, не мог увидеть
+	// заметку 313128 никогда. Ровно та же грабля, что у живого добора на
+	// смешанном треде (platform.FreshAfter) и у линейного вида: порядок по id
+	// верен ВНУТРИ полосы и неверен между ними.
+	//
+	// Взамен спрашивается то, что и требовалось: знает ли МИР этот тред. Мир и
+	// есть память службы о виденном, а песочниц единицы — их заводят по одной
+	// рукой администратора.
+	stageNoteCap = 200
 )
 
 // Сорта событий, на которые бросается монетка.
@@ -49,6 +61,16 @@ const (
 	eventNote  = "note"
 	eventReply = "reply"
 )
+
+// ErrOffStage — заметки на сцене больше нет: администратор снял признак
+// песочницы либо её скрыли.
+//
+// Ошибкой она называется по месту в сигнатуре, а событием является ШТАТНЫМ:
+// песочницу заводят и закрывают руками, и служба обязана это пережить, закрыв
+// разговор, — а не остановить смотр всем остальным песочницам. Отдельный тип
+// нужен ровно затем, чтобы отличать её от настоящего отказа базы, где остановка
+// как раз правильна.
+var ErrOffStage = errors.New("заметки нет на сцене")
 
 // Config — настройки службы. Все умолчания названы в Defaults вместе с доводом:
 // число без довода через месяц никто не сможет ни поднять, ни опустить.
@@ -297,16 +319,25 @@ func (s *Service) Scan(ctx context.Context) error {
 
 // scanNotes — заметки-песочницы, которых служба ещё не видела.
 func (s *Service) scanNotes(ctx context.Context) error {
-	after, err := s.world.Cursor(ctx, cursorStageNote)
+	notes, err := s.stage.StageNotesSince(ctx, 0, stageNoteCap)
 	if err != nil {
 		return err
 	}
-	notes, err := s.stage.StageNotesSince(ctx, after, 20)
-	if err != nil {
-		return err
+	if len(notes) == stageNoteCap {
+		// Молча упереться в потолок нельзя: заметки идут по возрастанию
+		// номера, и за потолком осталась бы новая песочница, а не старая.
+		s.log.Warn("народ: песочниц больше потолка", "потолок", stageNoteCap)
 	}
 	now := s.clock.Now()
 	for _, n := range notes {
+		// Виденную песочницу пропускаем: за её тредом ходит scanThreads.
+		known, err := s.world.KnownThread(ctx, n.ID)
+		if err != nil {
+			return err
+		}
+		if known {
+			continue
+		}
 		// Часы жизни треда заводятся от того мгновения, когда песочница стала
 		// ВИДНА жителям, а не от времени написания текста. Разница неважна у
 		// свежей `narod seed` (там это одно и то же) и решает всё у заметки,
@@ -333,9 +364,6 @@ func (s *Service) scanNotes(ctx context.Context) error {
 				return err
 			}
 		}
-		if err := s.world.SetCursor(ctx, cursorStageNote, n.ID); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -361,6 +389,18 @@ func (s *Service) scanThreads(ctx context.Context) error {
 
 func (s *Service) scanThread(ctx context.Context, noteID int64) error {
 	note, thread, err := s.look(ctx, noteID)
+	if errors.Is(err, ErrOffStage) {
+		// Заметка ушла со сцены — админ снял признак либо её скрыли. Это
+		// ШТАТНОЕ событие, а не сбой: жителям там больше нечего делать, и
+		// разговор закрывается ровно как у запертого треда.
+		//
+		// Раньше отсюда возвращалась ошибка, и она роняла ВЕСЬ смотр: одна
+		// заметка, снятая со сцены неделю назад, останавливала службу для
+		// всех остальных песочниц (поймано боем 30.08.2026 — смотр падал
+		// каждые тридцать секунд на заметке 100000000028 и до новой не
+		// доходил вовсе).
+		return s.world.CloseThread(ctx, noteID)
+	}
 	if err != nil {
 		return err
 	}
@@ -775,7 +815,7 @@ func (s *Service) look(ctx context.Context, noteID int64) (StageNote, []StageRep
 		return StageNote{}, nil, err
 	}
 	if len(notes) == 0 || notes[0].ID != noteID {
-		return StageNote{}, nil, fmt.Errorf("заметки %d на сцене нет", noteID)
+		return StageNote{}, nil, fmt.Errorf("заметка %d: %w", noteID, ErrOffStage)
 	}
 	thread, err := s.stage.StageThread(ctx, noteID)
 	return notes[0], thread, err

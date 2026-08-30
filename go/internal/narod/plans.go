@@ -274,3 +274,22 @@ func (w *World) ReopenThread(ctx context.Context, noteID int64, now time.Time) e
 	}
 	return nil
 }
+
+// KnownThread — видел ли мир этот тред хоть раз.
+//
+// Спрашивается отдельно, а не выводится из пустого LastActive у ThreadOf:
+// «незнакомый тред — не ошибка» там означает «считай его живым и пустым», и
+// строить на этом «а значит, мы его не видели» значит держать смысл на
+// умолчании соседней функции.
+//
+// Этим вопросом служба и узнаёт новую песочницу — вместо курсора по номеру
+// заметки, который не мог увидеть зеркальную (см. service.go).
+func (w *World) KnownThread(ctx context.Context, noteID int64) (bool, error) {
+	var n int
+	err := w.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM threads WHERE note_id = ?`, noteID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("тред %d: %w", noteID, err)
+	}
+	return n > 0, nil
+}
