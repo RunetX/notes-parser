@@ -286,3 +286,43 @@ func tailOf(s string) string {
 	}
 	return s
 }
+
+// ПОДПИСЬ ДВЕРИ называет то, зачем в неё идут, а не поля формы за ней.
+//
+// Поймано боем 30.08.2026: владелец смотрел на страницу зеркальной заметки
+// 313128, искал, как запустить жителей, и не находил — ссылка на форму правки
+// называлась «Картинка». Галочка песочницы за этой дверью уже стояла, а вывеска
+// осталась от прежнего содержимого. Дефект не в форме и не в ядре, а ровно в
+// одном слове, и потому проверяется именно слово.
+func TestДверьНазываетПесочницу(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		st         *fakeStore
+		want, gone string
+	}{
+		// Молчащая зеркальная — та самая, ради которой всё и делалось.
+		{"молчащая зеркальная", silentMirrorNote(), "Песочница", "Картинка"},
+		// В заметке уже говорили: песочницы не будет, и обещать её нельзя —
+		// остаётся прежняя подпись про картинку копии.
+		{"зеркальная с разговором", talkedMirrorNote(), "Картинка", "Песочница"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _, token := modServerOn(t, c.st, platform.RoleAdmin)
+			body := do(h, as(guest(t, "GET", "/n/"+itoa64(c.st.note.ID)), token)).Body.String()
+			if !strings.Contains(body, `<span class="lbl">`+c.want+`</span>`) {
+				t.Errorf("двери не хватает подписи %q — по ней её и ищут", c.want)
+			}
+			if strings.Contains(body, `<span class="lbl">`+c.gone+`</span>`) {
+				t.Errorf("дверь подписана %q, а ведёт не туда", c.gone)
+			}
+		})
+	}
+}
+
+// talkedMirrorNote — зеркальная заметка, под которой уже говорили: песочницей
+// ей не стать, и правило это держит ядро.
+func talkedMirrorNote() *fakeStore {
+	st := silentMirrorNote()
+	st.note.CommentCount = 7
+	return st
+}
