@@ -124,6 +124,11 @@ type Store interface {
 	UserProfile(ctx context.Context, id int64) (platform.Profile, error)
 	AuthorNotes(ctx context.Context, id int64, limit int) ([]platform.PubNote, error)
 	AuthorComments(ctx context.Context, id int64, limit int) ([]platform.PubComment, error)
+	// PersonaFaces — мордолента: жители с фотографией над первой страницей
+	// ленты (faces.go). Отдельным методом, а не полем у ленты: полоса живёт
+	// вне хронологии, спрашивается только на первой странице и порядок у неё
+	// свой — кто говорил последним.
+	PersonaFaces(ctx context.Context, limit int) ([]platform.PersonaFace, error)
 }
 
 // Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:

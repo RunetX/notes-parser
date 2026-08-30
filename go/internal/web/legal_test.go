@@ -114,8 +114,8 @@ func TestOwnDocsFailLoudlyOnUnknownField(t *testing.T) {
 
 // Переключатель тем переехал из подвала в меню участника (решение владельца
 // 23.08.2026): тема — настройка «про меня». Плата названа честно и стережётся
-// здесь же: у гостя переключателя нет вовсе, до входа тему держит системная
-// настройка браузера.
+// здесь же: у гостя переключателя нет вовсе, и с 30.08.2026 плата выросла —
+// до входа человек видит тему по умолчанию (defaultTheme), а не свою системную.
 func TestThemeSwitcherLivesInTheAccountMenu(t *testing.T) {
 	auth, token := signedInAs(t, platform.User{
 		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,

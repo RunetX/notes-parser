@@ -838,6 +838,13 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		{"карточка участника: заметки", profileQuery, []any{int64(1)}, "notes_author", 1},
 		{"заметки участника", authorNotesQuery, []any{int64(1), pubLimit}, "notes_author", 1},
 		{"реплики участника", authorCommentsQuery, []any{int64(1), pubLimit}, "comments_author_time", 1},
+		// Мордолента идёт на КАЖДОМ показе первой страницы ленты, и «когда этот
+		// житель говорил» она спрашивает по разу на жителя. Индекс users_persona
+		// здесь не назван намеренно: в заготовке двести анкет, и на такой
+		// таблице планировщик прав, выбирая перебор, — цена у выбора появляется
+		// только на боевых сотнях тысяч. А вот перебор comments ценой не
+		// оправдан ни на какой заготовке, и его ловит общая проверка ниже.
+		{"мордолента", personaFacesQuery, []any{60}, "comments_author_time", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

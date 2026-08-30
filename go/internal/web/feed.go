@@ -90,6 +90,10 @@ type feedPage struct {
 	// завести в одном списке ровно ту разницу между чужим и своим, которой у
 	// картинки нет вовсе.
 	Shots map[int64]platform.Media
+	// Faces — мордолента: лица жителей над лентой (faces.go). Только на первой
+	// странице, поэтому пустой список здесь означает и «жителей с фото нет», и
+	// «это не первая страница» — показу разница безразлична.
+	Faces []platform.PersonaFace
 }
 
 // thumbs — иллюстрации показанных заметок. Отказ чтения не роняет ленту: без
@@ -140,9 +144,11 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if len(notes) > 0 {
 		fresh = feedCursor(notes[0].PublishedAt, notes[0].ID)
 	}
-	// Закреплённое — только на первой странице. На остальных оно было бы
-	// шапкой, которая едет за читателем: он листает ленту как раз затем, чтобы
-	// уйти от начала. Лишнего запроса на страницах 2…5933 при этом нет вовсе.
+	// Закреплённое и мордолента — только на первой странице. На остальных они
+	// были бы шапкой, которая едет за читателем: он листает ленту как раз затем,
+	// чтобы уйти от начала. Лишних запросов на страницах 2…5933 при этом нет
+	// вовсе — ни того, ни другого.
+	var faces []platform.PersonaFace
 	if num == 1 {
 		pinned, err := s.st.PinnedNotes(ctx, v)
 		if err != nil {
@@ -150,6 +156,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		notes = append(pinned, notes...)
+		faces = s.faces(ctx)
 	}
 	me, signedIn := s.me(r)
 	s.render(w, r, http.StatusOK, "feed.gohtml", feedPage{
@@ -168,6 +175,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		FreshOK:    num == 1,
 		FreshAfter: fresh,
 		Shots:      s.thumbs(ctx, notes),
+		Faces:      faces,
 	})
 }
 

@@ -104,6 +104,66 @@ func TestСтраницаЖителяНазываетСебя(t *testing.T) {
 	}
 }
 
+// А страница ЖИТЕЛЯ открыта гостю (просьба владельца 30.08.2026 вслед за
+// мордолентой): довод, закрывший живых, здесь не работает вовсе — собирать в
+// одно место нечего, персональных данных у персонажа нет, а биографию оператор
+// и написал для показа. От поисковика она закрыта по-прежнему: profile
+// выдуманного человека в выдаче наравне с живыми — не то, чего мы хотим.
+func TestСтраницаЖителяОткрытаГостю(t *testing.T) {
+	st := profileStore()
+	st.profile.Persona = true
+	h, _, _ := profileServer(t, st, platform.RoleUser)
+
+	w := do(h, guest(t, "GET", profilePath()))
+	if w.Code != http.StatusOK {
+		t.Fatalf("гостю на странице жителя код %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "житель площадки") {
+		t.Error("гостю не сказано, кто перед ним")
+	}
+	if got := w.Header().Get("X-Robots-Tag"); !strings.Contains(got, "noindex") {
+		t.Errorf("страница жителя открыта роботам: %q", got)
+	}
+}
+
+// «Такого нет» и «есть, но живой» отвечаются гостю ОДИНАКОВО. Разведи мы эти
+// два ответа — и перебор номеров сказал бы постороннему, какие анкеты на
+// площадке заведены; сегодня этого не знает никто, кроме вошедших.
+func TestГостюНеВидноКакиеАнкетыЕсть(t *testing.T) {
+	st := profileStore()
+	st.profile.Persona = true
+	h, _, _ := profileServer(t, st, platform.RoleUser)
+
+	// Номер, которого в базе нет вовсе.
+	if got := do(h, guest(t, "GET", "/u/"+itoa64(profUserID+999))).Header().Get("Location"); got != "/login" {
+		t.Errorf("на несуществующей анкете гостя ведёт на %q, ожидался /login", got)
+	}
+	// Тот же номер, но анкета живого человека.
+	st.profile.Persona = false
+	if got := do(h, guest(t, "GET", profilePath())).Header().Get("Location"); got != "/login" {
+		t.Errorf("на анкете живого человека гостя ведёт на %q, ожидался /login", got)
+	}
+}
+
+// Имя ЖИТЕЛЯ — ссылка и у гостя, там же, где имя живого остаётся текстом:
+// мордолента ведёт ровно на ту же страницу, и расходиться этим двум дорогам
+// незачем.
+func TestИмяЖителяСсылкаИУГостя(t *testing.T) {
+	st := profileStore()
+	st.notes[0].Author.Persona = true
+	h, _, _ := profileServer(t, st, platform.RoleUser)
+
+	want := `href="/u/` + itoa64(st.notes[0].Author.ID) + `"`
+	if body := do(h, guest(t, "GET", "/")).Body.String(); !strings.Contains(body, want) {
+		t.Errorf("гостю имя жителя показано текстом, нет %q:\n%s", want, tailOf(body))
+	}
+	// А в треде — то же самое: правило про АВТОРА, а не про место показа.
+	st.thread[0].Author.Persona = true
+	if body := do(h, guest(t, "GET", "/n/312811")).Body.String(); !strings.Contains(body, `href="/u/`) {
+		t.Errorf("в треде имя жителя не ссылка:\n%s", tailOf(body))
+	}
+}
+
 // Запрет писать стоит на СТРАНИЦЕ ЧЕЛОВЕКА — там, где на него и смотрят.
 // Роли раздаёт только администратор: право скрывать чужие слова не должно
 // размножаться само.

@@ -148,3 +148,65 @@ func (p *Platform) Personas(ctx context.Context) ([]PersonaRow, error) {
 	}
 	return out, wrapf(rows.Err(), "жители")
 }
+
+// PersonaFace — житель в мордоленте: лицо, имя и номер, по которому собирается
+// адрес страницы. Ни биографии, ни счётчиков: полоса отвечает на вопрос «кто
+// здесь живёт», а всё остальное про человека — на его собственной странице.
+type PersonaFace struct {
+	ID        int64
+	Nick      string
+	AvatarURL string
+	Gender    Gender
+}
+
+// personaFacesQuery — жители для мордоленты, недавно говорившие первыми.
+//
+// Условий два, и оба существенные. JOIN к media, а не LEFT: мордолента есть
+// лента ЛИЦ, и житель без фото занял бы в ней место силуэтом, то есть сказал бы
+// читателю ровно ничего. Порядок — по последнему сказанному слову: полоса, у
+// которой порядок вечный, за неделю становится частью фона, а на НГС мордолента
+// как раз двигалась (жалоба тех лет — «мордолента уже третьи сутки не
+// двигается»). Ещё не заговоривший житель уходит в конец, но из полосы не
+// пропадает: он здесь живёт, просто пока молчит.
+//
+// Оба индекса на месте: жителей отбирает частичный users_persona (миграция
+// 0021), «когда говорил» отвечает comments_author_time (0011) — по одному
+// обращению на жителя, а не проходом по 10,7 млн реплик. Условие status = 0 в
+// подзапросе стоит не ради показа (времени наружу не отдаём), а ради ПЛАНА:
+// индекс частичный по тому же условию, и без него подзапрос уходит в перебор.
+const personaFacesQuery = `
+	SELECT u.id, u.nick, u.avatar_sha, m.mime, u.gender
+	  FROM users u
+	  JOIN media m ON m.sha256 = u.avatar_sha
+	 WHERE u.persona
+	 ORDER BY (SELECT max(c.published_at) FROM comments c
+	            WHERE c.author_id = u.id AND c.status = 0) DESC NULLS LAST, u.id
+	 LIMIT $1`
+
+// PersonaFaces — мордолента: жители с фотографией, недавно говорившие первыми.
+//
+// Читается на каждом показе первой страницы ленты, поэтому и запрос, и оба его
+// индекса названы выше поимённо: это самый частый запрос площадки, и лишний
+// перебор здесь отбирается у зеркала, живущего на том же ядре.
+func (p *Platform) PersonaFaces(ctx context.Context, limit int) ([]PersonaFace, error) {
+	rows, err := p.pool.Query(ctx, personaFacesQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("мордолента: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PersonaFace
+	for rows.Next() {
+		var (
+			f    PersonaFace
+			sha  []byte
+			mime *string
+		)
+		if err := rows.Scan(&f.ID, &f.Nick, &sha, &mime, &f.Gender); err != nil {
+			return nil, fmt.Errorf("мордолента: %w", err)
+		}
+		f.AvatarURL = MediaURL(sha, strOf(mime))
+		out = append(out, f)
+	}
+	return out, wrapf(rows.Err(), "мордолента")
+}

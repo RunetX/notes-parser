@@ -4,6 +4,8 @@
   {{if .CanWrite}}<a class="newnote" href="/new">Написать заметку</a>{{end}}
 </div>
 
+{{if .Faces}}{{template "faces" .Faces}}{{end}}
+
 {{template "pager" .Pager}}
 
 {{if not .Notes}}

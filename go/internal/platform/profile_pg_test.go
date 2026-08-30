@@ -225,3 +225,69 @@ func TestСписокЖителей(t *testing.T) {
 		t.Errorf("список жителей: %+v", list)
 	}
 }
+
+// Мордолента: кто попадает в полосу лиц и в каком порядке.
+//
+// Два правила, и оба видны только на живой базе. Без ФОТО жителя в полосе нет:
+// мордолента есть лента лиц, и силуэт занял бы место, ничего не сказав. Порядок
+// — по последнему сказанному слову: полоса с вечным порядком за неделю
+// становится частью фона, а на НГС мордолента как раз двигалась.
+func TestМордолентаБерётЛицаИДвижетсяПоРазговору(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	actor := Viewer{UserID: admin, Role: RoleAdmin}
+	note := mustStageNote(t, p, admin)
+
+	sova := mustPersona(t, p, "Сова")
+	seva := mustPersona(t, p, "Механик Сева")
+	nemoy := mustPersona(t, p, "Безлицый")
+	mustUser(t, p, "Полынь-Трава") // живой человек в полосу не идёт вовсе
+
+	media := mustShot(t, p, 300, 300)
+	for _, id := range []int64{sova, seva} {
+		if err := p.SetPersonaAvatarAsAdmin(ctx, actor, id, &media, "лицо"); err != nil {
+			t.Fatalf("фото жителю %d: %v", id, err)
+		}
+	}
+
+	// Сперва сказала Сова, потом Сева, — значит наверху полосы Сева.
+	for _, id := range []int64{sova, seva, nemoy} {
+		if _, err := p.CreateComment(ctx, NewComment{
+			NoteID: note, AuthorID: id, Body: "и вот что я думаю",
+		}); err != nil {
+			t.Fatalf("реплика жителя %d: %v", id, err)
+		}
+	}
+
+	faces, err := p.PersonaFaces(ctx, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(faces) != 2 {
+		t.Fatalf("в полосе %d лиц, ожидалось 2 (безлицый и живой в неё не идут): %+v", len(faces), faces)
+	}
+	if faces[0].ID != seva || faces[1].ID != sova {
+		t.Errorf("порядок полосы %d, %d — ожидался «кто говорил последним»: %d, %d",
+			faces[0].ID, faces[1].ID, seva, sova)
+	}
+	if faces[0].Nick != "Механик Сева" || faces[0].AvatarURL == "" {
+		t.Errorf("лицо без имени или без картинки: %+v", faces[0])
+	}
+
+	// Ещё не заговоривший из полосы не пропадает — он здесь живёт, просто
+	// молчит; уходит он в конец.
+	if err := p.SetPersonaAvatarAsAdmin(ctx, actor, nemoy, &media, "лицо"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.pool.Exec(ctx, `DELETE FROM comments WHERE author_id = $1`, nemoy); err != nil {
+		t.Fatal(err)
+	}
+	faces, err = p.PersonaFaces(ctx, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(faces) != 3 || faces[2].ID != nemoy {
+		t.Errorf("молчащий житель встал не в конец полосы: %+v", faces)
+	}
+}

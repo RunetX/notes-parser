@@ -73,6 +73,11 @@ type fakeStore struct {
 
 	pingErr error
 
+	// Мордолента: лица жителей над первой страницей ленты.
+	faces      []platform.PersonaFace
+	facesErr   error
+	facesLimit int
+
 	// Страница участника: карточка и то, что он написал.
 	profile    platform.Profile
 	profileErr error
@@ -99,6 +104,12 @@ func (f *fakeStore) AuthorNotes(context.Context, int64, int) ([]platform.PubNote
 
 func (f *fakeStore) AuthorComments(context.Context, int64, int) ([]platform.PubComment, error) {
 	return f.pubComs, nil
+}
+
+// Мордолента: что отдать и с каким потолком за ней пришли.
+func (f *fakeStore) PersonaFaces(_ context.Context, limit int) ([]platform.PersonaFace, error) {
+	f.facesLimit = limit
+	return f.faces, f.facesErr
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
@@ -911,11 +922,72 @@ func TestThemeCookieRendersAttribute(t *testing.T) {
 	if !strings.Contains(do(h, r).Body.String(), `data-theme="classic"`) {
 		t.Error("тема из куки не доехала до разметки")
 	}
-	// Мусор в куке читается как «как в системе»: кука приходит от человека.
+	// Мусор в куке читается как «не выбирал»: кука приходит от человека, и
+	// доверять ей нечего. Раньше это означало «решает система», теперь —
+	// умолчание; в разметку значение не попадает ни в каком случае.
 	r2 := guest(t, "GET", "/")
 	r2.AddCookie(&http.Cookie{Name: themeCookie, Value: `<script>alert(1)</script>`})
-	if strings.Contains(do(h, r2).Body.String(), "<script>alert") {
+	body := do(h, r2).Body.String()
+	if strings.Contains(body, "<script>alert") {
 		t.Error("значение куки попало в разметку")
+	}
+	if !strings.Contains(body, `data-theme="`+defaultTheme+`"`) {
+		t.Error("мусорная кука не свелась к теме по умолчанию")
+	}
+}
+
+// Тема по умолчанию — «Графит» (решение владельца 30.08.2026). До этого дня
+// умолчания не было вовсе: атрибут не ставился, и вид площадки определяла
+// системная настройка читателя. Проверяем ОБА конца правила, потому что порознь
+// каждый выглядит целым: сервер обязан назвать тему всем, включая гостя и
+// поисковик, а в стилях не должно остаться состояния «темы нет» — иначе первая
+// же страница, где атрибут забыли, покрасится не тем и никто не заметит.
+func TestТемаПоУмолчаниюГрафит(t *testing.T) {
+	if defaultTheme != "graphite" {
+		t.Errorf("тема по умолчанию %q, ожидался graphite", defaultTheme)
+	}
+	if !validTheme(defaultTheme) {
+		t.Fatal("тема по умолчанию не из набора: кнопки для неё нет, а страница ею красится")
+	}
+	h := openServer(t, &fakeStore{})
+	if !strings.Contains(do(h, guest(t, "GET", "/")).Body.String(), `data-theme="`+defaultTheme+`"`) {
+		t.Error("гостю без куки тема не названа")
+	}
+
+	css := cssText(t)
+	// Ни палитры, ни подсветки кнопки «как в системе» больше нет: сервер знает
+	// тему всегда, и второе место, где она решается, было бы вторым мнением.
+	if strings.Contains(css, ":root:not(") {
+		t.Error("в стилях осталось правило для страницы без темы")
+	}
+	if strings.Contains(css, "@media (prefers-color-scheme") {
+		t.Error("в стилях осталась палитра по системной настройке")
+	}
+	// А тема, названная разметкой, обязана назвать себя и браузеру: полосы
+	// прокрутки и галочки рисует он, и на тёмной странице они иначе светлые.
+	for _, sel := range []string{":root {", `:root[data-theme="graphite"] {`} {
+		if !strings.Contains(cssRule(t, css, sel), "color-scheme:") {
+			t.Errorf("у палитры %s нет color-scheme", sel)
+		}
+	}
+}
+
+// Подсвечена та тема, которая сейчас на экране, и называет её РАЗМЕТКА: с тех
+// пор как умолчание есть, сервер знает тему всегда, и подсказывать CSS ему
+// больше нечего. Кнопка при этом подсвечена и у того, кто ничего не выбирал, —
+// прежде такой человек видел переключатель, где нажатой не значилось ничего.
+func TestКнопкаТемыПодсвеченаБезКуки(t *testing.T) {
+	auth, token := signedInAs(t, platform.User{
+		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,
+	})
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{})
+	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
+	want := `class="tbtn t-` + defaultTheme + ` on"`
+	if !strings.Contains(body, want) {
+		t.Errorf("в меню нет нажатой кнопки темы по умолчанию (%s)", want)
+	}
+	if n := strings.Count(body, ` on"`); n != 1 {
+		t.Errorf("нажатых кнопок темы %d, ожидалась одна", n)
 	}
 }
 

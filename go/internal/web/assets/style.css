@@ -11,8 +11,10 @@
  * колонка новостей НГС. Первые три — функции, которых у площадки нет по
  * решению (эпик E), последняя — чужой раздел.
  *
- * Тема живёт в токенах :root: без атрибута data-theme решает
- * prefers-color-scheme, с атрибутом — человек. Палитр четыре, и они двух родов:
+ * Тема живёт в токенах :root, а какая именно — говорит атрибут data-theme.
+ * Стоит он на КАЖДОЙ странице: не выбиравший получает тему по умолчанию
+ * (web.defaultTheme, «Графит»), поэтому prefers-color-scheme площадка не
+ * спрашивает нигде. Палитр четыре, и они двух родов:
  * «Светлая» (она же голый :root) и «Тёмная» — это НГС, их числа с сайта и
  * закреплены fidelity_test; «Бумага» и «Графит» — наши, и мера у них другая,
  * читаемость вместо соответствия. Правило набора одно, и оплачено оно
@@ -24,7 +26,14 @@
  * отступ ветки задаётся классом d1…d12, а расстояние считает calc(). На самом
  * НГС это inline padding-left — нам так нельзя. */
 
+/* color-scheme — не украшение: он говорит браузеру, какими рисовать ПОЛОСЫ
+   ПРОКРУТКИ, галочки и поле выбора файла. Раньше это решала система читателя,
+   и на тёмной теме со светлой системой полоса прокрутки оставалась белой; с
+   тех пор как тёмная тема стала умолчанием, такой она была бы у КАЖДОГО гостя.
+   Стоит внутри палитры, потому что это её собственное свойство, а не отдельная
+   настройка рядом. */
 :root {
+  color-scheme: light;
   --page: #e9edf0;
   --card: #fff;
   --ink: #3d4952;
@@ -48,31 +57,8 @@
   --step: 14px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --page: #15181c;
-    --card: #1d2126;
-    --ink: #dbe2e8;
-    --meta: #8c959d;
-    --rule: #2e353c;
-    --link: #6fadde;
-    --male: #6fadde;
-    --female: #ef6f70;
-    --anon: #a8b1b9;
-    --nav: #23527a;
-    --btn: #242a30;
-    --bb-red: #ef6f70;
-    --bb-green: #7fbf5a;
-    --bb-blue: #6fadde;
-    --bb-purple: #b48ae6;
-    --bb-orange: #e39a45;
-    --bb-pink: #f0a0c0;
-    --hl: #232a31;
-    --sil-fade: .72;
-  }
-}
-
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --page: #15181c;
   --card: #1d2126;
   --ink: #dbe2e8;
@@ -103,6 +89,7 @@
    Цвета разметки ранних лет достаются от светлой намеренно: лист почти белый,
    и «розовый» здесь виден ровно так же еле-еле, как автору в 2013-м. */
 :root[data-theme="paper"] {
+  color-scheme: light;
   --page: #f4f1ec;
   --card: #fffdf9;
   --ink: #26231e;
@@ -129,6 +116,7 @@
    (3,9:1), и сам текст на карточке (3,7:1) — палитры, где обе роли брали бы
    4,5:1, не существует, и размен сделан в пользу равенства. */
 :root[data-theme="graphite"] {
+  color-scheme: dark;
   --page: #1c2126;
   --card: #252b32;
   --ink: #cfd6dd;
@@ -292,18 +280,14 @@ a:hover { text-decoration: underline; }
   background: var(--btn); color: var(--ink); border: 1px solid var(--rule); border-radius: 3px;
 }
 .tbtn:hover { border-color: var(--meta); }
-/* Подсвечена та тема, которая сейчас на экране. Пока человек не выбирал,
-   её держит система, а сервер prefers-color-scheme не видит — поэтому в
-   этом единственном случае нажатую кнопку называет CSS, а не разметка.
-   Без этого переключатель до первого нажатия показывал бы обе кнопки
-   погашенными — врал бы ровно тем, кто его видит впервые. */
-.tbtn.on,
-:root:not([data-theme]) .tbtn.t-classic { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Подсвечена та тема, которая сейчас на экране, и называет её РАЗМЕТКА:
+   класс on ставит шаблон. Пока умолчания не было, «сейчас на экране» знал
+   один браузер — сервер prefers-color-scheme не видит, — и ту же подсветку
+   приходилось повторять отдельными правилами для страницы без атрибута. С
+   темой по умолчанию (30.08.2026) сервер знает её всегда, и повторять стало
+   нечего. */
+.tbtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) .tbtn.t-classic { background: var(--btn); border-color: var(--rule); color: var(--ink); }
-  :root:not([data-theme]) .tbtn.t-dark { background: var(--accent); border-color: var(--accent); color: #fff; }
-}
 .enter {
   display: inline-block; font: inherit; font-size: 14px; line-height: 1.45;
   color: var(--nav-ink); background: rgba(255, 255, 255, .18);
@@ -788,6 +772,35 @@ span.rxb { cursor: default; }
 }
 .newnote:hover { text-decoration: none; opacity: .9; }
 .editlink { font-size: 12px; margin-left: 14px; }
+
+/* Мордолента — полоса лиц жителей над лентой (faces.go; имя не выдумано, так её
+   звали на НГС). Лицо крупнее подписи и уже колонки автора: в ленте аватар
+   100×100 стои́т рядом с текстом, а здесь их три десятка в ряд, и ряд обязан
+   читаться одним взглядом.
+
+   Едет она ВБОК, а не переносится: тридцать лиц в три ряда съедают экран над
+   лентой, ради которой человек и пришёл. Прокрутка живёт ВНУТРИ полосы —
+   страница вбок не ездит никогда (то же правило, что у широких таблиц и
+   блоков кода). overscroll-behavior не даёт докрученной до края полосе увести
+   за собой всю страницу: на телефоне это выглядело бы срывом. */
+.faceband { margin: 14px 0 0; }
+.faceband .fine { margin: 0 0 6px; }
+.faces {
+  display: flex; gap: 12px; list-style: none; margin: 0; padding: 0 0 8px;
+  overflow-x: auto; overscroll-behavior-x: contain;
+}
+.faces li { flex: 0 0 auto; width: 72px; }
+.faces a { display: block; text-align: center; }
+.faces a:hover { text-decoration: none; }
+.faces a:hover .nick { text-decoration: underline; }
+.faces .ava { width: 72px; height: 72px; }
+/* Ник под лицом — в одну строку с многоточием: ники у жителей длинные
+   («ГердаИзСемейкиАддамс»), а перенос на вторую строку сделал бы полосу
+   рваной по высоте. Целиком имя показывает title на самой ссылке. */
+.faces .nick {
+  display: block; margin-top: 5px; font-size: 12px; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* Форма записи — одна на всё: новая заметка, правка, ответ в тред. */
 .wform { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 0; }
