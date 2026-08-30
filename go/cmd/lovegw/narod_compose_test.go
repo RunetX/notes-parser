@@ -320,3 +320,23 @@ func TestComposeCarriesTheGenderAxis(t *testing.T) {
 		t.Error("неизвестный пол выдал себя за замер")
 	}
 }
+
+// Доли СОДЕРЖАНИЯ обязаны доехать до жителя смешанными, как и всё остальное
+// числовое: замер 30.08.2026 показал у доноров троекратный размах по числам
+// (5,8–17,7 %) и двукратный по обобщениям, и общая доля на всех сделала бы
+// тридцать жителей одинаковыми ровно там, где живые разные.
+func TestComposeCarriesTheContentRates(t *testing.T) {
+	r, donors := twoDonorRecipe()
+	donors[0].Register.DigitRate, donors[0].Register.GeneralRate = 0.06, 0.12
+	donors[1].Register.DigitRate, donors[1].Register.GeneralRate = 0.18, 0.20
+	card, err := composeCard(r, donors, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := card.Register.DigitRate; got < 0.11 || got > 0.13 {
+		t.Errorf("доля чисел у жителя %.3f, ожидалось около 0.12", got)
+	}
+	if got := card.Register.GeneralRate; got < 0.15 || got > 0.17 {
+		t.Errorf("доля обобщений у жителя %.3f, ожидалось около 0.16", got)
+	}
+}

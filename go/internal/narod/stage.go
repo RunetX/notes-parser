@@ -31,20 +31,38 @@ import (
 
 // StageNote — заметка-песочница глазами жителя.
 type StageNote struct {
-	ID          int64
-	AuthorID    int64
-	AuthorNick  string
-	Body        string
-	PublishedAt time.Time
-	Locked      bool
+	ID           int64
+	AuthorID     int64
+	AuthorNick   string
+	AuthorGender string // male | female | "" — площадка пола не знает
+	Body         string
+	PublishedAt  time.Time
+	Locked       bool
 }
 
 // StageReply — чужая реплика в треде.
 type StageReply struct {
-	ID          int64
-	NoteID      int64
-	AuthorID    int64
-	AuthorNick  string
+	ID         int64
+	NoteID     int64
+	AuthorID   int64
+	AuthorNick string
+	// Gender — пол сказавшего ("male"/"female"; пусто — неизвестен).
+	//
+	// Поле сцены, а не догадка по нику, и нужно оно ДВОИМ сразу.
+	//
+	// КУБИКУ: отклик по полу говорящего — замер, и крупный (ReplyRate.ToMale /
+	// ToFemale, 300 тыс. рёбер: мужчина женщине ×1,36, мужчина мужчине ×0,47).
+	// В калибровке пол приезжает из архива и рычаг работает, а в бою сцена его не
+	// отдавала вовсе — значит боевой кубик выбирал собеседника вслепую, ровно как
+	// до замера. Расхождение молчаливое: формула одна на оба мира, а входные
+	// данные разные, и заметить это по поведению нельзя.
+	//
+	// МОДЕЛИ: русский глагол прошедшего времени пола не прощает. Урок этот
+	// оплачен один раз — 28.08.2026 модель угадывала пол ПЕРСОНАЖА по нику и
+	// половину угадывала неверно (см. innerPrompt), — но исправлен был только
+	// свой пол. Про собеседника догадка осталась, и 30.08.2026 она вышла на
+	// страницу: «Лисёнок в кедах, ты про себя это и сказал» женщине от женщины.
+	Gender      string
 	Body        string
 	ReplyTo     int64 // 0 — реплика самой заметке
 	PublishedAt time.Time

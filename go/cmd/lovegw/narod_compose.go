@@ -162,6 +162,9 @@ func blendRegisters(donors []narod.Card, w []float64) narod.Register {
 		r.NoFinalPunct += k * d.Register.NoFinalPunct
 		r.YoRate += k * d.Register.YoRate
 		r.AddressPrefix += k * d.Register.AddressPrefix
+		r.DigitRate += k * d.Register.DigitRate
+		r.GeneralRate += k * d.Register.GeneralRate
+		r.AdviceRate += k * d.Register.AdviceRate
 		r.Punct = addRates(r.Punct, d.Register.Punct, k)
 		r.ParenRuns = addRates(r.ParenRuns, d.Register.ParenRuns, k)
 	}

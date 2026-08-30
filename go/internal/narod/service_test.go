@@ -18,7 +18,8 @@ import (
 // fakeStage — сцена без Postgres. Хранит песочницы списком, потому что весь
 // предмет обоих тестов — КАКИЕ заметки служба увидит, а не что в них написано.
 type fakeStage struct {
-	notes []StageNote
+	notes  []StageNote
+	thread []StageReply
 }
 
 func (f *fakeStage) StageNotesSince(_ context.Context, after int64, limit int) ([]StageNote, error) {
@@ -31,7 +32,9 @@ func (f *fakeStage) StageNotesSince(_ context.Context, after int64, limit int) (
 	return out, nil
 }
 
-func (f *fakeStage) StageThread(context.Context, int64) ([]StageReply, error) { return nil, nil }
+func (f *fakeStage) StageThread(context.Context, int64) ([]StageReply, error) {
+	return f.thread, nil
+}
 
 func (f *fakeStage) StagePost(context.Context, int64, int64, int64, string) (int64, error) {
 	return 0, errors.New("в этих тестах никто не говорит")

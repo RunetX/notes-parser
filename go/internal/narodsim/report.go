@@ -22,6 +22,7 @@ import (
 
 	"lovegw/internal/archive"
 	"lovegw/internal/narod"
+	"lovegw/internal/speech"
 )
 
 // ActorReport — итог по одному слепку на всех его тредах.
@@ -304,14 +305,55 @@ func writeShape(b *strings.Builder, got, want archive.VoiceShape) {
 	if got.Texts == 0 || want.Texts == 0 {
 		return
 	}
-	fmt.Fprintf(b, "Механика письма — житель против донора:\n\n")
+	// ПЕЧАТАЕТСЯ ВСЁ, ЧТО ПОСЧИТАНО, и правило это оплачено: до 30.08.2026
+	// портрет считал ритм, местоимения, цифры и вопросы, а печатал четыре
+	// строки — длину, p90, слова в предложении и смайлы. Ранг атрибутора при
+	// этом говорит «не похоже» и не говорит ЧЕМ, а весь смысл портрета был как
+	// раз в ответе на второй вопрос. Замер, который есть, но не показан, — это
+	// замера нет.
+	fmt.Fprintf(b, "Механика письма — житель против донора:\n\n\n")
 	fmt.Fprintf(b, "| | житель | донор |\n|---|---:|---:|\n")
 	fmt.Fprintf(b, "| знаков в реплике (медиана) | %d | %d |\n", got.Runes.Median, want.Runes.Median)
 	fmt.Fprintf(b, "| знаков, p90 | %d | %d |\n", got.Runes.P90, want.Runes.P90)
 	fmt.Fprintf(b, "| слов в предложении (медиана) | %d | %d |\n", got.SentWords.Median, want.SentWords.Median)
+	fmt.Fprintf(b, "| разброс длины фразы (sd) | %.1f | %.1f |\n", got.SentWordSD, want.SentWordSD)
+	fmt.Fprintf(b, "| рубленых фраз (<=3 слов) | %s | %s |\n", shPct(got.ShortSents), shPct(want.ShortSents))
+	fmt.Fprintf(b, "| длинных фраз (>=18 слов) | %s | %s |\n", shPct(got.LongSents), shPct(want.LongSents))
+	fmt.Fprintf(b, "| «я» на 100 слов | %.2f | %.2f |\n", got.Person["я"], want.Person["я"])
+	fmt.Fprintf(b, "| «ты» на 100 слов | %.2f | %.2f |\n", got.Person["ты"], want.Person["ты"])
+	fmt.Fprintf(b, "| кончается вопросом | %s | %s |\n", shPct(got.EndsQuestion), shPct(want.EndsQuestion))
+	fmt.Fprintf(b, "| с маленькой буквы | %s | %s |\n", shPct(got.StartsLower), shPct(want.StartsLower))
+	fmt.Fprintf(b, "| без точки в конце | %s | %s |\n", shPct(got.NoFinalPunct), shPct(want.NoFinalPunct))
 	fmt.Fprintf(b, "| доля реплик со смайлом | %.2f | %.2f |\n", got.EmojiRate, want.EmojiRate)
 	b.WriteString("\n")
+	writeMarks(b, got.Marks, want.Marks)
 }
+
+// writeMarks — О ЧЁМ реплика: свой случай против мнения.
+//
+// Отдельной таблицей, а не строками в общей, потому что вопрос другой. Механика
+// отвечает «похоже ли написано», содержание — «есть ли что рассказать»; первое
+// калибровка выправила ещё в августе, второе всплыло только на живой песочнице
+// («реплики какие-то абстрактные, большинство людей так не общается»).
+//
+// Числа читаются ТОЛЬКО парой (см. шапку internal/speech): невод ловит форму, и
+// в одиночку его доля не значит ничего.
+func writeMarks(b *strings.Builder, got, want speech.Marks) {
+	if got.Texts == 0 || want.Texts == 0 {
+		return
+	}
+	fmt.Fprintf(b, "О чём реплика — житель против донора:\n\n")
+	fmt.Fprintf(b, "| | житель | донор |\n|---|---:|---:|\n")
+	fmt.Fprintf(b, "| свой случай (я + прошедшее) | %s | %s |\n", shPct(got.OwnStory), shPct(want.OwnStory))
+	fmt.Fprintf(b, "| привязка ко времени | %s | %s |\n", shPct(got.TimeMark), shPct(want.TimeMark))
+	fmt.Fprintf(b, "| числа | %s | %s |\n", shPct(got.Digits), shPct(want.Digits))
+	fmt.Fprintf(b, "| обобщение (все, всегда, люди) | %s | %s |\n", shPct(got.General), shPct(want.General))
+	fmt.Fprintf(b, "| поучение (надо, должен) | %s | %s |\n", shPct(got.Advice), shPct(want.Advice))
+	b.WriteString("\n")
+}
+
+// shPct — доля процентами.
+func shPct(x float64) string { return fmt.Sprintf("%.1f %%", 100*x) }
 
 // writeSeeds — разброс по зёрнам, и это не приложение к итогу, а условие, при
 // котором итог вообще можно читать.

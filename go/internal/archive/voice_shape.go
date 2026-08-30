@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"lovegw/internal/love"
+	"lovegw/internal/speech"
 )
 
 // --- измерения ---
@@ -344,6 +345,11 @@ func measureShape(texts []voiceText, kind string, nicks map[string]bool) VoiceSh
 		a.addRhythm(t.text, r)
 	}
 	a.finish(&sh, len(texts))
+	bodies := make([]string, 0, len(texts))
+	for _, t := range texts {
+		bodies = append(bodies, t.text)
+	}
+	sh.Marks = speech.Measure(bodies)
 	sh.From, sh.To = spanOf(texts)
 	return sh
 }

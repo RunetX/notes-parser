@@ -14,6 +14,7 @@ import (
 
 	"lovegw/internal/archive"
 	"lovegw/internal/narod"
+	"lovegw/internal/speech"
 )
 
 // Перенос замеров манеры обязан быть полным. Молча потерянное поле выглядит на
@@ -38,6 +39,7 @@ func TestRegisterFromShapeCarriesEveryMeasure(t *testing.T) {
 		YoRate:        0.02,
 		TopOpenings:   []archive.VoiceCount{{Text: "ну", Share: 0.11}},
 		AddressPrefix: 0.52,
+		Marks:         speech.Marks{Texts: 100, Digits: 0.11, General: 0.19, Advice: 0.07},
 	}
 	r := registerFromShape(sh)
 
@@ -60,6 +62,9 @@ func TestRegisterFromShapeCarriesEveryMeasure(t *testing.T) {
 		"YoRate":        r.YoRate == sh.YoRate,
 		"Openings":      len(r.Openings) == 1 && r.Openings[0].Text == "ну",
 		"AddressPrefix": r.AddressPrefix == sh.AddressPrefix,
+		"DigitRate":     r.DigitRate == sh.Marks.Digits,
+		"GeneralRate":   r.GeneralRate == sh.Marks.General,
+		"AdviceRate":    r.AdviceRate == sh.Marks.Advice,
 	}
 	for name, ok := range checks {
 		if !ok {

@@ -177,6 +177,9 @@ func registerFromShape(sh archive.VoiceShape) narod.Register {
 		YoRate:        sh.YoRate,
 		Openings:      countsFromArchive(sh.TopOpenings),
 		AddressPrefix: sh.AddressPrefix,
+		DigitRate:     sh.Marks.Digits,
+		GeneralRate:   sh.Marks.General,
+		AdviceRate:    sh.Marks.Advice,
 	}
 }
 

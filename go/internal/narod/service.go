@@ -424,6 +424,7 @@ func (s *Service) scanThread(ctx context.Context, noteID int64) error {
 				TriggerID: c.ID, Trigger: c.Body,
 				Author: c.AuthorID, Nick: c.AuthorNick,
 				Addressed: c.ReplyTo != 0 && s.authorOf(thread, c.ReplyTo) == p.UserID,
+				Gender:    c.Gender,
 				Seen:      i + 1,
 			}
 			said, err := s.world.SaidInThread(ctx, p.Card.ID, noteID)
@@ -639,8 +640,16 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	}
 	if point.ReplyTo.ID != 0 {
 		mood.Peer = point.ReplyTo.AuthorNick
-		if peer, ok := s.playerByUser(point.ReplyTo.AuthorID); ok {
-			mood.PeerGender = peer.Card.Persona.Gender
+		// Пол собеседника берётся СО СЦЕНЫ, а карточка остаётся запасным
+		// путём. Прежде было наоборот, и оттого пола не было вовсе у всех, кто
+		// не житель: у администратора, заведшего песочницу, и у любого
+		// человека, когда песочницу откроют людям, — а подтекст живёт ровно у
+		// разнополой пары (subtextLine).
+		mood.PeerGender = point.ReplyTo.Gender
+		if mood.PeerGender == "" {
+			if peer, ok := s.playerByUser(point.ReplyTo.AuthorID); ok {
+				mood.PeerGender = peer.Card.Persona.Gender
+			}
 		}
 		if a, ok, err := s.world.ActorByPlatformUser(ctx, point.ReplyTo.AuthorID); err == nil && ok {
 			e, err := s.world.EdgeOf(ctx, p.Card.ID, a.ID)
@@ -659,6 +668,17 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	if r := p.Card.Register.EmojiRate; r > 0 {
 		want := rng.Float64() < r
 		point.Emoji = &want
+	}
+	// СОДЕРЖАНИЕ реплики — те же жребии, что длина и эмодзи, и по тому же
+	// доводу: доля живёт МЕЖДУ репликами, а модель видит каждую поодиночке и
+	// исполняет названную долю в каждой.
+	point.Digit = rng.Float64() < p.Card.Register.DigitRate
+	if r := p.Card.Register.GeneralRate; r > 0 {
+		// Узкий рычаг настроения (вброс на весь пол, 0,198 % по замеру) и этот
+		// широкий говорят об одном, поэтому противоречить друг другу им нельзя:
+		// выпал вброс — обобщение разрешено, а не запрещено соседней строкой.
+		want := mood.Generalize || rng.Float64() < r
+		point.Broad = &want
 	}
 	return point, nil
 }

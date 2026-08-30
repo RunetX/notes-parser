@@ -41,7 +41,8 @@ func New(p *platform.Platform) *Stage {
 // построению (песочницу заводит администратор или житель), но LEFT JOIN оставлен
 // — автор может быть и снесён.
 const stageNotesQuery = `
-	SELECT n.id, coalesce(n.author_id, 0), coalesce(u.nick, ''), n.body,
+	SELECT n.id, coalesce(n.author_id, 0), coalesce(u.nick, ''),
+	       coalesce(u.gender, 0), n.body,
 	       n.published_at, n.locked
 	  FROM notes n
 	  LEFT JOIN users u ON u.id = n.author_id
@@ -59,10 +60,12 @@ func (s *Stage) StageNotesSince(ctx context.Context, afterID int64, limit int) (
 	var out []narod.StageNote
 	for rows.Next() {
 		var n narod.StageNote
-		if err := rows.Scan(&n.ID, &n.AuthorID, &n.AuthorNick, &n.Body,
+		var sex platform.Gender
+		if err := rows.Scan(&n.ID, &n.AuthorID, &n.AuthorNick, &sex, &n.Body,
 			&n.PublishedAt, &n.Locked); err != nil {
 			return nil, fmt.Errorf("заметки песочницы: %w", err)
 		}
+		n.AuthorGender = genderWord(sex)
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -80,6 +83,7 @@ func (s *Stage) StageNotesSince(ctx context.Context, afterID int64, limit int) (
 // — второго ради песочницы не заводится.
 const stageThreadQuery = `
 	SELECT c.id, c.note_id, coalesce(c.author_id, 0), coalesce(u.nick, ''),
+	       coalesce(u.gender, 0),
 	       c.body, coalesce(c.reply_to_id, 0), c.published_at
 	  FROM comments c
 	  LEFT JOIN users u ON u.id = c.author_id
@@ -96,10 +100,12 @@ func (s *Stage) StageThread(ctx context.Context, noteID int64) ([]narod.StageRep
 	var out []narod.StageReply
 	for rows.Next() {
 		var c narod.StageReply
-		if err := rows.Scan(&c.ID, &c.NoteID, &c.AuthorID, &c.AuthorNick,
+		var sex platform.Gender
+		if err := rows.Scan(&c.ID, &c.NoteID, &c.AuthorID, &c.AuthorNick, &sex,
 			&c.Body, &c.ReplyTo, &c.PublishedAt); err != nil {
 			return nil, fmt.Errorf("тред песочницы %d: %w", noteID, err)
 		}
+		c.Gender = genderWord(sex)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -117,4 +123,26 @@ func (s *Stage) StagePost(ctx context.Context, userID, noteID, replyTo int64, bo
 	return s.core.CreateComment(ctx, platform.NewComment{
 		NoteID: noteID, AuthorID: userID, ReplyToID: replyTo, Body: body,
 	})
+}
+
+// genderWord — пол в словах народа.
+//
+// Ядро площадки хранит его числом (platform.Gender: тем же, каким сайт красит
+// ник), карточка жителя — строкой "male"/"female", как в анкете НГС. Перевод
+// стоит на ГРАНИЦЕ, а не у одной из сторон: пусти число в narod — и ядро,
+// которое не вправе знать про площадку, узнало бы её представление; пусти строку
+// в platform — и у столбца завелось бы второе значение.
+//
+// Неизвестный пол переводится в пустую строку и остаётся неизвестным до конца
+// пути: кубик от него не получает рычага вовсе (ReplyRate.GenderLift), а модели
+// про такого собеседника не говорится ничего — догадка по нику здесь и была
+// дефектом.
+func genderWord(g platform.Gender) string {
+	switch g {
+	case platform.GenderMale:
+		return "male"
+	case platform.GenderFemale:
+		return "female"
+	}
+	return ""
 }
