@@ -115,3 +115,20 @@ func TestRegisterAddsEllipsisAfterBareWord(t *testing.T) {
 		t.Fatal("многоточие не появилось ни разу")
 	}
 }
+
+// Смайл дописывается В ОБЁРТКЕ сайта: в карточке лежит имя («crazy2»), а голое
+// английское слово посреди русской реплики выдаёт машину сильнее, чем
+// отсутствие смайла вовсе.
+func TestRegisterWrapsSmileyCode(t *testing.T) {
+	r := regCard()
+	r.SmileyRate = 1
+	got := ApplyRegister("вот так вот", r, 0, 3)
+	if !strings.Contains(got, ":::popcorn:::") {
+		t.Errorf("смайл дописан без обёртки: %q", got)
+	}
+	// Уже обёрнутый не заворачивается дважды.
+	r.Smileys = []Count{{Text: ":::agree:::"}}
+	if got := ApplyRegister("ага", r, 0, 3); strings.Contains(got, "::::::") {
+		t.Errorf("обёртка удвоилась: %q", got)
+	}
+}
