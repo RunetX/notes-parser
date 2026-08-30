@@ -224,3 +224,81 @@ func TestМоделиЗапрещеноСложение(t *testing.T) {
 		t.Error("в задании модели остался список, из-за которого все вышли упитанными")
 	}
 }
+
+// ГРАНИЦА ЗАГАРА ЗАПРЕЩЕНА, и запрет стоит в задании модели.
+//
+// Оплачено боем 30.08.2026: владелец увидел на аватарке «строгий переход загара,
+// будто часть не загорела под каской». Так и было — модель писала это сама, семь
+// приметок из тридцати про солнце: «deep tan line across the forehead where a
+// cap sits, paler skin above». Генератор рисует такую границу ЖЁСТКОЙ ПОЛОСОЙ, и
+// на квадрате 100x100 ничего, кроме полосы, не видно.
+func TestГраницаЗагараЗапрещена(t *testing.T) {
+	system, _ := PortraitRequest(sevaBio())
+	for _, want := range []string{"NEVER a boundary between two skin tones", "no tan lines", "hard stripe"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("в задании модели нет запрета %q", want)
+		}
+	}
+}
+
+// ПРИМЕТА ОБЯЗАНА ПОМЕЩАТЬСЯ В КАДР. Восемь примет из тридцати оказались на
+// руках — костяшки, ногти, запястья, предплечья, — а последняя строка того же
+// промпта говорит «no hands in frame». Промпт противоречил сам себе, и
+// генератор разрешал противоречие как умел.
+func TestПриметаНеУезжаетИзКадра(t *testing.T) {
+	system, _ := PortraitRequest(sevaBio())
+	for _, want := range []string{"HEAD-AND-SHOULDERS crop", "Never hands, knuckles, nails"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("в задании модели нет запрета %q", want)
+		}
+	}
+}
+
+// ПРИМЕТА ВЫПАДАЕТ ЖРЕБИЕМ, а не стоит у каждого. Модель на «верни пустую
+// строку, если приметы нет» отвечала приметой в 28 случаях из 30 — то есть
+// придумывала, а «особинка у каждого встречного» выдаёт машину так же, как
+// одинаковое сложение.
+func TestПриметаВыпадаетЖребием(t *testing.T) {
+	look := Look{Face: "a plain face", Clothing: "a grey jacket", Detail: "a small scar on the jaw"}
+	slugs := []string{
+		"beret", "dyadyastepa", "gosha", "hlopushka", "irma", "kedrach",
+		"koshka", "kostik", "kuzmich", "lisenok", "mazay", "myatnaya",
+		"nyurka", "olgabat", "pelmen", "polkovnik", "professor", "prorab",
+		"ryabina", "ryabinka", "sansanych", "seva", "shtangen", "sovushka",
+		"svarnoy", "taygafm", "tetyamotya", "valpetrovna", "vesnushka", "vishnya",
+	}
+	with := 0
+	for _, slug := range slugs {
+		if strings.Contains(Portrait(sevaBio(), slug, 1, look, false), "small scar on the jaw") {
+			with++
+		}
+	}
+	if with == 0 || with == len(slugs) {
+		t.Fatalf("примета есть у %d жителей из %d — жребий не бросается вовсе", with, len(slugs))
+	}
+	// Доля не проверяется точно (это бросок), но «почти у всех» — это ровно то
+	// состояние, из-за которого монетка и заведена.
+	if with*2 > len(slugs) {
+		t.Errorf("примета у %d из %d — снова особинка у каждого встречного", with, len(slugs))
+	}
+}
+
+// Монетка приметы НЕ СДВИГАЕТ КАМЕРУ: у неё своя соль, и кадр у жителя тот же,
+// какой был до её появления. Иначе тридцать готовых промптов сменили бы ракурс
+// без всякого повода.
+func TestМонеткаПриметыНеТрогаетКадр(t *testing.T) {
+	bare := Portrait(sevaBio(), "dyadyastepa", 1, Look{}, false)
+	withDetail := Portrait(sevaBio(), "dyadyastepa", 1,
+		Look{Detail: "a small scar on the jaw"}, false)
+	line := func(s string) string {
+		for _, l := range strings.Split(s, "\n") {
+			if strings.HasPrefix(l, "Head and shoulders,") {
+				return l
+			}
+		}
+		return ""
+	}
+	if line(bare) == "" || line(bare) != line(withDetail) {
+		t.Errorf("кадр сдвинулся от приметы:\n  %s\n  %s", line(bare), line(withDetail))
+	}
+}

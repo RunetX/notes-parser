@@ -208,6 +208,25 @@ func portraitDie(seed uint64, slug string) *rand.Rand {
 
 func pick(rng *rand.Rand, from []string) string { return from[rng.IntN(len(from))] }
 
+// portraitDetailSalt — СВОЯ соль у монетки приметы, и это не педантизм: брось
+// её из общего жребия камеры — и сдвинулись бы все последующие броски, то есть
+// у тридцати уже готовых промптов сменился бы кадр без всякого повода. Отдельный
+// ключ делает рычаги независимыми по построению.
+const portraitDetailSalt = 0x5851F42D4C957F2D
+
+// portraitDetailRate — как часто у жителя есть видимая примета.
+//
+// Число АВТОРСКОЕ, замера у него нет и быть не может. Взято от противного: у
+// модели выходило 28 из 30, и «особинка у каждого встречного» — это ровно та же
+// ровность, что одинаковое сложение. Треть похожа на людей, которых замечаешь.
+const portraitDetailRate = 0.35
+
+// hasDetail — выпала ли жителю видимая примета.
+func hasDetail(seed uint64, slug string) bool {
+	rng := rand.New(rand.NewPCG(seed^portraitDetailSalt, hashString(slug)))
+	return rng.Float64() < portraitDetailRate
+}
+
 // ---------------------------------------------------------------- промпт
 
 // Portrait собирает готовый английский промпт.
@@ -241,7 +260,11 @@ func Portrait(b Bio, slug string, seed uint64, look Look, midjourney bool) strin
 	// a tall man...».
 	fmt.Fprintf(&b1, "Face and hair: %s.\n", trimDot(face))
 	fmt.Fprintf(&b1, "Wearing %s.\n", trimDot(clothing))
-	if d := strings.TrimSpace(look.Detail); d != "" {
+	// Примета ставится по ЖРЕБИЮ, а не по наличию. Модель на «верни пустую
+	// строку, если приметы нет» отвечает приметой в 28 случаях из 30 — то есть
+	// придумывает, а «у каждого встречного есть особинка» выдаёт машину так же,
+	// как одинаковое сложение.
+	if d := strings.TrimSpace(look.Detail); d != "" && hasDetail(seed, slug) {
 		fmt.Fprintf(&b1, "%s.\n", trimDot(upperFirst(d)))
 	}
 
@@ -371,7 +394,8 @@ Rules:
   imperfections are enough (an uneven nose, thin eyebrows, a crooked tooth, a
   bad haircut). Do not pile them up.
 - Let the job and the small facts show through the hair and the clothes, not
-  through props: a hairdresser's own haircut, not a pair of scissors.
+  through props: a hairdresser's own haircut, not a pair of scissors. An
+  outdoor job is NOT a tan line — see the rule for detail below.
 - No text, logos, brands, uniforms with insignia, or writing of any kind.
 - Plain noun phrases, no sentences, no "the image shows", no adjectives of
   praise. Each field at most 20 words.
@@ -380,7 +404,18 @@ Fields:
 - face: the face and the hair, in that order. No body, no age marks.
 - clothing: everyday clothes this person would actually wear, plainly named.
 - detail: ONE visible thing taken from the facts, if any of them is visible at
-  all. If none is, return an empty string — do not invent one.`
+  all. If none is, return an empty string — do not invent one.
+
+  It must sit inside a HEAD-AND-SHOULDERS crop with no hands in it: hair, ears,
+  neck, collar, the shoulder of a garment. Never hands, knuckles, nails,
+  wrists, watches, bracelets or forearms — they are outside the frame, and
+  asking for them makes the generator either drop the detail or draw a hand
+  where none belongs.
+
+  NEVER a boundary between two skin tones: no tan lines, no "paler skin above",
+  no cap or goggle or helmet line, no sunburn edge. A generator draws such a
+  boundary as a hard stripe across the face, and on a 100x100 avatar that
+  stripe is the only thing anyone sees. Even and unremarkable skin.`
 
 // PortraitRequest — задание модели по одному жителю.
 //
