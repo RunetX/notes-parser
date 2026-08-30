@@ -33,6 +33,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
 		"scout": true, "enroll": true, "seed": true, "stage": true, "wake": true,
+		"portrait": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -65,7 +66,10 @@ func cmdNarod(ctx context.Context, args []string) error {
 	rounds := fs.Int("rounds", 1, "replay: раундов с обратной связью (1 — без неё)")
 	outDir := fs.String("out", filepath.Join("data", "narod", "replay"), "replay: куда класть отчёты")
 	cfgPath := fs.String("config", "config.json", "replay: конфиг (нужен только с -speak)")
-	model := fs.String("model", "", "replay: модель (пусто — из секции llm)")
+	model := fs.String("model", "", "replay, portrait: модель (пусто — из секции llm)")
+	portraitTo := fs.String("to", filepath.Join("data", "narod", "portraits"),
+		"portrait: куда класть промпты (пусто — только на экран)")
+	midjourney := fs.Bool("mj", false, "portrait: дописать хвост Midjourney (--ar 1:1 --style raw)")
 	body := fs.String("body", "", "seed: файл с текстом заметки-песочницы (- — stdin)")
 	from := fs.Int64("from", 0, "seed: поднять архивную заметку с этим номером")
 	stageNote := fs.Int64("id", 0, "stage: номер уже стоящей в ленте заметки")
@@ -114,6 +118,12 @@ func cmdNarod(ctx context.Context, args []string) error {
 		return narodStage(ctx, cfg, *stageNote, *stageOff, *reason)
 	case "wake":
 		return narodWake(ctx, *worldPath, *stageNote)
+	case "portrait":
+		return narodPortrait(ctx, portraitOpts{
+			cardsDir: *cardsDir, outDir: *portraitTo, slugs: fs.Args(),
+			seed: *seed, speak: *speak, mj: *midjourney,
+			cfgPath: *cfgPath, model: *model,
+		})
 	case "replay":
 		opts := replayOpts{
 			dbPath: *dbPath, cardsDir: *cardsDir, outDir: *outDir, mode: *mode,
@@ -132,7 +142,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 			return fmt.Errorf("narod replay: -mode бывает %s или %s, а не %q", modeSolo, modeVacuum, *mode)
 		}
 	default:
-		return fmt.Errorf("narod: нужна подкоманда (scout|card|compose|show|world|replay|enroll|seed)")
+		return fmt.Errorf("narod: нужна подкоманда (scout|card|compose|show|world|replay|enroll|seed|stage|wake|portrait)")
 	}
 }
 
