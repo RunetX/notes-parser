@@ -29,6 +29,19 @@ import (
 // из архивных писем живых людей, а репозиторий публичный.
 var defaultCardsDir = filepath.Join("data", "narod", "cards")
 
+// flagNamed — назвал ли флаг сам человек. Нужно, чтобы отличить умолчание,
+// которое мы вправе пересчитать, от значения, выбранного руками: пустое -to
+// («только на экран») законно и пересчёту не подлежит.
+func flagNamed(fs *flag.FlagSet, name string) bool {
+	named := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			named = true
+		}
+	})
+	return named
+}
+
 func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
@@ -64,11 +77,12 @@ func cmdNarod(ctx context.Context, args []string) error {
 	// Раунд по умолчанию один: мерка голоса — это ПЕРВАЯ попытка, а раунд с
 	// обратной связью меряет судью, а не пишущего, и стоит вдвое.
 	rounds := fs.Int("rounds", 1, "replay: раундов с обратной связью (1 — без неё)")
-	outDir := fs.String("out", filepath.Join("data", "narod", "replay"), "replay: куда класть отчёты")
+	outDir := fs.String("out", filepath.Join("data", "narod", "replay"),
+		"replay: куда класть отчёты (умолчание — рядом с карточками)")
 	cfgPath := fs.String("config", "config.json", "replay: конфиг (нужен только с -speak)")
 	model := fs.String("model", "", "replay, portrait: модель (пусто — из секции llm)")
 	portraitTo := fs.String("to", filepath.Join("data", "narod", "portraits"),
-		"portrait: куда класть промпты (пусто — только на экран)")
+		"portrait: куда класть промпты (пусто — только на экран; умолчание — рядом с карточками)")
 	midjourney := fs.Bool("mj", false, "portrait: дописать хвост Midjourney (--ar 1:1 --style raw)")
 	body := fs.String("body", "", "seed: файл с текстом заметки-песочницы (- — stdin)")
 	from := fs.Int64("from", 0, "seed: поднять архивную заметку с этим номером")
@@ -79,6 +93,18 @@ func cmdNarod(ctx context.Context, args []string) error {
 	speechFiles := fs.String("file", "", "speech: файлы с нашими репликами (JSON-массив строк), через запятую")
 	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
+	}
+
+	// Куда класть вывод, считается ОТ КАТАЛОГА КАРТОЧЕК, а не от текущего
+	// каталога. Прогон с явным -cards (а из корня репозитория он только такой и
+	// бывает) иначе уводил промпты в другое место МОЛЧА, и 31.08.2026 их
+	// набралось две кучи по тридцать — разной свежести и на одних и тех же
+	// жителей. Названный руками флаг сильнее: на то он и назван.
+	if !flagNamed(fs, "to") {
+		*portraitTo = filepath.Join(filepath.Dir(*cardsDir), "portraits")
+	}
+	if !flagNamed(fs, "out") {
+		*outDir = filepath.Join(filepath.Dir(*cardsDir), "replay")
 	}
 
 	switch sub {
