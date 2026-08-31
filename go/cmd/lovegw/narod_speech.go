@@ -119,6 +119,7 @@ func speechTable(cols []speechColumn) string {
 	row("числа", func(m speech.Marks) float64 { return m.Digits })
 	row("обобщение (все, всегда)", func(m speech.Marks) float64 { return m.General })
 	row("поучение (надо, должен)", func(m speech.Marks) float64 { return m.Advice })
+	row("штамп машины (складно, будто)", func(m speech.Marks) float64 { return m.Stamp })
 	return b.String()
 }
 

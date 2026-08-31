@@ -54,6 +54,19 @@ type Marks struct {
 	// Advice — поучение: надо, нужно, должен, стоит. Первую реплику амвона сняли
 	// с сайта именно за этот тон, и с тех пор он стоит отдельной мерой.
 	Advice float64 `json:"advice"`
+	// Stamp — ШТАМП МАШИНЫ: слово, которым модель говорит куда чаще живых.
+	//
+	// Замер 01.09.2026 по 849 боевым репликам жителей в ПЯТИ тредах разных тем
+	// против 400 тыс. реплик корпуса, частотой НА СЛОВО (доля реплик врёт: наши
+	// реплики длиннее корпусных в полтора раза по числу слов, и всё подряд
+	// выходило впятеро завышенным). Разброс: складно ×730, вслух ×50, ровно ×27,
+	// будто ×20, верно ×11, легко ×10, нечего ×5,6, потому ×6,0 — при том что
+	// «просто», «тоже», «надо», «вообще», «люди» легли в 0,4–1,0× и служат
+	// внутренним контролем: систематического пола у сравнения нет.
+	//
+	// Слово в список берётся, только если живёт во ВСЕХ пяти тредах: слово одной
+	// темы — это тема, а не почерк.
+	Stamp float64 `json:"stamp"`
 }
 
 // Measure снимает портрет с набора текстов.
@@ -62,7 +75,7 @@ func Measure(texts []string) Marks {
 	if len(texts) == 0 {
 		return m
 	}
-	var own, tm, dg, gen, adv int
+	var own, tm, dg, gen, adv, stp int
 	for _, t := range texts {
 		f := Of(t)
 		if f.OwnStory {
@@ -80,6 +93,9 @@ func Measure(texts []string) Marks {
 		if f.Advice {
 			adv++
 		}
+		if f.Stamp {
+			stp++
+		}
 	}
 	n := float64(len(texts))
 	m.OwnStory = round4(float64(own) / n)
@@ -87,6 +103,7 @@ func Measure(texts []string) Marks {
 	m.Digits = round4(float64(dg) / n)
 	m.General = round4(float64(gen) / n)
 	m.Advice = round4(float64(adv) / n)
+	m.Stamp = round4(float64(stp) / n)
 	return m
 }
 
@@ -97,6 +114,7 @@ type Flags struct {
 	Digits   bool
 	General  bool
 	Advice   bool
+	Stamp    bool
 }
 
 // GeneralHit — ПЕРВОЕ слово-обобщение в тексте; пусто — обобщения нет.
@@ -110,6 +128,23 @@ func GeneralHit(text string) string {
 	for _, s := range sentences(strings.ToLower(text)) {
 		for _, w := range wordsOf(s) {
 			if generalWords[w] {
+				return w
+			}
+		}
+	}
+	return ""
+}
+
+// StampHit — ПЕРВЫЙ штамп машины в тексте; пусто — штампа нет.
+//
+// Устроена как GeneralHit и по тому же доводу: брак, названный словом, модель
+// исправляет с первой попытки. Сравнение идёт ПО СЛОВУ, а не по подстроке, —
+// иначе «верно» ловилось бы в «наверное», а «сама» в «самая», и невод врал бы
+// в ту же сторону, в какую его завели.
+func StampHit(text string) string {
+	for _, s := range sentences(strings.ToLower(text)) {
+		for _, w := range wordsOf(s) {
+			if stampWords[w] {
 				return w
 			}
 		}
@@ -134,6 +169,9 @@ func Of(text string) Flags {
 				f.General = true
 			case adviceWords[w]:
 				f.Advice = true
+			}
+			if stampWords[w] {
+				f.Stamp = true
 			}
 		}
 		if !f.TimeMark && hasTimePhrase(s) {
@@ -227,6 +265,22 @@ func hasTimePhrase(s string) bool {
 	}
 	return false
 }
+
+// stampWords — ШТАМПЫ МАШИНЫ: слова, которыми модель говорит в разы чаще живых.
+//
+// Список ЗАМЕРЕН, а не собран на слух (см. Marks.Stamp), и держится тремя
+// правилами. Слово обязано жить во всех тредах замера — иначе это тема. Слово
+// обязано отрываться от корпуса в разы, а не в проценты, — рядом с контролем в
+// 0,4–1,0×. И слова, уже судимого другим неводом, здесь быть не должно:
+// «никто» лежит в generalWords, и два невода, судящие одно слово, однажды
+// разойдутся между собой — обобщение выпало разрешённым, а штамп запрещённым.
+//
+// Список ПОЛ, а не потолок: он ловит те слова, которыми модель выдала себя на
+// первых девятистах репликах, и после каждой правки промпта его надо снимать
+// заново — почерк уедет в другие слова.
+var stampWords = set(
+	"складно", "вслух", "ровно", "будто", "верно", "легко", "нечего", "потому",
+)
 
 // generalWords — вынесение сказанного на всех.
 var generalWords = set(

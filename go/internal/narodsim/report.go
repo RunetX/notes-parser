@@ -349,6 +349,7 @@ func writeMarks(b *strings.Builder, got, want speech.Marks) {
 	fmt.Fprintf(b, "| числа | %s | %s |\n", shPct(got.Digits), shPct(want.Digits))
 	fmt.Fprintf(b, "| обобщение (все, всегда, люди) | %s | %s |\n", shPct(got.General), shPct(want.General))
 	fmt.Fprintf(b, "| поучение (надо, должен) | %s | %s |\n", shPct(got.Advice), shPct(want.Advice))
+	fmt.Fprintf(b, "| штамп машины (складно, будто) | %s | %s |\n", shPct(got.Stamp), shPct(want.Stamp))
 	b.WriteString("\n")
 }
 
