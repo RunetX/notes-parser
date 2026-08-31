@@ -179,8 +179,13 @@ func (s *Service) askOnce(ctx context.Context, system, prompt string, cfg valida
 		return draft{Skip: true, Idea: d.Idea}, false, nil
 	}
 	d.Text = tightenRubrics(sitetext.Normalize(d.Text))
+	// Забракованный черновик возвращается ВМЕСТЕ с причиной: его текст пишет в
+	// лог `ask`, и без этого причина говорит, ЧТО не так, и молчит о том, на чём
+	// модель настаивает. Пустая строка в логе стоила утра 01.09.2026: правило про
+	// час выхода забраковало все четыре попытки, а посмотреть, что модель писала,
+	// было негде. Опубликовать его нельзя и так: на ошибке черновик не берут.
 	if reason := validate(d, cfg); reason != "" {
-		return draft{}, true, fmt.Errorf("%s", reason)
+		return d, true, fmt.Errorf("%s", reason)
 	}
 	return d, false, nil
 }

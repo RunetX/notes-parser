@@ -485,6 +485,28 @@ func TestPunchUpTakesEditedText(t *testing.T) {
 	}
 }
 
+// TestAskOnceReturnsRejectedText — забракованный черновик обязан доехать до
+// вызывающего ВМЕСТЕ с причиной: его текст `ask` пишет в лог, и без него
+// причина говорит, ЧТО не так, и молчит о том, на чём модель настаивает.
+// Пустая строка в логе стоила утра 01.09.2026: правило про час выхода
+// забраковало все четыре попытки, а посмотреть, на чём модель упёрлась, было
+// негде — в лог ехал `draft{}`, а не ответ.
+func TestAskOnceReturnsRejectedText(t *testing.T) {
+	bad := strings.ReplaceAll(okNote(), "пора признаться, что у вас в наушниках",
+		"в семь утра признаваться, что у вас в наушниках, рано")
+	s, _ := punchService(`{"skip":false,"text":` + mustJSON(bad) + `,"used":[1,3,4],"idea":"x"}`)
+	got, retriable, err := s.askOnce(context.Background(), morningSystem, "", validCfg())
+	if err == nil {
+		t.Fatal("чужой час выхода пропущен валидатором")
+	}
+	if !retriable {
+		t.Error("брак ответа объявлен неповторяемым: переспроса не будет")
+	}
+	if want := tightenRubrics(sitetext.Normalize(bad)); got.Text != want {
+		t.Errorf("забракованный текст не вернулся вызывающему: %q", got.Text)
+	}
+}
+
 func mustJSON(s string) string {
 	b, err := json.Marshal(s)
 	if err != nil {
