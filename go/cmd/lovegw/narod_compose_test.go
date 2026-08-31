@@ -340,3 +340,57 @@ func TestComposeCarriesTheContentRates(t *testing.T) {
 		t.Errorf("доля обобщений у жителя %.3f, ожидалось около 0.16", got)
 	}
 }
+
+// ПЕРЕКОС ПО ТЕМАМ доезжает до жителя, а слова остаются авторскими.
+//
+// До 31.08.2026 сборка писала `card.Triggers = r.Triggers`, а рецепты тем не
+// называют вовсе — и у всех тридцати боевых композитов перекос был пуст, при
+// том что у 137 слепков из 158 он замерен. Кубик из-за этого не знал про заметку
+// ничего, кроме того, что она новая.
+//
+// Разделение труда проверяется здесь целиком: LIFT — замер и смешивается, ВЕС и
+// ИМЯ — авторские и берутся только из рецепта. Донорская тема, которой в рецепте
+// нет, приезжает с нулевым весом: в брифе её не видно (writeTriggers смотрит на
+// вес), а в кубике она работает.
+func TestComposeCarriesTheTopicLift(t *testing.T) {
+	r, donors := twoDonorRecipe()
+	r.Triggers = []narod.Topic{{Key: "dogs", Name: "собаки", Weight: 0.8}}
+	donors[0].Triggers = []narod.Topic{
+		{Key: "dogs", Lift: 2.0},
+		{Key: "dacha", Lift: 3.0},
+	}
+	donors[1].Triggers = []narod.Topic{{Key: "dogs", Lift: 1.0}}
+	card, err := composeCard(r, donors, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]narod.Topic{}
+	for _, tp := range card.Triggers {
+		byKey[tp.Key] = tp
+	}
+	dogs, ok := byKey["dogs"]
+	if !ok {
+		t.Fatal("тема из рецепта пропала")
+	}
+	// (2.0 + 1.0) / 2 = 1.5, веса поровну.
+	if dogs.Lift < 1.49 || dogs.Lift > 1.51 {
+		t.Errorf("перекос по теме рецепта %.2f, ожидалось 1.50", dogs.Lift)
+	}
+	if dogs.Name != "собаки" || dogs.Weight != 0.8 {
+		t.Errorf("слова автора подменены замером: %q вес %.2f", dogs.Name, dogs.Weight)
+	}
+	// Тема, которую назвал только донор, приезжает БЕЗ веса и без имени: её
+	// читает кубик, а не модель.
+	dacha, ok := byKey["dacha"]
+	if !ok {
+		t.Fatal("донорская тема потеряна — замер снова не доехал до жителя")
+	}
+	// Донор у неё один из двух, но доля считается по назвавшим: полвеса делить
+	// на полвеса и есть исходный перекос.
+	if dacha.Lift < 2.99 || dacha.Lift > 3.01 {
+		t.Errorf("перекос донорской темы %.2f, ожидалось 3.00", dacha.Lift)
+	}
+	if dacha.Name != "" || dacha.Weight != 0 {
+		t.Errorf("донорская тема попала в бриф: %q вес %.2f", dacha.Name, dacha.Weight)
+	}
+}

@@ -107,7 +107,7 @@ func composeCard(r composeRecipe, donors []narod.Card, now time.Time) (narod.Car
 	card.Rhythm = blendRhythm(donors, w)
 	card.Vocab, card.VocabRate = blendVocab(donors, w)
 	card.Errors = blendErrors(donors, w)
-	card.Triggers = r.Triggers
+	card.Triggers = blendTopics(donors, w, r.Triggers)
 	card.Dice = blendDice(donors, w)
 	card.Rate = blendRate(donors, w)
 	card.Roots = blendRoots(donors, w)
@@ -570,6 +570,67 @@ func blendRoots(donors []narod.Card, w []float64) narod.RootRate {
 // blendCome смешивает готовность зайти в новую заметку — ДОЛЯМИ, как и всё
 // остальное: у одного донора дней на сайте втрое больше, и сумма счётчиков
 // отдала бы меру ему независимо от весов рецепта.
+// blendTopics — ПЕРЕКОС ПО ТЕМАМ у жителя: замер от доноров, слова от владельца.
+//
+// До 31.08.2026 здесь стояло `card.Triggers = r.Triggers`, и это молча выносило
+// замер вон: рецепты тем не называют вовсе, поэтому у всех тридцати боевых
+// композитов `triggers` был пуст, тогда как у 137 слепков из 158 перекос
+// замерен (archive.MineTopicLift). Кубик из-за этого не знал про заметку
+// НИЧЕГО, кроме того, что она новая, — и «кто придёт именно сюда» выходило
+// жребием, ровно как до замера. Третий случай одного дефекта за три дня: пол,
+// поля точки решения, теперь темы.
+//
+// Разделение труда то же, что описано у самого типа Topic. LIFT — замер, «зайдёт
+// ли он в такую заметку», и смешивается по донорам, как Rate и Come рядом. ВЕС и
+// ИМЯ — авторские, «как он про это говорит», и берутся только из рецепта: их
+// читает модель (writeTriggers), и подставить туда донорские интересы значило бы
+// написать жителю биографию за владельца. Поэтому донорская тема, которой в
+// рецепте нет, приезжает с нулевым весом — в брифе её не видно, а в кубике она
+// работает.
+func blendTopics(donors []narod.Card, w []float64, own []narod.Topic) []narod.Topic {
+	lift := map[string]float64{}
+	weight := map[string]float64{}
+	for i, d := range donors {
+		for _, t := range d.Triggers {
+			if t.Key == "" || t.Lift <= 0 {
+				continue // «не мерили» — это не «не интересуется»
+			}
+			lift[t.Key] += w[i] * t.Lift
+			weight[t.Key] += w[i]
+		}
+	}
+	for k := range lift {
+		lift[k] /= weight[k]
+	}
+	out := make([]narod.Topic, 0, len(own)+len(lift))
+	named := map[string]bool{}
+	for _, t := range own {
+		named[t.Key] = true
+		if t.Key != "" {
+			if v, ok := lift[t.Key]; ok {
+				t.Lift = v
+			}
+		}
+		out = append(out, t)
+	}
+	// Порядок донорских тем — по ключу: он не значит ничего, но карточка обязана
+	// пересниматься байт в байт, иначе diff двух пересъёмов нечитаем.
+	keys := make([]string, 0, len(lift))
+	for k := range lift {
+		if !named[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, narod.Topic{Key: k, Lift: lift[k]})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func blendCome(donors []narod.Card, w []float64) narod.ComeRate {
 	var p, weight float64
 	var out narod.ComeRate

@@ -64,7 +64,7 @@ type ReplyRate struct {
 	Familiar []RateBucket `json:"familiar,omitempty"`
 
 	// Tempo — та же мера по НАКАЛУ треда: сколько реплик прилетело за последние
-	// tempoWindow минут ПЕРЕД этой возможностью.
+	// TempoWindow минут ПЕРЕД этой возможностью.
 	//
 	// Заведена 28.08.2026 по итогам второго платного прогона, и повод у неё
 	// точный. Отбор конфликтных тредов доказал, что дело не в заметках: на
@@ -124,14 +124,14 @@ type ReplyRate struct {
 	ToFemale RateBucket `json:"to_female"`
 }
 
-// tempoWindow — за какое время считается накал.
+// TempoWindow — за какое время считается накал.
 //
 // Десять минут: столько же держит vacuumBurst, и совпадение не случайно — там
 // это окно, за которое разговор НЕ имеет права уложиться целиком, здесь окно,
 // за которое видно, что он разогрелся. Обе величины про одно и то же чувство
 // живого треда, и разводить их двумя числами значило бы завести два ответа на
 // один вопрос.
-const tempoWindow = 10 * time.Minute
+const TempoWindow = 10 * time.Minute
 
 // tempoBuckets — верхние границы по числу реплик в окне. Ноль отдельной
 // корзиной: «в треде тихо» — это не «мало», а другое состояние, и мешать его с
@@ -253,7 +253,7 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 	var note int64
 	pos := 0
 	// recent — времена последних реплик треда, скользящим окном: накал это
-	// «сколько прилетело за последние tempoWindow ДО этой возможности», и
+	// «сколько прилетело за последние TempoWindow ДО этой возможности», и
 	// заглядывать вперёд нельзя — там уже видно, чем разговор кончился.
 	var recent []time.Time
 	for rows.Next() {
@@ -273,7 +273,7 @@ func (s *Store) MineReplyRate(ctx context.Context, accIDs []int64, maxThreads in
 		if err != nil {
 			continue
 		}
-		edge := now.Add(-tempoWindow)
+		edge := now.Add(-TempoWindow)
 		cut := 0
 		for cut < len(recent) && recent[cut].Before(edge) {
 			cut++

@@ -66,6 +66,25 @@ func (w *World) PlanReply(ctx context.Context, p Plan, now time.Time) (int64, bo
 	return id, false, err
 }
 
+// PendingInThread — сколько намерений жителя в этом треде ещё не исполнено.
+//
+// Считается ВМЕСТЕ со сказанным (см. Said у точки решения): между броском
+// монетки и репликой лежит замеренная задержка в минуты, и всё это время житель
+// «уже идёт говорить», хотя в журнале его нет. Без этого слагаемого залп
+// созревших намерений проходит мимо MaxPerThread — потолка, который РАЗГОВОРЧИВ
+// сам по себе (замер archive.MineThreadLoad, у доноров 11…45), — и житель
+// перебирает собственный характер. Калибровочный харнесс складывал эти два
+// числа с самого начала (narodsim: said + pending), боевая служба не складывала,
+// и разойтись им было нечем, кроме молчания.
+func (w *World) PendingInThread(ctx context.Context, actorID string, noteID int64) (int, error) {
+	var n int
+	err := w.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM plans
+		 WHERE actor_id = ? AND note_id = ? AND state = ?`,
+		actorID, noteID, PlanQueued).Scan(&n)
+	return n, err
+}
+
 // DuePlans — намерения, которым пора, от самых просроченных.
 //
 // Просрочку НЕ отсекаем здесь: решение «слишком поздно, уже неуместно» — это

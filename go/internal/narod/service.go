@@ -208,6 +208,14 @@ type Service struct {
 	// у llm и rullm это разные вещи, а в gen_runs должна стоять одна строка.
 	model    string
 	provider string
+
+	// topics — разбор ТЕМ заметки. Замыкание, а не метод: лексикон и сам разбор
+	// живут в архиве (archive.TopicsOf), а ядру народа архив импортировать
+	// нельзя (deps_test). Ставит его cmd/lovegw, который знает оба мира, — тем
+	// же приёмом, каким туда попадают карточки. Не поставлено — тем нет, и
+	// TopicLift просто не даёт множителя; так было ВСЕГДА до 31.08.2026, и это
+	// был дефект, а не замысел.
+	topics func(string) []string
 }
 
 // NewService собирает службу. Карточки ПРОВЕРЯЮТСЯ здесь же: в live выходят
@@ -259,6 +267,15 @@ func (s *Service) SetSeed(seed uint64) { s.seed = seed }
 func (s *Service) SetGate(f func(context.Context) bool) {
 	if f != nil {
 		s.enabled = f
+	}
+}
+
+// SetTopics вешает разбор тем заметки — тот самый, по которому снят замер
+// перекоса (archive.MineTopicLift). Разбор обязан быть ТЕМ ЖЕ: множитель,
+// приложенный к темам, посчитанным иначе, относится к другой величине.
+func (s *Service) SetTopics(f func(string) []string) {
+	if f != nil {
+		s.topics = f
 	}
 }
 
@@ -329,6 +346,7 @@ func (s *Service) scanNotes(ctx context.Context) error {
 		s.log.Warn("народ: песочниц больше потолка", "потолок", stageNoteCap)
 	}
 	now := s.clock.Now()
+	feels := newFeel(s.world)
 	for _, n := range notes {
 		// Виденную песочницу пропускаем: за её тредом ходит scanThreads.
 		known, err := s.world.KnownThread(ctx, n.ID)
@@ -349,18 +367,34 @@ func (s *Service) scanNotes(ctx context.Context) error {
 		if _, err := s.world.TouchThread(ctx, n.ID, false, now); err != nil {
 			return err
 		}
+		// Темы заметки разбираются ОДИН раз на заметку, а не на жителя: разбор
+		// один и тот же, а жителей тридцать.
+		var topics []string
+		if s.topics != nil {
+			topics = s.topics(n.Body)
+		}
 		for _, p := range s.players {
 			// Автор заметки монетку не бросает: «прийти в новую заметку» — это
 			// про чужую, а под своей человек появляется, отвечая пришедшим.
 			if p.UserID == n.AuthorID {
 				continue
 			}
+			tone, _, err := feels.of(ctx, p.Card.ID, n.AuthorID)
+			if err != nil {
+				return err
+			}
 			pt := DecisionPoint{
 				Now: now, Actor: p.UserID, NoteID: n.ID,
-				TriggerID: 0, Trigger: n.Body,
+				Topics: topics, TriggerID: 0, Trigger: n.Body,
 				Author: n.AuthorID, Nick: n.AuthorNick,
+				// Пол автора кубик на этой точке не спрашивает (GenderLift
+				// живёт у ответа), но подаётся он и здесь: харнесс и бой
+				// обязаны собирать точку ОДИНАКОВО, иначе расхождение снова
+				// окажется молчаливым.
+				Gender: n.AuthorGender,
+				Tone:   tone,
 			}
-			if err := s.roll(ctx, p, eventKey(eventNote, n.ID), pt, n.ID, 0, ""); err != nil {
+			if _, err := s.roll(ctx, p, eventKey(eventNote, n.ID), pt, n.ID, 0, ""); err != nil {
 				return err
 			}
 		}
@@ -412,28 +446,60 @@ func (s *Service) scanThread(ctx context.Context, noteID int64) error {
 		return err
 	}
 	now := s.clock.Now()
+	feels := newFeel(s.world)
+	// Окно накала — ЧЕЛОВЕЧЕСКОЕ, поэтому переводится в стенные часы тем же
+	// slowdown, что и задержка ответа: сжав время жителям, мы сжали и их паузы,
+	// а десять минут по стенным часам вместили бы у них в 1/scale раз больше
+	// разговора, чем видел замер.
+	window := s.slowdown(TempoWindow)
+	// Сколько житель уже сказал (и намерен сказать) в этом треде — величина на
+	// ЖИТЕЛЯ, а не на реплику, поэтому спрашивается один раз за проход: в
+	// двойном цикле это было бы players × реплики обращений к базе на каждом
+	// такте смотра.
+	said := make(map[string]int, len(s.players))
+	for _, p := range s.players {
+		n, err := s.world.SaidInThread(ctx, p.Card.ID, noteID)
+		if err != nil {
+			return err
+		}
+		// Плюс намерения, ещё не исполненные: житель, решивший ответить через
+		// сорок минут, уже говорит — просто ещё молчит.
+		pending, err := s.world.PendingInThread(ctx, p.Card.ID, noteID)
+		if err != nil {
+			return err
+		}
+		said[p.Card.ID] = n + pending
+	}
 	for i, c := range thread {
+		tempo := tempoAt(thread, i, window)
 		for _, p := range s.players {
 			// Сам себе точкой решения реплика не бывает — ни своя, ни чужая,
 			// сказанная за него службой.
 			if c.AuthorID == p.UserID || mine[c.ID] == p.Card.ID {
 				continue
 			}
+			tone, familiar, err := feels.of(ctx, p.Card.ID, c.AuthorID)
+			if err != nil {
+				return err
+			}
 			pt := DecisionPoint{
 				Now: now, Actor: p.UserID, NoteID: noteID,
 				TriggerID: c.ID, Trigger: c.Body,
 				Author: c.AuthorID, Nick: c.AuthorNick,
-				Addressed: c.ReplyTo != 0 && s.authorOf(thread, c.ReplyTo) == p.UserID,
-				Gender:    c.Gender,
-				Seen:      i + 1,
+				Addressed:   c.ReplyTo != 0 && s.authorOf(thread, c.ReplyTo) == p.UserID,
+				Gender:      c.Gender,
+				Seen:        i + 1,
+				Tempo:       tempo,
+				Familiarity: familiar,
+				Tone:        tone,
+				Said:        said[p.Card.ID],
 			}
-			said, err := s.world.SaidInThread(ctx, p.Card.ID, noteID)
+			planned, err := s.roll(ctx, p, eventKey(eventReply, c.ID), pt, noteID, c.ID, c.AuthorNick)
 			if err != nil {
 				return err
 			}
-			pt.Said = said
-			if err := s.roll(ctx, p, eventKey(eventReply, c.ID), pt, noteID, c.ID, c.AuthorNick); err != nil {
-				return err
+			if planned {
+				said[p.Card.ID]++
 			}
 		}
 	}
@@ -457,18 +523,22 @@ func (s *Service) authorOf(thread []StageReply, id int64) int64 {
 // событие): пятнадцать процентов, спрошенные десять раз за десять тактов,
 // превращаются в восемьдесят — урок оплачен амвоном. Здесь он важнее вдвое:
 // такт смотра перечитывает тред целиком каждые полминуты.
+// roll — одна точка решения. Второе значение: НАМЕРЕНИЕ ЗАВЕДЕНО, — и нужно оно
+// зовущему, чтобы держать Said свежим в пределах одного прохода: житель,
+// собравшийся ответить на третью реплику, к седьмой уже «говорит», а в журнале
+// его ещё нет и не будет минуты.
 func (s *Service) roll(ctx context.Context, p Player, event string, pt DecisionPoint,
-	noteID, replyTo int64, target string) error {
+	noteID, replyTo int64, target string) (bool, error) {
 	if p.UserID == 0 {
-		return nil // житель ещё не заведён на площадке: играть ему нечем
+		return false, nil // житель ещё не заведён на площадке: играть ему нечем
 	}
 	if _, err := s.world.DiceOf(ctx, p.Card.ID, event); err == nil {
-		return nil // уже бросали
+		return false, nil // уже бросали
 	}
 	d := &CardDecider{Card: *p.Card, Seed: s.seed}
 	got, err := d.Decide(ctx, pt)
 	if err != nil {
-		return err
+		return false, err
 	}
 	verdict := DiceSkip
 	if got.Speak {
@@ -477,22 +547,22 @@ func (s *Service) roll(ctx context.Context, p Player, event string, pt DecisionP
 	if _, fresh, err := s.world.Roll(ctx, Dice{
 		ActorID: p.Card.ID, EventID: event, Verdict: verdict, At: pt.Now,
 	}); err != nil || !fresh {
-		return err
+		return false, err
 	}
 	if !got.Speak {
-		return nil
+		return false, nil
 	}
 	// Корневая реплика адресата не имеет: житель вернулся в заметку, а не
 	// ответил тому, кто его сюда позвал.
 	if got.Root {
 		replyTo, target = 0, ""
 	}
-	_, _, err = s.world.PlanReply(ctx, Plan{
+	_, fresh, err := s.world.PlanReply(ctx, Plan{
 		ActorID: p.Card.ID, EventID: event, NoteID: noteID,
 		ReplyTo: replyTo, Target: target,
 		DueAt: pt.Now.Add(s.slowdown(got.After)),
 	}, pt.Now)
-	return err
+	return fresh, err
 }
 
 // Work — один проход работы: созревшие планы.
@@ -707,6 +777,87 @@ func (s *Service) peersOf(ctx context.Context, note StageNote, thread []StageRep
 	return out
 }
 
+// TempoWindow — окно НАКАЛА: за сколько считается «сколько прилетело только
+// что». Число то же, что в замере (archive.tempoWindow), и переписано сюда, а не
+// импортировано, потому что архив ядру народа недоступен (deps_test); разойдись
+// они — множитель прикладывался бы к накалу, которого в замере не было.
+//
+// Окно ЧЕЛОВЕЧЕСКОЕ, и потому применяется через slowdown: у жителей время сжато
+// LatencyScale, и десять минут по стенным часам вмещают у них в 1/scale раз
+// больше разговора, чем видел замер.
+const TempoWindow = 10 * time.Minute
+
+// tempoAt — сколько реплик прилетело за окно ПЕРЕД i-й репликой треда.
+//
+// Считается по времени самой реплики, а не по «сейчас»: замер снят как «сколько
+// прилетело за tempoWindow ДО этой возможности», и точка решения на старой
+// реплике обязана видеть тот накал, который был в её минуту. Обход идёт назад и
+// обрывается на первой же старой — в длинном треде это единицы шагов.
+func tempoAt(thread []StageReply, i int, window time.Duration) int {
+	if i < 0 || i >= len(thread) {
+		return 0
+	}
+	edge := thread[i].PublishedAt.Add(-window)
+	n := 0
+	for j := i - 1; j >= 0; j-- {
+		if thread[j].PublishedAt.Before(edge) {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// feel — ТОН и ЗНАКОМСТВО жителя к говорящему, с кэшем на один проход смотра.
+//
+// Обе величины лежат в ОДНОМ ребре графа мира, поэтому и спрашиваются одним
+// запросом: тон двигает relationLift, знакомство — FamiliarLift, и разъехаться
+// им нельзя. Кэш здесь не украшение: точек решения в проходе players × реплики
+// треда (тридцать жителей на полсотни реплик — полторы тысячи), а собеседников
+// в треде десятки.
+//
+// Незаведённый в мире собеседник даёт нули, и это ОТВЕТ, а не отсутствие
+// данных: незнакомство есть состояние, и кубик читает его именно так (ноль тона
+// значит и «безразличен», и «незнаком», см. DecisionPoint.Tone).
+type feel struct {
+	world *World
+	slug  map[int64]string
+	// Ключ — ПАРА слугов, а не склейка: разделитель в склейке пришлось бы
+	// выбирать, а слуг житель пишет себе сам.
+	edge map[[2]string]Edge
+}
+
+func newFeel(w *World) *feel {
+	return &feel{world: w, slug: map[int64]string{}, edge: map[[2]string]Edge{}}
+}
+
+func (f *feel) of(ctx context.Context, mine string, userID int64) (float64, int, error) {
+	dst, seen := f.slug[userID]
+	if !seen {
+		a, ok, err := f.world.ActorByPlatformUser(ctx, userID)
+		if err != nil {
+			return 0, 0, err
+		}
+		if ok {
+			dst = a.ID
+		}
+		f.slug[userID] = dst
+	}
+	if dst == "" || dst == mine {
+		return 0, 0, nil
+	}
+	key := [2]string{mine, dst}
+	e, ok := f.edge[key]
+	if !ok {
+		var err error
+		if e, err = f.world.EdgeOf(ctx, mine, dst); err != nil {
+			return 0, 0, err
+		}
+		f.edge[key] = e
+	}
+	return e.Tone(), int(e.Familiarity), nil
+}
+
 // heatOf — сколько раз пара уже обменялась репликами в этом треде.
 func heatOf(thread []StageReply, me, peer int64) int {
 	if me == 0 || peer == 0 {
@@ -728,14 +879,26 @@ func heatOf(thread []StageReply, me, peer int64) int {
 
 // overCap — упёрся ли житель в потолок. Возвращает ПРИЧИНУ словами: она едет и
 // в журнал, и в отчёт, и «промолчал» без причины через месяц не объяснить.
+//
+// ЧАСЫ ЗДЕСЬ ЧЕЛОВЕЧЕСКИЕ, и это правка 31.08.2026 по разбору первого смежного
+// треда. Потолки говорят про ТЕМП человека («столько-то реплик в час»), а
+// считались по стенным часам — при том что задержки жителя сжаты LatencyScale.
+// В бою со сжатием 0,08 в одном стенном часе укладывалось 12,5 часа разговора,
+// то есть часовой потолок оказывался в 12,5 раза жёстче задуманного: верхние по
+// разговорчивости упёрлись в него ровно (шесть реплик при потолке шесть) за
+// девятнадцать минут, и повторно зайти в заметку — а у живых это 40 % всех
+// корней — уже не могли. Два ограничителя мерились разными часами; теперь одними.
+//
+// Денежный потолок (DayCalls) остаётся в СТЕННЫХ сутках намеренно: счёт из
+// облака приходит по календарю, а не по внутреннему времени песочницы.
 func (s *Service) overCap(ctx context.Context, p Player, pl Plan) (string, error) {
 	now := s.clock.Now()
-	if n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-time.Hour)); err != nil {
+	if n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-s.slowdown(time.Hour))); err != nil {
 		return "", err
 	} else if s.cfg.PerPersonaHour > 0 && n >= s.cfg.PerPersonaHour {
 		return fmt.Sprintf("потолок часа: уже %d реплик", n), nil
 	}
-	if n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-24*time.Hour)); err != nil {
+	if n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-s.slowdown(24*time.Hour))); err != nil {
 		return "", err
 	} else if s.cfg.PerPersonaDay > 0 && n >= s.cfg.PerPersonaDay {
 		return fmt.Sprintf("потолок суток: уже %d реплик", n), nil

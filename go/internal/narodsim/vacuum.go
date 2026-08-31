@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"lovegw/internal/archive"
+	"lovegw/internal/narod"
 )
 
 // VacuumActor — житель на сцене.
@@ -129,11 +130,11 @@ type VacuumOpts struct {
 
 const vacuumMaxReplies = 300
 
-// vacuumTempo — окно накала: за сколько считается «сколько прилетело только
-// что». Совпадает с окном ЗАМЕРА (archive.tempoWindow) не по совпадению: кубику
-// подаётся та же величина, по которой снята кривая, и разойдись они — множитель
-// прикладывался бы к накалу, которого в замере не было.
-const vacuumTempo = 10 * time.Minute
+// Окно накала СВОЁ ЗДЕСЬ НЕ ЗАВОДИТСЯ: берётся narod.TempoWindow, то же самое,
+// каким считает бой, а равенство его замеру (archive.TempoWindow) стережёт тест
+// в этом же пакете — он единственный видит оба мира. Три копии десяти минут
+// разошлись бы молча, и множитель прикладывался бы к накалу, которого в замере
+// не было; ровно по этому доводу словарь мата вынесен в profanity.
 
 // VacuumRun — итог прогона в вакууме.
 type VacuumRun struct {
@@ -694,14 +695,14 @@ func jaccardStr(a, b []string) float64 {
 	return float64(both) / float64(union)
 }
 
-// tempo — сколько реплик прозвучало за последние vacuumTempo до момента at.
+// tempo — сколько реплик прозвучало за последние narod.TempoWindow до момента at.
 //
 // Считается по хвосту треда с конца, а не хранится счётчиком: реплики приходят
 // строго по возрастанию времени (очередь отдаёт ближайшее событие), поэтому
 // нужный отрезок всегда в конце, и обход прерывается на первой же старой. В
 // длинном треде это единицы шагов, а не проход по трёмстам репликам.
 func (st *vacState) tempo(at time.Time) int {
-	edge := at.Add(-vacuumTempo)
+	edge := at.Add(-narod.TempoWindow)
 	n := 0
 	for i := len(st.got.Comments) - 1; i >= 0; i-- {
 		if st.got.Comments[i].PublishedAt.Before(edge) {

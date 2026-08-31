@@ -60,7 +60,7 @@ type RootRate struct {
 // Второе значение — был ли это ЗАМЕР: пустая корзина возвращает 0, false.
 func (r RootRate) Rate(pos int) (float64, bool) { return rateIn(r.Buckets, pos, false) }
 
-// TempoRate — то же при накале n (реплик за последние tempoWindow).
+// TempoRate — то же при накале n (реплик за последние TempoWindow).
 func (r RootRate) TempoRate(n int) (float64, bool) { return rateIn(r.Tempo, n, false) }
 
 // MineRootRate считает кривую повторного захода по последним maxThreads тредам,
@@ -176,7 +176,7 @@ func (s *Store) MineRootRate(ctx context.Context, accIDs []int64, maxThreads int
 		if err != nil {
 			continue
 		}
-		edge := now.Add(-tempoWindow)
+		edge := now.Add(-TempoWindow)
 		cut := 0
 		for cut < len(recent) && recent[cut].Before(edge) {
 			cut++
