@@ -347,6 +347,10 @@ func (s *Service) scanNotes(ctx context.Context) error {
 	}
 	now := s.clock.Now()
 	feels := newFeel(s.world)
+	full, err := s.saturated(ctx, now)
+	if err != nil {
+		return err
+	}
 	for _, n := range notes {
 		// Виденную песочницу пропускаем: за её тредом ходит scanThreads.
 		known, err := s.world.KnownThread(ctx, n.ID)
@@ -377,6 +381,11 @@ func (s *Service) scanNotes(ctx context.Context) error {
 			// Автор заметки монетку не бросает: «прийти в новую заметку» — это
 			// про чужую, а под своей человек появляется, отвечая пришедшим.
 			if p.UserID == n.AuthorID {
+				continue
+			}
+			// Наговорившийся молчит, НЕ ТРАТЯ монетку: событие остаётся
+			// неброшенным и достанется ему, когда окно освободится.
+			if full[p.Card.ID] {
 				continue
 			}
 			tone, _, err := feels.of(ctx, p.Card.ID, n.AuthorID)
@@ -447,6 +456,10 @@ func (s *Service) scanThread(ctx context.Context, noteID int64) error {
 	}
 	now := s.clock.Now()
 	feels := newFeel(s.world)
+	full, err := s.saturated(ctx, now)
+	if err != nil {
+		return err
+	}
 	// Окно накала — ЧЕЛОВЕЧЕСКОЕ, поэтому переводится в стенные часы тем же
 	// slowdown, что и задержка ответа: сжав время жителям, мы сжали и их паузы,
 	// а десять минут по стенным часам вместили бы у них в 1/scale раз больше
@@ -476,6 +489,10 @@ func (s *Service) scanThread(ctx context.Context, noteID int64) error {
 			// Сам себе точкой решения реплика не бывает — ни своя, ни чужая,
 			// сказанная за него службой.
 			if c.AuthorID == p.UserID || mine[c.ID] == p.Card.ID {
+				continue
+			}
+			// То же, что и на заметке: наговорившийся не тратит монетку.
+			if full[p.Card.ID] {
 				continue
 			}
 			tone, familiar, err := feels.of(ctx, p.Card.ID, c.AuthorID)
@@ -775,6 +792,58 @@ func (s *Service) peersOf(ctx context.Context, note StageNote, thread []StageRep
 		add(c.AuthorID, c.AuthorNick)
 	}
 	return out
+}
+
+// saturated — кто из жителей уже наобещал больше своего личного потолка.
+//
+// ЗАЧЕМ ЭТО ЕСТЬ ОТДЕЛЬНО ОТ overCap, хотя потолки те же. Монетка бросается
+// РОВНО ОДИН РАЗ на событие (ключ броска — событие, и повторный roll коротит
+// сам себя), а потолок до 31.08.2026 спрашивался ТОЛЬКО на исполнении плана —
+// то есть житель, упёршийся в потолок, терял ту возможность НАВСЕГДА: бросок
+// записан, план убит, второй раз эта чужая реплика ему не выпадет никогда.
+// Дороже всего это стоило как раз тем, кто разговорчив: у живых 40 % корней
+// это ПОВТОРНЫЙ заход, а повторно заходит тот, кто уже наговорил.
+//
+// Поэтому потолок спрашивается ДО броска, и спрашивается он про НАМЕРЕНИЯ, а не
+// только про сказанное: между монеткой и репликой лежит замеренная задержка в
+// минуты, и всё это время житель для журнала молчит. Сумма «сказал за окно +
+// намерен сказать» и есть то, во что он упирается.
+//
+// Раз на проход, а не на точку решения: точек в проходе players × реплики
+// треда, а величина эта на ЖИТЕЛЯ. Потолки на тред и денежный сюда НЕ идут —
+// они предохранители, а не темп человека, и остаются на исполнении, где им и
+// место.
+func (s *Service) saturated(ctx context.Context, now time.Time) (map[string]bool, error) {
+	out := make(map[string]bool, len(s.players))
+	if s.cfg.PerPersonaHour <= 0 && s.cfg.PerPersonaDay <= 0 {
+		return out, nil
+	}
+	for _, p := range s.players {
+		pending, err := s.world.PendingOf(ctx, p.Card.ID)
+		if err != nil {
+			return nil, err
+		}
+		if s.cfg.PerPersonaHour > 0 {
+			n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-s.slowdown(time.Hour)))
+			if err != nil {
+				return nil, err
+			}
+			if n+pending >= s.cfg.PerPersonaHour {
+				out[p.Card.ID] = true
+				continue
+			}
+		}
+		if s.cfg.PerPersonaDay > 0 {
+			n, err := s.world.SaidSince(ctx, p.Card.ID, now.Add(-s.slowdown(24*time.Hour)))
+			if err != nil {
+				return nil, err
+			}
+			if n+pending >= s.cfg.PerPersonaDay {
+				out[p.Card.ID] = true
+			}
+		}
+	}
+	return out, nil
 }
 
 // TempoWindow — окно НАКАЛА: за сколько считается «сколько прилетело только

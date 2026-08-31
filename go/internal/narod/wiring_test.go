@@ -260,3 +260,113 @@ func TestОкноНакалаИСчётНакала(t *testing.T) {
 		t.Errorf("у первой реплики накал %d, ожидался ноль", got)
 	}
 }
+
+// ---------------------------------------------------- монетка и потолок
+
+// МОНЕТКА НЕ СГОРАЕТ НА ПОТОЛКЕ.
+//
+// Бросок ключуется СОБЫТИЕМ и делается ровно один раз — иначе пятнадцать
+// процентов, спрошенные десять раз за десять тактов, превращаются в восемьдесят.
+// Но потолок до 31.08.2026 спрашивался только на ИСПОЛНЕНИИ плана, и связка
+// выходила такая: житель бросил монетку, выиграл, завёл намерение — а на
+// исполнении упёрся в потолок, намерение убили, и второй раз эта чужая реплика
+// ему не выпадет НИКОГДА. Терял на этом больше всех разговорчивый: у живых 40 %
+// корней — повторный заход, а повторно заходит тот, кто уже наговорил.
+//
+// Проверяется поведением, а не устройством: наговорившийся житель проходит тред
+// молча и НЕ оставляет бросков; освободилось окно — те же самые реплики
+// достаются ему целыми. На прежнем коде тест падает первой же проверкой.
+func TestПотолокНеСжигаетМонетку(t *testing.T) {
+	ctx := context.Background()
+	card := wiringCard("full")
+	// Кубик у него почти всегда «прийти»: без этого «бросков нет» ничего не
+	// доказывало бы — их могло не быть и по невезению.
+	card.Rate = ReplyRate{Buckets: []RateBucket{{Upto: 1 << 30, Chances: 100, Answers: 99}}}
+	thread := spread(6, time.Minute)
+
+	stage := &fakeStage{notes: []StageNote{wiringNote}, thread: thread}
+	svc, w := testService(t, stage)
+	svc.cfg.PerPersonaHour = 3
+	svc.players = []Player{{Card: card, UserID: 42}}
+	if err := w.UpsertActor(ctx, Actor{ID: card.ID, Kind: ActorPersona,
+		PlatformUserID: 42, Nick: "Житель"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Он уже сказал столько, сколько ему положено в час.
+	for i := 0; i < 3; i++ {
+		if _, err := w.Remember(ctx, JournalEntry{
+			ActorID: card.ID, At: svc.clock.Now(), Kind: JournalComment,
+			NoteID: wiringNote.ID, Text: "сказанное раньше",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := svc.scanThread(ctx, wiringNote.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range thread {
+		if _, err := w.DiceOf(ctx, card.ID, eventKey(eventReply, c.ID)); err == nil {
+			t.Fatalf("наговорившийся житель потратил монетку на реплику %d", c.ID)
+		}
+	}
+
+	// Окно освободилось — те же реплики достаются ему целыми, а не сгоревшими.
+	if _, err := w.db.ExecContext(ctx, `DELETE FROM journal WHERE actor_id = ?`, card.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.scanThread(ctx, wiringNote.ID); err != nil {
+		t.Fatal(err)
+	}
+	rolled := 0
+	for _, c := range thread {
+		if _, err := w.DiceOf(ctx, card.ID, eventKey(eventReply, c.ID)); err == nil {
+			rolled++
+		}
+	}
+	if rolled != len(thread) {
+		t.Errorf("после освобождения окна брошено %d монеток из %d — часть возможностей сгорела",
+			rolled, len(thread))
+	}
+}
+
+// В ПОТОЛОК СЧИТАЮТСЯ И НАМЕРЕНИЯ, а не только сказанное.
+//
+// Между монеткой и репликой лежит замеренная задержка в минуты, и всё это время
+// житель для журнала молчит. Считай потолок по одному журналу — и в людном
+// треде житель наберёт десяток намерений при потолке в три: шесть станут
+// репликами, остальные умрут на исполнении, потратив монетки. Здесь журнал пуст
+// вовсе, а намерения уже есть, и правильный ответ — молчать.
+func TestНамеренияСчитаютсяВПотолок(t *testing.T) {
+	ctx := context.Background()
+	card := wiringCard("planner")
+	card.Rate = ReplyRate{Buckets: []RateBucket{{Upto: 1 << 30, Chances: 100, Answers: 99}}}
+	thread := spread(4, time.Minute)
+
+	stage := &fakeStage{notes: []StageNote{wiringNote}, thread: thread}
+	svc, w := testService(t, stage)
+	svc.cfg.PerPersonaHour = 2
+	svc.players = []Player{{Card: card, UserID: 42}}
+	if err := w.UpsertActor(ctx, Actor{ID: card.ID, Kind: ActorPersona,
+		PlatformUserID: 42, Nick: "Житель"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Ни одной реплики в журнале — только намерения, ещё не исполненные.
+	for i := 0; i < 2; i++ {
+		if _, _, err := w.PlanReply(ctx, Plan{
+			ActorID: card.ID, EventID: eventKey(eventReply, int64(900+i)),
+			NoteID: wiringNote.ID, DueAt: svc.clock.Now().Add(time.Hour),
+		}, svc.clock.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := svc.scanThread(ctx, wiringNote.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range thread {
+		if _, err := w.DiceOf(ctx, card.ID, eventKey(eventReply, c.ID)); err == nil {
+			t.Fatalf("житель с полным набором намерений всё равно бросил монетку на %d", c.ID)
+		}
+	}
+}

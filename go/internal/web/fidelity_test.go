@@ -681,6 +681,20 @@ func TestStickyHeaderCarriesCommentCount(t *testing.T) {
 	if feed := do(h, guest(t, "GET", "/")).Body.String(); strings.Contains(feed, "hcount") {
 		t.Error("счётчик реплик оказался в шапке ленты")
 	}
+
+	// И ПРИ НУЛЕ он стоит. Условие тут не про число, а про страницу, и разница
+	// не косметическая: живой добор умеет подкрутить счётчик, но не завести
+	// его, — а заметку, открытую пустой, у нас открывают чаще всего (песочница и
+	// двойник других состояний в начале не имеют). Пока условие считало ноль за
+	// «это не страница заметки», число в шапке не появлялось до перезагрузки,
+	// сколько бы реплик в тред ни пришло (жалоба владельца 31.08.2026).
+	empty := sampleNote()
+	empty.CommentCount = 0
+	eh := openServer(t, &fakeStore{note: empty, total: 1, notes: []platform.NoteView{empty}})
+	page = do(eh, guest(t, "GET", "/n/312811")).Body.String()
+	if !strings.Contains(page, `class="hcount"`) || !strings.Contains(page, `<span class="n">0</span>`) {
+		t.Error("у заметки без реплик в шапке нет счётчика: живому добору нечего будет подкручивать")
+	}
 }
 
 // [Э] Название площадки на узком экране — ЗНАК, а не слово. Мера прежняя:
