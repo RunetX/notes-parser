@@ -21,6 +21,33 @@ import (
 // целиком. Выборка идёт с конца (последние по номеру): нам нужна нынешняя
 // манера, а не средняя за тринадцать лет, — в 2013-м и сайт, и разговор были
 // другими.
+// CorpusTexts — те же реплики, что берёт SpeechCorpus, но СЫРЫМИ.
+//
+// Отдельным методом, а не полем результата: своду (speech.Sweep) нужны сами
+// слова, а портрету содержания — только доли, и таскать сотню тысяч строк ради
+// пяти чисел незачем. Выборка та же и по тому же доводу — с конца, нам нужна
+// нынешняя манера, а не средняя за тринадцать лет.
+func (s *Store) CorpusTexts(ctx context.Context, sample int) ([]string, error) {
+	if sample <= 0 {
+		sample = 100000
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT text FROM comments WHERE text != '' ORDER BY id DESC LIMIT ?`, sample)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var texts []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		texts = append(texts, t)
+	}
+	return texts, rows.Err()
+}
+
 func (s *Store) SpeechCorpus(ctx context.Context, sample int) (speech.Marks, error) {
 	if sample <= 0 {
 		sample = 100000

@@ -46,7 +46,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
 		"scout": true, "enroll": true, "seed": true, "stage": true, "wake": true,
-		"portrait": true, "speech": true, "twin": true,
+		"portrait": true, "speech": true, "twin": true, "stamps": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -89,8 +89,8 @@ func cmdNarod(ctx context.Context, args []string) error {
 	stageNote := fs.Int64("id", 0, "stage: номер уже стоящей в ленте заметки")
 	stageOff := fs.Bool("off", false, "stage: вернуть заметку людям")
 	reason := fs.String("reason", "", "stage: пометка в журнал")
-	speechCorpus := fs.Int("corpus", 100000, "speech: сколько реплик корпуса взять в мерку (0 — не брать)")
-	speechFiles := fs.String("file", "", "speech: файлы с нашими репликами (JSON-массив строк), через запятую")
+	speechCorpus := fs.Int("corpus", 100000, "speech, stamps: сколько реплик корпуса взять в мерку (0 — не брать)")
+	speechFiles := fs.String("file", "", "speech, stamps: файлы с нашими репликами (JSON-массив строк), через запятую; у stamps — ПО ФАЙЛУ НА ТРЕД")
 	if err := fs.Parse(reorderArgs(rest, fs)); err != nil {
 		return err
 	}
@@ -152,6 +152,10 @@ func cmdNarod(ctx context.Context, args []string) error {
 		return narodTwin(ctx, cfg, *stageNote)
 	case "wake":
 		return narodWake(ctx, *worldPath, *stageNote)
+	case "stamps":
+		return narodStamps(ctx, stampsOpts{
+			dbPath: *dbPath, corpus: *speechCorpus, files: *speechFiles,
+		})
 	case "speech":
 		return narodSpeech(ctx, speechOpts{
 			dbPath: *dbPath, corpus: *speechCorpus, actors: *actor,
