@@ -75,6 +75,9 @@ type fakeStore struct {
 
 	// Мордолента: лица жителей над первой страницей ленты.
 	faces      []platform.PersonaFace
+	synth      platform.NoteSynth
+	synthOf    int64
+	synthErr   error
 	facesErr   error
 	facesLimit int
 	facesCalls int
@@ -111,6 +114,15 @@ func (f *fakeStore) AuthorComments(context.Context, int64, int) ([]platform.PubC
 func (f *fakeStore) PersonaFaces(_ context.Context, limit int) ([]platform.PersonaFace, error) {
 	f.facesLimit, f.facesCalls = limit, f.facesCalls+1
 	return f.faces, f.facesErr
+}
+
+// Смежное обсуждение: есть ли у заметки двойник (эпик «народ»).
+func (f *fakeStore) SynthTwin(_ context.Context, noteID int64) (platform.NoteSynth, bool, error) {
+	f.synthOf = noteID
+	if f.synthErr != nil {
+		return platform.NoteSynth{}, false, f.synthErr
+	}
+	return f.synth, f.synth.ID != 0, nil
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }

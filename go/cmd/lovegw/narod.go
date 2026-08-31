@@ -33,7 +33,7 @@ func cmdNarod(ctx context.Context, args []string) error {
 	sub, rest := splitSubcommand(args, map[string]bool{
 		"card": true, "compose": true, "show": true, "world": true, "replay": true,
 		"scout": true, "enroll": true, "seed": true, "stage": true, "wake": true,
-		"portrait": true, "speech": true,
+		"portrait": true, "speech": true, "twin": true,
 	})
 	fs := flag.NewFlagSet("narod", flag.ExitOnError)
 	dbPath := fs.String("db", defaultArchivePath, "путь к archive.db")
@@ -118,6 +118,12 @@ func cmdNarod(ctx context.Context, args []string) error {
 			return err
 		}
 		return narodStage(ctx, cfg, *stageNote, *stageOff, *reason)
+	case "twin":
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return err
+		}
+		return narodTwin(ctx, cfg, *stageNote)
 	case "wake":
 		return narodWake(ctx, *worldPath, *stageNote)
 	case "speech":

@@ -288,6 +288,12 @@ var fanOutRules = []fanRule{{
 	// «Мне ответили» и «в моём треде кто-то говорит» — разные вопросы: под
 	// заметкой с девятью сотнями реплик второе это не уведомление, а рассылка.
 	// Захотевшему следить за тредом целиком нужна подписка, а не повод.
+	// И НЕ ПРО ПЕСОЧНИЦУ. Заметку-песочницу (а с 31.08.2026 и двойника, у
+	// которого автор тот же администратор) заводят не ради разговора с автором:
+	// это СЦЕНА, и корневые реплики жителей — не «вам ответили», а она сама.
+	// Тридцать жителей дают их десятками, и колокольчик администратора
+	// превращался бы в ленту собственной песочницы. Ответ ЕМУ САМОМУ повод
+	// по-прежнему даёт — это правило выше, и оно про разговор, а не про сцену.
 	name:   "ответ на заметку",
 	reason: ReasonReplyToNote,
 	kinds:  []EventKind{EventComment},
@@ -298,7 +304,7 @@ var fanOutRules = []fanRule{{
 	        JOIN notes    n ON n.id = c.note_id
 	        JOIN users    u ON u.id = n.author_id
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3) AND c.status = 0
-	         AND c.reply_to_id IS NULL
+	         AND c.reply_to_id IS NULL AND NOT n.stage
 	         AND n.author_id IS DISTINCT FROM c.author_id
 	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	      ON CONFLICT DO NOTHING`,

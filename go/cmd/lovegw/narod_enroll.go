@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -226,6 +227,42 @@ func narodStage(ctx context.Context, cfg *config.Config, noteID int64, off bool,
 	}
 	fmt.Printf("заметка %d стала песочницей: %s/n/%d\n", noteID, cfg.Platform.BaseURL, noteID)
 	fmt.Println("жители придут сами, когда служба увидит её очередным смотром")
+	return nil
+}
+
+// narodTwin заводит СМЕЖНОЕ обсуждение: жители говорят о заметке рядом, в своём
+// треде, а сама заметка и её настоящий разговор не трогаются вовсе.
+//
+// Ручка появилась вместо единственной прежней дороги — `narod stage`, который
+// отдаёт заметку жителям целиком и только пока в ней никто не сказал ни слова.
+// Обе остаются: перевод годится пустой своей заметке, двойник — любой, включая
+// заметку с живым тредом на сотню реплик.
+func narodTwin(ctx context.Context, cfg *config.Config, noteID int64) error {
+	if noteID == 0 {
+		return fmt.Errorf("narod twin: назовите заметку (-id <номер>)")
+	}
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	actor, err := adminViewer(ctx, p)
+	if err != nil {
+		return err
+	}
+	id, err := p.CreateSynthThreadAsAdmin(ctx, actor, noteID)
+	switch {
+	case errors.Is(err, platform.ErrSynthExists):
+		// Не отказ, а ответ: спрашивали адрес — вот он.
+		fmt.Printf("смежное обсуждение у заметки %d уже есть: %s/n/%d\n", noteID, cfg.Platform.BaseURL, id)
+		return nil
+	case err != nil:
+		return err
+	}
+	fmt.Printf("смежное обсуждение заведено: %s/n/%d\n", cfg.Platform.BaseURL, id)
+	fmt.Printf("оригинал не тронут: %s/n/%d\n", cfg.Platform.BaseURL, noteID)
+	fmt.Println("жители придут сами, когда служба увидит его очередным смотром")
 	return nil
 }
 

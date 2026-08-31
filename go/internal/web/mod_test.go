@@ -43,6 +43,8 @@ type fakeMod struct {
 	shotSet  bool
 	shotNote int64
 	// pinnedFull — закреплённых уже столько, сколько лента выдерживает: ядро в
+	synthID  int64
+	synthErr error
 	// этом случае отказывает, и морда обязана сказать об этом человеком, а не
 	// пятисоткой.
 	pinnedFull bool
@@ -119,6 +121,18 @@ func (f *fakeMod) Decide(_ context.Context, _ platform.Viewer, s platform.Subjec
 	}
 	return f.note("keep " + s.String())
 }
+
+// Смежное обсуждение: заводится и отвечает номером двойника.
+func (f *fakeMod) CreateSynthThreadAsAdmin(_ context.Context, _ platform.Viewer, id int64) (int64, error) {
+	if f.synthErr != nil {
+		return f.synthID, f.synthErr
+	}
+	if err := f.note("synth"); err != nil {
+		return 0, err
+	}
+	return f.synthID, nil
+}
+
 func (f *fakeMod) SetNotePinned(_ context.Context, _ platform.Viewer, id int64, pinned bool, _ string) error {
 	if pinned {
 		if f.pinnedFull {

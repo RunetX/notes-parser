@@ -56,7 +56,8 @@ const noteViewColumns = `
 	CASE WHEN n.anonymous THEN false ELSE coalesce(u.persona, false) END,
 	coalesce(n.author_id = $1, false),
 	n.pinned_at IS NOT NULL,
-	n.stage`
+	n.stage,
+	coalesce(n.synth_of, 0)`
 
 const noteViewFrom = `
 	FROM notes n
@@ -76,7 +77,8 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 	)
 	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.Locked, &v.CommentCount,
 		&v.PublishedAt, &v.PublishedExact, &v.LastCommentAt, &v.EditedAt,
-		&author, &nick, &sha, &mime, &gender, &shadow, &persona, &v.Own, &v.Pinned, &v.Stage)
+		&author, &nick, &sha, &mime, &gender, &shadow, &persona, &v.Own, &v.Pinned, &v.Stage,
+		&v.SynthOf)
 	v.Author = Author{
 		ID: idOf(author), Nick: strOf(nick),
 		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
@@ -99,7 +101,7 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 // новой заметки ровно в момент листания, и стоит он одной задвоенной строки.
 const feedQuery = `
 	SELECT ` + noteViewColumns + noteViewFrom + `
-	 WHERE n.status = 0 AND n.pinned_at IS NULL
+	 WHERE n.status = 0 AND n.pinned_at IS NULL AND n.synth_of IS NULL
 	 ORDER BY n.published_at DESC, n.id DESC
 	 LIMIT $2 OFFSET $3`
 
@@ -132,7 +134,8 @@ const feedModQuery = `
 // страницы, и дописать их вторым экземпляром значило бы задвоить.
 const notesSinceQuery = `
 	SELECT ` + noteViewColumns + noteViewFrom + `
-	 WHERE n.status = 0 AND n.pinned_at IS NULL AND (n.published_at, n.id) > ($2, $3)
+	 WHERE n.status = 0 AND n.pinned_at IS NULL AND n.synth_of IS NULL
+	   AND (n.published_at, n.id) > ($2, $3)
 	 ORDER BY n.published_at DESC, n.id DESC
 	 LIMIT $4`
 
@@ -408,19 +411,35 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	if err := publishGuard(ctx, tx, in.AuthorID); err != nil {
 		return 0, err
 	}
-	if err := enforceRate(ctx, tx, notesRecentQuery, in.AuthorID, time.Now(), noteRates); err != nil {
-		return 0, err
+	// Потолок частоты ЗАЩИЩАЕТ ЛЕНТУ от наплыва — а двойника (смежного
+	// обсуждения) в ленте нет вовсе, он приложение к чужой заметке и виден только
+	// ссылкой с неё. Поэтому и потолка у него нет: иначе «заполнить старые
+	// заметки» упиралось бы в пять записей в сутки, то есть в правило, охраняющее
+	// то, куда двойник не попадает. Всё остальное — согласия, гейт песочницы,
+	// очередь модерации, событие шины — он проходит наравне со всеми, а завести
+	// его вправе только администратор (CreateSynthThreadAsAdmin).
+	if in.SynthOf == 0 {
+		if err := enforceRate(ctx, tx, notesRecentQuery, in.AuthorID, time.Now(), noteRates); err != nil {
+			return 0, err
+		}
 	}
 	// То же правило, что у комментария, и той же функцией: песочницу заводит
 	// администратор или житель, а житель заводит ТОЛЬКО песочницу.
 	if err := stageGuard(ctx, tx, in.AuthorID, in.Stage); err != nil {
 		return 0, err
 	}
+	// Двойник без песочницы был бы обычной заметкой, в которой почему-то говорят
+	// машины: признак synth_of сам по себе никого писать не пускает, пускает
+	// stage. Связка проверяется здесь, потому что здесь единственное место, где
+	// заметка заводится.
+	if in.SynthOf != 0 && !in.Stage {
+		return 0, errors.New("смежное обсуждение заводится только песочницей")
+	}
 	var id int64
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO notes (id, author_id, anonymous, body, published_at, published_exact, stage)
-		VALUES (nextval('notes_native_seq'), $1, $2, $3, now(), true, $4)
-		RETURNING id`, in.AuthorID, in.Anonymous, body, in.Stage).Scan(&id); err != nil {
+		INSERT INTO notes (id, author_id, anonymous, body, published_at, published_exact, stage, synth_of)
+		VALUES (nextval('notes_native_seq'), $1, $2, $3, now(), true, $4, $5)
+		RETURNING id`, in.AuthorID, in.Anonymous, body, in.Stage, nullID(in.SynthOf)).Scan(&id); err != nil {
 		return 0, fmt.Errorf("публикация заметки: %w", err)
 	}
 	// Иллюстрация — той же транзакцией: «заметка вышла, а картинка к ней не

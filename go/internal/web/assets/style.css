@@ -1377,3 +1377,10 @@ span.rxb { cursor: default; }
    очередь обязана читаться за минуту, а не пролистываться. */
 .mshot { display: block; margin: 8px 0; }
 .mshot img { max-width: 100%; max-height: 200px; width: auto; height: auto; display: block; border: 1px solid var(--rule); }
+
+/* Ссылка на смежное обсуждение — строка под заголовком треда. Значок и текст в
+   одной строке, поэтому inline-flex: иконка внутри ссылки не должна съезжать
+   относительно текста. Число — той же плашкой, что счётчик в шапке. */
+.synth { margin: 0 0 10px; }
+.synth a { display: inline-flex; align-items: center; gap: 6px; }
+.synth .cnt { font-weight: 600; }

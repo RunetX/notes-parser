@@ -129,6 +129,11 @@ type Store interface {
 	// вне хронологии, спрашивается только на первой странице и порядок у неё
 	// свой — кто говорил последним.
 	PersonaFaces(ctx context.Context, limit int) ([]platform.PersonaFace, error)
+
+	// SynthTwin — есть ли у заметки СМЕЖНОЕ обсуждение: свой тред, в котором о
+	// том же материале говорят жители (эпик «народ»). Один вопрос на страницу
+	// заметки и одно попадание в частичный индекс.
+	SynthTwin(ctx context.Context, noteID int64) (platform.NoteSynth, bool, error)
 }
 
 // Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:

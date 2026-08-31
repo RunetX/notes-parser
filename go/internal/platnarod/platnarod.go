@@ -36,17 +36,36 @@ func New(p *platform.Platform) *Stage {
 
 // stageNotesQuery — заметки-песочницы после afterID.
 //
+// У ДВОЙНИКА (notes.synth_of) жителям подаётся текст ОРИГИНАЛА, а не его
+// собственное тело: тело двойника — служебная строка про то, что здесь машинный
+// разговор, и обсуждать её нечего. Копии текста при этом нет нигде — она
+// собирается запросом в тот момент, когда нужна, и потому не может разойтись с
+// оригиналом ни правкой, ни обезличиванием.
+//
+// Скрытый оригинал уводит со сцены и двойника (`o.status = 0`): читать текст,
+// которого на площадке больше нет, жителям незачем, а служба закроет такой тред
+// сама — для неё заметка просто исчезла.
+//
 // Скрытые не отдаются: для пишущего скрытая заметка просто отсутствует, и то же
 // самое ответило бы ядро при попытке в неё написать. Аноним здесь невозможен по
 // построению (песочницу заводит администратор или житель), но LEFT JOIN оставлен
 // — автор может быть и снесён.
 const stageNotesQuery = `
-	SELECT n.id, coalesce(n.author_id, 0), coalesce(u.nick, ''),
-	       coalesce(u.gender, 0), n.body,
+	SELECT n.id,
+	       CASE WHEN coalesce(o.anonymous, n.anonymous) THEN 0
+	            ELSE coalesce(o.author_id, n.author_id, 0) END,
+	       CASE WHEN coalesce(o.anonymous, n.anonymous) THEN 'Аноним'
+	            ELSE coalesce(ou.nick, u.nick, '') END,
+	       CASE WHEN coalesce(o.anonymous, n.anonymous) THEN 0
+	            ELSE coalesce(ou.gender, u.gender, 0) END,
+	       coalesce(o.body, n.body),
 	       n.published_at, n.locked
 	  FROM notes n
-	  LEFT JOIN users u ON u.id = n.author_id
+	  LEFT JOIN notes o  ON o.id = n.synth_of
+	  LEFT JOIN users u  ON u.id = n.author_id
+	  LEFT JOIN users ou ON ou.id = o.author_id
 	 WHERE n.stage AND n.status = 0 AND n.id > $1
+	   AND (n.synth_of IS NULL OR o.status = 0)
 	 ORDER BY n.id
 	 LIMIT $2`
 

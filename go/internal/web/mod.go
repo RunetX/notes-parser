@@ -48,6 +48,11 @@ type Moderator interface {
 	Decide(ctx context.Context, actor platform.Viewer, s platform.Subject, d platform.Decision, reason string) error
 	SetThreadLocked(ctx context.Context, actor platform.Viewer, noteID int64, locked bool, reason string) error
 	SetNotePinned(ctx context.Context, actor platform.Viewer, noteID int64, pinned bool, reason string) error
+	// CreateSynthThreadAsAdmin — завести рядом с заметкой СМЕЖНОЕ обсуждение
+	// (эпик «народ»): жители говорят о ней в своём треде, а сама заметка не
+	// трогается вовсе. Администраторская, как роли и приглашения: пятого списка
+	// ради них не заводится, а право проверяет ядро.
+	CreateSynthThreadAsAdmin(ctx context.Context, actor platform.Viewer, noteID int64) (int64, error)
 
 	BanUser(ctx context.Context, actor platform.Viewer, userID int64, until time.Time, reason string) error
 	UnbanUser(ctx context.Context, actor platform.Viewer, userID int64, reason string) error
@@ -202,6 +207,16 @@ func (s *Server) handleModAct(w http.ResponseWriter, r *http.Request) {
 		err = s.mod.SetThreadLocked(ctx, actor, noteFormID(r), r.FormValue("do") == "lock", reason)
 	case "pin", "unpin":
 		err = s.mod.SetNotePinned(ctx, actor, noteFormID(r), r.FormValue("do") == "pin", reason)
+	case "synth":
+		// СМЕЖНОЕ обсуждение. Ответ на нажатие — переход НА ДВОЙНИКА, а не назад:
+		// администратор шёл смотреть, как жители заговорят. «Уже есть» здесь не
+		// отказ, а тот же переход: спрашивали адрес.
+		id, sErr := s.mod.CreateSynthThreadAsAdmin(ctx, actor, noteFormID(r))
+		if sErr == nil || errors.Is(sErr, platform.ErrSynthExists) {
+			http.Redirect(w, r, "/n/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+			return
+		}
+		err = sErr
 	default:
 		s.fail(w, r, http.StatusBadRequest, "Неизвестное действие.")
 		return
@@ -211,7 +226,8 @@ func (s *Server) handleModAct(w http.ResponseWriter, r *http.Request) {
 
 // noteAction — действия над ТРЕДОМ целиком: объект у них не «заметка или
 // комментарий» из subjectOf, а номер заметки в отдельном поле формы.
-var noteAction = map[string]bool{"lock": true, "unlock": true, "pin": true, "unpin": true}
+var noteAction = map[string]bool{"lock": true, "unlock": true, "pin": true, "unpin": true,
+	"synth": true}
 
 func noteFormID(r *http.Request) int64 {
 	id, _ := strconv.ParseInt(r.FormValue("note"), 10, 64)
@@ -228,6 +244,10 @@ func (s *Server) afterModAction(w http.ResponseWriter, r *http.Request, err erro
 		s.fail(w, r, http.StatusNotFound, "Этой записи больше нет.")
 	case errors.Is(err, platform.ErrNotModerator):
 		s.fail(w, r, http.StatusForbidden, "Нужны права модератора.")
+	case errors.Is(err, platform.ErrNotAdmin):
+		s.fail(w, r, http.StatusForbidden, "Нужны права администратора.")
+	case errors.Is(err, platform.ErrSynthOfStage):
+		s.fail(w, r, http.StatusBadRequest, "У песочницы смежного обсуждения не бывает.")
 	case errors.Is(err, platform.ErrTooManyPinned):
 		// Потолок закреплённых — правило ленты, а не поломка: говорим прямо,
 		// сколько их бывает, чтобы модератор снял лишнее, а не гадал.
@@ -515,6 +535,10 @@ type modAct struct {
 	// у своей молчащей заметки администратор увидит «Песочница» там, где шёл
 	// поправить опечатку, — про текст и картинку ему говорит подсказка ссылки.
 	AdminStage bool
+	// AdminSynth — можно завести СМЕЖНОЕ обсуждение: жители поговорят о заметке
+	// рядом, в своём треде, а сама заметка не тронется вовсе (эпик «народ»).
+	// Кнопка живёт только на странице заметки — см. modNote.
+	AdminSynth bool
 	CSRF       string
 	Back       string
 }
@@ -531,9 +555,15 @@ func modNote(p notePage) modAct {
 		Locked:   p.Note.Locked,
 		// Авторское «Поправить» стоит в подвале заметки, и второй такой же
 		// ссылкой рядом администратор-автор ничего нового не узнает.
-		AdminEdit:   p.AdminEdit && !p.Editable,
-		AdminShot:   p.AdminEdit && !platform.IsNative(p.Note.ID),
-		AdminStage:  p.AdminEdit && p.Note.CommentCount == 0,
+		AdminEdit:  p.AdminEdit && !p.Editable,
+		AdminShot:  p.AdminEdit && !platform.IsNative(p.Note.ID),
+		AdminStage: p.AdminEdit && p.Note.CommentCount == 0,
+		// СМЕЖНОЕ обсуждение — кнопка администратора и только на СТРАНИЦЕ
+		// заметки: в ленте про двойника неизвестно (запрос за ним делает
+		// страница), а кнопка «завести», уводящая к уже заведённому, была бы
+		// неправдой. У песочницы и у самого двойника её нет вовсе — синтетика
+		// поверх синтетики не заводится.
+		AdminSynth:  p.AdminEdit && p.Synth.ID == 0 && !p.Note.Stage && p.Note.SynthOf == 0,
 		CanModerate: p.CanModerate,
 		// Пожаловаться на СВОЮ публикацию нельзя, и «пожаловаться» под чужой
 		// показываем только тому, кто вправе писать: жалоба заводит работу
