@@ -12,11 +12,13 @@ package platnarod
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"lovegw/internal/narod"
 	"lovegw/internal/platform"
 )
 
@@ -153,5 +155,37 @@ func TestДвойникПодаётЖителямТекстОригинала(t 
 		if n.ID == twin {
 			t.Error("двойник остался на сцене со скрытым оригиналом")
 		}
+	}
+}
+
+// ПОТОЛОК ЧАСТОТЫ ПЛОЩАДКИ ДОЕЗЖАЕТ ДО СЛУЖБЫ КАК ВРЕМЕННЫЙ ОТКАЗ.
+//
+// Тест на ПУТИ ДАННЫХ, и другого способа его поставить нет: перевод стоит на
+// границе двух пакетов, у каждого из которых свои тесты, — а разойтись они
+// могут молча. Именно так 31.08.2026 четыре написанных и оплаченных реплики
+// ушли в никуда: служба видела обычную ошибку и хоронила намерение.
+//
+// Потолок здесь настоящий (platform.commentRates: одна реплика в десять секунд),
+// поэтому второй вызов подряд в него и упирается.
+func TestПотолокЧастотыПриезжаетКакЗанятость(t *testing.T) {
+	p := stagePlatform(t)
+	ctx := context.Background()
+
+	author := mustMember(t, p, "Сварной")
+	note, err := p.CreateNote(ctx, platform.NewNote{AuthorID: author, Body: "про соседскую собаку"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := New(p)
+	if _, err := stage.StagePost(ctx, author, note, 0, "первая реплика"); err != nil {
+		t.Fatalf("первая реплика: %v", err)
+	}
+	_, err = stage.StagePost(ctx, author, note, 0, "вторая тут же")
+	if !errors.Is(err, narod.ErrStageBusy) {
+		t.Fatalf("второй отказ приехал как %v, а служба обязана узнать в нём временную занятость", err)
+	}
+	// Причина остаётся видимой: в журнале службы стоит она, а не «занято».
+	if !strings.Contains(err.Error(), platform.ErrRateLimited.Error()) {
+		t.Errorf("отказ %q потерял причину", err)
 	}
 }

@@ -15,6 +15,7 @@ package platnarod
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -139,9 +140,24 @@ func (s *Stage) StageThread(ctx context.Context, noteID int64) ([]narod.StageRep
 // завёлся бы автор, которого никто не проверяет, — а это ровно та поблажка, от
 // которой отказались, оставив жителей под автоматом модерации наравне со всеми.
 func (s *Stage) StagePost(ctx context.Context, userID, noteID, replyTo int64, body string) (int64, error) {
-	return s.core.CreateComment(ctx, platform.NewComment{
+	id, err := s.core.CreateComment(ctx, platform.NewComment{
 		NoteID: noteID, AuthorID: userID, ReplyToID: replyTo, Body: body,
 	})
+	// ПОТОЛОК ЧАСТОТЫ ПЛОЩАДКИ — отказ ВРЕМЕННЫЙ, и здесь он и переводится.
+	//
+	// Правило platform.commentRates (одна реплика в десять секунд) написано для
+	// ЧЕЛОВЕКА и меряется СТЕННЫМИ часами; житель же живёт во времени, сжатом
+	// LatencyScale, и два его намерения ложатся в одну щель. Служба народа про
+	// площадку не знает, поэтому перевод стоит на границе — тем же приёмом и по
+	// тому же доводу, что genderWord ниже.
+	//
+	// Переводится РОВНО этот отказ. Он проверяется внутри транзакции ДО вставки,
+	// то есть доказывает, что записи нет, — а повторить реплику, которую сцена
+	// могла и принять, значит поставить её дважды.
+	if errors.Is(err, platform.ErrRateLimited) {
+		return 0, fmt.Errorf("%w: %v", narod.ErrStageBusy, err)
+	}
+	return id, err
 }
 
 // genderWord — пол в словах народа.

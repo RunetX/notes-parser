@@ -149,6 +149,29 @@ func (w *World) TakePlan(ctx context.Context, id int64) error {
 	return nil
 }
 
+// RetryPlan возвращает ВЗЯТОЕ намерение в очередь с новым сроком.
+//
+// Единственный обратный ход у CAS, и разрешён он ровно на одном отказе —
+// ErrStageBusy, — потому что только он ДОКАЗЫВАЕТ, что сцена ничего не
+// записала (потолок частоты у площадки проверяется внутри транзакции до
+// вставки). На любом другом отказе строка остаётся в posting и не
+// переотправляется никогда: сцена могла реплику и принять, ответив ошибкой.
+//
+// Условие state = posting здесь не формальность: план, уже закрытый другим
+// тактом, возвращать в очередь нельзя — это была бы вторая реплика.
+func (w *World) RetryPlan(ctx context.Context, id int64, due time.Time) error {
+	res, err := w.db.ExecContext(ctx, `
+		UPDATE plans SET state = ?, due_at = ? WHERE id = ? AND state = ?`,
+		PlanQueued, fmtTime(due), id, PlanPosting)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrPlanTaken
+	}
+	return nil
+}
+
 // FinishPlan закрывает намерение — сделанным либо брошенным с причиной.
 //
 // Причина обязательна у брошенного и хранится: «промолчал» и «сломалось» через

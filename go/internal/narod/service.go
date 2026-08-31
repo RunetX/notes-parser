@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
@@ -216,7 +217,41 @@ type Service struct {
 	// TopicLift просто не даёт множителя; так было ВСЕГДА до 31.08.2026, и это
 	// был дефект, а не замысел.
 	topics func(string) []string
+
+	// held — реплики, написанные и НЕ принятые сценой по временному отказу
+	// (ErrStageBusy). Ключ — номер плана.
+	//
+	// В ПАМЯТИ, а не в базе, и это осознанный размен. Повтор случается через
+	// секунды, то есть переживать рестарт ему незачем; а колонка под черновик в
+	// plans завела бы второе место, где живёт текст реплики, — рядом с журналом,
+	// который пишется ДО публикации ровно затем, чтобы такого второго места не
+	// было. Потеряли при рестарте — план сгенерируется заново и заплатит второй
+	// раз; это цена одной реплики, а не дыра в разговоре.
+	held   map[int64]heldDraft
+	heldMu sync.Mutex
 }
+
+// heldDraft — написанное, но не поставленное. Держит и номер записи в журнале:
+// повтор обязан ДОПИСАТЬ её номером реплики, а не завести вторую — иначе житель
+// вспомнит, что сказал одно и то же дважды.
+type heldDraft struct {
+	Draft   Draft
+	Journal int64
+	Tries   int
+}
+
+// Повтор при временном отказе сцены.
+const (
+	// stageRetryAfter — через сколько пробовать снова. Число СТЕННОЕ и
+	// LatencyScale НЕ сжимается намеренно: потолок частоты у площадки меряется
+	// стенными часами, и сжатая пауза уткнулась бы в него второй раз. Пятнадцать
+	// секунд — с запасом к десятисекундному окну platform.commentRates.
+	stageRetryAfter = 15 * time.Second
+	// stageRetries — сколько раз. Пять: это семьдесят пять секунд, вчетверо
+	// больше окна. Не помогло — значит дело не в частоте, и настоящую причину
+	// прячет повтор.
+	stageRetries = 5
+)
 
 // NewService собирает службу. Карточки ПРОВЕРЯЮТСЯ здесь же: в live выходят
 // только композиты, и это второе из двух мест, где записано правило (первое —
@@ -252,6 +287,7 @@ func NewService(cfg Config, w *World, stage Stage, gen JSONGenerator,
 		cfg: cfg, world: w, stage: stage, gen: gen, players: players,
 		clock: RealClock{}, seed: 1, log: log,
 		enabled: func(context.Context) bool { return true },
+		held:    map[int64]heldDraft{},
 	}, nil
 }
 
@@ -599,6 +635,18 @@ func (s *Service) Work(ctx context.Context) error {
 			continue
 		}
 		if err := s.execute(ctx, pl); err != nil {
+			// ВРЕМЕННЫЙ отказ сцены — не конец намерения, а неудачный момент:
+			// текст написан, оплачен и придержан, повторить его нечего стоит.
+			if h, ok := s.heldOf(pl.ID); ok && errors.Is(err, ErrStageBusy) && h.Tries <= stageRetries {
+				s.log.Warn("народ: сцена занята, реплика перенесена",
+					"житель", pl.ActorID, "заметка", pl.NoteID,
+					"попытка", h.Tries, "через", stageRetryAfter)
+				if err := s.world.RetryPlan(ctx, pl.ID, now.Add(stageRetryAfter)); err != nil {
+					return err
+				}
+				continue
+			}
+			s.forget(pl.ID)
 			s.log.Error("народ: реплика", "житель", pl.ActorID, "заметка", pl.NoteID, "err", err)
 			if err := s.world.FinishPlan(ctx, pl.ID, PlanDropped, err.Error()); err != nil {
 				return err
@@ -627,6 +675,14 @@ func (s *Service) execute(ctx context.Context, pl Plan) error {
 		return err
 	} else if why != "" {
 		return s.drop(ctx, pl, GenSkipped, why)
+	}
+
+	// ПОВТОР ПОСЛЕ ВРЕМЕННОГО ОТКАЗА идёт прямо на сцену: текст написан, а
+	// запись в журнале уже стоит. Спросить модель заново значило бы заплатить
+	// дважды и вспомнить сказанное дважды. Потолки выше при этом спрошены — они
+	// предохранители, и обходить их повтором нельзя.
+	if h, ok := s.heldOf(pl.ID); ok {
+		return s.place(ctx, p, pl, h.Draft, h.Journal)
 	}
 
 	note, thread, err := s.look(ctx, pl.NoteID)
@@ -682,10 +738,22 @@ func (s *Service) publish(ctx context.Context, p Player, pl Plan, d Draft) error
 		}
 		return s.world.FinishPlan(ctx, pl.ID, PlanDone, "сухой прогон")
 	}
+	return s.place(ctx, p, pl, d, jid)
+}
+
+// place ставит УЖЕ НАПИСАННОЕ на сцену. Отдельно от publish ровно затем, чтобы
+// повтор после временного отказа входил сюда, минуя журнал: вторая запись о той
+// же реплике сделала бы жителя помнящим её дважды.
+func (s *Service) place(ctx context.Context, p Player, pl Plan, d Draft, jid int64) error {
+	now := s.clock.Now()
 	id, err := s.stage.StagePost(ctx, p.UserID, pl.NoteID, pl.ReplyTo, d.Text)
 	if err != nil {
+		if errors.Is(err, ErrStageBusy) {
+			s.hold(pl.ID, d, jid)
+		}
 		return err
 	}
+	s.forget(pl.ID)
 	if err := s.world.SetJournalComment(ctx, jid, id); err != nil {
 		return err
 	}
@@ -696,6 +764,31 @@ func (s *Service) publish(ctx context.Context, p Player, pl Plan, d Draft) error
 		return err
 	}
 	return s.world.FinishPlan(ctx, pl.ID, PlanDone, "")
+}
+
+// hold прячет написанное до повтора и говорит, какая это попытка.
+func (s *Service) hold(id int64, d Draft, jid int64) int {
+	s.heldMu.Lock()
+	defer s.heldMu.Unlock()
+	h := s.held[id]
+	h.Draft, h.Journal, h.Tries = d, jid, h.Tries+1
+	s.held[id] = h
+	return h.Tries
+}
+
+// heldOf — написанное в прошлый заход, если оно есть.
+func (s *Service) heldOf(id int64) (heldDraft, bool) {
+	s.heldMu.Lock()
+	defer s.heldMu.Unlock()
+	h, ok := s.held[id]
+	return h, ok
+}
+
+// forget убирает придержанное: намерение кончилось так или иначе.
+func (s *Service) forget(id int64) {
+	s.heldMu.Lock()
+	defer s.heldMu.Unlock()
+	delete(s.held, id)
 }
 
 // compose собирает всё, из чего пишется реплика: память, настроение, жребии.
