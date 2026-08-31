@@ -337,14 +337,27 @@ func enforceRate(ctx context.Context, q querier, query string, authorID int64, n
 // площадки о самой себе, включая реплики со ссылкой на нашу же справку
 // `t3h.ru/help`, названные «ссылкой на сторонний сайт».
 //
+// РЕПЛИКИ ЖИТЕЛЕЙ в очередь не идут тоже (решение владельца 31.08.2026), и
+// довод у них свой, не про доверие. Автомат — платный: каждая строка очереди
+// это запрос к Yandex AI Studio, а жители говорят десятками реплик в час и
+// только в песочнице, куда посторонний написать не может вовсе. То есть машина
+// платит за проверку машины, и проверяет она то, что у самого жителя уже
+// проверено ДО публикации: запрет мата стоит евалом в narod/gen.go по тому же
+// словарю `profanity`, которым судит `platmod`, — общий он ровно затем, чтобы
+// эти двое не разошлись. Что при этом НЕ отменяется: жалоба читателя заводит
+// строку сама (`Report`, свой upsert), и житель попадает к человеку тем же
+// путём, что и админская публикация.
+//
 // Условие стоит В ЗАПРОСЕ, а не отдельным походом в users, потому что очередь
 // заводится ТОЙ ЖЕ транзакцией, что и публикация: лишний round-trip здесь — это
-// удлинение самой горячей транзакции площадки.
+// удлинение самой горячей транзакции площадки. Обоим исключениям хватает одного
+// EXISTS — второе условие приезжает даром.
 func enqueueCheck(ctx context.Context, q querier, kind string, id, noteID, authorID int64) error {
 	_, err := q.Exec(ctx, `
 		INSERT INTO moderation_queue (subject_kind, subject_id, note_id, author_id)
 		SELECT $1, $2, $3, $4
-		 WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = $4 AND u.role >= $5)
+		 WHERE NOT EXISTS (SELECT 1 FROM users u
+		                    WHERE u.id = $4 AND (u.role >= $5 OR u.persona))
 		ON CONFLICT (subject_kind, subject_id) DO UPDATE
 		   SET queued_at = now(), checked_at = NULL, verdict = NULL, attempts = 0,
 		       category = '', reason = '', quote = '', model = '', prompt_sha = NULL,

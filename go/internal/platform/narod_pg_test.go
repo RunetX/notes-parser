@@ -355,3 +355,76 @@ func TestStageFlagDoorAndSilence(t *testing.T) {
 		t.Errorf("зеркальную с разговором отдали жителям: %v", err)
 	}
 }
+
+// РЕПЛИКА ЖИТЕЛЯ НЕ ИДЁТ В ОЧЕРЕДЬ АВТОМАТА, а реплика человека в той же
+// песочнице идёт. Проверять это надо именно парой: «очередь пуста» само по себе
+// доказывало бы и то, что enqueueCheck сломан целиком.
+//
+// Строка очереди — платный запрос к Yandex AI Studio, а жители говорят десятками
+// реплик в час; мат у них при этом запрещён своим евалом, по тому же словарю,
+// которым судит автомат.
+func TestPersonaRepliesSkipTheAutomaton(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "Садовник")
+	note := mustStageNote(t, p, admin)
+
+	byPersona, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: mustPersona(t, p, "Кедрачъ"), Body: "а у нас в гараже"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Администратор в песочницу писать вправе — его реплика тоже мимо очереди,
+	// но по СВОЕМУ, давнему правилу; берём поэтому обычного участника заметки.
+	byHuman := mustNoteComment(t, p, mustUser(t, p, "Ирма"))
+
+	for _, c := range []struct {
+		id   int64
+		want int
+		who  string
+	}{{byPersona, 0, "житель"}, {byHuman, 1, "участник"}} {
+		var n int
+		if err := p.pool.QueryRow(ctx, `
+			SELECT count(*) FROM moderation_queue
+			 WHERE subject_kind = $1 AND subject_id = $2`, SubjectComment, c.id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != c.want {
+			t.Errorf("%s: строк очереди %d, ожидалось %d", c.who, n, c.want)
+		}
+	}
+
+	// Жалоба читателя заводит строку САМА — путь к человеку у жителя остаётся
+	// тот же, что у публикации администрации.
+	if err := p.AddReport(ctx, mustUser(t, p, "Веснушка"), CommentSubject(byPersona), "грубит"); err != nil {
+		t.Fatalf("жалоба на жителя: %v", err)
+	}
+	q, err := p.ReviewQueue(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen bool
+	for _, it := range q {
+		if it.Subject.Kind == SubjectComment && it.Subject.ID == byPersona {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("жалоба на реплику жителя не дошла до модератора")
+	}
+}
+
+// mustNoteComment — реплика участника в его собственной обычной заметке.
+func mustNoteComment(t *testing.T, p *Platform, author int64) int64 {
+	t.Helper()
+	ctx := context.Background()
+	note, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "обычная заметка"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: author, Body: "сама себе отвечу"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
