@@ -74,13 +74,17 @@ type fakeStore struct {
 	pingErr error
 
 	// Мордолента: лица жителей над первой страницей ленты.
-	faces      []platform.PersonaFace
-	synth      platform.NoteSynth
-	synthOf    int64
-	synthErr   error
-	facesErr   error
-	facesLimit int
-	facesCalls int
+	faces    []platform.PersonaFace
+	synth    platform.NoteSynth
+	synthOf  int64
+	synthErr error
+	// Оригиналы двойников: что отдать и у кого их спросили.
+	origins      map[int64]platform.SynthOrigin
+	originsAsked []int64
+	originsErr   error
+	facesErr     error
+	facesLimit   int
+	facesCalls   int
 
 	// Страница участника: карточка и то, что он написал.
 	profile    platform.Profile
@@ -123,6 +127,13 @@ func (f *fakeStore) SynthTwin(_ context.Context, noteID int64) (platform.NoteSyn
 		return platform.NoteSynth{}, false, f.synthErr
 	}
 	return f.synth, f.synth.ID != 0, nil
+}
+
+// Оригиналы для двойников этой страницы: карточка двойника состоит из подписи
+// и цитаты, и без неё она — служебная строка без предмета.
+func (f *fakeStore) SynthOrigins(_ context.Context, twinIDs []int64) (map[int64]platform.SynthOrigin, error) {
+	f.originsAsked = append(f.originsAsked, twinIDs...)
+	return f.origins, f.originsErr
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }

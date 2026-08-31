@@ -90,6 +90,32 @@ type feedPage struct {
 	// завести в одном списке ровно ту разницу между чужим и своим, которой у
 	// картинки нет вовсе.
 	Shots map[int64]platform.Media
+	// Origins — ОРИГИНАЛ для каждого показанного двойника, по его номеру.
+	// Картой и отдельным запросом по тем же двум причинам, что и Shots: тащить
+	// соединение в общий запрос ленты значило бы платить им за все 117 тысяч
+	// заметок ради нескольких, а без цитаты карточка двойника — служебная
+	// строка без предмета, ровно то, на что владелец и пожаловался.
+	Origins map[int64]platform.SynthOrigin
+}
+
+// origins — оригиналы для двойников этой страницы. Отказ ленту не роняет, как и
+// у иллюстраций: без цитаты двойник остаётся собой, а без ленты цитата не нужна.
+func (s *Server) origins(ctx context.Context, notes []platform.NoteView) map[int64]platform.SynthOrigin {
+	var ids []int64
+	for _, n := range notes {
+		if n.SynthOf != 0 {
+			ids = append(ids, n.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	got, err := s.st.SynthOrigins(ctx, ids)
+	if err != nil {
+		s.log.Error("оригиналы смежных обсуждений", "err", err)
+		return nil
+	}
+	return got
 }
 
 // thumbs — иллюстрации показанных заметок. Отказ чтения не роняет ленту: без
@@ -173,6 +199,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		FreshOK:    num == 1,
 		FreshAfter: fresh,
 		Shots:      s.thumbs(ctx, notes),
+		Origins:    s.origins(ctx, notes),
 	})
 }
 

@@ -134,6 +134,11 @@ type Store interface {
 	// том же материале говорят жители (эпик «народ»). Один вопрос на страницу
 	// заметки и одно попадание в частичный индекс.
 	SynthTwin(ctx context.Context, noteID int64) (platform.NoteSynth, bool, error)
+	// SynthOrigins — оригиналы для показанных двойников, по номеру двойника.
+	// Пачкой на страницу, как NoteThumbs: карточка двойника состоит из подписи
+	// и ЦИТАТЫ оригинала, а копии текста нигде нет — он выводится соединением
+	// в момент показа.
+	SynthOrigins(ctx context.Context, twinIDs []int64) (map[int64]platform.SynthOrigin, error)
 }
 
 // Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:

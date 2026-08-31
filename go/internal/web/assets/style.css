@@ -777,8 +777,8 @@ span.rxb { cursor: default; }
    выдумано, так её звали на НГС). Вид снят с записанной ленты сайта, а не
    придуман: там это section.lv-top-tape перед блоком содержимого, внутри —
    div.lv-top-tape__visible-part с одним рядом ul.lv-top-tape__list, фото
-   100×100 и БЕЗ подписей: имя всплывает при наведении (на сайте это qtip, у
-   нас title — он же работает без JS).
+   70×70 (замер по index.css НГС, см. ниже) и БЕЗ подписей: имя всплывает
+   при наведении (на сайте это qtip, у нас title — он же работает без JS).
 
    Ряд НЕ ПЕРЕНОСИТСЯ на второй этаж: тридцать лиц в три ряда над лентой — уже
    не лента, а стена. Листается он при этом по-настоящему — пальцем на
@@ -791,14 +791,60 @@ span.rxb { cursor: default; }
    сайте она тоже стоит над блоком, а не внутри него. */
 .faceband { position: relative; width: 100%; max-width: 910px; margin: 10px auto 0; }
 .faces {
-  display: flex; gap: 10px; list-style: none; margin: 0; padding: 0;
+  display: flex; gap: 0; list-style: none; margin: 0; padding: 0;
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none; -ms-overflow-style: none;
   overscroll-behavior-x: contain;
 }
 .faces::-webkit-scrollbar { width: 0; height: 0; }
-.faces li { flex: 0 0 auto; }
+.faces li { flex: 0 0 auto; padding: 5px; }
 .faces a { display: block; line-height: 0; }
+
+/* РАЗМЕР ЛИЦА В ПОЛОСЕ — 70×70, и это ЗАМЕР, а не глазомер (31.08.2026,
+   замечание владельца «в оригинальной мордоленте аватары меньше аватаров
+   авторов заметок»). Снято с живого index.css НГС, где полоса описана так:
+
+     .lv-top-tape__visible-part { height: 82px }
+     .lv-top-tape__item         { height: 82px; width: 82px }
+     .lv-top-tape__link         { padding: 5px; height: 70px; width: 70px }
+     .lv-top-tape__userpic      { width: 100%; height: 100%; border-radius: 3px }
+     .lv-top-tape__link:hover   { padding: 0; width: 80px; height: 80px }
+
+   Стояло у нас 100×100 — размер САМОГО ФАЙЛА (аватары НГС лежат как
+   `..._100_100_c.jpg`), и записанная страница называет именно его. Отсюда и
+   ошибка: разметка говорит про файл, размер показа задаёт таблица стилей, и
+   первого без второго мало. Полоса от этого весила ровно столько же, сколько
+   колонка автора, — то есть переставала быть полосой.
+
+   Отступ 5px у гнезда и НУЛЕВОЙ зазор дают те же 10px между лицами, что и
+   раньше, а заодно место для роста при наведении: лицо занимает собственные
+   поля и НЕ двигает соседей — так это и сделано на сайте. */
+.faces .ava { width: 70px; height: 70px; }
+.faces a:hover .ava { width: 80px; height: 80px; margin: -5px; }
+
+/* КАРТОЧКА ДВОЙНИКА — смежного обсуждения (parts/synth.gohtml).
+
+   Знак площадки занимает место аватара: у двойника нет автора-человека, и
+   квадрат ровно того же размера держит колонку, чтобы соседние карточки ленты
+   не разъезжались. Ник под ним — имя площадки, приглушённое и без ссылки: это
+   не тот, к кому идут знакомиться.
+
+   Цитата — линейка слева и приглушённая шапка, как у всякой цитаты: она обязана
+   читаться как ЧУЖИЕ слова, а не как текст этой записи. Отступ у текста тот же,
+   что у линейки, чтобы вложенная в цитату разметка не липла к ней. */
+.sitemark {
+  width: 100px; height: 100px; display: flex;
+  align-items: center; justify-content: center;
+  border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--btn); color: var(--meta);
+}
+.sitemark .ico { width: 44px; height: 44px; }
+.nick._site { color: var(--meta); font-weight: 600; }
+.synthcap { margin: 0 0 10px; color: var(--meta); font-size: 13px; }
+.synthq { margin: 0; padding: 0 0 0 12px; border-left: 3px solid var(--rule); }
+.synthq .qhead { margin: 0 0 6px; color: var(--meta); font-size: 13px; }
+.synthq .qnick { font-weight: 600; }
+.synthq .date { color: inherit; }
 
 /* Стрелки листания — те самые lv-top-tape__nav с сайта: тень и стрелка у края.
    Рисует их СКРИПТ, а не сервер, и по общему правилу площадки: без JS ряд

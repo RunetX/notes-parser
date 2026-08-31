@@ -111,6 +111,15 @@ type notePage struct {
 	// Ноль в поле — двойника нет; у самого двойника его не бывает вовсе, и
 	// запроса за ним не делается.
 	Synth platform.NoteSynth
+	// Origin — у самого ДВОЙНИКА: заметка, о которой здесь говорят. Её текст и
+	// подпись автора рисуются цитатой прямо в карточке — без них страница
+	// открывалась бы девяноста репликами о неизвестно чём, и узнать предмет
+	// можно было бы только переходом (жалоба владельца 31.08.2026).
+	//
+	// Пусто у обычной заметки и у двойника, чей оригинал скрыт модератором:
+	// показать убранный текст на соседней странице значило бы вернуть его на
+	// вид. Карточка тогда остаётся с одной подписью — это честно.
+	Origin platform.SynthOrigin
 	// FreshOK и FreshAfter — живой добор: страница дописывает новые реплики сама
 	// (fresh.go). Флаг отдельно от границы, потому что граница бывает нулевой у
 	// пустого треда — а он-то как раз дописываться должен.
@@ -172,6 +181,17 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		return
 	}
 
+	// Оригинал двойника берётся ДО сборки страницы: из него же складывается
+	// заголовок вкладки. Отказ страницу не роняет — как у иллюстраций.
+	var origin platform.SynthOrigin
+	if note.SynthOf != 0 {
+		if got, err := s.st.SynthOrigins(ctx, []int64{id}); err != nil {
+			s.log.Warn("оригинал смежного обсуждения", "заметка", id, "err", err)
+		} else {
+			origin = got[id]
+		}
+	}
+
 	images, err := s.st.NoteImages(ctx, id)
 	if err != nil {
 		s.oops(w, r, "иллюстрации заметки", err)
@@ -188,8 +208,9 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		return
 	}
 	p := notePage{
-		page:        s.readingPage(r, noteTitle(note)),
+		page:        s.readingPage(r, synthTitle(note, origin)),
 		Note:        note,
+		Origin:      origin,
 		Images:      images,
 		Linear:      linear,
 		TreeURL:     noteURL(id, false, 1),

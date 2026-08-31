@@ -213,6 +213,7 @@ func (s *Server) handleFreshFeed(w http.ResponseWriter, r *http.Request) {
 		CanModerate: v.CanModerate() && s.mod != nil,
 		CanEdit:     me.Role >= platform.RoleAdmin && s.mod != nil,
 		Shots:       s.thumbs(ctx, notes),
+		Origins:     s.origins(ctx, notes),
 	}
 	p.SignedIn = signedIn // подпись автора: у вошедшего имя — ссылка
 	if signedIn {

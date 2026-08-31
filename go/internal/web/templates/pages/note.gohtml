@@ -34,11 +34,20 @@
        смыслу, что у скрытой реплики: nhid к chid, и правило в CSS у них общее. */}}
   <div class="note notebox{{if ne $n.Status 0}} nhid{{end}}">
     <div class="author">
+      {{if $n.SynthOf}}{{template "synthmark"}}{{else}}
       {{template "avatar" (av $n.Author.AvatarURL $n.Author.Gender $n.Anonymous)}}
       {{template "nick" (nk $n.Author $n.Name $n.Anonymous .SignedIn)}}
+      {{end}}
     </div>
     <div class="nbody">
+      {{/* Двойник: подпись и ЦИТАТА оригинала вместо служебного тела. Здесь она
+           НЕ сворачивается — за предметом разговора сюда и пришли. */}}
+      {{if $n.SynthOf}}
+      {{template "synthcap"}}
+      {{if .Origin.ID}}{{template "synthquote" (sq .Origin $n.ID false)}}{{end}}
+      {{else}}
       <div class="text">{{body $n}}</div>
+      {{end}}
       {{/* Ролики идут ПЕРЕД иллюстрациями: картинку к заметке приложил сайт, а
            ролик назвал сам автор в тексте — и стоять он должен там, где о нём
            сказано. */}}

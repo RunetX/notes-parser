@@ -56,6 +56,8 @@ var funcs = template.FuncMap{
 	"av":          newAvatar,
 	"nk":          nickOf,
 	"body":        noteBodyHTML,
+	"quote":       quoteBodyHTML,
+	"sq":          synthQuote,
 	"doc":         docHTML,
 	"commentBody": commentBodyHTML,
 	"long":        isLongBody,
@@ -478,4 +480,46 @@ func replyName(r *platform.ReplyRef) string {
 func noteTitle(n platform.NoteView) string {
 	plain := stripMarkup(n.Body, eraOf(n.ID, n.PublishedAt))
 	return textutil.Fit(textutil.OneLine(plain), 60)
+}
+
+// synthTitle — заголовок вкладки у ДВОЙНИКА: имя оригинала, а не своё.
+//
+// Своё тело у двойника — служебная фраза, одна и та же у всех; заведи владелец
+// два десятка двойников, и вкладки стали бы неразличимы, а закладка на один из
+// них — бесполезной. Предмет разговора называет оригинал, поэтому в заголовок
+// идёт его начало под общей приставкой. Без цитаты (оригинал скрыт) остаётся
+// прежнее правило: заголовок из собственного тела.
+func synthTitle(n platform.NoteView, o platform.SynthOrigin) string {
+	if n.SynthOf == 0 || o.ID == 0 {
+		return noteTitle(n)
+	}
+	plain := stripMarkup(o.Body, eraOf(o.ID, o.PublishedAt))
+	return "Смежное обсуждение: " + textutil.Fit(textutil.OneLine(plain), 40)
+}
+
+// synthQuoteArg — точка для части «synthquote»: оригинал, номер двойника (из
+// него имя галочки ката) и надо ли сворачивать длинную цитату. Пара с
+// контекстом, как у commentItemData: второго аргумента у {{template}} не бывает.
+type synthQuoteArg struct {
+	Origin platform.SynthOrigin
+	TwinID int64
+	// Clip — сворачивать длинную цитату. Правда в ЛЕНТЕ, где карточка одна из
+	// двадцати, и ложь на своей странице двойника: туда пришли читать разговор,
+	// и прятать его предмет за галочкой значит спрятать самое нужное.
+	Clip bool
+}
+
+func synthQuote(o platform.SynthOrigin, twinID int64, clip bool) synthQuoteArg {
+	return synthQuoteArg{Origin: o, TwinID: twinID, Clip: clip}
+}
+
+// quoteBodyHTML — текст ОРИГИНАЛА в карточке двойника.
+//
+// Отдельный глагол, а не `body`, потому что эпоха разметки считается по САМОЙ
+// цитируемой заметке (её номер и её дата), а не по двойнику: двойник нативный,
+// и у него скобки разбираются всегда, тогда как процитированная запись 2013
+// года может быть с НГС, где `[b]` рисовал сам сайт. Подставь мы сюда двойника,
+// чужой текст «улучшился» бы при переезде — ровно то, чего избегает bbcode.go.
+func quoteBodyHTML(o platform.SynthOrigin) template.HTML {
+	return renderBody("", o.Body, eraOf(o.ID, o.PublishedAt))
 }
