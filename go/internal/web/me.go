@@ -19,11 +19,11 @@ const myHiddenLimit = 20
 
 type mePage struct {
 	page
-	Member  platform.Author
-	Docs    []platform.ConsentDoc
-	Have    platform.Consents
-	Shadow  bool // вход не завершён: согласий нет
-	Admin   bool
+	Member platform.Author
+	Docs   []platform.ConsentDoc
+	Have   platform.Consents
+	Shadow bool // вход не завершён: согласий нет
+	Admin  bool
 	// Avatar — показывать ли кнопку «Обновить аватар». Её нет у вошедшего по
 	// приглашению (анкеты НГС у него нет вовсе) и нет, когда сайт недоступен:
 	// кнопка, которая заведомо ответит отказом, хуже её отсутствия.
@@ -45,6 +45,12 @@ type mePage struct {
 	// Jump — стоит ли «проматывать к новым» (jump.go). Предпочтение экрана, а не
 	// человека, поэтому приезжает из куки, а не из карточки участника.
 	Jump bool
+	// NGSSend — уносить ли написанное здесь на love.ngs.ru, и показывать ли эту
+	// галочку вообще. Показывается она только тому, у кого есть анкета НГС:
+	// вошедшему по приглашению уносить нечем и некуда — кнопки, отвечающей
+	// отказом, площадка не рисует (тот же довод, что у «Обновить аватар»).
+	NGSSend     bool
+	NGSSendable bool
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -99,19 +105,32 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 	if u.Banned(time.Now()) {
 		ban = u.BannedUntil
 	}
+	// Галочка выноса на НГС. Её отказ страницу не роняет: «Моя страница» нужна
+	// человеку и ради согласий, и ради списка скрытого, а состояние одной
+	// галочки этого не стоит.
+	var ngsSend bool
+	if s.wr != nil && platform.IsNGS(u.ID) {
+		if on, err := s.wr.NGSSendOn(r.Context(), u.ID); err == nil {
+			ngsSend = on
+		} else {
+			s.log.Warn("состояние отправки на НГС не прочитано", "user", u.ID, "err", err)
+		}
+	}
 	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
-		page:    s.newPage(r, "Моя страница"),
-		Member:  card,
-		Docs:    docs,
-		Have:    have,
-		Shadow:  u.Kind == platform.KindShadow,
-		Admin:   u.Role >= platform.RoleAdmin,
-		Avatar:  s.site != nil && platform.IsNGS(u.ID),
-		Problem: problem,
-		Hidden:  hidden,
-		Ban:     ban,
-		Reason:  u.BanReason,
-		Jump:    s.jumpFresh(r),
+		page:        s.newPage(r, "Моя страница"),
+		Member:      card,
+		Docs:        docs,
+		Have:        have,
+		Shadow:      u.Kind == platform.KindShadow,
+		Admin:       u.Role >= platform.RoleAdmin,
+		Avatar:      s.site != nil && platform.IsNGS(u.ID),
+		Problem:     problem,
+		Hidden:      hidden,
+		Ban:         ban,
+		Reason:      u.BanReason,
+		Jump:        s.jumpFresh(r),
+		NGSSend:     ngsSend,
+		NGSSendable: platform.IsNGS(u.ID) && u.Kind == platform.KindMember,
 	})
 }
 
@@ -206,6 +225,30 @@ func (s *Server) handleAvatarClear(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.wr.ClearOwnAvatar(r.Context(), u.ID); err != nil {
 		s.oops(w, r, "снятие фото", err)
+		return
+	}
+	http.Redirect(w, r, "/me", http.StatusSeeOther)
+}
+
+// handleNGSSend переключает вынос написанного на love.ngs.ru.
+//
+// Формой с POST, а не ссылкой: это изменение согласия на распространение
+// собственных слов на чужом сайте, и делаться оно должно нажатием, которое
+// нельзя получить чужой ссылкой. Тот же приём, что у выхода и смены темы.
+func (s *Server) handleNGSSend(w http.ResponseWriter, r *http.Request) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.writer(w, r)
+	if !ok {
+		return
+	}
+	// Значение приходит явным полем, а не «переключи на противоположное»: две
+	// вкладки, открытые на /me, иначе переключали бы галочку друг у друга, и
+	// человек получил бы включённую отправку, нажав «выключить».
+	on := r.FormValue("on") == "1"
+	if err := s.wr.SetNGSSend(r.Context(), u.ID, on); err != nil {
+		s.oops(w, r, "переключение отправки на НГС", err)
 		return
 	}
 	http.Redirect(w, r, "/me", http.StatusSeeOther)

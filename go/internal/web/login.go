@@ -171,7 +171,10 @@ type loginPage struct {
 	// ByProfile — доступен ли вход по анкете. Нет клиента сайта (или сайт
 	// закрылся) — показывать форму, которая не сработает, хуже, чем сказать это.
 	ByProfile bool
-	Problem   string
+	// Bot — адрес РюмкинЪа. Пусто означает «про этот путь не говорим»: звать в
+	// бота, которого не назвали, некуда.
+	Bot     string
+	Problem string
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +189,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int,
 	s.render(w, r, status, "login.gohtml", loginPage{
 		page:      s.newPage(r, "Вход"),
 		ByProfile: s.site != nil,
+		Bot:       s.cfg.Contacts.Bot,
 		Problem:   problem,
 	})
 }
@@ -473,4 +477,54 @@ func (s *Server) setCookie(w http.ResponseWriter, name, value string, ttl time.D
 		c.MaxAge = -1
 	}
 	http.SetCookie(w, c)
+}
+
+// ---------------------------------------------------------------- вход из бота
+
+// handleBotLogin впускает по одноразовой ссылке, выданной РюмкинЪом.
+//
+// Права на анкету здесь не проверяются и проверить их нечем: доказательством
+// служит живая сессия НГС, которую бот держит у себя, а ключ — лишь её
+// предъявление. Вся строгость поэтому в ядре: ключ одноразовый (гасится
+// удалением строки), живёт десять минут и не годится обезличенному.
+//
+// Ключ уходит из адресной строки СРАЗУ, редиректом: иначе он остался бы в
+// истории браузера и в логе прокси. Погашенный, он там уже безвреден, но
+// приучать себя к секретам в URL не стоит — тот же довод, по которому код
+// приглашения показывается в ответе на POST, а не после перехода.
+func (s *Server) handleBotLogin(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.me(r); ok {
+		http.Redirect(w, r, "/me", http.StatusSeeOther)
+		return
+	}
+	userID, err := s.auth.RedeemBotLogin(r.Context(), r.URL.Query().Get("key"))
+	switch {
+	case err == nil:
+	case errors.Is(err, platform.ErrBotKeyInvalid):
+		// Три причины — не найден, истёк, уже использован — человеку значат одно
+		// и то же, и разводить их в ответе значило бы рассказывать постороннему,
+		// угадал он ключ или нет.
+		s.renderLogin(w, r, http.StatusUnauthorized,
+			"Ссылка не сработала: она одноразовая и живёт десять минут. "+
+				"Попросите у РюмкинЪа новую — командой /site.")
+		return
+	default:
+		s.oops(w, r, "вход по ссылке из бота", err)
+		return
+	}
+	if _, err := s.auth.CompleteBotLogin(r.Context(), userID); err != nil {
+		if errors.Is(err, platform.ErrAnonymized) {
+			s.fail(w, r, http.StatusForbidden,
+				"Данные этой анкеты обезличены по требованию её владельца. "+
+					"Автоматически вернуть их нельзя — напишите администратору.")
+			return
+		}
+		s.oops(w, r, "завершение входа из бота", err)
+		return
+	}
+	if err := s.signIn(w, r, userID); err != nil {
+		s.oops(w, r, "выдача сессии", err)
+		return
+	}
+	http.Redirect(w, r, "/consent", http.StatusSeeOther)
 }

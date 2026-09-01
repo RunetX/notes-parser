@@ -45,6 +45,13 @@ type Writer interface {
 	// рядом с SetOwnAvatar, потому что первая пустую анкету НГС за причину
 	// снять фото не считает: чужая рука фото не отнимает, своя — вправе.
 	ClearOwnAvatar(ctx context.Context, userID int64) error
+	// SetNGSSend — уносить ли написанное здесь на love.ngs.ru. По умолчанию
+	// ВЫКЛЮЧЕНО: публикуя здесь, человек соглашался на публикацию ЗДЕСЬ, и унести
+	// его слова на чужой сайт под его именем можно только по осознанно нажатой
+	// галочке. Отправляет потом демон и СЕССИЕЙ САМОГО ЧЕЛОВЕКА — морда ключа от
+	// сессий не имеет вовсе.
+	SetNGSSend(ctx context.Context, userID int64, on bool) error
+	NGSSendOn(ctx context.Context, userID int64) (bool, error)
 	// React — нажать, переключить или снять реакцию. Правкой чужого это не
 	// является: строка своя, а объект остаётся нетронутым.
 	React(ctx context.Context, in platform.NewReaction) error

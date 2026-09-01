@@ -97,6 +97,7 @@ func cmdWeb(ctx context.Context, args []string) error {
 			ProfileID: cfg.Platform.Contacts.ProfileID,
 			Telegram:  cfg.Platform.Contacts.Telegram,
 			MAX:       cfg.Platform.Contacts.MAX,
+			Bot:       cfg.Platform.Contacts.Bot,
 		},
 		Log: log,
 	}, pf, pf, wr, wr, site)

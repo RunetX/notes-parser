@@ -414,12 +414,12 @@ func (l *Logic) askNoteKind(ctx context.Context, userID int64) {
 // PublishCommands публикует меню команд бота под его роль. Зовётся один раз на
 // старте; сбой не фатален — команды просто не появятся в списке мессенджера.
 func (l *Logic) PublishCommands(ctx context.Context) {
-	l.tr.SetCommands(ctx, botCommands(l.talksOnly, l.talks != nil, l.profile != nil))
+	l.tr.SetCommands(ctx, botCommands(l.talksOnly, l.talks != nil, l.profile != nil, l.siteLogin != nil))
 }
 
 // botCommands — тот же набор, что и в приветствии: слэш-команды остаются
 // рабочими, кнопки их не отменяют. Админская /news в меню не значится.
-func botCommands(talksOnly, withTalks, withProfile bool) []kbd.Command {
+func botCommands(talksOnly, withTalks, withProfile, withSite bool) []kbd.Command {
 	if talksOnly {
 		return []kbd.Command{
 			{Name: "start", Description: "начать и показать меню"},
@@ -438,6 +438,9 @@ func botCommands(talksOnly, withTalks, withProfile bool) []kbd.Command {
 		{Name: "subscribe", Description: "подписаться на слово"},
 		{Name: "unsubscribe", Description: "отписаться от слова"},
 		{Name: "mysubs", Description: "мои подписки"},
+	}
+	if withSite {
+		cmds = append(cmds, kbd.Command{Name: "site", Description: "войти на «Зазеркалье»"})
 	}
 	if withProfile {
 		cmds = append(cmds, kbd.Command{Name: "profile", Description: "моя анкета на сайте"})

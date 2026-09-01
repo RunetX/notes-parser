@@ -714,6 +714,25 @@ func platformDoctor(ctx context.Context, cfg *config.Config) error {
 			return err
 		}
 		fmt.Fprintf(w, "наполнение\t%d заметок, %d комментариев, %d личностей\t\n", notes, comments, users)
+
+		// Очередь выноса на НГС. Показывается всегда, даже пустая: молчащая очередь
+		// и отсутствующая — разные состояния, и первое хочется видеть глазами, а не
+		// выводить из тишины в логе.
+		if st, err := p.NGSOutboxStats(ctx); err != nil {
+			fmt.Fprintf(w, "вынос на НГС\tОШИБКА\t%v\n", err)
+		} else {
+			state, note := "ok", ""
+			if st.Queued > 0 && !st.Oldest.IsZero() {
+				note = fmt.Sprintf(", старшая ждёт %s", time.Since(st.Oldest).Round(time.Minute))
+			}
+			// Отказы называем вслух: три попытки исчерпаны, и сама собой строка уже
+			// не уйдёт — это повод посмотреть last_error, а не фон.
+			if st.Failed > 0 {
+				state = "ЕСТЬ ОТКАЗЫ"
+			}
+			fmt.Fprintf(w, "вынос на НГС\t%s\tждёт %d, ушло %d, отказов %d, пропущено %d%s\n",
+				state, st.Queued, st.Sent, st.Failed, st.Skipped, note)
+		}
 	}
 
 	if cfg.Platform.MediaDir != "" {

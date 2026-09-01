@@ -170,6 +170,9 @@ func (d *Bot) SetTalkRouter(r TalkRouter) {
 	d.logic.talks = r
 }
 
+// SetSiteLogin подключает выдачу ссылок входа на площадку (/site).
+func (d *Bot) SetSiteLogin(s SiteLogin) { d.logic.SetSiteLogin(s) }
+
 // SetNews подключает публикацию новостей проекта админом (/news).
 func (d *Bot) SetNews(svc *news.Service, adminID int64) { d.logic.SetNews(svc, adminID) }
 

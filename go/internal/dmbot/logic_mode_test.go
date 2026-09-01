@@ -59,7 +59,7 @@ func TestTalksMenuCommandsAccepted(t *testing.T) {
 	l, tr := newTestTalksLogic(t, st, store.MessengerTelegram)
 	l.SetTalkRouter(&fakeRouter{ret: true})
 
-	for _, c := range botCommands(true, true, true) {
+	for _, c := range botCommands(true, true, true, true) {
 		l.HandleText(ctx, user, "1", "/"+c.Name)
 		if strings.Contains(tr.lastSent(), "Здесь только личная переписка") {
 			t.Errorf("/%s есть в меню бота переписки, но отфутболена: %q", c.Name, tr.lastSent())

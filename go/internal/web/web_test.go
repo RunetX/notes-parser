@@ -1348,3 +1348,75 @@ func TestNotePageNamesItsCanonicalAddress(t *testing.T) {
 		t.Error("страница ленты объявлена копией первой")
 	}
 }
+
+// Вход по ссылке из бота. Права на анкету доказаны ДО площадки — живой сессией
+// НГС, которую держит РюмкинЪ, — поэтому здесь проверяется не право, а
+// одноразовость ключа и то, что он не остаётся в адресной строке.
+func TestВходПоСсылкеИзБота(t *testing.T) {
+	auth := newFakeAuth()
+	auth.users[testProfileID] = platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindShadow}
+	auth.botKeys["klyuch"] = testProfileID
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{})
+
+	w := do(h, guest(t, "GET", "/login/bot?key=klyuch"))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d, ожидался редирект", w.Code)
+	}
+	// На согласия, а не на ленту: подписать их обязан и тот, кто вошёл из бота.
+	if got := w.Header().Get("Location"); got != "/consent" {
+		t.Errorf("после входа ведёт на %q, ожидался /consent", got)
+	}
+	if cookieOf(w, sessCookie) == nil {
+		t.Fatal("сессия не выдана")
+	}
+	if u := auth.users[testProfileID]; u.Kind != platform.KindMember {
+		t.Error("тень не стала участником")
+	}
+
+	// Ключ одноразовый: второй переход по той же ссылке не пускает никого.
+	w2 := do(h, guest(t, "GET", "/login/bot?key=klyuch"))
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("повторный переход: код %d, ожидался 401", w2.Code)
+	}
+	if cookieOf(w2, sessCookie) != nil {
+		t.Fatal("сожжённый ключ выдал сессию")
+	}
+}
+
+// Чужой и выдуманный ключ отвечаются ОДИНАКОВО и не говорят ничего: «не найден»,
+// «истёк» и «уже использован» человеку значат одно, а разница в ответе
+// рассказывала бы постороннему, угадал он ключ или нет.
+func TestВыдуманныйКлючНеПускает(t *testing.T) {
+	auth := newFakeAuth()
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{})
+	for _, key := range []string{"", "чужой", "klyuch"} {
+		w := do(h, guest(t, "GET", "/login/bot?key="+key))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("ключ %q: код %d, ожидался 401", key, w.Code)
+		}
+	}
+}
+
+// Про путь через бота на странице входа сказано, только если бот назван: звать в
+// бота, адреса которого нет, некуда. И поля пароля на площадке нет ни при каком
+// раскладе — пароль спрашивает бот, а не мы.
+func TestПутьЧерезБотаНазываетсяТолькоСАдресом(t *testing.T) {
+	auth := newFakeAuth()
+	withBot := newFullServer(t, &fakeStore{}, auth, nil, nil, nil,
+		Config{Contacts: Contacts{Bot: "https://t.me/RyumkinBot"}})
+	body := do(withBot, guest(t, "GET", "/login")).Body.String()
+	if !strings.Contains(body, "/site") {
+		t.Error("не сказано, какой командой просить ссылку")
+	}
+	if !strings.Contains(body, "https://t.me/RyumkinBot") {
+		t.Error("нет ссылки на бота")
+	}
+	if strings.Contains(body, `type="password"`) {
+		t.Fatal("на странице входа завелось поле пароля — пароль НГС спрашивает бот, а не площадка")
+	}
+
+	without := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{})
+	if strings.Contains(do(without, guest(t, "GET", "/login")).Body.String(), "РюмкинЪ") {
+		t.Error("бот назван, хотя адреса его нет")
+	}
+}

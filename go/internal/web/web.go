@@ -74,6 +74,10 @@ type Contacts struct {
 	ProfileID int64
 	Telegram  string
 	MAX       string
+	// Bot — куда идти за ссылкой входа. Живёт рядом с контактами, потому что
+	// это тот же вопрос «где нас найти», и потому что адрес у него один на оба
+	// употребления: два поля разошлись бы при первой же смене имени бота.
+	Bot string
 }
 
 // Store — то, что морда спрашивает у ядра.
@@ -165,6 +169,8 @@ type Store interface {
 // делать с чужими данными», а здесь — операции над данными ОДНОГО человека, и
 // смешивать их в один список значило бы потерять это различие.
 type Auth interface {
+	RedeemBotLogin(ctx context.Context, key string) (int64, error)
+	CompleteBotLogin(ctx context.Context, userID int64) (int64, error)
 	StartProfileChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
 	VerifyProfileChallenge(ctx context.Context, profileID int64, code, aboutMe string) error
 	CompleteNGSLogin(ctx context.Context, prof platform.MirroredAuthor, gender platform.Gender) (int64, error)
@@ -266,7 +272,7 @@ type Server struct {
 // ради них площадка не обязана. В лог при этом уходит строка — молча пропавшая
 // ссылка иначе обнаружилась бы через месяц.
 func checkContacts(c Contacts, log *slog.Logger) Contacts {
-	for name, link := range map[string]*string{"telegram": &c.Telegram, "max": &c.MAX} {
+	for name, link := range map[string]*string{"telegram": &c.Telegram, "max": &c.MAX, "bot": &c.Bot} {
 		if *link == "" {
 			continue
 		}
@@ -353,6 +359,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /login", s.handleLogin)
 	mux.HandleFunc("POST /login", s.handleLoginStart)
 	mux.HandleFunc("POST /login/check", s.handleLoginCheck)
+	// Вход по ссылке из бота. GET, потому что по ней ПЕРЕХОДЯТ из мессенджера:
+	// POST оттуда не сделать, а промежуточная страница «нажмите, чтобы войти»
+	// была бы лишним шагом ровно там, где человек уже всё подтвердил в личном
+	// чате. Ключ гасится на первом же переходе, поэтому предзагрузка ссылки
+	// мессенджером его сожжёт — от этого спасает не метод, а то, что вход по
+	// сожжённому ключу человек тут же повторит новой командой боту.
+	mux.HandleFunc("GET /login/bot", s.handleBotLogin)
 	mux.HandleFunc("GET /login/invite", s.handleInvite)
 	mux.HandleFunc("POST /login/invite", s.handleInviteSubmit)
 	mux.HandleFunc("GET /consent", s.handleConsent)
@@ -365,6 +378,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /me/avatar", s.handleAvatar)
 	mux.HandleFunc("POST /me/avatar/clear", s.handleAvatarClear)
 	mux.HandleFunc("POST /me/jump", s.handleJump)
+	mux.HandleFunc("POST /me/ngssend", s.handleNGSSend)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	// События: свои поводы и отметка прочитанного. Маршруты заведены всегда —
 	// без шины они отвечают «нет такой страницы», как /mod без модерации.

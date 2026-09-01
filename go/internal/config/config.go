@@ -375,6 +375,11 @@ type Contacts struct {
 	ProfileID int64  `json:"profile_id,omitempty"`
 	Telegram  string `json:"telegram,omitempty"`
 	MAX       string `json:"max,omitempty"`
+	// Bot — публичный адрес РюмкинЪа. Нужен ВХОДУ, а не только контактам: вход
+	// по ссылке из бота начинается в боте, и площадке надо уметь показать, куда
+	// идти. Пусто — про этот путь на странице входа не говорится вовсе, ровно
+	// как про форму анкеты при мёртвом НГС.
+	Bot string `json:"bot,omitempty"`
 }
 
 type Moderation struct {

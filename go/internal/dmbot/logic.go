@@ -51,6 +51,9 @@ type Logic struct {
 	// profile — управление своей анкетой на сайте (/profile). Способность
 	// необязательная: её даёт сам клиент сайта, и nil значит «команды нет».
 	profile SiteProfile
+	// siteLogin — выдача ссылки входа на площадку (/site). Тоже необязательная:
+	// без площадки (или без её адреса) команды нет вовсе.
+	siteLogin SiteLogin
 	// news + adminID — публикация внутренних новостей проекта (/news).
 	// nil/0 — команды нет: она админская и в списке команд не значится.
 	news *news.Service
@@ -77,7 +80,7 @@ type Logic struct {
 // к боту команд, чтобы у пользователя не двоились /login и заметки. Список
 // выведен из его же меню: два ручных перечня разъехались бы, и команда из меню
 // мессенджера получала бы отлуп «здесь только переписка».
-var talksCommands = commandSet(botCommands(true, true, true))
+var talksCommands = commandSet(botCommands(true, true, true, true))
 
 func commandSet(cmds []kbd.Command) map[string]bool {
 	set := make(map[string]bool, len(cmds))
@@ -200,6 +203,8 @@ func (l *Logic) handleCommand(ctx context.Context, userID int64, cmd, messageID,
 		// Прямая дорога для тех, кто привык: вопрос об авторстве пропускаем.
 		l.setState(ctx, userID, stateAwaitAnonNote)
 		l.tr.SendKeyboard(ctx, userID, msgAskAnonNote, cancelKeyboard())
+	case "/site":
+		l.handleSite(ctx, userID)
 	case "/status":
 		l.handleStatus(ctx, userID)
 	case "/subscribe":

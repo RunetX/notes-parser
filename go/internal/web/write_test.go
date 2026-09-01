@@ -30,8 +30,10 @@ type fakeWriter struct {
 	// cleared — у кого сняли фото. Ноль означает «ядро об этом не просили», и
 	// половина тестов аватара проверяет именно это.
 	cleared int64
-	nextID   int64
-	fail     error
+	// ngsSend — состояние галочки «отправлять на НГС» по участникам.
+	ngsSend map[int64]bool
+	nextID  int64
+	fail    error
 	// shot — что дошло до ядра вместе с заметкой; nil означает «картинки не
 	// было». Половина тестов приёма проверяет именно это: перекодировщик не
 	// должен звать ядро там, где файл негоден.
@@ -669,4 +671,19 @@ func TestFormsShowMarkupHelp(t *testing.T) {
 			t.Errorf("%s: в справочнике нет кода, который набирают", target)
 		}
 	}
+}
+
+func (f *fakeWriter) SetNGSSend(_ context.Context, userID int64, on bool) error {
+	if f.fail != nil {
+		return f.fail
+	}
+	if f.ngsSend == nil {
+		f.ngsSend = map[int64]bool{}
+	}
+	f.ngsSend[userID] = on
+	return nil
+}
+
+func (f *fakeWriter) NGSSendOn(_ context.Context, userID int64) (bool, error) {
+	return f.ngsSend[userID], nil
 }

@@ -55,6 +55,7 @@ import (
 	"lovegw/internal/platdigest"
 	"lovegw/internal/platform"
 	"lovegw/internal/platmod"
+	"lovegw/internal/platngs"
 	"lovegw/internal/platout"
 	"lovegw/internal/platsink"
 	"lovegw/internal/store"
@@ -346,6 +347,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	}
 	d.wirePollAlerts()
 	d.setupTalks()
+	d.setupSiteLogin()
 	d.setupNews()
 	d.publishCommands(ctx)
 	if err := d.setupDigest(); err != nil {
@@ -802,6 +804,11 @@ func (d *daemon) setupPlatform(ctx context.Context) error {
 
 	d.setupModeration(p)
 	d.setupBus(p)
+	// Вынос написанного здесь обратно на НГС. Живёт у демона, потому что ключ
+	// шифрования кук есть только у него: морда ставит строку в очередь, ходит на
+	// сайт эта служба, и ходит СЕССИЕЙ АВТОРА, а не нашей.
+	ngsOut := platngs.New(p, d.st, d.client, platngs.Config{}, log)
+	d.starts = append(d.starts, ngsOut.Run)
 
 	log.Info("площадка включена", "schema", inDB, "media_dir", cfg.Platform.MediaDir,
 		"reconcile", platsink.Interval, "дерево_живых", platsink.ScanInterval,

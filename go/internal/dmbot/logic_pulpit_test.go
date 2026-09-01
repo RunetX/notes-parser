@@ -60,7 +60,7 @@ func TestPulpitAdminOnly(t *testing.T) {
 
 // TestPulpitNotInMenus — ни в меню команд мессенджера, ни в приветствии.
 func TestPulpitNotInMenus(t *testing.T) {
-	for _, cmd := range botCommands(false, true, true) {
+	for _, cmd := range botCommands(false, true, true, true) {
 		if cmd.Name == "pulpit" {
 			t.Error("админская команда попала в меню мессенджера")
 		}

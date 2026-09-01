@@ -479,6 +479,12 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	if err := enqueueCheck(ctx, tx, SubjectNote, id, id, in.AuthorID); err != nil {
 		return 0, err
 	}
+	// Вынос на НГС. Анонимную не уносим вовсе: там её пришлось бы публиковать от
+	// имени автора, а он именно этого и не хотел, — анонимность у нас и на сайте
+	// разные обещания, и подменять одно другим нельзя.
+	if err := enqueueNGS(ctx, tx, NGSNote, id, in.AuthorID, id, in.Anonymous); err != nil {
+		return 0, err
+	}
 	// У анонимной заметки актор не записывается ВОВСЕ. Настоящий автор и так
 	// лежит в notes.author_id — там он нужен модерации и правам субъекта; а
 	// второе место, откуда его нельзя показывать, рано или поздно станет местом,

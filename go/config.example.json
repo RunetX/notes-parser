@@ -134,7 +134,8 @@
     "contacts": {
       "profile_id": 0,
       "telegram": "",
-      "max": ""
+      "max": "",
+      "bot": ""
     },
     "moderation": {
       "enabled": false,

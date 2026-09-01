@@ -29,6 +29,7 @@ type fakeAuth struct {
 	aborted  []int64                     // кому откатили вход
 	revoked  map[int64][]string          // отозванные согласия
 	avatars  map[int64]string            // фото в карточке участника
+	botKeys  map[string]int64            // одноразовый ключ входа → чья анкета
 	fail     error                       // если задано, всё падает этой ошибкой
 }
 
@@ -41,7 +42,32 @@ func newFakeAuth() *fakeAuth {
 		invites:  map[string]int64{testInvite: 0},
 		revoked:  map[int64][]string{},
 		avatars:  map[int64]string{},
+		botKeys:  map[string]int64{},
 	}
+}
+
+// Ключ гасится УДАЛЕНИЕМ, как в ядре: одноразовость держит отсутствие строки, а
+// не отметка рядом с ней, — иначе подделка повторяла бы не то, что проверяет.
+func (f *fakeAuth) RedeemBotLogin(_ context.Context, key string) (int64, error) {
+	id, ok := f.botKeys[key]
+	if !ok {
+		return 0, platform.ErrBotKeyInvalid
+	}
+	delete(f.botKeys, key)
+	return id, nil
+}
+
+func (f *fakeAuth) CompleteBotLogin(_ context.Context, userID int64) (int64, error) {
+	if f.fail != nil {
+		return 0, f.fail
+	}
+	u, ok := f.users[userID]
+	if !ok {
+		return 0, platform.ErrBotKeyInvalid
+	}
+	u.Kind = platform.KindMember
+	f.users[userID] = u
+	return userID, nil
 }
 
 func (f *fakeAuth) StartProfileChallenge(_ context.Context, id int64) (platform.Challenge, error) {

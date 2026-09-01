@@ -60,7 +60,7 @@ func TestMorningAdminOnly(t *testing.T) {
 
 // TestMorningNotInMenus — ни в меню команд мессенджера, ни в приветствии.
 func TestMorningNotInMenus(t *testing.T) {
-	for _, cmd := range botCommands(false, true, true) {
+	for _, cmd := range botCommands(false, true, true, true) {
 		if cmd.Name == "morning" {
 			t.Error("админская команда попала в меню мессенджера")
 		}

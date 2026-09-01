@@ -299,7 +299,7 @@ func TestProfileAbsentWithoutCapableSite(t *testing.T) {
 	if !strings.Contains(tr.lastSent(), "недоступно") {
 		t.Errorf("ждём отказ, получили %q", tr.lastSent())
 	}
-	for _, c := range botCommands(false, true, false) {
+	for _, c := range botCommands(false, true, false, true) {
 		if c.Name == "profile" {
 			t.Error("в меню команды быть не должно")
 		}
@@ -325,7 +325,7 @@ func TestProfileRejectedByTalksBot(t *testing.T) {
 	if got := tr.answers[len(tr.answers)-1]; !strings.Contains(got, "только личная переписка") {
 		t.Errorf("нажатие тоже не для него: %q", got)
 	}
-	for _, c := range botCommands(true, true, true) {
+	for _, c := range botCommands(true, true, true, true) {
 		if c.Name == "profile" {
 			t.Error("в меню бота переписки команды быть не должно")
 		}
@@ -335,7 +335,7 @@ func TestProfileRejectedByTalksBot(t *testing.T) {
 // Команда есть в меню и в приветствии ровно тогда, когда сайт её поддерживает.
 func TestProfileInMenus(t *testing.T) {
 	var found bool
-	for _, c := range botCommands(false, true, true) {
+	for _, c := range botCommands(false, true, true, true) {
 		found = found || c.Name == "profile"
 	}
 	if !found {
