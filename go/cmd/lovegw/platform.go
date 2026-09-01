@@ -730,8 +730,8 @@ func platformDoctor(ctx context.Context, cfg *config.Config) error {
 			if st.Failed > 0 {
 				state = "ЕСТЬ ОТКАЗЫ"
 			}
-			fmt.Fprintf(w, "вынос на НГС\t%s\tждёт %d, ушло %d, отказов %d, пропущено %d%s\n",
-				state, st.Queued, st.Sent, st.Failed, st.Skipped, note)
+			fmt.Fprintf(w, "вынос на НГС\t%s\tждёт %d, ушло %d, отказов %d, пропущено %d, эхо погашено %d%s\n",
+				state, st.Queued, st.Sent, st.Failed, st.Skipped, st.Echoed, note)
 		}
 	}
 

@@ -914,6 +914,15 @@ func (m *Mirror) backfillGap(ctx context.Context, n store.Note, known map[int64]
 			}
 			ours = append(ours, c)
 		}
+		// Своё эхо спрашивается и здесь, а не только на первой странице: добор
+		// идёт по НАСТОЯЩЕМУ расхождению со счётчиком (сайт скрыл реплику,
+		// источник молчал), и наша копия может оказаться на второй странице
+		// заодно. Дубль неотменим, а вопрос стоит один запрос.
+		if err := m.markCommentEcho(ctx, n, ours, known); err != nil {
+			m.log.Warn("добор прерван: своё это эхо или нет, неизвестно",
+				"note", n.ID, "page", p, "err", err)
+			break
+		}
 		added += m.saveComments(ctx, n.ID, ours, known)
 		if below == len(page.Comments) {
 			break // страница целиком старше нашего наблюдения — дальше предыстория

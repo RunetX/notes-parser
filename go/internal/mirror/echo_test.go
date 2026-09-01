@@ -164,3 +164,43 @@ func TestUndecidedEchoDefersWholeThreadTick(t *testing.T) {
 		t.Fatalf("отложенная реплика не вернулась: %v", ids)
 	}
 }
+
+// Добор страниц идёт по НАСТОЯЩЕМУ расхождению со счётчиком треда (сайт скрыл
+// реплику, источник молчал), и наша копия может оказаться на второй странице
+// заодно. Спрашивать про неё надо и там: дубль неотменим, а вопрос стоит один
+// запрос.
+func TestOwnCommentEchoIsCaughtOnBackfillPages(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	site := &fakeSite{
+		notes:    []love.Note{{ID: "n1", Text: "т"}},
+		comments: map[string][]love.Comment{"n1": {{ID: 100, AuthorID: "600", AuthorName: "А", Text: "верх", PublishedAt: now}}},
+		// Счётчик сайта больше известного: тред и правда разъехался с базой, и
+		// зеркало полезет на вторую страницу.
+		totals: map[string]int{"n1": 3},
+		// Время реплик — ЗАВЕДОМО позже взятия заметки под наблюдение: добор
+		// отсекает предысторию по FirstSeenAt, а его ставит feedCycle ниже, уже
+		// после now. С «ровно now» тест был бы броском монеты на разрешении
+		// часов.
+		pages: map[string]map[int][]love.Comment{"n1": {2: {
+			{ID: 99, AuthorID: "500", AuthorName: "Я", Text: "наша реплика", PublishedAt: now.Add(time.Hour)},
+			{ID: 98, AuthorID: "600", AuthorName: "А", Text: "чужая", PublishedAt: now.Add(time.Hour)},
+		}}},
+	}
+	sink := &echoSink{own: map[string]bool{"comment:99": true}}
+	m, st := echoMirror(t, site, sink)
+	m.feedCycle(ctx, false)
+	n, err := st.NoteByID(ctx, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.pollComments(ctx, n, &noteState{})
+
+	ids, _ := st.CommentIDs(ctx, "n1")
+	if ids[99] {
+		t.Error("своя реплика сохранена на доборе страниц")
+	}
+	if !ids[98] || !ids[100] {
+		t.Errorf("чужие реплики потерялись: %v", ids)
+	}
+}

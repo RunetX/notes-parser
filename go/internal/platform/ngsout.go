@@ -263,7 +263,13 @@ func (p *Platform) SkipNGSJob(ctx context.Context, id int64, why string) error {
 // NGSOutboxStats — сводка для doctor и для глаз владельца.
 type NGSOutboxStats struct {
 	Queued, Sent, Failed, Skipped int
-	Oldest                        time.Time
+	// Echoed — сколько ушедших строк вернулось с сайта и было опознано своими
+	// (у строки закреплён id записи НГС). Показывается затем, что гашение эха
+	// работает МОЛЧА: удачное опознание не оставляет следа ни на странице, ни в
+	// канале, и отличить «эхо гасится» от «эха ещё не было» иначе нечем — а
+	// разница между ними это дубли в трёх местах сразу.
+	Echoed int
+	Oldest time.Time
 }
 
 func (p *Platform) NGSOutboxStats(ctx context.Context) (NGSOutboxStats, error) {
@@ -274,9 +280,10 @@ func (p *Platform) NGSOutboxStats(ctx context.Context) (NGSOutboxStats, error) {
 		       count(*) FILTER (WHERE state = $2),
 		       count(*) FILTER (WHERE state = $3),
 		       count(*) FILTER (WHERE state = $4),
+		       count(*) FILTER (WHERE ngs_id <> ''),
 		       min(created_at) FILTER (WHERE state = $1)
 		  FROM ngs_outbox`, NGSQueued, NGSSent, NGSFailed, NGSSkipped).
-		Scan(&s.Queued, &s.Sent, &s.Failed, &s.Skipped, &oldest)
+		Scan(&s.Queued, &s.Sent, &s.Failed, &s.Skipped, &s.Echoed, &oldest)
 	if err != nil {
 		return s, fmt.Errorf("сводка очереди на НГС: %w", err)
 	}
