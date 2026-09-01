@@ -164,6 +164,12 @@ type Store interface {
 	// и ЦИТАТЫ оригинала, а копии текста нигде нет — он выводится соединением
 	// в момент показа.
 	SynthOrigins(ctx context.Context, twinIDs []int64) (map[int64]platform.SynthOrigin, error)
+
+	// NGSSentObjects — что из показанного уже унесено на НГС (kind: note либо
+	// comment). Третье состояние метки происхождения: «написано здесь И там
+	// теперь тоже стоит». Пачкой на страницу, как SynthOrigins, и по той же
+	// причине — в запросе треда лишний JOIN платили бы все девятьсот строк.
+	NGSSentObjects(ctx context.Context, kind string, ids []int64) (map[int64]bool, error)
 }
 
 // Auth — вход, сессии и согласия. Отдельным интерфейсом от Store намеренно:

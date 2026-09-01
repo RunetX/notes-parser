@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -80,6 +81,9 @@ type fakeStore struct {
 	synthErr error
 	// Оригиналы двойников: что отдать и у кого их спросили.
 	origins      map[int64]platform.SynthOrigin
+	// ngsSent — ключ «вид:номер» (note:1 и comment:1 это разные объекты).
+	ngsSent    map[string]bool
+	ngsSentErr error
 	originsAsked []int64
 	originsErr   error
 	facesErr     error
@@ -134,6 +138,22 @@ func (f *fakeStore) SynthTwin(_ context.Context, noteID int64) (platform.NoteSyn
 func (f *fakeStore) SynthOrigins(_ context.Context, twinIDs []int64) (map[int64]platform.SynthOrigin, error) {
 	f.originsAsked = append(f.originsAsked, twinIDs...)
 	return f.origins, f.originsErr
+}
+
+// Что уже унесено на НГС: третье состояние метки происхождения. Ключ — ВИД и
+// номер: у заметок и реплик свои последовательности, и номера у них совпадают
+// запросто, поэтому дубль в стенде ловится тем же ключом, что и в базе.
+func (f *fakeStore) NGSSentObjects(_ context.Context, kind string, ids []int64) (map[int64]bool, error) {
+	if f.ngsSentErr != nil {
+		return nil, f.ngsSentErr
+	}
+	got := map[int64]bool{}
+	for _, id := range ids {
+		if f.ngsSent[kind+":"+strconv.FormatInt(id, 10)] {
+			got[id] = true
+		}
+	}
+	return got, nil
 }
 
 func (f *fakeStore) Ping(context.Context) error { return f.pingErr }

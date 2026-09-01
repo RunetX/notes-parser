@@ -461,3 +461,57 @@ func (p *Platform) NGSReplyTarget(ctx context.Context, commentID int64) (int64, 
 	}
 	return id, nick, true, nil
 }
+
+// NGSSentObjects — что из показанного уже унесено на НГС (kind: note | comment).
+//
+// Понадобилось на СТРАНИЦЕ (решение владельца 02.09.2026: «если из Зазеркалья
+// успешно улетел на НГС, то наверное должен тоже помечаться»): метка
+// происхождения отвечала двумя состояниями — «пришло с НГС» и «написано здесь»,
+// — а с открытием выноса появилось третье, и оно самое интересное автору:
+// написано здесь И там теперь тоже стоит.
+//
+// Пачкой на страницу, как NoteThumbs и SynthOrigins, а не колонкой в запросе
+// треда: тред идёт range-scan'ом по comments_tree, и LEFT JOIN к очереди платили
+// бы ВСЕ девятьсот строк ради тех немногих, что вообще могли уехать. Вход —
+// уникальный индекс ngs_outbox_object по паре (kind, object_id).
+//
+// Спрашиваются только НАТИВНЫЕ номера: зеркальной строки в очереди не бывает по
+// построению — уносим мы своё, — и отбор здесь бережёт не запрос, а массив
+// параметров: в зеркальном треде своих реплик единицы из сотен.
+//
+// «Унесено» — это state = sent ЛИБО непустой ngs_id, и второе условие не
+// лишнее: сайт отвечает 500 и на ПРИНЯТУЮ реплику (замер 17.08.2026), поэтому у
+// строки бывает failed при живой копии на НГС. Узнаём мы об этом ровно тогда,
+// когда её номер удалось вычитать со страницы, — и тогда метка честна.
+func (p *Platform) NGSSentObjects(ctx context.Context, kind string, ids []int64) (map[int64]bool, error) {
+	native := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if IsNative(id) {
+			native = append(native, id)
+		}
+	}
+	if len(native) == 0 {
+		return nil, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT object_id FROM ngs_outbox
+		 WHERE kind = $1 AND object_id = ANY($2) AND (state = $3 OR ngs_id <> '')`,
+		kind, native, NGSSent)
+	if err != nil {
+		return nil, fmt.Errorf("унесённое на НГС (%s): %w", kind, err)
+	}
+	defer rows.Close()
+
+	sent := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("унесённое на НГС (%s): %w", kind, err)
+		}
+		sent[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("унесённое на НГС (%s): %w", kind, err)
+	}
+	return sent, nil
+}

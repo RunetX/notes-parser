@@ -136,6 +136,17 @@ type notePage struct {
 	// FreshKnown — границу удалось спросить у ядра. Её отказ выключает добор, а
 	// не страницу: дописываться она перестанет, читаться — нет.
 	FreshKnown bool
+	// NGSSent — какие реплики этого треда уже унесены на НГС, и NoteNGSSent — то
+	// же про саму заметку. Третье состояние метки происхождения (origin.go):
+	// «написано здесь И там теперь тоже стоит».
+	//
+	// Картой и отдельным запросом по той же причине, что Reactions и Shots:
+	// колонкой в запросе треда за неё платили бы все реплики страницы, а
+	// уехавших среди них единицы. У ЖИВОГО ДОБОРА карта пустая намеренно —
+	// свежая реплика на момент отрисовки ещё не уехала (очередь разбирает демон
+	// тактами), и метка появится при следующем показе страницы.
+	NGSSent     map[int64]bool
+	NoteNGSSent bool
 	// Book — свидетельство этого треда о том, какие слова в нём ники (address.go).
 	// Собирается по показанным репликам и нужно ровно для одного: не дорисовать
 	// второе обращение там, где автор уже назвал адресата сам.
@@ -192,6 +203,17 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		}
 	}
 
+	// Унесённое на НГС: заметка спрашивается отдельно от реплик — вид в очереди
+	// у них разный, а номера из разных последовательностей и совпадают запросто.
+	// Запроса к базе не будет вовсе, если спрашивать нечего: зеркальные номера
+	// ядро отсеивает у себя, до SQL.
+	var noteSent bool
+	if got, err := s.st.NGSSentObjects(ctx, platform.NGSNote, []int64{id}); err != nil {
+		s.log.Warn("унесённое на НГС", "заметка", id, "err", err)
+	} else {
+		noteSent = got[id]
+	}
+
 	images, err := s.st.NoteImages(ctx, id)
 	if err != nil {
 		s.oops(w, r, "иллюстрации заметки", err)
@@ -210,6 +232,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 	p := notePage{
 		page:        s.readingPage(r, synthTitle(note, origin)),
 		Note:        note,
+		NoteNGSSent: noteSent,
 		Origin:      origin,
 		Images:      images,
 		Linear:      linear,
@@ -301,6 +324,19 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 	// такое-то слово в этом треде ник, есть ровно в них (address.go). В линейном
 	// виде свидетельства меньше — там на странице тридцать реплик, — и это
 	// честная цена: не узнав ник, показ дорисует обращение, как раньше.
+	// Унесённые на НГС реплики — по ПОКАЗАННЫМ, а не по всему треду: в линейном
+	// виде на странице окно из тридцати, и спрашивать про остальные незачем.
+	// Отказ метку гасит, а страницу нет — как у иллюстраций и цитат.
+	ids := make([]int64, 0, len(p.Comments))
+	for _, c := range p.Comments {
+		ids = append(ids, c.ID)
+	}
+	if sent, err := s.st.NGSSentObjects(ctx, platform.NGSComment, ids); err != nil {
+		s.log.Warn("унесённое на НГС", "заметка", id, "err", err)
+	} else {
+		p.NGSSent = sent
+	}
+
 	p.Book = newAddressBook(note, p.Comments)
 	// Адресат берётся из уже загруженного треда, а не отдельным запросом: он там
 	// есть по определению, а лишний поход в базу на каждое «Ответить» — это цена

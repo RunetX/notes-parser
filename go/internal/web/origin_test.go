@@ -4,18 +4,20 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"lovegw/internal/platform"
 )
 
 func TestOriginMarksBothSides(t *testing.T) {
-	mirror := originOf(312811, false)
+	mirror := originOf(312811, false, false)
 	if mirror.Label != "НГС" {
 		t.Errorf("зеркальная помечена как %q", mirror.Label)
 	}
-	own := originOf(platform.NativeIDBase+7, false)
+	own := originOf(platform.NativeIDBase+7, false, false)
 	if own.Label != SiteName {
 		t.Errorf("нативная помечена как %q, ожидалось %q", own.Label, SiteName)
 	}
@@ -30,7 +32,7 @@ func TestOriginMarksBothSides(t *testing.T) {
 // Значков ДВА, а не три: восстановленное из чужих зеркал читателю ничем не
 // отличается от свежего зеркала.
 func TestRestoredLooksLikeMirror(t *testing.T) {
-	if o := originOf(platform.RestoredIDBase+5, false); o.Label != "НГС" {
+	if o := originOf(platform.RestoredIDBase+5, false, false); o.Label != "НГС" {
 		t.Errorf("восстановленная помечена как %q: значков должно быть два, а не три", o.Label)
 	}
 }
@@ -40,7 +42,7 @@ func TestRestoredLooksLikeMirror(t *testing.T) {
 // заранее, — ответить в ней он не сможет.
 func TestStageOverridesOwnMark(t *testing.T) {
 	id := platform.NativeIDBase + 7
-	own, stage := originOf(id, false), originOf(id, true)
+	own, stage := originOf(id, false, false), originOf(id, true, false)
 	if stage.Icon == own.Icon {
 		t.Fatalf("у песочницы тот же значок, что у обычной своей заметки (%q)", stage.Icon)
 	}
@@ -201,4 +203,76 @@ func postReq(path string) *http.Request {
 func getReq(path string) *http.Request {
 	r, _ := http.NewRequest("GET", path, nil)
 	return r
+}
+
+// ------------------------------------------------- унесённое на НГС (третье состояние)
+
+// Метка реплики стои́т В СТРОКЕ ДАТЫ, а не соседкой (жалоба владельца
+// 02.09.2026: «с рамкой перекос, значок источника ни к месту»). Дата — БЛОК,
+// поэтому метка рядом с ним уезжала третьей строкой карточки и висела сама по
+// себе. Проверяется именно вложенность, а не «метка есть»: разъехаться они
+// могут молча, и видно это только глазом на странице.
+func TestCommentOriginSitsInsideTheDateLine(t *testing.T) {
+	st := noteStore()
+	st.thread = sampleThread()
+	h := newTestServer(t, st, Config{})
+
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	i := strings.Index(body, `<div class="cdate">`)
+	if i < 0 {
+		t.Fatal("в треде нет строки даты")
+	}
+	line := body[i : i+strings.Index(body[i:], "</div>")]
+	if !strings.Contains(line, `class="orig"`) {
+		t.Error("метка происхождения выпала из строки даты — она снова встанет отдельной строкой")
+	}
+}
+
+// Третье состояние: реплика написана здесь И её копия уехала на НГС (решение
+// владельца 02.09.2026). Значок обязан отличаться от «своей» — иначе состояние
+// есть, а показать его нечем.
+func TestSentToNGSGetsItsOwnMark(t *testing.T) {
+	sent := commentOriginOf(platform.NativeIDBase+7, true)
+	own := commentOriginOf(platform.NativeIDBase+7, false)
+	if sent.Icon == own.Icon {
+		t.Fatalf("у унесённой реплики тот же значок, что у оставшейся здесь (%q)", sent.Icon)
+	}
+	if sent.Title == "" || sent.Label == "" {
+		t.Error("метка унесённого не объясняет себя (правило Ш5з)")
+	}
+	// Зеркальную это состояние не касается вовсе: уносим мы СВОЁ, и «пришло с
+	// НГС» плюс «ушло на НГС» вместе означали бы круг.
+	if mirror := commentOriginOf(312811, true); mirror.Icon != commentOriginOf(312811, false).Icon {
+		t.Error("зеркальная реплика помечена как унесённая")
+	}
+	// То же самое у заметки — она уезжает тем же путём и той же галочкой.
+	if originOf(platform.NativeIDBase+7, false, true).Icon != sent.Icon {
+		t.Error("у заметки и реплики разные значки для одного и того же состояния")
+	}
+}
+
+// И метка эта доезжает ДО СТРАНИЦЫ, а не только считается: величина, которую
+// показывают, обязана иметь тест на пути данных — тот же урок, что с полом
+// собеседника в эпике «народ».
+func TestSentMarkReachesThePage(t *testing.T) {
+	st := noteStore()
+	mine := platform.CommentView{
+		ID: platform.NativeIDBase + 7, Author: platform.Author{ID: 1, Nick: "Пух"},
+		Body: "Написано здесь.", Depth: 1,
+		PublishedAt: time.Date(2026, 8, 17, 12, 30, 0, 0, time.UTC),
+	}
+	st.thread = []platform.CommentView{mine}
+	st.ngsSent = map[string]bool{"comment:" + strconv.FormatInt(mine.ID, 10): true}
+	h := newTestServer(t, st, Config{})
+
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	if !strings.Contains(body, commentOriginOf(mine.ID, true).Title) {
+		t.Error("на странице нет метки «унесено на НГС»")
+	}
+	// А без отметки в очереди — прежняя метка «написано здесь».
+	st.ngsSent = nil
+	body = do(newTestServer(t, st, Config{}), guest(t, "GET", "/n/312811")).Body.String()
+	if strings.Contains(body, commentOriginOf(mine.ID, true).Title) {
+		t.Error("метка «унесено» стои́т у реплики, которая никуда не уезжала")
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // Галочка выключена по умолчанию, и это про согласие: публикуя здесь, человек
@@ -162,4 +163,78 @@ func outboxCount(t *testing.T, p *Platform) int {
 		t.Fatalf("счёт очереди: %v", err)
 	}
 	return n
+}
+
+// Метка «унесено на НГС» на странице (решение владельца 02.09.2026) считается
+// ЗАПРОСОМ ПАЧКОЙ, и правил у неё два: зеркальные номера отсеиваются до SQL, а
+// унесённым считается и строка с ошибкой, у которой сайт всё-таки вернул номер
+// реплики, — сайт отвечает 500 и на ПРИНЯТУЮ (замер 17.08.2026).
+func TestУнесённоеНаНГССчитаетсяПачкой(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustNGSMember(t, p, 1493279, "Рио")
+	if err := p.SetNGSSend(ctx, author, true); err != nil {
+		t.Fatalf("галочка: %v", err)
+	}
+	// Заметка ЗЕРКАЛЬНАЯ: под нативной ответ не уносится вовсе — на НГС такой
+	// заметки нет, и нести реплику некуда.
+	const note = 312811
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: note, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная заметка", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatalf("приём заметки: %v", err)
+	}
+
+	// Три реплики: уехавшая, ждущая очереди и та, что отказала, но номер на НГС
+	// всё же получила.
+	var ids []int64
+	for i := 0; i < 3; i++ {
+		id, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: author, Body: "реплика"})
+		if err != nil {
+			t.Fatalf("реплика %d: %v", i, err)
+		}
+		ids = append(ids, id)
+		// Потолок частоты у комментария — одна реплика в десять секунд.
+		if _, err := p.pool.Exec(ctx, `UPDATE comments SET published_at = published_at - interval '1 minute' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE ngs_outbox SET state = $1 WHERE kind = $2 AND object_id = $3`,
+		NGSSent, NGSComment, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE ngs_outbox SET state = $1, ngs_id = '63238879' WHERE kind = $2 AND object_id = $3`,
+		NGSFailed, NGSComment, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+
+	// В список подмешан зеркальный номер: до SQL он не доходит вовсе, и строки
+	// в очереди у него быть не может по построению — уносим мы своё.
+	sent, err := p.NGSSentObjects(ctx, NGSComment, append(append([]int64{}, ids...), 63238879))
+	if err != nil {
+		t.Fatalf("унесённое: %v", err)
+	}
+	if !sent[ids[0]] {
+		t.Error("уехавшая реплика не помечена")
+	}
+	if sent[ids[1]] {
+		t.Error("ждущая очереди реплика помечена как уехавшая")
+	}
+	if !sent[ids[2]] {
+		t.Error("реплика с номером на НГС не помечена: отказ отправки не значит, что её там нет")
+	}
+	if sent[63238879] {
+		t.Error("зеркальная реплика помечена как унесённая")
+	}
+
+	// Заметка и реплика с ОДНИМ номером — разные объекты: последовательности у
+	// них свои, и путать их нельзя.
+	if got, err := p.NGSSentObjects(ctx, NGSNote, ids[:1]); err != nil {
+		t.Fatalf("унесённые заметки: %v", err)
+	} else if got[ids[0]] {
+		t.Error("реплика сошла за заметку с тем же номером")
+	}
 }

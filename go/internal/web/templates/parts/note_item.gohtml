@@ -65,7 +65,7 @@
       {{/* Метка происхождения (origin.go, правило Ш5з). Стоит сразу за датой и
            НЕ между «Комментарии» и числом: там её ищет fidelity_test, сверяя
            надпись ленты с оригиналом. */}}
-      {{with origin $n.ID $n.Stage}}<span class="orig" title="{{.Title}}">{{template "ico-origin" .Icon}}<span class="sr-only">{{.Label}}</span></span>{{end}}
+      {{with origin $n.ID $n.Stage (index $.Page.NGSSent $n.ID)}}{{template "origmark" .}}{{end}}
       {{/* Закрытое обсуждение показывается ТОЙ ЖЕ надписью, что и отметка НГС
            «не актуальна»: для читателя оба состояния значат одно — заглянуть
            можно, вступить нельзя, — и заводить ради нашего замка вторую

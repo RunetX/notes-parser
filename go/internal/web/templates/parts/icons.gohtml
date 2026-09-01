@@ -85,6 +85,21 @@
   <path fill="currentColor" fill-rule="evenodd" d="M10 1.4a6.1 6.1 0 0 0-6.1 6.1v5a6.1 6.1 0 0 0 12.2 0v-5A6.1 6.1 0 0 0 10 1.4zm0 1.8a4.3 4.3 0 0 1 4.3 4.3v5a4.3 4.3 0 0 1-8.6 0v-5A4.3 4.3 0 0 1 10 3.2z"/>
   <path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" d="M7.7 7.5 11.3 11.1"/>
 </svg>
+{{- else if eq . "away"}}
+{{/* Унесено на НГС — ТОТ ЖЕ силуэт зеркала, что у «своей», со стрелкой вместо
+     блика: текст написан здесь, а копия ушла отсюда туда. Родство силуэта здесь
+     и есть смысл — читателю не надо запоминать четвёртый знак, он видит тот же
+     с добавкой.
+
+     Стрелку рисуем ВНУТРИ, а не выходящей наружу: наружу выходящая — это
+     всемирный знак внешней ссылки, а метка не кликается вовсе (ссылок на НГС
+     площадка не ставит нигде, решение 27.08.2026). Проверено рендером в 14
+     точек: зеркало со стрелкой рядом сливается в «0→», а зеркало с внутренней
+     стрелкой читается. */}}
+<svg class="ico" viewBox="0 0 20 20" width="14" height="14" aria-hidden="true" focusable="false">
+  <path fill="currentColor" fill-rule="evenodd" d="M10 1.4a6.1 6.1 0 0 0-6.1 6.1v5a6.1 6.1 0 0 0 12.2 0v-5A6.1 6.1 0 0 0 10 1.4zm0 1.8a4.3 4.3 0 0 1 4.3 4.3v5a4.3 4.3 0 0 1-8.6 0v-5A4.3 4.3 0 0 1 10 3.2z"/>
+  <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M10 13.4V6.8M7.7 9.1 10 6.8l2.3 2.3"/>
+</svg>
 {{- else}}
 <svg class="ico" viewBox="0 0 20 20" width="14" height="14" aria-hidden="true" focusable="false"
      fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
@@ -93,3 +108,9 @@
 </svg>
 {{- end}}
 {{- end}}
+
+{{/* САМА МЕТКА — одним шаблоном на все три места показа (лента, страница
+     заметки, реплика треда). Разметка у них была одинаковой и лежала тремя
+     копиями: значок, заголовок при наведении и спрятанная подпись для читалки —
+     разъехались бы они молча и в первой же правке. Точка — noteOrigin. */}}
+{{define "origmark"}}<span class="orig" title="{{.Title}}">{{template "ico-origin" .Icon}}<span class="sr-only">{{.Label}}</span></span>{{end}}

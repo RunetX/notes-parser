@@ -90,6 +90,11 @@ type feedPage struct {
 	// завести в одном списке ровно ту разницу между чужим и своим, которой у
 	// картинки нет вовсе.
 	Shots map[int64]platform.Media
+	// NGSSent — какие из показанных заметок уже унесены на НГС (третье состояние
+	// метки происхождения). Отдельным запросом и картой по тем же двум причинам,
+	// что Shots: лишняя колонка в самом частом запросе площадки и то, что живёт
+	// это в своей таблице.
+	NGSSent map[int64]bool
 	// Origins — ОРИГИНАЛ для каждого показанного двойника, по его номеру.
 	// Картой и отдельным запросом по тем же двум причинам, что и Shots: тащить
 	// соединение в общий запрос ленты значило бы платить им за все 117 тысяч
@@ -116,6 +121,24 @@ func (s *Server) origins(ctx context.Context, notes []platform.NoteView) map[int
 		return nil
 	}
 	return got
+}
+
+// sentToNGS — какие из показанных заметок уехали на НГС. Отказ ленту не роняет,
+// как и у иллюстраций: без метки заметка остаётся собой.
+func (s *Server) sentToNGS(ctx context.Context, notes []platform.NoteView) map[int64]bool {
+	if len(notes) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(notes))
+	for _, n := range notes {
+		ids = append(ids, n.ID)
+	}
+	sent, err := s.st.NGSSentObjects(ctx, platform.NGSNote, ids)
+	if err != nil {
+		s.log.Error("унесённое на НГС", "err", err)
+		return nil
+	}
+	return sent
 }
 
 // thumbs — иллюстрации показанных заметок. Отказ чтения не роняет ленту: без
@@ -199,6 +222,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		FreshOK:    num == 1,
 		FreshAfter: fresh,
 		Shots:      s.thumbs(ctx, notes),
+		NGSSent:    s.sentToNGS(ctx, notes),
 		Origins:    s.origins(ctx, notes),
 	})
 }
