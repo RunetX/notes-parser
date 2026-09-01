@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,10 +56,11 @@ type NGSJob struct {
 	AuthorID int64
 	// NoteID — куда нести комментарий: id заметки НГС. У заметки не заполняется.
 	NoteID int64
-	// ReplyToNGSID — id реплики НГС, которой отвечаем. Ноль — корень треда.
-	ReplyToNGSID int64
-	Body         string
-	Attempts     int
+	// Адресата здесь НЕТ намеренно: он спрашивается перед самой отправкой
+	// (NGSReplyTarget), потому что родитель мог уехать на сайт тем же проходом
+	// очереди и получить номер в её середине.
+	Body     string
+	Attempts int
 }
 
 // SetNGSSend переключает галочку «Отправлять».
@@ -211,23 +213,13 @@ func fillNGSJob(ctx context.Context, q querier, j *NGSJob) error {
 		}
 		return err
 	case NGSComment:
-		// reply_to_id уносим ТОЛЬКО если адресат сам с НГС: у нативной реплики
-		// там номера нет, и ответ ей на сайте становится корневым — это честнее,
-		// чем привязать его к чужой строке.
-		var replyTo *int64
 		err := q.QueryRow(ctx, `
-			SELECT body, note_id, reply_to_id FROM comments
-			 WHERE id = $1 AND status = 0`, j.ObjectID).Scan(&j.Body, &j.NoteID, &replyTo)
+			SELECT body, note_id FROM comments
+			 WHERE id = $1 AND status = 0`, j.ObjectID).Scan(&j.Body, &j.NoteID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
-		if err != nil {
-			return err
-		}
-		if replyTo != nil && IsNGS(*replyTo) {
-			j.ReplyToNGSID = *replyTo
-		}
-		return nil
+		return err
 	}
 	return nil
 }
@@ -412,4 +404,60 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
 	}
 	return true, nil
+}
+
+// NGSReplyTarget — куда на НГС ложится ответ и кого он называет.
+//
+// Спрашивается ПЕРЕД отправкой, а не при выдаче строки: родитель мог уехать на
+// сайт тем же проходом очереди, и его номер появляется в середине прохода.
+//
+// ok == false означает «родителя на НГС нет вовсе». Такую реплику уносить не
+// надо: она отвечает собеседнику, которого на той стороне не видно, и читается
+// там бессмыслицей под именем живого человека. То же правило, по которому не
+// уносится ответ под нативной заметкой, — нести некуда.
+//
+// Ноль и пустой ник при ok == true — ответ САМОЙ ЗАМЕТКЕ: у него адресата нет,
+// и обращения быть не должно.
+//
+// Ник нужен потому, что сайт и площадка хранят адресата ПО-РАЗНОМУ: у нас это
+// ребро, дорисовываемое на показе из текущего ника, а на НГС — префикс «Ник, »
+// в САМОМ ТЕЛЕ. Не подставив его, мы отправляем туда реплику, про которую
+// нельзя понять, кому она отвечает, даже когда ветка указана верно (bridge это
+// знает с самого начала, а вынос — с 01.09.2026, оплачено боем).
+func (p *Platform) NGSReplyTarget(ctx context.Context, commentID int64) (int64, string, bool, error) {
+	var (
+		replyTo, parent *int64
+		nick, parentNGS string
+	)
+	err := p.pool.QueryRow(ctx, `
+		SELECT c.reply_to_id, p.id, COALESCE(u.nick, ''), COALESCE(o.ngs_id, '')
+		  FROM comments c
+		  LEFT JOIN comments p ON p.id = c.reply_to_id
+		  LEFT JOIN users u ON u.id = p.author_id
+		  LEFT JOIN ngs_outbox o ON o.kind = $2 AND o.object_id = p.id
+		 WHERE c.id = $1`, commentID, NGSComment).
+		Scan(&replyTo, &parent, &nick, &parentNGS)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, fmt.Errorf("адресат ответа %d: %w", commentID, err)
+	}
+	if replyTo == nil {
+		return 0, "", true, nil // ответ заметке: адресата нет
+	}
+	if parent == nil {
+		// Родителя снесли, пока строка ждала очереди.
+		return 0, "", false, nil
+	}
+	if IsNGS(*parent) {
+		return *parent, nick, true, nil
+	}
+	// Родитель нативный: он существует на НГС ровно в том случае, если сам туда
+	// уехал и вернулся опознанным — тогда за ним закреплён номер сайта.
+	id, err := strconv.ParseInt(parentNGS, 10, 64)
+	if err != nil || id == 0 {
+		return 0, "", false, nil
+	}
+	return id, nick, true, nil
 }

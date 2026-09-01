@@ -67,6 +67,7 @@ var funcs = template.FuncMap{
 	"themes":      themeList,
 	"site":        func() string { return SiteName },
 	"origin":      originOf,
+	"corigin":     commentOriginOf,
 	"replyURL":    replyURL,
 	"rx":          reactBoxOf,
 	"modn":        modNote,
@@ -503,20 +504,21 @@ func synthTitle(n platform.NoteView, o platform.SynthOrigin) string {
 	return "Смежное обсуждение: " + textutil.Fit(textutil.OneLine(plain), 40)
 }
 
-// synthQuoteArg — точка для части «synthquote»: оригинал, номер двойника (из
-// него имя галочки ката) и надо ли сворачивать длинную цитату. Пара с
-// контекстом, как у commentItemData: второго аргумента у {{template}} не бывает.
+// synthQuoteArg — точка для части «synthquote»: оригинал и номер двойника (из
+// него имя галочки ката). Пара с контекстом, как у commentItemData: второго
+// аргумента у {{template}} не бывает.
+//
+// Флага «сворачивать ли» здесь больше нет: до 01.09.2026 длинная цитата
+// сворачивалась в ленте и не сворачивалась на странице двойника, а теперь
+// сворачивается везде — как и сама заметка. Флаг с одним значением это
+// выдуманная гибкость.
 type synthQuoteArg struct {
 	Origin platform.SynthOrigin
 	TwinID int64
-	// Clip — сворачивать длинную цитату. Правда в ЛЕНТЕ, где карточка одна из
-	// двадцати, и ложь на своей странице двойника: туда пришли читать разговор,
-	// и прятать его предмет за галочкой значит спрятать самое нужное.
-	Clip bool
 }
 
-func synthQuote(o platform.SynthOrigin, twinID int64, clip bool) synthQuoteArg {
-	return synthQuoteArg{Origin: o, TwinID: twinID, Clip: clip}
+func synthQuote(o platform.SynthOrigin, twinID int64) synthQuoteArg {
+	return synthQuoteArg{Origin: o, TwinID: twinID}
 }
 
 // quoteBodyHTML — текст ОРИГИНАЛА в карточке двойника.

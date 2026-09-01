@@ -259,3 +259,119 @@ func TestЖивойЭмодзиОпознаниюНеМешает(t *testing.T) 
 		t.Fatal("реплика с эмодзи не опознана")
 	}
 }
+
+// Адресат ответа на НГС: у нас он ребро, а там — префикс «Ник, » в теле, и
+// ветка задаётся номером реплики САЙТА. Спрашивается всё это перед отправкой.
+func TestАдресатОтветаНаЗеркальнуюРеплику(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustNGSMember(t, p, 1493279, "Рио")
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: 312811, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.IngestComment(ctx, MirroredComment{
+		ID: 63238879, NoteID: 312811, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "чужая реплика", PublishedAt: time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	our, err := p.CreateComment(ctx, NewComment{
+		NoteID: 312811, AuthorID: author, ReplyToID: 63238879, Body: "мой ответ"})
+	if err != nil {
+		t.Fatalf("ответ: %v", err)
+	}
+
+	parent, nick, ok, err := p.NGSReplyTarget(ctx, our)
+	if err != nil {
+		t.Fatalf("адресат: %v", err)
+	}
+	if !ok || parent != 63238879 || nick != "ДВ" {
+		t.Fatalf("адресат вышел (%d, %q, %v), ожидалось (63238879, «ДВ», true)", parent, nick, ok)
+	}
+}
+
+// Ответ САМОЙ ЗАМЕТКЕ адресата не имеет, и обращения в теле быть не должно:
+// «Ник, » там назвал бы автора заметки, которому реплика не адресована.
+func TestОтветЗаметкеОбращенияНеПолучает(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustNGSMember(t, p, 1493279, "Рио")
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: 312811, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	our, err := p.CreateComment(ctx, NewComment{NoteID: 312811, AuthorID: author, Body: "в корень"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, nick, ok, err := p.NGSReplyTarget(ctx, our)
+	if err != nil {
+		t.Fatalf("адресат: %v", err)
+	}
+	if !ok || parent != 0 || nick != "" {
+		t.Fatalf("у ответа заметке нашёлся адресат: (%d, %q, %v)", parent, nick, ok)
+	}
+}
+
+// СЛУЧАЙ ВЛАДЕЛЬЦА 01.09.2026: ответ на реплику, которой на НГС нет вовсе.
+// Уносить его нельзя — он отвечает собеседнику, которого на той стороне не
+// видно, и читается там бессмыслицей под именем живого человека. А вот если
+// родитель сам уехал на сайт и получил там номер, ветка цепляется за него.
+func TestОтветНаНативнуюРеплику(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustNGSMember(t, p, 1493279, "Рио")
+	if err := p.SetNGSSend(ctx, author, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: 312811, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parentID, err := p.CreateComment(ctx, NewComment{NoteID: 312811, AuthorID: author, Body: "первая своя"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Потолок частоты — реплика в десять секунд; сдвигаем время, а не спим.
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE comments SET published_at = published_at - interval '1 minute'`); err != nil {
+		t.Fatal(err)
+	}
+	child, err := p.CreateComment(ctx, NewComment{
+		NoteID: 312811, AuthorID: author, ReplyToID: parentID, Body: "ответ самому себе"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Родитель ещё не уехал: нести ответ некуда.
+	if _, _, ok, err := p.NGSReplyTarget(ctx, child); err != nil || ok {
+		t.Fatalf("ответ на невидимую реплику признан переносимым: ok=%v err=%v", ok, err)
+	}
+
+	// Родитель уехал и получил номер сайта — теперь есть за что цеплять ветку.
+	jobs, err := p.NextNGSJobs(ctx, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range jobs {
+		if j.ObjectID == parentID {
+			if err := p.FinishNGSJob(ctx, j.ID, "63300001", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	parent, nick, ok, err := p.NGSReplyTarget(ctx, child)
+	if err != nil {
+		t.Fatalf("адресат: %v", err)
+	}
+	if !ok || parent != 63300001 || nick != "Рио" {
+		t.Fatalf("адресат вышел (%d, %q, %v), ожидалось (63300001, «Рио», true)", parent, nick, ok)
+	}
+}

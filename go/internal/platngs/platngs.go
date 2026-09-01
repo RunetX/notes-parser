@@ -28,9 +28,15 @@ import (
 )
 
 // Site — что службе нужно от клиента сайта.
+//
+// FetchCommentsPage нужен ПОСЛЕ отправки: PostComment не возвращает номера
+// вовсе, а номер этот дорог сразу двум делам — по нему цепляется ветка у
+// следующего ответа и по нему же зеркало узнаёт своё эхо точно, не сверяя
+// тексты. Стоит он одного запроса на отправку, а отправляем мы редко.
 type Site interface {
 	PostNote(ctx context.Context, cookies []*http.Cookie, text string, anonymous bool) error
 	PostComment(ctx context.Context, cookies []*http.Cookie, noteID, comAPIID, text string) error
+	FetchCommentsPage(ctx context.Context, noteID string) (love.CommentsPage, error)
 }
 
 // Config — темп и порции.
@@ -114,22 +120,43 @@ func (s *Service) one(ctx context.Context, j platform.NGSJob) {
 	// отказом на длинное тире, он просто печатает его в нашем тексте, — а
 	// типографика выдаёт машину вернее содержания.
 	text := sitetext.Normalize(j.Body)
-	var err error
+	var (
+		err    error
+		posted string
+	)
 	switch j.Kind {
 	case platform.NGSNote:
 		err = s.site.PostNote(ctx, cookies, text, false)
 	case platform.NGSComment:
+		parent, nick, ok, terr := s.p.NGSReplyTarget(ctx, j.ObjectID)
+		if terr != nil {
+			s.log.Error("адресат ответа", "строка", j.ID, "err", terr)
+			return
+		}
+		if !ok {
+			// Собеседника на той стороне не видно, и реплика читалась бы там
+			// бессмыслицей под именем живого человека.
+			s.skip(ctx, j, "адресата нет на НГС")
+			return
+		}
 		replyTo := ""
-		if j.ReplyToNGSID != 0 {
-			replyTo = strconv.FormatInt(j.ReplyToNGSID, 10)
+		if parent != 0 {
+			replyTo = strconv.FormatInt(parent, 10)
+			// Обращение живёт в САМОМ ТЕЛЕ: у нас адресат ребро и
+			// дорисовывается на показе, а на сайте его несёт префикс. Ветка,
+			// указанная одним comApiId, кому реплика отвечает, не говорит.
+			text = nick + ", " + text
 		}
 		err = s.site.PostComment(ctx, cookies,
 			strconv.FormatInt(j.NoteID, 10), replyTo, text)
+		if err == nil {
+			posted = s.findPosted(ctx, j, text)
+		}
 	default:
 		s.skip(ctx, j, "неизвестный вид: "+j.Kind)
 		return
 	}
-	if ferr := s.p.FinishNGSJob(ctx, j.ID, "", err); ferr != nil {
+	if ferr := s.p.FinishNGSJob(ctx, j.ID, posted, err); ferr != nil {
 		s.log.Error("запись исхода выноса", "строка", j.ID, "err", ferr)
 	}
 	if err != nil {
@@ -178,4 +205,40 @@ func (s *Service) skip(ctx context.Context, j platform.NGSJob, why string) {
 		return
 	}
 	s.log.Info("вынос на НГС пропущен", "вид", j.Kind, "объект", j.ObjectID, "почему", why)
+}
+
+// findPosted — номер, под которым сайт принял нашу реплику.
+//
+// PostComment не возвращает его вовсе, поэтому спрашиваем страницу треда сразу
+// после отправки. Номер нужен ДВУМ делам, и оба важнее одного запроса к сайту:
+// по нему цепляется ветка у следующего ответа этому же человеку, и по нему же
+// зеркало узнаёт своё эхо ТОЧНО, не сверяя тексты — а сверка текстов уже
+// подвела однажды, когда сайт подменил смайлик эмодзи (01.09.2026).
+//
+// Пустой ответ — не беда и не ошибка: сверка текстов остаётся вторым рубежом, и
+// именно она ловит случай, когда страница не прочиталась. Поэтому здесь только
+// warn, а исход отправки не меняется.
+func (s *Service) findPosted(ctx context.Context, j platform.NGSJob, sent string) string {
+	page, err := s.site.FetchCommentsPage(ctx, strconv.FormatInt(j.NoteID, 10))
+	if err != nil {
+		s.log.Warn("номер своей реплики на НГС не прочитан",
+			"строка", j.ID, "заметка", j.NoteID, "err", err)
+		return ""
+	}
+	author := strconv.FormatInt(j.AuthorID, 10)
+	var best int64
+	for _, c := range page.Comments {
+		// Свою реплику узнаём по автору И по тексту: человек мог писать в этот
+		// тред и с сайта, а взять «последнюю его» значило бы закрепить за нашей
+		// строкой чужой номер — и погасить потом не то эхо.
+		if c.AuthorID == author && c.ID > best && sitetext.SameText(sent, c.Text) {
+			best = c.ID
+		}
+	}
+	if best == 0 {
+		s.log.Warn("своей реплики на странице треда не нашлось",
+			"строка", j.ID, "заметка", j.NoteID)
+		return ""
+	}
+	return strconv.FormatInt(best, 10)
 }

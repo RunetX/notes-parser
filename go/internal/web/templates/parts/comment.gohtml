@@ -23,6 +23,11 @@
       {{template "nick" (nk $c.Author $c.Name $c.Anonymous .Page.SignedIn)}}
       <a class="anchor" href="#c{{$c.ID}}" title="Ссылка на этот комментарий">#</a>
       <div class="cdate">{{when $c.PublishedAt true}}</div>
+      {{/* Метка происхождения (origin.go, правило Ш5з). Тред с 01.09.2026
+           смешанный в обе стороны, и различить реплику сайта от написанной
+           здесь иначе нечем. Значком, а не словом: строк в треде до девятисот,
+           и подпись на каждой спорила бы за внимание с самим разговором. */}}
+      {{with corigin $c.ID}}<span class="orig" title="{{.Title}}">{{template "ico-origin" .Icon}}<span class="sr-only">{{.Label}}</span></span>{{end}}
     </div>
     {{if long $c.Body}}
     {{/* Простыня показывается началом. Разворачивает её ГАЛОЧКА с подписью, а не
