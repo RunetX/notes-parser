@@ -1403,16 +1403,36 @@ func TestВыдуманныйКлючНеПускает(t *testing.T) {
 func TestПутьЧерезБотаНазываетсяТолькоСАдресом(t *testing.T) {
 	auth := newFakeAuth()
 	withBot := newFullServer(t, &fakeStore{}, auth, nil, nil, nil,
-		Config{Contacts: Contacts{Bot: "https://t.me/RyumkinBot"}})
+		Config{Contacts: Contacts{
+			BotTelegram: "https://t.me/RyumkinBot",
+			BotMAX:      "https://max.ru/id6140010377_1_bot",
+		}})
 	body := do(withBot, guest(t, "GET", "/login")).Body.String()
 	if !strings.Contains(body, "/site") {
 		t.Error("не сказано, какой командой просить ссылку")
 	}
-	if !strings.Contains(body, "https://t.me/RyumkinBot") {
-		t.Error("нет ссылки на бота")
+	// Мессенджера два, и адреса у бота там РАЗНЫЕ: назвав один, мы отправили бы
+	// половину людей в сеть, где их бота нет.
+	for _, want := range []string{"https://t.me/RyumkinBot", "https://max.ru/id6140010377_1_bot",
+		"в Telegram", "в MAX", "</a> или <a"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("на странице входа нет %q", want)
+		}
 	}
 	if strings.Contains(body, `type="password"`) {
 		t.Fatal("на странице входа завелось поле пароля — пароль НГС спрашивает бот, а не площадка")
+	}
+
+	// Один мессенджер — рабочее состояние, а не полбеды: перечисление обязано
+	// обойтись без висящего «или».
+	one := newFullServer(t, &fakeStore{}, auth, nil, nil, nil,
+		Config{Contacts: Contacts{BotTelegram: "https://t.me/RyumkinBot"}})
+	oneBody := do(one, guest(t, "GET", "/login")).Body.String()
+	if !strings.Contains(oneBody, "в Telegram") {
+		t.Error("названный мессенджер не показан")
+	}
+	if strings.Contains(oneBody, "</a> или <a") || strings.Contains(oneBody, "в MAX") {
+		t.Error("перечисление тянет за собой неназванный мессенджер")
 	}
 
 	without := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, Config{})

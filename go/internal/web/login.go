@@ -171,10 +171,35 @@ type loginPage struct {
 	// ByProfile — доступен ли вход по анкете. Нет клиента сайта (или сайт
 	// закрылся) — показывать форму, которая не сработает, хуже, чем сказать это.
 	ByProfile bool
-	// Bot — адрес РюмкинЪа. Пусто означает «про этот путь не говорим»: звать в
-	// бота, которого не назвали, некуда.
-	Bot     string
+	// Bots — где живёт РюмкинЪ. Пустой список означает «про этот путь не
+	// говорим»: звать в бота, которого не назвали, некуда.
+	Bots    []botLink
 	Problem string
+}
+
+// botLink — один адрес РюмкинЪа. Мессенджера два, и адреса у них разные:
+// Telegram и MAX — разные сети, ссылка одной в другой не работает, и человеку
+// надо назвать ту, которой пользуется он. Собирается СПИСКОМ, а не двумя
+// полями, чтобы шаблон перечислял их одним range: иначе «или» между ними
+// пришлось бы городить ветвлением на все четыре случая.
+type botLink struct {
+	Name string // как сеть зовут вслух: «Telegram», «MAX»
+	URL  string
+}
+
+// botLinks — названные адреса бота, в порядке показа. Неназванный пропускается
+// поштучно: один мессенджер это рабочее состояние, а не полбеды.
+func (s *Server) botLinks() []botLink {
+	var out []botLink
+	for _, b := range []botLink{
+		{Name: "Telegram", URL: s.cfg.Contacts.BotTelegram},
+		{Name: "MAX", URL: s.cfg.Contacts.BotMAX},
+	} {
+		if b.URL != "" {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -189,7 +214,7 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int,
 	s.render(w, r, status, "login.gohtml", loginPage{
 		page:      s.newPage(r, "Вход"),
 		ByProfile: s.site != nil,
-		Bot:       s.cfg.Contacts.Bot,
+		Bots:      s.botLinks(),
 		Problem:   problem,
 	})
 }

@@ -74,10 +74,12 @@ type Contacts struct {
 	ProfileID int64
 	Telegram  string
 	MAX       string
-	// Bot — куда идти за ссылкой входа. Живёт рядом с контактами, потому что
-	// это тот же вопрос «где нас найти», и потому что адрес у него один на оба
-	// употребления: два поля разошлись бы при первой же смене имени бота.
-	Bot string
+	// BotTelegram и BotMAX — куда идти за ссылкой входа. Живут рядом с
+	// контактами, потому что это тот же вопрос «где нас найти». Полей два:
+	// Telegram и MAX — разные сети, адреса у бота там разные, и ссылка одной в
+	// другой не работает.
+	BotTelegram string
+	BotMAX      string
 }
 
 // Store — то, что морда спрашивает у ядра.
@@ -272,7 +274,10 @@ type Server struct {
 // ради них площадка не обязана. В лог при этом уходит строка — молча пропавшая
 // ссылка иначе обнаружилась бы через месяц.
 func checkContacts(c Contacts, log *slog.Logger) Contacts {
-	for name, link := range map[string]*string{"telegram": &c.Telegram, "max": &c.MAX, "bot": &c.Bot} {
+	for name, link := range map[string]*string{
+		"telegram": &c.Telegram, "max": &c.MAX,
+		"bot_telegram": &c.BotTelegram, "bot_max": &c.BotMAX,
+	} {
 		if *link == "" {
 			continue
 		}

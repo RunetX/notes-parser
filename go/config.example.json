@@ -135,7 +135,8 @@
       "profile_id": 0,
       "telegram": "",
       "max": "",
-      "bot": ""
+      "bot_telegram": "",
+      "bot_max": ""
     },
     "moderation": {
       "enabled": false,

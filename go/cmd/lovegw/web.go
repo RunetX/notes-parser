@@ -94,10 +94,11 @@ func cmdWeb(ctx context.Context, args []string) error {
 		MediaDir: cfg.Platform.MediaDir,
 		Operator: operatorOf(cfg),
 		Contacts: web.Contacts{
-			ProfileID: cfg.Platform.Contacts.ProfileID,
-			Telegram:  cfg.Platform.Contacts.Telegram,
-			MAX:       cfg.Platform.Contacts.MAX,
-			Bot:       cfg.Platform.Contacts.Bot,
+			ProfileID:   cfg.Platform.Contacts.ProfileID,
+			Telegram:    cfg.Platform.Contacts.Telegram,
+			MAX:         cfg.Platform.Contacts.MAX,
+			BotTelegram: cfg.Platform.Contacts.BotTelegram,
+			BotMAX:      cfg.Platform.Contacts.BotMAX,
 		},
 		Log: log,
 	}, pf, pf, wr, wr, site)
