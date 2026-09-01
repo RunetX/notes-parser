@@ -74,3 +74,33 @@ func TestHelpNumbersComeFromTheCore(t *testing.T) {
 		t.Error("потолок закреплённых в справке не совпадает с platform.MaxPinned")
 	}
 }
+
+// Контакты показываются, только если их настроили, и пустое поле пропускается
+// поштучно. Заголовок над пустотой — тот же дефект, что «ЧТО ТЕБЯ ЦЕПЛЯЕТ» без
+// единой темы в брифе жителя: раздел есть, сказать ему нечего.
+func TestКонтактыПоказываютсяТолькоНастроенные(t *testing.T) {
+	if body := helpBody(t, Config{}); strings.Contains(body, "Как связаться") {
+		t.Error("ненастроенные контакты дали пустой раздел")
+	}
+
+	body := helpBody(t, Config{Contacts: Contacts{
+		ProfileID: 1493279,
+		Telegram:  "https://t.me/zazerkalje",
+	}})
+	if !strings.Contains(body, "Как связаться") {
+		t.Fatal("настроенные контакты не показаны")
+	}
+	if !strings.Contains(body, `href="/u/1493279"`) {
+		t.Error("нет ссылки на страницу владельца ЗДЕСЬ")
+	}
+	if strings.Contains(body, "love.ngs.ru/profile") {
+		t.Error("контакты увели на НГС: ссылок туда площадка не ставит нигде")
+	}
+	if !strings.Contains(body, "https://t.me/zazerkalje") {
+		t.Error("нет ссылки на группу в Telegram")
+	}
+	// MAX не задан — строки о нём быть не должно.
+	if strings.Contains(body, "Группа в MAX") {
+		t.Error("показана группа MAX, которой в настройках нет")
+	}
+}

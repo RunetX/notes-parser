@@ -131,6 +131,11 @@
     "media_dir": "data/media",
     "operator": "",
     "contact": "",
+    "contacts": {
+      "profile_id": 0,
+      "telegram": "",
+      "max": ""
+    },
     "moderation": {
       "enabled": false,
       "provider": "yandex",

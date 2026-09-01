@@ -372,3 +372,55 @@ func TestЖителиЗакрытыОтМодератора(t *testing.T) {
 		t.Errorf("модератор снял фото: код %d", w.Code)
 	}
 }
+
+// Страница того, кого площадка САМА назвала в контактах, открыта гостю — иначе
+// ссылка «написать владельцу» отвечала бы «войдите», то есть была бы не
+// контактом, а тупиком. Довод, закрывший страницы живых людей («заметки и
+// реплики открыты поиску по отдельности, а профиль собирает их в одно место»),
+// здесь снят самим человеком: он поставил ссылку на себя в настройки площадки,
+// то есть распорядился своими данными.
+//
+// От ПОИСКОВИКА страница закрыта по-прежнему: /u целиком лежит в privateRoots, и
+// открытие одной страницы гостю этого не меняет.
+func TestСтраницаИзКонтактовОткрытаГостю(t *testing.T) {
+	st := profileStore()
+	st.profile.Persona = false // живой человек, не житель
+	auth, _ := signedInAs(t, platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindMember})
+	h := newFullServer(t, st, auth, &fakeWriter{}, newFakeMod(), nil,
+		Config{Contacts: Contacts{ProfileID: profUserID}})
+
+	w := do(h, guest(t, "GET", profilePath()))
+	if w.Code != http.StatusOK {
+		t.Fatalf("гостю на странице из контактов код %d, ожидался 200", w.Code)
+	}
+	if got := w.Header().Get("X-Robots-Tag"); !strings.Contains(got, "noindex") {
+		t.Errorf("страница из контактов открыта роботам: %q", got)
+	}
+	// А соседняя, не названная в контактах, гостю по-прежнему закрыта: открылась
+	// ровно одна страница, а не раздел /u целиком.
+	if got := do(h, guest(t, "GET", "/u/"+itoa64(profUserID+1))).Header().Get("Location"); got != "/login" {
+		t.Errorf("чужая страница гостю: %q, ожидался /login", got)
+	}
+}
+
+// Ссылка на группу без https в href не попадает: адрес приезжает из файла
+// настроек, его пишет рука, а «t.me/…» без схемы браузер прочтёт как
+// относительный путь и уведёт человека на t3h.ru/t.me/… . Схемы javascript: и
+// data: тем более: в чужих текстах их не пускает CSP, и в своём шаблоне им
+// делать нечего.
+func TestКриваяСсылкаНаГруппуГаснет(t *testing.T) {
+	got := checkContacts(Contacts{
+		ProfileID: 1,
+		Telegram:  "t.me/без_схемы",
+		MAX:       "https://max.ru/zazerkalje",
+	}, quietLog())
+	if got.Telegram != "" {
+		t.Errorf("ссылка без схемы уцелела: %q", got.Telegram)
+	}
+	if got.MAX != "https://max.ru/zazerkalje" {
+		t.Errorf("годная ссылка потерялась: %q", got.MAX)
+	}
+	if got.ProfileID != 1 {
+		t.Error("номер анкеты не должен зависеть от проверки ссылок")
+	}
+}

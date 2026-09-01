@@ -93,7 +93,12 @@ func cmdWeb(ctx context.Context, args []string) error {
 		BaseURL:  cfg.Platform.BaseURL,
 		MediaDir: cfg.Platform.MediaDir,
 		Operator: operatorOf(cfg),
-		Log:      log,
+		Contacts: web.Contacts{
+			ProfileID: cfg.Platform.Contacts.ProfileID,
+			Telegram:  cfg.Platform.Contacts.Telegram,
+			MAX:       cfg.Platform.Contacts.MAX,
+		},
+		Log: log,
 	}, pf, pf, wr, wr, site)
 	// Шина событий: страница «События», колокольчик и живой канал. Морда только
 	// ЧИТАЕТ поводы и отмечает их прочитанными — раздаёт их демон (platbus),
@@ -289,11 +294,11 @@ func (p loginProfiles) Profile(ctx context.Context, id int64) (web.SiteProfile, 
 		return web.SiteProfile{}, err
 	}
 	return web.SiteProfile{
-		Nick:       prof.Nick,
-		AvatarURL:  realAvatar(prof.AvatarURL),
-		AboutMe:    prof.AboutMe,
-		Gender:     platformGender(prof.Gender),
-		Blocked:    prof.Blocked,
+		Nick:      prof.Nick,
+		AvatarURL: realAvatar(prof.AvatarURL),
+		AboutMe:   prof.AboutMe,
+		Gender:    platformGender(prof.Gender),
+		Blocked:   prof.Blocked,
 	}, nil
 }
 

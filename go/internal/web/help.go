@@ -34,6 +34,14 @@ type helpPage struct {
 	// MaxPinned — сколько заметок можно закрепить наверху. Здесь по той же
 	// причине, что и окно правки.
 	MaxPinned int
+	// Contacts — живые контакты. Пустые поля шаблон пропускает: строка
+	// «Telegram: —» хуже отсутствующей строки.
+	Contacts Contacts
+	// HasContacts — есть ли что показывать вообще. Считается здесь, а не тремя
+	// {{if}} подряд в шаблоне: иначе у пустой настройки остался бы заголовок
+	// раздела над пустотой — тот же дефект, что был у «ЧТО ТЕБЯ ЦЕПЛЯЕТ» в
+	// брифе жителя.
+	HasContacts bool
 }
 
 func (s *Server) handleHelp(w http.ResponseWriter, r *http.Request) {
@@ -44,5 +52,8 @@ func (s *Server) handleHelp(w http.ResponseWriter, r *http.Request) {
 		Contact:     op.Contact,
 		EditMinutes: int(platform.EditWindow / time.Minute),
 		MaxPinned:   platform.MaxPinned,
+		Contacts:    s.cfg.Contacts,
+		HasContacts: s.cfg.Contacts.ProfileID != 0 ||
+			s.cfg.Contacts.Telegram != "" || s.cfg.Contacts.MAX != "",
 	})
 }
