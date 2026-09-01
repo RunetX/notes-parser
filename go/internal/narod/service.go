@@ -128,6 +128,16 @@ type Config struct {
 	// строгости — лишний брак это лишний платный вызов, а недобор поймает
 	// следующий свод, он бесплатный.
 	StampRate float64
+	// MoveRates — доли ХОДОВ: чем именно житель отвечает (move.go). Пусто —
+	// DefaultMoveRates.
+	//
+	// ЗАМЕРА У НИХ НЕТ, и это названо здесь, а не подразумевается: соседние доли
+	// службы (AskRate, OneThoughtRate, StampRate) сняты с архива, а эти —
+	// авторское решение владельца 01.09.2026 после первого треда, где панч стоял
+	// в каждой реплике и 80 % треда вышло одной формой. Часть из них замерима
+	// (доля вопросов автору, доля коротких реплик), и снятый замер обязан эти
+	// числа заменить.
+	MoveRates map[Move]float64
 	// LatencyScale — множитель ЗАДЕРЖКИ ответа, и это единственное место службы,
 	// которое сознательно ОТСТУПАЕТ от замера. Единица — человеческий темп из
 	// карточки (Latency.ToReplySec): у него длинный хвост, кто-то отвечает через
@@ -172,6 +182,7 @@ func Defaults() Config {
 		EllipsisRate:     0.225,
 		GeneralizeRate:   0.0048,
 		StampRate:        0.0294,
+		MoveRates:        DefaultMoveRates(),
 		// Единица — темп живых. Сжимать его можно только осознанно и только на
 		// стенде, поэтому умолчание не «поудобнее», а «как у людей».
 		LatencyScale: 1,
@@ -193,6 +204,9 @@ func (c Config) Validate() error {
 	}
 	if c.LatencyScale <= 0 {
 		return fmt.Errorf("множитель задержки %v: должен быть больше нуля", c.LatencyScale)
+	}
+	if err := ValidateMoveRates(c.MoveRates); err != nil {
+		return err
 	}
 	if c.ScanEvery <= 0 || c.WorkEvery <= 0 {
 		return errors.New("такты службы должны быть положительными")
@@ -817,6 +831,12 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 			point.ReplyTo = c
 		}
 	}
+	// ЖИТЕЛЬ-ШУМ ветки НЕ ЧИТАЕТ: он видит заметку и ту реплику, на которую
+	// отвечает, — и всё. Это и есть его порода, а не экономия на промпте: он не
+	// подхватывает чужого канона просто потому, что не знает его.
+	if p.Card.Noise {
+		point.Thread = nil
+	}
 	peers := s.peersOf(ctx, note, thread)
 	memory, err := WriteMemory(ctx, s.world, p.Card.ID, peers)
 	if err != nil {
@@ -829,11 +849,26 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	// их списком или долей, решает за весь прогон разом (оплачено дважды: длиной
 	// 28.08.2026 и комплиментом-суффиксом 29.08.2026).
 	rng := rand.New(rand.NewPCG(s.seed^uint64(pl.ID), uint64(pl.NoteID)+1))
+	// ХОД бросается ПЕРВЫМ из жребиев: от него зависят и длина, и панч, и
+	// ступень настроения, — то есть он не мерка реплики, а то, что она такое.
+	point.Move = PickMove(rng, s.cfg.MoveRates, MoveFit{
+		// До автора реплика доходит двумя путями: она либо корневая (адресат —
+		// сама заметка), либо отвечает его собственной реплике.
+		ToAuthor: point.ReplyTo.ID == 0 ||
+			(note.AuthorID != 0 && point.ReplyTo.AuthorID == note.AuthorID),
+		ToPeer: point.ReplyTo.ID != 0,
+	})
 	mood := MoodPoint{
 		Card:       *p.Card,
 		Heat:       heatOf(thread, p.UserID, point.ReplyTo.AuthorID),
 		Jab:        rng.IntN(len(jabWays)),
 		Generalize: rng.Float64() < s.cfg.GeneralizeRate,
+		// ПРИДИРКА — провоцирующий ход, и ступень эскалации при нём не нижняя.
+		// Без этого ссоре взяться неоткуда: лестница считается от накала пары, а
+		// в свежем треде пара обменивается репликами один раз, то есть накал у
+		// всех нулевой и все всегда «держатся предмета». За первый боевой тред в
+		// 58 реплик не вышло ни одной перепалки — ровно поэтому.
+		Nag: point.Move == MoveGrumble,
 	}
 	if point.ReplyTo.ID != 0 {
 		mood.Peer = point.ReplyTo.AuthorNick
@@ -860,6 +895,14 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 
 	point.TargetRunes = int(QuantileAt(p.Card.Register.Runes, rng.Float64()) + 0.5)
 	point.OneThought = rng.Float64() < s.cfg.OneThoughtRate
+	// КОРОТКИЙ ХОД правит длину и однофразовость САМ, а не спорит с ними: «два-три
+	// слова» рядом с «около 120 знаков» — это два указания лбами, и побеждает то,
+	// что стоит ниже. Длина берётся из НИЖНЕЙ четверти разброса самого жителя, а
+	// не общим числом: коротко у каждого своё.
+	if point.Move == MoveShort {
+		point.TargetRunes = int(QuantileAt(p.Card.Register.Runes, rng.Float64()*0.25) + 0.5)
+		point.OneThought = true
+	}
 	point.Asks = rng.Float64() < s.cfg.AskRate
 	point.Ellipsis = s.cfg.EllipsisRate
 	if r := p.Card.Register.EmojiRate; r > 0 {
@@ -878,7 +921,16 @@ func (s *Service) compose(ctx context.Context, p Player, pl Plan,
 	// брошенное: «встречный вопрос» в реплике, которой жребий запретил
 	// вопросы, столкнул бы две инструкции лбами, и модель выполнила бы ту,
 	// что стоит ниже, — то есть жребий вопроса стал бы решаться порядком строк.
-	point.Punch = pickPunch(rng, point.Asks)
+	// ПАНЧ — теперь ОДИН ХОД ИЗ СЕМИ, а не свойство каждой реплики. Приём внутри
+	// него по-прежнему выбирает жребий: список приёмов модель читает как рецепт.
+	if point.Move == MovePunch {
+		point.Punch = pickPunch(rng, point.Asks)
+	}
+	// КАНОН треда считается ПОСЛЕ хода: он зависит от того, что уже сказано, а не
+	// от жребиев. Жителю-шуму не считается вовсе — он ветку не читает.
+	if !p.Card.Noise {
+		point.Canon = canonWords(note, thread, p.UserID)
+	}
 	if r := p.Card.Register.GeneralRate; r > 0 {
 		// Узкий рычаг настроения (вброс на весь пол, 0,198 % по замеру) и этот
 		// широкий говорят об одном, поэтому противоречить друг другу им нельзя:

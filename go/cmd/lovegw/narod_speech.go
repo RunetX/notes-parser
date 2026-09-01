@@ -120,6 +120,7 @@ func speechTable(cols []speechColumn) string {
 	row("обобщение (все, всегда)", func(m speech.Marks) float64 { return m.General })
 	row("поучение (надо, должен)", func(m speech.Marks) float64 { return m.Advice })
 	row("штамп машины (складно, будто)", func(m speech.Marks) float64 { return m.Stamp })
+	row("ролевой зачин (как X скажу)", func(m speech.Marks) float64 { return m.RoleLead })
 	return b.String()
 }
 

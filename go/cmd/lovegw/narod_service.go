@@ -195,6 +195,16 @@ func narodConfig(cfg *config.Config) narod.Config {
 	if n.DayCalls > 0 {
 		c.DayCalls = n.DayCalls
 	}
+	// ХОДЫ: названный конфигом набор заменяет умолчание ЦЕЛИКОМ, а не дополняет
+	// его. Смешение было бы хуже обоих: назвав в конфиге «панч 0.05», владелец
+	// ждёт, что панчей станет мало, — а при смешении рядом остались бы прежние
+	// двадцать процентов под тем же ключом.
+	if len(n.Moves) > 0 {
+		c.MoveRates = map[narod.Move]float64{}
+		for k, v := range n.Moves {
+			c.MoveRates[narod.Move(k)] = v
+		}
+	}
 	return c
 }
 

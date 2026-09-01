@@ -67,6 +67,14 @@ type Marks struct {
 	// Слово в список берётся, только если живёт во ВСЕХ пяти тредах: слово одной
 	// темы — это тема, а не почерк.
 	Stamp float64 `json:"stamp"`
+	// RoleLead — РОЛЕВОЙ ЗАЧИН: «как пожарный скажу», «как автослесарь спрошу»
+	// (невод и замер — role.go). Мера стои́т здесь, среди мер содержания, а не
+	// только евалом в бою, по правилу пакета: величину, которую правят, сперва
+	// спрашивают у прогона, — и спрашивать её надо ТЕМ ЖЕ неводом, каким судят.
+	//
+	// ЗАМЕР 01.09.2026: у живых 0,0004 % реплик (40 настоящих зачинов на
+	// 10,8 млн), у нас в первом же треде с панчем — большинство.
+	RoleLead float64 `json:"role_lead"`
 }
 
 // Measure снимает портрет с набора текстов.
@@ -75,7 +83,7 @@ func Measure(texts []string) Marks {
 	if len(texts) == 0 {
 		return m
 	}
-	var own, tm, dg, gen, adv, stp int
+	var own, tm, dg, gen, adv, stp, rl int
 	for _, t := range texts {
 		f := Of(t)
 		if f.OwnStory {
@@ -96,6 +104,9 @@ func Measure(texts []string) Marks {
 		if f.Stamp {
 			stp++
 		}
+		if f.RoleLead {
+			rl++
+		}
 	}
 	n := float64(len(texts))
 	m.OwnStory = round4(float64(own) / n)
@@ -104,6 +115,7 @@ func Measure(texts []string) Marks {
 	m.General = round4(float64(gen) / n)
 	m.Advice = round4(float64(adv) / n)
 	m.Stamp = round4(float64(stp) / n)
+	m.RoleLead = round4(float64(rl) / n)
 	return m
 }
 
@@ -115,6 +127,7 @@ type Flags struct {
 	General  bool
 	Advice   bool
 	Stamp    bool
+	RoleLead bool
 }
 
 // GeneralHit — ПЕРВОЕ слово-обобщение в тексте; пусто — обобщения нет.
@@ -184,6 +197,10 @@ func Of(text string) Flags {
 			break
 		}
 	}
+	// Зачин считается по ИСХОДНОМУ тексту, а не по разбитому на предложения:
+	// он живёт ровно в начале реплики, и «как пожарный скажу» из середины —
+	// это уже другая величина (см. замер в role.go).
+	f.RoleLead = RoleLead(text) != ""
 	return f
 }
 

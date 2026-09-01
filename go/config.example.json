@@ -89,6 +89,25 @@
     "source_timeout_s": 20,
     "fuse_misses": 2
   },
+  "narod": {
+    "enabled": false,
+    "mode": "dry-run",
+    "cards_dir": "data/narod/cards",
+    "db_path": "data/narod.db",
+    "seed": 1,
+    "per_thread": 400,
+    "day_calls": 600,
+    "latency_scale": 0.08,
+    "moves": {
+      "punch": 0.2,
+      "author": 0.2,
+      "grumble": 0.15,
+      "short": 0.15,
+      "story": 0.15,
+      "offtop": 0.1,
+      "other": 0.05
+    }
+  },
   "talks": {
     "enabled": false,
     "admin_only": true,

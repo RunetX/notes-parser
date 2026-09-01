@@ -160,9 +160,15 @@ func TestЗапретШтампаДоезжаетСловами(t *testing.T) {
 // ни разу не заполнены, а все тесты на формулы проходили. Здесь ровно та же
 // опасность: pickPunch может быть безупречен, а строка `point.Punch = …`
 // отсутствовать, и разницы не увидит никто, кроме счёта из облака.
+//
+// ПРАВИЛО ЗДЕСЬ СМЕНИЛОСЬ 01.09.2026, и тест переписан вместе с ним: панч
+// перестал быть свойством КАЖДОЙ реплики и стал одним ходом из семи (move.go).
+// Поэтому спрашивается он теперь на своём ходе — а прежняя проверка «панч есть
+// всегда» стала бы сторожем отменённого решения.
 func TestЖребииПанчаИШтампаДоезжаютДоТочки(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := retryService(t, &busyStage{}, nil)
+	svc.cfg.MoveRates = map[Move]float64{MovePunch: 1}
 	p := svc.players[0]
 	pl := Plan{ActorID: p.Card.ID, NoteID: wiringNote.ID, EventID: "reply:100"}
 	point, err := svc.compose(ctx, p, pl, wiringNote, nil)

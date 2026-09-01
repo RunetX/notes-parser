@@ -43,6 +43,16 @@ type composeRecipe struct {
 	Triggers  []narod.Topic     `json:"triggers,omitempty"`
 	Dice      *narod.DiceParams `json:"dice,omitempty"`
 	Seed      int64             `json:"seed,omitempty"`
+	// RoleLead — разрешение открывать реплику ролевой рамкой («как пожарный
+	// скажу»). Авторское и поимённое: по замеру у живых такой зачин стоит в
+	// 0,0004 % реплик, то есть его нет ни у кого, — а у одного-двух жителей он
+	// вправе быть манерой. Пишется владельцем в рецепте, как ник и биография,
+	// потому что это решение о ЧЕЛОВЕКЕ, а не смесь донорских чисел.
+	RoleLead bool `json:"role_lead,omitempty"`
+	// Noise — житель-ШУМ: коротко, мимо, ветку не читает. Тоже решение о
+	// человеке, а не замер: в архиве видно, что человек написал коротко, и не
+	// видно, читал ли он тред.
+	Noise bool `json:"noise,omitempty"`
 }
 
 // lopsidedWeight — доля, выше которой композит перестаёт быть композитом.
@@ -91,6 +101,10 @@ func composeCard(r composeRecipe, donors []narod.Card, now time.Time) (narod.Car
 		Sources: append([]string(nil), r.Donors...),
 		Persona: r.Persona,
 		Seed:    r.Seed,
+		// Флаги породы переносятся ИЗ РЕЦЕПТА как есть: они не смешиваются из
+		// доноров, потому что у доноров их нет вовсе.
+		RoleLead: r.RoleLead,
+		Noise:    r.Noise,
 	}
 	if card.Seed == 0 {
 		card.Seed = 1
