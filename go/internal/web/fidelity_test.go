@@ -246,15 +246,39 @@ func TestLongFeedNoteIsCollapsedButWhole(t *testing.T) {
 	}
 }
 
-// [Ф] А на СВОЕЙ странице заметка не сворачивается никогда: туда пришли читать
-// именно её, и лишнее нажатие там было бы издевательством.
-func TestNotePageShowsWholeNote(t *testing.T) {
+// [Ф] И на СВОЕЙ странице заметка тоже показывается началом (жалоба владельца
+// 01.09.2026 на заметку в четыре тысячи знаков). До этого дня правило было
+// обратным — «туда пришли читать именно её», — но верно оно лишь про первый
+// экран: под заметкой лежит её обсуждение, и простыня отодвигает первую реплику
+// на несколько экранов вниз.
+//
+// Проверяется, как и в ленте, не «обрезано», а ровно обратное: свёрнут ПОКАЗ,
+// текст отдан целиком.
+func TestLongNotePageIsCollapsedButWhole(t *testing.T) {
 	n := sampleNote()
-	n.Body = strings.Repeat("длинная заметка. ", 200)
+	n.Body = strings.Repeat("длинная заметка. ", 200) // ~3400 знаков
 	h := openServer(t, &fakeStore{note: n})
 	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
+
+	if strings.Count(body, `class="text clip"`) != 1 {
+		t.Error("заметка не свёрнута на собственной странице")
+	}
+	if !strings.Contains(body, "Показать полностью") || !strings.Contains(body, `for="exn`) {
+		t.Error("длинную заметку нечем развернуть")
+	}
+	if strings.Count(body, "длинная заметка") < 200 {
+		t.Error("текст свёрнутой заметки обрезан на сервере")
+	}
+}
+
+// А короткая на своей странице не сворачивается: порог один на все три места
+// (лента, тред, страница заметки), и кнопка над тремя строками была бы
+// издевательством.
+func TestShortNotePageIsNotCollapsed(t *testing.T) {
+	h := openServer(t, &fakeStore{note: sampleNote()})
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
 	if strings.Contains(body, `class="text clip"`) || strings.Contains(body, "Показать полностью") {
-		t.Error("заметка свёрнута на собственной странице")
+		t.Error("свёрнута короткая заметка")
 	}
 }
 
