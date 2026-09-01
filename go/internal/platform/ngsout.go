@@ -387,7 +387,14 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 			rows.Close()
 			return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
 		}
-		if claim == 0 && sitetext.SameText(sent, body) {
+		// Правило сверки зависит от ВИДА, и это про форму данных, а не про
+		// строгость: реплику сайт отдаёт целиком, а заметку лента показывает
+		// началом.
+		same := sitetext.SameText(sent, body)
+		if kind == NGSNote {
+			same = sitetext.SameStart(sent, body)
+		}
+		if claim == 0 && same {
 			claim = id
 		}
 	}
