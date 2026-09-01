@@ -19,6 +19,9 @@
   <a href="#narod">Жители площадки</a>
   <a href="#mod">Модерация</a>
   <a href="#data">Ваши данные</a>
+  {{/* Плитка появляется вместе с самим разделом: оглавление, ведущее в пустоту,
+       хуже отсутствующего пункта. */}}
+  {{if .HasContacts}}<a href="#contacts">Как связаться</a>{{end}}
   <a href="#rules">Правила площадки</a>
 </nav>
 
@@ -320,15 +323,16 @@
   там видно, что он пишет, и оттуда можно ответить ему в любой его заметке.</li>
   {{end}}
   {{if .Contacts.Telegram}}
-  <li><b>Группа в Telegram</b> — <a href="{{.Contacts.Telegram}}" rel="noopener nofollow">{{.Contacts.Telegram}}</a>.</li>
+  <li><b>Группа в Telegram</b> — <a href="{{.Contacts.Telegram}}" rel="noopener nofollow">{{.Contacts.Telegram}}</a></li>
   {{end}}
   {{if .Contacts.MAX}}
-  <li><b>Группа в MAX</b> — <a href="{{.Contacts.MAX}}" rel="noopener nofollow">{{.Contacts.MAX}}</a>.</li>
+  <li><b>Группа в MAX</b> — <a href="{{.Contacts.MAX}}" rel="noopener nofollow">{{.Contacts.MAX}}</a></li>
   {{end}}
 </ul>
-<p class="fine">Адрес показан целиком, а не спрятан за словом: это ссылка наружу,
-и куда она ведёт, видно до нажатия — то же правило, по которому площадка не
-делает кликабельными чужие адреса в чужих текстах.</p>
+<p class="fine">Группы закрытые: ссылка и есть приглашение, войти по ней можно
+без спроса, а искать группу поиском в мессенджере бесполезно. Адрес показан
+целиком, а не спрятан за словом, — это ссылка наружу, и куда она ведёт, видно до
+нажатия.</p>
 </section>
 {{end}}
 
