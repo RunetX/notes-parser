@@ -11,29 +11,36 @@ package platform
 // зеркалом заранее, поэтому вход не переносит ни одной строки — он меняет kind
 // у уже существующего ряда, и весь след прошлых лет мгновенно становится своим.
 //
-// КАНАЛОВ ДОСТАВКИ КОДА ДВА, и они различаются НЕ удобством, а способом
-// проверки.
-//
-//   - ЛИЧКА НГС (ChallengeTalks) — основной. Код уходит личным сообщением от
-//     служебного аккаунта, читать который может только владелец ящика; поэтому
-//     достаточно, чтобы человек назвал код обратно. Модерации личка не проходит
-//     и приходит сразу.
-//   - ПОЛЕ «О СЕБЕ» (ChallengeProfile) — запасной, на случай мёртвого
-//     служебного аккаунта. Здесь проверка ДВУСТОРОННЯЯ, и это не
-//     перестраховка: пока код висит в «о себе», его видит кто угодно — анкета
-//     публичная, мы сами читаем её анонимно. Значит «в анкете лежит наш код»
-//     доказывает контроль над анкетой, но НЕ то, что проверку запросил её
-//     владелец. Второй половиной служит кука, выданная вместе с кодом. Нужны
-//     обе, иначе посторонний, заметивший чужой код, входил бы одним нажатием.
+// КАНАЛ ДОСТАВКИ КОДА ОДИН — ПОЛЕ «О СЕБЕ» (ChallengeProfile), и проверка у
+// него ДВУСТОРОННЯЯ. Это не перестраховка: пока код висит в «о себе», его видит
+// кто угодно — анкета публичная, мы сами читаем её анонимно. Значит «в анкете
+// лежит наш код» доказывает контроль над анкетой, но НЕ то, что проверку
+// запросил её владелец. Второй половиной служит кука, выданная вместе с кодом.
+// Нужны обе, иначе посторонний, заметивший чужой код, входил бы одним нажатием.
 //
 // Отсюда правило, которое нельзя нарушать при правках: код, ПОКАЗАННЫЙ на
 // экране, нельзя принимать введённым обратно. Иначе вход под чужой анкетой
 // стоит одного нажатия — запросил код на чужой номер, увидел его у себя,
-// переписал в поле. Каналы разведены видом челленджа именно поэтому.
+// переписал в поле. Держится правило теперь СТРУКТУРНО: поля ввода кода нет ни
+// на одном экране вовсе, а сверка берёт код из куки и ищет его в тексте анкеты.
 //
-// Запасной путь остался запасным по причине, которой не было в замерах:
-// правка поля «о себе» уходит на МОДЕРАЦИЮ НГС, одобряют её не сразу и не
-// наверняка (владелец, 18.08.2026).
+// ВТОРОГО КАНАЛА БОЛЬШЕ НЕТ. До 01.09.2026 основным был код ЛИЧНЫМ СООБЩЕНИЕМ
+// на НГС (вид челленджа `ngs_talks`): читать сообщение мог только владелец
+// ящика, поэтому достаточно было назвать код обратно, и модерации личка не
+// проходила. Служебный аккаунт, от которого уходили эти письма, УДАЛЁН
+// (владелец, 01.09.2026), и завести новый — это снова живая сессия на чужом
+// сайте, который и комментариев-то не принимает с 17.08.2026.
+//
+// Убран путь ЦЕЛИКОМ, а не оставлен выключенным, и это главное решение здесь:
+// канал с ОДНОСТОРОННЕЙ проверкой, дремлющий рядом с двусторонним, — ровно та
+// развилка, на которой однажды примут показанный код введённым обратно. Мёртвый
+// код такой развилки не сторожит; отсутствующий — сторожит сам собой.
+//
+// Цена названа честно: правка поля «о себе» уходит на МОДЕРАЦИЮ НГС, одобряют
+// её не сразу и не наверняка (владелец, 18.08.2026), — то есть единственный
+// оставшийся код медленный, и именно поэтому личку когда-то и завели. Кому он
+// не годится, остаётся приглашение (`/login/invite`); оно же остаётся на случай
+// снесённой анкеты и закрывшегося сайта.
 //
 // Пароль НГС на нашей форме отвергнут навсегда: единственная его выгода — кука
 // для обратной публикации, которой в MVP нет, а цена — приучить сообщество
@@ -107,36 +114,18 @@ const (
 	IdentityInvite = "invite"
 
 	MethodProfileCode = "profile_code"
-	MethodTalksCode   = "talks_code"
 	MethodInvite      = "admin_invite"
 )
 
-// Виды челленджа — значения auth_challenges.kind. Вид определяет СПОСОБ
-// ПРОВЕРКИ, а не только канал доставки (см. шапку файла), поэтому проверять
-// код одного вида функцией другого нельзя.
+// Вид челленджа — значение auth_challenges.kind. Вид определяет СПОСОБ
+// ПРОВЕРКИ, а не только канал доставки (см. шапку файла), и потому он остаётся
+// колонкой, хотя вид сейчас ровно один: заведись второй, он обязан отличаться
+// здесь, а не порядком аргументов.
 const (
 	// ChallengeProfile — код в поле «о себе». Значение совпадает с IdentityNGS
 	// по историческим причинам: строки этого вида лежат в базе с первого дня.
 	ChallengeProfile = IdentityNGS
-	// ChallengeTalks — код личным сообщением на НГС.
-	ChallengeTalks = "ngs_talks"
 )
-
-const (
-	// TalksResendAfter — раньше этого повторную отправку не делаем: человек
-	// нажал «отправить ещё раз», не увидев первого сообщения, а не потому, что
-	// оно потерялось.
-	TalksResendAfter = 3 * time.Minute
-	// talksMaxSends — потолок отправок кода на одну анкету за время жизни кода.
-	// Вход начинает кто угодно, а сообщение приходит НАСТОЯЩЕМУ владельцу
-	// анкеты, то есть служебный аккаунт можно сделать рассыльщиком чужими
-	// руками. Этот потолок — единственное, что этому мешает.
-	talksMaxSends = 3
-)
-
-// ErrCodeJustSent — код только что отправлен, ждём. Не ошибка, а ответ
-// человеку: «посмотрите личные сообщения».
-var ErrCodeJustSent = errors.New("код уже отправлен")
 
 // Challenge — выданный код и его срок. Код возвращается ОДИН раз, в базе лежит
 // только sha256: показать его повторно нельзя, и это осознанно — иначе строка
@@ -268,136 +257,6 @@ func (p *Platform) ProfileVerified(ctx context.Context, profileID int64, code st
 		return false, fmt.Errorf("состояние кода анкеты %d: %w", profileID, err)
 	}
 	return subtle.ConstantTimeCompare(codeDigest(code), stored) == 1, nil
-}
-
-// StartTalksChallenge выдаёт код для отправки в личку НГС.
-//
-// В отличие от «о себе», повтор здесь НЕ обесценивает прежний код молча:
-// каждая выдача стоит нам исходящего сообщения ЧУЖОМУ человеку — вход начинает
-// кто угодно, а письмо получает настоящий владелец анкеты. Поэтому пока код
-// жив, новая отправка либо отклоняется (ErrCodeJustSent), либо считается в
-// потолок (talksMaxSends), и превратить служебный аккаунт в рассыльщик чужими
-// руками нельзя.
-//
-// Код возвращается вызывающему ровно затем, чтобы тот отправил его человеку.
-// На экран он не попадает никогда: показанный код, принимаемый введённым
-// обратно, — это вход под чужой анкетой в одно нажатие.
-func (p *Platform) StartTalksChallenge(ctx context.Context, profileID int64) (Challenge, error) {
-	if !IsNGS(profileID) {
-		return Challenge{}, fmt.Errorf("номер анкеты %d вне полосы НГС", profileID)
-	}
-	code, err := newCode()
-	if err != nil {
-		return Challenge{}, err
-	}
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return Challenge{}, fmt.Errorf("выдача кода анкете %d: %w", profileID, err)
-	}
-	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
-
-	var (
-		id      int64
-		sends   int16
-		created time.Time
-		expires time.Time
-	)
-	err = tx.QueryRow(ctx, `
-		SELECT id, sends, created_at, expires_at FROM auth_challenges
-		 WHERE kind = $1 AND subject = $2 AND verified_at IS NULL AND expires_at > now()
-		 FOR UPDATE`, ChallengeTalks, subjectOf(profileID)).Scan(&id, &sends, &created, &expires)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		expires = time.Now().Add(ChallengeTTL)
-		// Протухшую строку снимаем явно: уникальный индекс живых челленджей не
-		// смотрит на expires_at, для него «не проверен» и есть «живой».
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM auth_challenges WHERE kind = $1 AND subject = $2 AND verified_at IS NULL`,
-			ChallengeTalks, subjectOf(profileID)); err != nil {
-			return Challenge{}, fmt.Errorf("выдача кода анкете %d: %w", profileID, err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO auth_challenges (kind, subject, code_sha, expires_at, sends)
-			VALUES ($1, $2, $3, $4, 1)`,
-			ChallengeTalks, subjectOf(profileID), codeDigest(code), expires); err != nil {
-			return Challenge{}, fmt.Errorf("выдача кода анкете %d: %w", profileID, err)
-		}
-	case err != nil:
-		return Challenge{}, fmt.Errorf("выдача кода анкете %d: %w", profileID, err)
-	case sends >= talksMaxSends:
-		return Challenge{ExpiresAt: expires}, ErrTooManyAttempts
-	case time.Since(created) < TalksResendAfter:
-		return Challenge{ExpiresAt: expires}, ErrCodeJustSent
-	default:
-		// Повторная отправка — это НОВЫЙ код: прежний plaintext мы не храним, а
-		// срок оставляем прежним, иначе продлевать его можно было бы вечно.
-		if _, err := tx.Exec(ctx, `
-			UPDATE auth_challenges
-			   SET code_sha = $2, created_at = now(), attempts = 0, sends = sends + 1
-			 WHERE id = $1`, id, codeDigest(code)); err != nil {
-			return Challenge{}, fmt.Errorf("выдача кода анкете %d: %w", profileID, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Challenge{}, fmt.Errorf("выдача кода анкете %d: %w", profileID, err)
-	}
-	return Challenge{Code: code, ExpiresAt: expires}, nil
-}
-
-// VerifyTalksCode сверяет код, который человек ПЕРЕПИСАЛ из личного сообщения.
-//
-// Половина здесь одна, и её достаточно: сообщение лежит в ящике, читать который
-// может только владелец анкеты. У поля «о себе» половин две ровно потому, что
-// оно публично (см. шапку файла).
-func (p *Platform) VerifyTalksCode(ctx context.Context, profileID int64, code string) error {
-	code = normalizeCode(code)
-	if code == "" {
-		return ErrNoChallenge
-	}
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("проверка кода анкеты %d: %w", profileID, err)
-	}
-	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
-
-	var (
-		id       int64
-		stored   []byte
-		attempts int16
-	)
-	err = tx.QueryRow(ctx, `
-		SELECT id, code_sha, attempts FROM auth_challenges
-		 WHERE kind = $1 AND subject = $2 AND verified_at IS NULL AND expires_at > now()
-		 FOR UPDATE`, ChallengeTalks, subjectOf(profileID)).Scan(&id, &stored, &attempts)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNoChallenge
-	}
-	if err != nil {
-		return fmt.Errorf("проверка кода анкеты %d: %w", profileID, err)
-	}
-	if attempts >= challengeMaxAttempts {
-		return ErrTooManyAttempts
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE auth_challenges SET attempts = attempts + 1 WHERE id = $1`, id); err != nil {
-		return fmt.Errorf("проверка кода анкеты %d: %w", profileID, err)
-	}
-	// Попытка засчитывается в любом случае, поэтому коммит идёт и на отказе:
-	// иначе счётчик откатывался бы вместе с неудачей и не считал бы ничего.
-	if subtle.ConstantTimeCompare(codeDigest(code), stored) != 1 {
-		if cerr := tx.Commit(ctx); cerr != nil {
-			return fmt.Errorf("проверка кода анкеты %d: %w", profileID, cerr)
-		}
-		return ErrCodeMismatch
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE auth_challenges SET verified_at = now() WHERE id = $1`, id); err != nil {
-		return fmt.Errorf("проверка кода анкеты %d: %w", profileID, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("проверка кода анкеты %d: %w", profileID, err)
-	}
-	return nil
 }
 
 // CompleteNGSLogin превращает доказанную анкету в участника. Идемпотентна:

@@ -301,11 +301,6 @@ type Platform struct {
 	// на пилоте это правда, но до открытия посторонним (Ш9) их надо заполнить.
 	Operator string `json:"operator,omitempty"`
 	Contact  string `json:"contact,omitempty"`
-	// SiteAccount — имя служебного аккаунта НГС (из accounts.db), от которого
-	// уходит код входа личным сообщением. Пусто — берётся первый живой. Нет ни
-	// одного — канал просто недоступен, и вход уходит на запасной путь (код в
-	// поле «о себе»); это штатное состояние, а не авария.
-	SiteAccount string `json:"site_account,omitempty"`
 	// Moderation — автомат модерации (Ш7, пакет platmod).
 	Moderation Moderation `json:"moderation"`
 	// Bus — шина событий (эпик F, пакет platbus).
@@ -832,7 +827,6 @@ func (c *Config) applyPlatformEnv() error {
 	envString(&c.Platform.MediaDir, "LOVEGW_PLATFORM_MEDIA_DIR")
 	envString(&c.Platform.Operator, "LOVEGW_PLATFORM_OPERATOR")
 	envString(&c.Platform.Contact, "LOVEGW_PLATFORM_CONTACT")
-	envString(&c.Platform.SiteAccount, "LOVEGW_PLATFORM_SITE_ACCOUNT")
 	// Приём картинок гасится с хоста по той же причине, что и автомат
 	// модерации: это единственный путь, которым посторонний кладёт файл на наш
 	// диск, и закрыть его надо уметь, не трогая смонтированный конфиг.

@@ -131,7 +131,6 @@
     "media_dir": "data/media",
     "operator": "",
     "contact": "",
-    "site_account": "",
     "moderation": {
       "enabled": false,
       "provider": "yandex",

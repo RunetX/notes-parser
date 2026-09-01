@@ -146,8 +146,6 @@ type Store interface {
 // делать с чужими данными», а здесь — операции над данными ОДНОГО человека, и
 // смешивать их в один список значило бы потерять это различие.
 type Auth interface {
-	StartTalksChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
-	VerifyTalksCode(ctx context.Context, profileID int64, code string) error
 	StartProfileChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
 	VerifyProfileChallenge(ctx context.Context, profileID int64, code, aboutMe string) error
 	CompleteNGSLogin(ctx context.Context, prof platform.MirroredAuthor, gender platform.Gender) (int64, error)
@@ -169,14 +167,11 @@ type Auth interface {
 // пакет web о существовании НГС знать не обязан, а перевод стоит десяти строк в
 // сборке команды (там же, где живёт клиент сайта).
 type SiteProfile struct {
-	Nick string
-	// PassportID — сквозной номер аккаунта НГС. Личные сообщения адресуются им,
-	// а не номером анкеты, поэтому без него канал «код в личку» недоступен.
-	PassportID int64
-	AvatarURL  string // на hsmedia.ru — наружу не отдаём, только для сверки
-	AboutMe    string
-	Gender     platform.Gender
-	Blocked    bool
+	Nick      string
+	AvatarURL string // на hsmedia.ru — наружу не отдаём, только для сверки
+	AboutMe   string
+	Gender    platform.Gender
+	Blocked   bool
 }
 
 // ErrNoProfile — анкеты с таким номером сайт не отдал.
@@ -191,28 +186,6 @@ type Site interface {
 	// способностью: это то же самое анонимное чтение чужого сайта, и живут они
 	// или умирают вместе.
 	Avatar(ctx context.Context, url string) ([]byte, error)
-}
-
-// SiteMessenger — необязательная способность клиента НГС: отправить код личным
-// сообщением от служебного аккаунта. Type-assertion, а не отдельный параметр
-// конструктора, — тот же приём, что у dmbot.SiteProfile: способности нет,
-// значит нет и канала, и страница входа сразу предлагает запасной путь вместо
-// формы, которая не сработает.
-//
-// Отдельным интерфейсом, а не методом Site, потому что это ЗАПИСЬ: чтение
-// анкеты анонимно и безобидно, а отправка сообщения идёт под живой сессией
-// служебного аккаунта и видна получателю.
-type SiteMessenger interface {
-	SendCode(ctx context.Context, passportID int64, code string) error
-}
-
-// messenger — доступен ли канал «код в личку».
-func (s *Server) messenger() (SiteMessenger, bool) {
-	if s.site == nil {
-		return nil, false
-	}
-	m, ok := s.site.(SiteMessenger)
-	return m, ok
 }
 
 // Server — HTTP-морда площадки.

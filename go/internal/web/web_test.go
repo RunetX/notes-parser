@@ -483,104 +483,28 @@ func TestInviteLetsIn(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------- вход в личку
-
-// Основной канал: код уходит личным сообщением на НГС, человек переписывает его
-// в форму. Код при этом НЕ показывается на экране — в этом вся разница с
-// запасным путём.
-func TestLoginByTalksCode(t *testing.T) {
-	auth := newFakeAuth()
-	var sent []string
-	site := talksSite{&fakeSite{prof: SiteProfile{Nick: testNick, PassportID: 280703879}, sent: &sent}}
-	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
-
-	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("шаг «это вы?»: код %d", w.Code)
-	}
-	if len(sent) != 1 {
-		t.Fatalf("сообщений отправлено %d, ожидалось 1", len(sent))
-	}
-	code := auth.talks[testProfileID]
-	if code == "" || !strings.Contains(sent[0], code) {
-		t.Fatalf("в сообщение попал не тот код: %q", sent[0])
-	}
-	if !strings.Contains(sent[0], "280703879:") {
-		t.Errorf("сообщение ушло не на паспорт анкеты: %q", sent[0])
-	}
-	body := w.Body.String()
-	if strings.Contains(body, code) {
-		t.Fatal("код показан на экране — так вход под чужой анкетой стоит одного нажатия")
-	}
-	if !strings.Contains(body, `name="code"`) {
-		t.Fatal("нет поля для ввода кода")
-	}
-
-	jar := cookieOf(w, codeCookie)
-	if jar == nil {
-		t.Fatal("кука проверки не поставлена")
-	}
-	if strings.Contains(jar.Value, code) {
-		t.Fatal("код положили в куку — у канала лички его знает только получатель")
-	}
-
-	// Не тот код — не пускаем.
-	r := post(t, "/login/check", url.Values{"code": {"T3H-ZZZZ-ZZZZ"}})
-	r.AddCookie(jar)
-	if got := do(h, r).Code; got != http.StatusUnauthorized {
-		t.Fatalf("чужой код: код %d, ожидался 401", got)
-	}
-
-	// Тот самый — пускаем.
-	r = post(t, "/login/check", url.Values{"code": {strings.ToLower(code)}})
-	r.AddCookie(jar)
-	w = do(h, r)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/consent" {
-		t.Fatalf("код %d, Location %q", w.Code, w.Header().Get("Location"))
-	}
-	if cookieOf(w, sessCookie) == nil {
-		t.Fatal("сессия не выдана")
-	}
-}
-
-// Служебный аккаунт мёртв или сообщение не ушло — вход обязан уйти на запасной
-// путь, а не встать. Человек в этом не виноват и починить это не может.
-func TestFailedTalksSendFallsBackToProfileField(t *testing.T) {
-	auth := newFakeAuth()
-	var sent []string
-	site := talksSite{&fakeSite{
-		prof:    SiteProfile{Nick: testNick, PassportID: 280703879},
-		sent:    &sent,
-		sendErr: errors.New("НГС не принял сообщение"),
-	}}
-	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
-
-	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("код %d", w.Code)
-	}
-	code := auth.codes[testProfileID]
-	if code == "" || !strings.Contains(w.Body.String(), code) {
-		t.Fatal("запасной путь не показал код для поля «о себе»")
-	}
-	if jar := cookieOf(w, codeCookie); jar == nil || !strings.Contains(jar.Value, code) {
-		t.Fatal("у запасного пути код обязан быть в куке: проверка там двусторонняя")
-	}
-}
+// ---------------------------------------------------------------- вход по коду
 
 // Код, показанный на экране, нельзя принимать введённым обратно: иначе войти под
 // чужой анкетой можно в одно нажатие — запросил код на чужой номер, увидел его у
-// себя, переписал в поле. Каналы разведены именно поэтому, и тест стережёт это.
+// себя, переписал в поле.
+//
+// С 01.09.2026, когда канал лички убран и показанный код остался единственным,
+// это главный инвариант входа: держит его отсутствие поля ввода на экране, а
+// тест стережёт, чтобы такое поле не завелось обратно вместе с приёмом кода.
 func TestShownCodeIsNotAcceptedBackAsInput(t *testing.T) {
 	auth := newFakeAuth()
-	site := &fakeSite{prof: SiteProfile{Nick: testNick}} // слать нечем — запасной путь
+	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
 	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
 
 	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
 	code := auth.codes[testProfileID]
 	jar := cookieOf(w, codeCookie)
 	if code == "" || jar == nil {
-		t.Fatal("запасной путь не начался")
+		t.Fatal("выдача кода не началась")
+	}
+	if body := w.Body.String(); strings.Contains(body, `name="code"`) {
+		t.Fatal("на экране проверки завелось поле ввода кода — показанный код принимать вводом нельзя")
 	}
 	// В анкете кода нет, зато он введён в форму — это не должно помочь.
 	r := post(t, "/login/check", url.Values{"code": {code}})
