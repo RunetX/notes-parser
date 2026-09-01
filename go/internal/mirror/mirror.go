@@ -110,6 +110,25 @@ type ThreadStarter interface {
 	StartThread(ctx context.Context, n store.Note, postMsgID string) (threadID string, err error)
 }
 
+// EchoFilter — приёмник, умеющий узнать в записи сайта СВОЮ копию, ушедшую туда
+// из Зазеркалья (площадка, пакет platsink). Способность необязательная: без
+// площадки уносить на НГС нечего, и вопрос не встаёт вовсе.
+//
+// Спрашивается ДО сохранения в lovegw.db, и это единственное место, где такой
+// вопрос имеет смысл задать один раз: дубль у ушедшей строки не один, а три —
+// вторая строка в треде площадки, пост в Telegram и пост в MAX, — и все три
+// растут из одной записи зеркала. Не попав сюда, она не попадёт уже никуда,
+// включая сверку площадки: та сравнивает SQLite с Postgres, и обе стороны
+// недосчитаются одного и того же.
+//
+// Ответ «да» зеркало ЗАПОМИНАЕТ (store.MarkNGSEcho) и второй раз не спрашивает:
+// страница треда отдаёт последние тридцать реплик, и наша провисит среди них
+// часами.
+type EchoFilter interface {
+	OwnEcho(ctx context.Context, kind, siteID, noteID, authorID, body string,
+		at time.Time) (bool, error)
+}
+
 type Mirror struct {
 	st           *store.Store
 	site         SiteClient
@@ -122,6 +141,7 @@ type Mirror struct {
 	subNotify    map[string]SubNotify
 	onNewNote    func(ctx context.Context, n love.Note)
 	mobileIDs    func(ctx context.Context) ([]string, error)
+	echo         EchoFilter
 
 	// unnamedProbe — отпечаток ленты (названные id плюс число безымянных), с
 	// которым мобильную версию уже спрашивали. Пока лента та же, спрашивать
@@ -170,10 +190,17 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 	if log == nil {
 		log = slog.Default()
 	}
+	var echo EchoFilter
 	for _, sink := range sinks {
 		if cfg.SubNotify[sink.Name()] == nil {
 			log.Warn("подписчиков этого мессенджера уведомлять некому: нет ЛС-бота",
 				"sink", sink.Name())
+		}
+		// Приёмник тут ровно один — площадка: она единственная, кто вообще
+		// что-то отправляет на НГС от нашего имени. Берём первый и не ищем
+		// дальше: два разных мнения о том, чьи это слова, помирить нечем.
+		if e, ok := sink.(EchoFilter); ok && echo == nil {
+			echo = e
 		}
 	}
 	return &Mirror{
@@ -188,6 +215,7 @@ func New(st *store.Store, site SiteClient, sinks []Sink, cfg Config, log *slog.L
 		subNotify:    cfg.SubNotify,
 		onNewNote:    cfg.OnNewNote,
 		mobileIDs:    cfg.MobileFeedIDs,
+		echo:         echo,
 		rescanEvery:  rescanInterval,
 		retryPause:   workerRetryPause,
 		events:       make(chan string, 16),
@@ -271,6 +299,17 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 		notes = notes[:m.notesLimit]
 	}
 
+	// Свои заметки, уехавшие на НГС, зеркало обратно не несёт: они уже лежат
+	// на площадке нативной строкой и уже ушли в каналы через platout.
+	//
+	// Дописываются они в известные ПОСЛЕ проверки холодного старта, и порядок
+	// тут не вкусовой: «база пуста» решается по len(known), а зеркало с одним
+	// лишь опознанным эхом — это как раз пустая база. Слей мы списки раньше,
+	// первый обход счёл бы её обжитой и вывалил в канал всю ленту.
+	if err := m.st.NGSEchoNotes(ctx, known); err != nil {
+		m.log.Error("чтение опознанного эха заметок", "err", err)
+		return false // без этого списка обход завёл бы дубли — лучше следующий такт
+	}
 	// Лента отдаёт новые сверху — обрабатываем в обратном порядке,
 	// чтобы старые заметки попадали в канал первыми.
 	var fresh []love.Note
@@ -279,6 +318,7 @@ func (m *Mirror) feedCycle(ctx context.Context, seed bool) bool {
 			fresh = append(fresh, notes[i])
 		}
 	}
+	fresh = m.dropNoteEcho(ctx, fresh, known)
 	// Догоняем не быстрее notes_limit заметок за обход: после долгого простоя
 	// вся лента разом не улетит в канал, хвост уйдёт следующими циклами.
 	if !seed && m.notesLimit > 0 && len(fresh) > m.notesLimit {
@@ -751,6 +791,14 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note, st *noteState) 
 		m.log.Error("чтение известных комментариев", "note", n.ID, "err", err)
 		return false
 	}
+	// Свои реплики, уехавшие на НГС, числим ИЗВЕСТНЫМИ, а не выбрасываем из
+	// страницы: расхождение с серверным счётчиком треда зеркало лечит добором
+	// страниц (backfillGap), и выброшенная реплика стоила бы до девяти лишних
+	// запросов к сайту на каждую нашу отправку.
+	if err := m.st.NGSEchoComments(ctx, n.ID, known); err != nil {
+		m.log.Error("чтение опознанного эха реплик", "note", n.ID, "err", err)
+		return false
+	}
 	// Второй рубеж к счётчику в парсере: тред, из которого мы уже зеркалили
 	// реплики, сам не пустеет. Ноль на такой заметке — источник замолчал
 	// (перенос комментариев на клиентский рендер выглядит ровно так: 200,
@@ -769,6 +817,11 @@ func (m *Mirror) pollComments(ctx context.Context, n store.Note, st *noteState) 
 	}
 	m.applyNoteHeader(ctx, n, page.Note)
 
+	if err := m.markCommentEcho(ctx, n, comments, known); err != nil {
+		m.log.Warn("такт треда отложен: своё это эхо или нет, неизвестно",
+			"note", n.ID, "err", err)
+		return false
+	}
 	fresh := m.saveComments(ctx, n.ID, comments, known)
 	// Дыра: страница отдаёт последнее окно limit~30, и если источник молчал
 	// дольше, чем тред уехал вперёд, пропущенное не увидит уже никто

@@ -1,0 +1,50 @@
+package platsink
+
+// Опознание СВОЕГО эха: записи НГС, которая на самом деле наша, ушедшая туда из
+// Зазеркалья (пакет platngs).
+//
+// Спрашивает зеркало, прежде чем принять запись, и отвечает здесь именно
+// площадка, потому что знает об этом одна она: очередь выноса ngs_outbox лежит в
+// Postgres, а у зеркала нет ни строчки о том, что мы куда-то что-то отправляли.
+//
+// Гасится эхо ОДНИМ решением на три дубля сразу — на площадке, в Telegram и в
+// MAX, — потому что стои́т это решение раньше их всех: не попав в lovegw.db,
+// запись не попадёт уже никуда.
+
+import (
+	"context"
+	"strconv"
+	"time"
+)
+
+// OwnEcho — не наша ли это копия. Ответ «да» означает: запись на сайте
+// существует, но нести её никуда не надо.
+//
+// Отдельный срок, а не opBudget: тут не приём, а вопрос, и отказ по нему стоит
+// дубля в треде. Пусть лучше зеркало подождёт лишнюю секунду — тактов у него
+// полминуты.
+func (s *Sink) OwnEcho(ctx context.Context, kind, siteID, noteID, authorID, body string,
+	at time.Time) (bool, error) {
+	author := profileID(authorID)
+	if author == 0 {
+		// Аноним НГС: анонимные заметки мы туда не уносим вовсе (см.
+		// platform.enqueueNGS), значит и опознавать нечего.
+		return false, nil
+	}
+	var note int64
+	if noteID != "" {
+		n, err := siteID64(noteID)
+		if err != nil {
+			return false, nil
+		}
+		note = n
+	}
+	ctx, cancel := context.WithTimeout(ctx, opBudget)
+	defer cancel()
+	return s.p.ClaimNGSEcho(ctx, kind, note, author, body, siteID, at)
+}
+
+// siteID64 — id записи сайта числом. Отдельно от siteID(): тот возвращает
+// типизированную ошибку приёма, а здесь нечисловой id это не сбой, а «спросили
+// не про то».
+func siteID64(s string) (int64, error) { return strconv.ParseInt(s, 10, 64) }

@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"lovegw/internal/sitetext"
 )
 
 // Состояния строки очереди.
@@ -282,4 +284,118 @@ func (p *Platform) NGSOutboxStats(ctx context.Context) (NGSOutboxStats, error) {
 		s.Oldest = *oldest
 	}
 	return s, nil
+}
+
+// NGSEchoWindow — сколько строка очереди вправе узнавать себя в записи сайта.
+//
+// Сутки. Попытки кончаются за полторы минуты, и текст, всплывший на НГС днём
+// позже, нашей копией уже не является: либо человек написал его там руками,
+// либо это чужая цитата. Окно тут предохранитель, а не мерка, — главную защиту
+// даёт ngs_id: одну ушедшую строку нельзя опознать дважды.
+const NGSEchoWindow = 24 * time.Hour
+
+// ClaimNGSEcho — узнать в записи НГС свою копию, ушедшую туда из Зазеркалья, и
+// закрепить за ней id сайта.
+//
+// Зовёт это ЗЕРКАЛО, прежде чем принять запись, и по ответу «да» не несёт её
+// никуда: ни на площадку (там она уже лежит нативной строкой), ни в каналы
+// мессенджеров (туда её отнёс platout). Второго прохода не будет — id
+// запоминается на стороне зеркала.
+//
+// Опознаём по ТРОЙКЕ «автор, место, отпечаток текста», а не по одному тексту:
+// побайтового совпадения не бывает (сайт схлопывает пробелы, делает nl2br и
+// подменяет эмодзи картинками), зато совпадения всех трёх у чужой реплики не
+// бывает тем более. Поверх стоит предохранитель, который и делает ошибку
+// неопасной: у каждой строки очереди ngs_id заполняется РОВНО ОДИН РАЗ, то есть
+// погасить эха больше, чем мы отправили, нельзя ни при какой сверке.
+//
+// Кандидатом считается строка, по которой была ХОТЯ БЫ ОДНА попытка, а не только
+// удачная: сайт отвечает 500 и на принятый комментарий (замер 17.08.2026), и
+// строка в состоянии failed сплошь и рядом лежит на НГС. Возьми мы одни лишь
+// sent — именно эти реплики и вернулись бы дублем.
+//
+// noteID ноль означает заметку: у неё места на сайте нет, пока она туда не
+// уехала.
+func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, authorID int64,
+	body, ngsID string, at time.Time) (bool, error) {
+	if authorID == 0 || ngsID == "" || body == "" {
+		return false, nil
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	// Уже закреплённая за этой записью строка узнаёт её СНОВА, и это не
+	// мелочь: зеркало помнит свой ответ в SQLite, а не записавшаяся отметка
+	// иначе означала бы дубль на следующем такте. Опознание идемпотентно по id
+	// записи — значит память зеркала остаётся оптимизацией.
+	var seen int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM ngs_outbox WHERE kind = $1 AND author_id = $2 AND ngs_id = $3`,
+		kind, authorID, ngsID).Scan(&seen); err != nil {
+		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+	}
+	if seen > 0 {
+		return true, nil
+	}
+
+	var (
+		rows pgx.Rows
+		from = at.Add(-NGSEchoWindow)
+	)
+	switch kind {
+	case NGSNote:
+		rows, err = tx.Query(ctx, `
+			SELECT o.id, n.body
+			  FROM ngs_outbox o JOIN notes n ON n.id = o.object_id
+			 WHERE o.kind = $1 AND o.author_id = $2
+			   AND o.attempts > 0 AND o.ngs_id = ''
+			   AND o.created_at > $3
+			 ORDER BY o.created_at
+			   FOR UPDATE OF o`, NGSNote, authorID, from)
+	case NGSComment:
+		rows, err = tx.Query(ctx, `
+			SELECT o.id, c.body
+			  FROM ngs_outbox o JOIN comments c ON c.id = o.object_id
+			 WHERE o.kind = $1 AND o.author_id = $2 AND c.note_id = $3
+			   AND o.attempts > 0 AND o.ngs_id = ''
+			   AND o.created_at > $4
+			 ORDER BY o.created_at
+			   FOR UPDATE OF o`, NGSComment, authorID, noteID, from)
+	default:
+		return false, fmt.Errorf("опознание эха: неизвестный вид %q", kind)
+	}
+	if err != nil {
+		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+	}
+	var claim int64
+	for rows.Next() {
+		var (
+			id   int64
+			sent string
+		)
+		if err := rows.Scan(&id, &sent); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+		}
+		if claim == 0 && sitetext.SameText(sent, body) {
+			claim = id
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+	}
+	if claim == 0 {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ngs_outbox SET ngs_id = $2 WHERE id = $1`, claim, ngsID); err != nil {
+		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+	}
+	return true, nil
 }
