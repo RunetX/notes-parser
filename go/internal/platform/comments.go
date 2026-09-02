@@ -769,7 +769,7 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	// проверки: «опубликовано, но в очередь не попало» существовать не должно.
 	// Молчит она чаще, чем срабатывает: галочка выключена по умолчанию, а под
 	// нативной заметкой реплике на сайте и вовсе некуда лечь.
-	if err := enqueueNGS(ctx, tx, NGSComment, id, in.AuthorID, in.NoteID, false); err != nil {
+	if err := enqueueNGS(ctx, tx, NGSComment, id, in.AuthorID, in.NoteID, false, stage); err != nil {
 		return 0, err
 	}
 	// Факт — той же транзакцией, что и сама реплика: «ответили, а повода нет»

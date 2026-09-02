@@ -238,3 +238,84 @@ func TestУнесённоеНаНГССчитаетсяПачкой(t *testing.T
 		t.Error("реплика сошла за заметку с тем же номером")
 	}
 }
+
+// ПЕСОЧНИЦА НА НГС НЕ УХОДИТ, и проверяется здесь именно ДВОЙНИК: 01.09.2026 на
+// love.ngs.ru заметкой 313147 вышло его служебное тело («о заметке говорят
+// жители площадки, их реплики пишет машина») под именем администратора. Сама
+// заметка при этом уносится и должна уноситься — приложение к ней нет.
+func TestПесочницаИДвойникНеУносятся(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustNGSAdmin(t, p, 1493279, "Рио")
+	if err := p.SetNGSSend(ctx, admin, true); err != nil {
+		t.Fatalf("галочка: %v", err)
+	}
+
+	if _, err := p.CreateNote(ctx, NewNote{AuthorID: admin, Body: "о чём поговорим", Stage: true}); err != nil {
+		t.Fatalf("песочница: %v", err)
+	}
+	if n := outboxCount(t, p); n != 0 {
+		t.Fatalf("песочница встала в очередь на НГС: строк %d", n)
+	}
+	// Вторая заметка подряд упёрлась бы в потолок частоты, поэтому сдвигаем время.
+	if _, err := p.pool.Exec(ctx,
+		`UPDATE notes SET published_at = published_at - interval '1 hour'`); err != nil {
+		t.Fatal(err)
+	}
+
+	base, err := p.CreateNote(ctx, NewNote{AuthorID: admin, Body: "живая заметка"})
+	if err != nil {
+		t.Fatalf("заметка: %v", err)
+	}
+	if n := outboxCount(t, p); n != 1 {
+		t.Fatalf("обычная заметка не встала в очередь: строк %d", n)
+	}
+	twin, err := p.CreateSynthThreadAsAdmin(ctx, Viewer{UserID: admin, Role: RoleAdmin}, base)
+	if err != nil {
+		t.Fatalf("двойник: %v", err)
+	}
+	if n := outboxCount(t, p); n != 1 {
+		t.Errorf("двойник %d встал в очередь на НГС: строк %d", twin, n)
+	}
+}
+
+// Реплика в ЗЕРКАЛЬНОЙ песочнице — случай отдельный, и соседним правилом он не
+// закрывается: у такой заметки на НГС есть настоящий тред, то есть машинной
+// сцене было бы куда лечь. (У нативной песочницы реплику не уносит правило «под
+// нативной заметкой некуда», и принимать одно за другое нельзя.)
+func TestРепликаВЗеркальнойПесочницеНеУносится(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustNGSAdmin(t, p, 1493279, "Рио")
+	if err := p.SetNGSSend(ctx, admin, true); err != nil {
+		t.Fatalf("галочка: %v", err)
+	}
+	const note = 312811
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: note, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная заметка", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatalf("приём заметки: %v", err)
+	}
+	if err := p.SetNoteStageAsAdmin(ctx, Viewer{UserID: admin, Role: RoleAdmin}, note, true, "сцена"); err != nil {
+		t.Fatalf("перевод в песочницу: %v", err)
+	}
+
+	if _, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: admin, Body: "реплика"}); err != nil {
+		t.Fatalf("реплика: %v", err)
+	}
+	if n := outboxCount(t, p); n != 0 {
+		t.Errorf("реплика из песочницы встала в очередь на НГС: строк %d", n)
+	}
+}
+
+// mustNGSAdmin — участник полосы НГС с правами администратора: песочницу и
+// двойника заводит только он, а галочка отправки бывает только у участника.
+func mustNGSAdmin(t *testing.T, p *Platform, id int64, nick string) int64 {
+	t.Helper()
+	id = mustNGSMember(t, p, id, nick)
+	if err := p.SetRole(context.Background(), Viewer{UserID: id, Role: RoleAdmin}, id, RoleAdmin); err != nil {
+		t.Fatalf("права администратора у %d: %v", id, err)
+	}
+	return id
+}
