@@ -248,9 +248,33 @@ func fillNGSJob(ctx context.Context, q querier, j *NGSJob) error {
 // остывший тред.
 func (p *Platform) FinishNGSJob(ctx context.Context, id int64, ngsID string, cause error) error {
 	if cause == nil {
+		// СТРОКА ПЕРЕРИСОВЫВАЕТСЯ, и отметка тут та же, что у переезда ветки.
+		//
+		// У реплики, ушедшей на НГС, меняется метка происхождения: «написано
+		// здесь» становится «написано здесь, копия ушла». Меняется она через
+		// полминуты после публикации — с таким тактом ходит очередь
+		// выноса, — то есть ровно тогда, когда автор ещё смотрит на свою
+		// реплику; без отметки он видит прежний значок до обновления страницы
+		// (жалоба владельца 02.09.2026).
+		//
+		// Канал для этого уже есть и второго не заводится: moved_at и заголовок
+		// X-Fresh-Moved несут строку ГОТОВОЙ разметкой, а страница ставит её
+		// вместо прежней. Довод тот же, по которому переезд не шлют парой чисел:
+		// второго способа превратить наш текст в HTML нет.
+		//
+		// Одним запросом с выносом, а не соседним: «ушло, но страница об этом не
+		// узнает» — то же самое состояние, которого не должно существовать, что
+		// и «опубликовано, но в очередь модерации не попало».
 		_, err := p.pool.Exec(ctx, `
-			UPDATE ngs_outbox SET state = $2, sent_at = now(), ngs_id = $3, last_error = ''
-			 WHERE id = $1`, id, NGSSent, ngsID)
+			WITH done AS (
+				UPDATE ngs_outbox SET state = $2, sent_at = now(), ngs_id = $3, last_error = ''
+				 WHERE id = $1
+			 RETURNING kind, object_id
+			)
+			UPDATE comments c SET moved_at = now()
+			  FROM done
+			 WHERE done.kind = $4 AND c.id = done.object_id`,
+			id, NGSSent, ngsID, NGSComment)
 		return err
 	}
 	_, err := p.pool.Exec(ctx, `

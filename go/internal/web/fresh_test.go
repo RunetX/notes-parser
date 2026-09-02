@@ -473,3 +473,38 @@ func TestLiveScriptKeepsReadingPlaceOnMove(t *testing.T) {
 		}
 	}
 }
+
+// МЕТКА «УШЛО НА НГС» ДОЕЗЖАЕТ ЖИВЫМ ДОБОРОМ.
+//
+// Написан по жалобе владельца 03.09.2026: значок у своей реплики меняется через
+// секунды после публикации (очередь выноса ходит раз в пятнадцать секунд), а
+// увидеть смену можно было только обновлением страницы.
+//
+// Проверяется здесь ровно то, что разошлось: путь добора не спрашивал про
+// унесённое вовсе, поэтому строка приезжала со значком «написано здесь» и
+// спорила с той же строкой после F5. Тест падает на коде до этой правки.
+func TestFreshCarriesTheAwayMark(t *testing.T) {
+	sent := freshComment(9, 2, 2)
+	sent.ID = 100000000009 // своя полоса: чужую реплику на НГС мы не уносим
+	st := &fakeStore{
+		note:    sampleNote(),
+		fresh:   []platform.CommentView{sent},
+		ngsSent: map[string]bool{platform.NGSComment + ":100000000009": true},
+	}
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0,0")).Body.String()
+	if !strings.Contains(body, "копия ушла на НГС") {
+		t.Errorf("добранная реплика приехала без метки выноса:\n%s", body)
+	}
+}
+
+// А не унесённая — со своей обычной меткой: третье состояние не должно
+// доставаться каждому только оттого, что путь научился про него спрашивать.
+func TestFreshKeepsPlainMarkWhenNotSent(t *testing.T) {
+	own := freshComment(9, 2, 2)
+	own.ID = 100000000009
+	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{own}}
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0,0")).Body.String()
+	if strings.Contains(body, "копия ушла на НГС") {
+		t.Errorf("метка выноса встала у реплики, которая никуда не уезжала:\n%s", body)
+	}
+}

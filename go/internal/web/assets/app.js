@@ -466,6 +466,16 @@ smilePanel(document);
   // Перестановка одной строки. Возвращает высоту, на которой она стояла (null —
   // её не было видно, и место чтения не про неё).
   var relocate = function (li, old) {
+    // ПЕРЕРИСОВКА, А НЕ ПЕРЕЕЗД. Строка приезжает тем же каналом и тогда, когда
+    // место её не менялось: у реплики, ушедшей на НГС, меняется одна метка
+    // происхождения. Тогда она просто встаёт на своё место, без рамки и без
+    // возни с прокруткой, — рамка отвечает на вопрос «почему вокруг всё
+    // поменялось», а вокруг ничего не поменялось, и ответ был бы неправдой.
+    if (li.getAttribute('data-parent') === old.getAttribute('data-parent') &&
+        li.getAttribute('data-depth') === old.getAttribute('data-depth')) {
+      old.replaceWith(li);
+      return null;
+    }
     var top = visibleTop(old);
     old.parentNode.removeChild(old);
     placeInTree(li);

@@ -319,3 +319,79 @@ func mustNGSAdmin(t *testing.T, p *Platform, id int64, nick string) int64 {
 	}
 	return id
 }
+
+// УШЛА НА НГС — ЗНАЧИТ ПЕРЕРИСОВАТЬ. У реплики, унесённой на сайт, меняется
+// метка происхождения, и меняется через секунды после публикации: очередь
+// выноса ходит раз в пятнадцать секунд, автор в это время ещё смотрит на свою
+// реплику. Отметка moved_at — тот самый канал, которым до открытой страницы
+// доезжает переезд ветки; без неё смену метки видно только по F5 (жалоба
+// владельца 03.09.2026).
+//
+// Проверяется НА ПУТИ ДАННЫХ: не «умеет ли запрос ставить отметку», а ставит ли
+// её тот единственный вызов, которым служба закрывает удачную отправку.
+func TestУшедшаяРепликаПомечаетсяКПерерисовке(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustNGSMember(t, p, 1493279, "Рио")
+	if err := p.SetNGSSend(ctx, author, true); err != nil {
+		t.Fatalf("галочка: %v", err)
+	}
+	const note = 312811
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: note, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная заметка", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatalf("приём заметки: %v", err)
+	}
+	id, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: author, Body: "своя реплика"})
+	if err != nil {
+		t.Fatalf("реплика: %v", err)
+	}
+
+	jobs, err := p.NextNGSJobs(ctx, 5)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("выдача: %v, строк %d", err, len(jobs))
+	}
+	if moved := movedAt(t, p, id); moved != nil {
+		t.Fatalf("отметка встала до отправки: %v", moved)
+	}
+	if err := p.FinishNGSJob(ctx, jobs[0].ID, "63258967", nil); err != nil {
+		t.Fatalf("запись исхода: %v", err)
+	}
+	if movedAt(t, p, id) == nil {
+		t.Error("реплика ушла на НГС, а к перерисовке не помечена — метку увидят только по F5")
+	}
+
+	// А неудачная отправка страницу не трогает: метка не сменилась, и
+	// перерисовывать нечего. Реплика ВТОРОГО человека, а не та же самая: у
+	// площадки свой потолок частоты — одна реплика в десять секунд на автора.
+	second := mustNGSMember(t, p, 1372959, "Полынь-Трава")
+	if err := p.SetNGSSend(ctx, second, true); err != nil {
+		t.Fatalf("галочка второму: %v", err)
+	}
+	other, err := p.CreateComment(ctx, NewComment{NoteID: note, AuthorID: second, Body: "вторая реплика"})
+	if err != nil {
+		t.Fatalf("вторая реплика: %v", err)
+	}
+	jobs, err = p.NextNGSJobs(ctx, 5)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("вторая выдача: %v, строк %d", err, len(jobs))
+	}
+	if err := p.FinishNGSJob(ctx, jobs[0].ID, "", errors.New("сайт молчит")); err != nil {
+		t.Fatalf("запись неудачи: %v", err)
+	}
+	if moved := movedAt(t, p, other); moved != nil {
+		t.Errorf("неудачная отправка пометила реплику к перерисовке: %v", moved)
+	}
+}
+
+// movedAt — отметка перерисовки у реплики; nil — её нет.
+func movedAt(t *testing.T, p *Platform, id int64) *time.Time {
+	t.Helper()
+	var at *time.Time
+	if err := p.pool.QueryRow(context.Background(),
+		`SELECT moved_at FROM comments WHERE id = $1`, id).Scan(&at); err != nil {
+		t.Fatalf("чтение moved_at: %v", err)
+	}
+	return at
+}

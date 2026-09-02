@@ -131,6 +131,25 @@ func (s *Server) handleFresh(w http.ResponseWriter, r *http.Request) {
 		comments...), moved...)
 	p.Book = newAddressBook(note, rows)
 
+	// УНЕСЁННОЕ НА НГС — по добранным строкам. Спрашивается здесь, а не только
+	// на полной странице, потому что смена этой метки и есть один из поводов
+	// добора: реплика уезжает на сайт через секунды после публикации, и
+	// перерисовать её надо тем же путём, что переезд ветки. Без этой строки
+	// добранная реплика приходила бы со значком «написано здесь» и спорила бы с
+	// той же репликой после обновления страницы.
+	if len(rows) > 0 {
+		ids := make([]int64, 0, len(rows))
+		for _, c := range rows {
+			ids = append(ids, c.ID)
+		}
+		if sent, err := s.st.NGSSentObjects(ctx, platform.NGSComment, ids); err != nil {
+			// Отказ гасит метку, а не добор: реплика важнее значка.
+			s.log.Warn("унесённое на НГС", "заметка", id, "err", err)
+		} else {
+			p.NGSSent = sent
+		}
+	}
+
 	var buf bytes.Buffer
 	for _, c := range rows {
 		if err := s.renderPart(&buf, "comment", commentItem(p, c)); err != nil {
