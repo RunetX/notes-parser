@@ -56,6 +56,10 @@ type mePage struct {
 	// следующая запись уезжает.
 	NGSStuck   int
 	NGSStuckAt time.Time
+	// NGSPending — сколько заметок ещё в пути на сайт. У человека с галочкой
+	// заметка не заводится здесь вовсе, и полторы минуты между нажатием и
+	// появлением в ленте иначе выглядят как пропажа текста.
+	NGSPending int
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +121,7 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		ngsSend    bool
 		ngsStuck   int
 		ngsStuckAt time.Time
+		ngsPending int
 	)
 	if s.wr != nil && platform.IsNGS(u.ID) {
 		if on, err := s.wr.NGSSendOn(r.Context(), u.ID); err == nil {
@@ -131,6 +136,11 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 				ngsStuck, ngsStuckAt = n, since
 			} else {
 				s.log.Warn("застрявшее на НГС не прочитано", "user", u.ID, "err", err)
+			}
+			if n, err := s.wr.NGSDraftsPending(r.Context(), u.ID); err == nil {
+				ngsPending = n
+			} else {
+				s.log.Warn("заметки в пути не прочитаны", "user", u.ID, "err", err)
 			}
 		}
 	}
@@ -151,6 +161,7 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		NGSSendable: platform.IsNGS(u.ID) && u.Kind == platform.KindMember,
 		NGSStuck:    ngsStuck,
 		NGSStuckAt:  ngsStuckAt,
+		NGSPending:  ngsPending,
 	})
 }
 

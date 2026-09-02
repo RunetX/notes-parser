@@ -88,8 +88,14 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-// pass — один проход по очереди.
+// pass — один проход по очередям. Их ДВЕ и они разной природы: черновики —
+// заметки, которых на площадке ещё нет вовсе (публикуются на сайте вместо неё),
+// а строки outbox — копии уже опубликованного здесь. Черновики идут первыми:
+// человек ждёт появления СВОЕЙ заметки, а копия чужого текста подождёт полминуты.
 func (s *Service) pass(ctx context.Context) error {
+	if err := s.drafts(ctx); err != nil {
+		return err
+	}
 	jobs, err := s.p.NextNGSJobs(ctx, s.cfg.Batch)
 	if err != nil {
 		return err
@@ -101,6 +107,96 @@ func (s *Service) pass(ctx context.Context) error {
 		s.one(ctx, j)
 	}
 	return nil
+}
+
+// drafts — заметки, которые публикуются НА САЙТЕ вместо площадки.
+//
+// Сюда они попадают, когда у автора стоит галочка «Отправлять мои записи на
+// НГС»: своей строки в notes у такой заметки нет, а обратно её принесёт зеркало
+// обычным обходом ленты — со своим тредом и своей дорогой в каналы.
+func (s *Service) drafts(ctx context.Context) error {
+	list, err := s.p.NextNGSDrafts(ctx, s.cfg.Batch)
+	if err != nil {
+		return err
+	}
+	for _, d := range list {
+		if ctx.Err() != nil {
+			return nil
+		}
+		s.draft(ctx, d)
+	}
+	return nil
+}
+
+// draft уносит одну заметку. Не вышло — публикуем ЗДЕСЬ: текст человека не
+// пропадает ни при каком отказе чужого сайта, и это главное свойство затеи.
+func (s *Service) draft(ctx context.Context, d platform.NGSDraft) {
+	cookies, ok := s.draftCookies(ctx, d)
+	if !ok {
+		return
+	}
+	// Тот же приведённый вид, что у амвона и утренней заметки: типографика
+	// выдаёт машину вернее содержания, а сайт на неё отказом не отвечает — он
+	// просто печатает её в нашем тексте.
+	err := s.site.PostNote(ctx, cookies, sitetext.Normalize(d.Body), d.Anonymous)
+	if err == nil {
+		if serr := s.p.SentNGSDraft(ctx, d.ID); serr != nil {
+			s.log.Error("исход заметки на НГС", "черновик", d.ID, "err", serr)
+			return
+		}
+		s.log.Info("заметка отправлена на НГС", "черновик", d.ID, "автор", d.AuthorID,
+			"анонимно", d.Anonymous)
+		return
+	}
+	// Сайт отвечает 500 и на ПРИНЯТУЮ заметку (замер 17.08.2026), поэтому
+	// неудача здесь не доказывает, что текста там нет. Отсюда потолок в три
+	// попытки: повторять вечно значит однажды опубликовать заметку дважды.
+	s.log.Warn("заметка на НГС не ушла", "черновик", d.ID, "попытка", d.Attempts, "err", err)
+	if d.Attempts < platform.NGSDraftMaxAttempts {
+		if rerr := s.p.RetryNGSDraft(ctx, d.ID, err); rerr != nil {
+			s.log.Error("исход заметки на НГС", "черновик", d.ID, "err", rerr)
+		}
+		return
+	}
+	s.fallback(ctx, d, "сайт не принял заметку")
+}
+
+// draftCookies — живая сессия автора. Нет её — публикуем здесь СРАЗУ, не тратя
+// попыток: сессия сама не заведётся, а человек ждёт свою заметку.
+func (s *Service) draftCookies(ctx context.Context, d platform.NGSDraft) ([]*http.Cookie, bool) {
+	messenger, userID, err := s.st.SessionForProfile(ctx, strconv.FormatInt(d.AuthorID, 10))
+	if errors.Is(err, store.ErrNotFound) {
+		s.fallback(ctx, d, platform.NGSNoSession)
+		return nil, false
+	}
+	if err != nil {
+		s.log.Error("поиск сессии для заметки", "черновик", d.ID, "err", err)
+		return nil, false
+	}
+	json, valid, err := s.st.SessionCookies(ctx, messenger, userID)
+	if err != nil || !valid {
+		s.fallback(ctx, d, platform.NGSSessionInvalid)
+		return nil, false
+	}
+	cookies, err := love.CookiesFromJSON([]byte(json), time.Now())
+	if err != nil || len(cookies) == 0 {
+		s.fallback(ctx, d, platform.NGSSessionUnread)
+		return nil, false
+	}
+	return cookies, true
+}
+
+// fallback — публикуем заметку здесь. Причина уходит в лог: человеку она видна
+// самой заметкой, вставшей в ленту, а разбирать «почему не на сайте» будет
+// владелец.
+func (s *Service) fallback(ctx context.Context, d platform.NGSDraft, why string) {
+	id, err := s.p.PublishNGSDraftHere(ctx, d.ID)
+	if err != nil {
+		s.log.Error("заметка не опубликована нигде", "черновик", d.ID, "почему", why, "err", err)
+		return
+	}
+	s.log.Info("заметка опубликована на площадке вместо НГС",
+		"черновик", d.ID, "заметка", id, "почему", why)
 }
 
 // one уносит одну публикацию.

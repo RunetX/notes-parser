@@ -52,6 +52,13 @@ type Writer interface {
 	// сессий не имеет вовсе.
 	SetNGSSend(ctx context.Context, userID int64, on bool) error
 	NGSSendOn(ctx context.Context, userID int64) (bool, error)
+	// QueueNGSNote — заметка человека с галочкой публикуется НА НГС вместо
+	// площадки, а сюда её приносит зеркало (platform/ngsdraft.go). Своей строки
+	// у неё здесь нет вовсе, поэтому и номера страница не получает: возвращается
+	// номер ЧЕРНОВИКА, и годится он только для лога.
+	QueueNGSNote(ctx context.Context, in platform.NewNote) (int64, error)
+	// NGSDraftsPending — сколько заметок человека ещё в пути на сайт.
+	NGSDraftsPending(ctx context.Context, userID int64) (int, error)
 	// NGSStuck — сколько записей не ушло из-за сессии сайта и с каких пор. Ноль
 	// значит «сейчас работает». Нужен затем, чтобы галочка не обещала того, чего
 	// не делает: сессия живёт у демона, и морда о ней узнать иначе не может —
@@ -218,6 +225,33 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ЗАМЕТКА ЧЕЛОВЕКА С ГАЛОЧКОЙ ЗДЕСЬ НЕ ЗАВОДИТСЯ ВОВСЕ (решение владельца
+	// 02.09.2026): она публикуется на НГС, а сюда её приносит зеркало — со своим
+	// тредом и своей дорогой в каналы. Прежде такая заметка выходила дважды, и
+	// платой за развод копий был оборванный разговор: ответивший на сайте
+	// отвечал в пустоту.
+	//
+	// ТРИ ИСКЛЮЧЕНИЯ, и все три про то, что на сайте этого не бывает: песочница
+	// (её ведут жители, наружу она не выходит), картинка (love.Client.PostNote
+	// шлёт один текст, а молча ронять приложенный файл значит решить за
+	// человека) и отказ самой галочки. Во всех трёх случаях заметка обычная,
+	// нативная.
+	viaNGS := shot == nil && !stage && s.sendsToNGS(r, u.ID)
+	if viaNGS {
+		if _, err := s.wr.QueueNGSNote(r.Context(), platform.NewNote{
+			AuthorID: u.ID, Anonymous: anon, Body: body,
+		}); err != nil {
+			s.composeProblem(w, r, err, s.newNoteForm(r, body, anon, stage), false, nil)
+			return
+		}
+		s.dropDraft(draft)
+		// Ведём в ЛЕНТУ, а не на заметку: заметки ещё нет, и её адрес станет
+		// известен только когда зеркало принесёт её с сайта. Лента — то место,
+		// где она появится, и человеку сказано, что ждать её около минуты.
+		http.Redirect(w, r, "/?ngs=1", http.StatusSeeOther)
+		return
+	}
+
 	// Stage уходит в ядро КАК ЕСТЬ, без проверки прав здесь: её делает
 	// stageGuard той же транзакцией, что и саму публикацию. Подделанная
 	// страница получит оттуда честный отказ, а не тихо заведённую песочницу.
@@ -235,6 +269,24 @@ func (s *Server) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	s.dropDraft(draft)
 	videoWarm(id, body)
 	http.Redirect(w, r, "/n/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// sendsToNGS — стоит ли у человека галочка «Отправлять мои записи на НГС».
+//
+// Спрашивается ОДНИМ запросом и только на публикации: держать признак в сессии
+// значило бы, что снятая галочка действует до следующего входа. Отказ читается
+// как «не стоит» — заметка тогда публикуется здесь, то есть худшее, что даёт
+// молчащая база, это заметка не на том сайте, а не потерянный текст.
+func (s *Server) sendsToNGS(r *http.Request, userID int64) bool {
+	if s.wr == nil || !platform.IsNGS(userID) {
+		return false
+	}
+	on, err := s.wr.NGSSendOn(r.Context(), userID)
+	if err != nil {
+		s.log.Warn("галочка отправки на НГС не прочитана", "user", userID, "err", err)
+		return false
+	}
+	return on
 }
 
 // composeProblem перерисовывает форму с отказом, не теряя ни набранного текста,

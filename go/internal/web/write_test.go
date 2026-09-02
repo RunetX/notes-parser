@@ -35,8 +35,14 @@ type fakeWriter struct {
 	// ngsStuck — сколько записей застряло из-за сессии сайта, и с каких пор.
 	ngsStuck   map[int64]int
 	ngsStuckAt time.Time
-	nextID  int64
-	fail    error
+	// ngsDraft — заметка, ушедшая на НГС вместо площадки. Ради этого поля
+	// половина тестов формы и заведена: у человека с галочкой своей строки не
+	// появляется вовсе, и проверять надо именно это.
+	ngsDraft    *platform.NewNote
+	ngsPending  map[int64]int
+	ngsQueueErr error
+	nextID      int64
+	fail        error
 	// shot — что дошло до ядра вместе с заметкой; nil означает «картинки не
 	// было». Половина тестов приёма проверяет именно это: перекодировщик не
 	// должен звать ядро там, где файл негоден.
@@ -695,4 +701,16 @@ func (f *fakeWriter) NGSSendOn(_ context.Context, userID int64) (bool, error) {
 // что в него положили: у большинства тестов это ноль, то есть «всё уходит».
 func (f *fakeWriter) NGSStuck(_ context.Context, userID int64) (int, time.Time, error) {
 	return f.ngsStuck[userID], f.ngsStuckAt, nil
+}
+
+func (f *fakeWriter) QueueNGSNote(_ context.Context, in platform.NewNote) (int64, error) {
+	if f.ngsQueueErr != nil {
+		return 0, f.ngsQueueErr
+	}
+	f.ngsDraft = &in
+	return 77, nil
+}
+
+func (f *fakeWriter) NGSDraftsPending(_ context.Context, userID int64) (int, error) {
+	return f.ngsPending[userID], nil
 }

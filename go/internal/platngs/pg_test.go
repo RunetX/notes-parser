@@ -16,6 +16,7 @@ package platngs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -70,6 +71,9 @@ type fakeSite struct {
 	// заведён: отправь мы анонимную заметку открытой, имя человека встало бы
 	// под текстом, который он публиковал скрытно, и починить это было бы нечем.
 	hideMe bool
+	// noteErr — чем отвечает сайт на заметку. Ради этого поля заведён откат:
+	// текст человека не должен пропадать оттого, что чужой сайт лежит.
+	noteErr error
 	// page — что отдаёт страница треда после отправки (вычитывание номера).
 	page []love.Comment
 }
@@ -77,7 +81,7 @@ type fakeSite struct {
 func (f *fakeSite) PostNote(_ context.Context, _ []*http.Cookie, text string, anonymous bool) error {
 	f.text, f.hideMe = text, anonymous
 	f.posts++
-	return nil
+	return f.noteErr
 }
 
 func (f *fakeSite) PostComment(_ context.Context, _ []*http.Cookie, noteID, comAPIID, text string) error {
@@ -326,5 +330,116 @@ func TestАнонимностьЗаметкиДоезжаетДоСайта(t *t
 				t.Errorf("на сайт ушло с анонимностью %v, а заметка %s", e.site.hideMe, c.имя)
 			}
 		})
+	}
+}
+
+// ЧЕРНОВИК УХОДИТ НА САЙТ, А ЗДЕСЬ ЗАМЕТКИ НЕ ПОЯВЛЯЕТСЯ (решение владельца
+// 02.09.2026). Тест на пути данных: смотрим, ЧТО легло в POST и чего НЕ легло в
+// notes, — прежде такая заметка выходила дважды, и весь смысл правки в том, что
+// второй копии больше нет.
+func TestЧерновикУходитНаСайтИЗдесьНеОстаётся(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	author := member(t, e, 1493279, "Рио")
+	if _, err := e.p.QueueNGSNote(ctx, platform.NewNote{
+		AuthorID: author, Anonymous: true, Body: "поедет на сайт"}); err != nil {
+		t.Fatalf("черновик: %v", err)
+	}
+	if err := e.svc.pass(ctx); err != nil {
+		t.Fatalf("проход: %v", err)
+	}
+	if e.site.posts != 1 || e.site.text != "поедет на сайт" {
+		t.Fatalf("на сайт ушло %d раз, текст %q", e.site.posts, e.site.text)
+	}
+	if !e.site.hideMe {
+		t.Error("анонимность не доехала до сайта")
+	}
+	var notes int
+	if err := e.p.Pool().QueryRow(ctx, `SELECT count(*) FROM notes`).Scan(&notes); err != nil {
+		t.Fatal(err)
+	}
+	if notes != 0 {
+		t.Errorf("заметка завелась и здесь: строк %d — она выйдет дважды", notes)
+	}
+}
+
+// САЙТ ОТКАЗАЛ ТРИЖДЫ — ЗАМЕТКА ВЫХОДИТ ЗДЕСЬ. Текст не пропадает ни при каком
+// отказе чужого сайта; это и есть причина, по которой у черновика нет конечного
+// состояния «не вышло».
+//
+// Проверяются ОБЕ половины: до потолка попыток заметка здесь не появляется (иначе
+// первый же 500 давал бы её и тут, и там), а после — появляется.
+func TestСайтНеВзялТриждыИЗаметкаВыходитЗдесь(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	author := member(t, e, 1493279, "Рио")
+	e.site.noteErr = errors.New("500 у сайта")
+	if _, err := e.p.QueueNGSNote(ctx, platform.NewNote{
+		AuthorID: author, Body: "не долетит"}); err != nil {
+		t.Fatalf("черновик: %v", err)
+	}
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := e.p.Pool().QueryRow(ctx, `SELECT count(*) FROM notes`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for i := 1; i < platform.NGSDraftMaxAttempts; i++ {
+		if err := e.svc.pass(ctx); err != nil {
+			t.Fatalf("проход %d: %v", i, err)
+		}
+		if n := count(); n != 0 {
+			t.Fatalf("после %d-й попытки заметка уже здесь (строк %d), а попытки не кончились", i, n)
+		}
+	}
+	if err := e.svc.pass(ctx); err != nil {
+		t.Fatalf("последний проход: %v", err)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("после потолка попыток заметок здесь %d, ожидалась одна", n)
+	}
+}
+
+// НЕТ СЕССИИ — ПУБЛИКУЕМ ЗДЕСЬ СРАЗУ, не тратя попыток: сессия сама не
+// заведётся, а человек ждёт свою заметку. Это тот самый случай, из-за которого
+// у участницы семь ответов подряд легли в skipped, — но заметку так терять
+// нельзя: её нигде больше нет.
+func TestБезСессииЗаметкаВыходитЗдесьСразу(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	// Участник БЕЗ входа в бота: анкета есть, сессии сайта нет.
+	const id = 1372959
+	if _, err := e.p.EnsureShadow(ctx, platform.MirroredAuthor{ID: id, Nick: "Полынь-Трава"}); err != nil {
+		t.Fatalf("тень: %v", err)
+	}
+	if _, err := e.p.CompleteBotLogin(ctx, id); err != nil {
+		t.Fatalf("вход: %v", err)
+	}
+	docs, err := platform.CurrentConsentDocs(platform.Operator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		if err := e.p.GrantConsent(ctx, id, d.Kind, d.Version, "тест"); err != nil {
+			t.Fatalf("согласие: %v", err)
+		}
+	}
+	if _, err := e.p.QueueNGSNote(ctx, platform.NewNote{AuthorID: id, Body: "некому нести"}); err != nil {
+		t.Fatalf("черновик: %v", err)
+	}
+	if err := e.svc.pass(ctx); err != nil {
+		t.Fatalf("проход: %v", err)
+	}
+	if e.site.posts != 0 {
+		t.Errorf("без сессии всё-таки постучались на сайт: %d раз", e.site.posts)
+	}
+	var n int
+	if err := e.p.Pool().QueryRow(ctx, `SELECT count(*) FROM notes`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("заметок здесь %d, а текст должен был остаться у нас", n)
 	}
 }

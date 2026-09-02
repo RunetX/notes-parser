@@ -94,3 +94,100 @@ func TestОстановленнаяОтправкаНаНГСОбъясняет�
 		t.Error("предупреждение осталось после того, как отправка наладилась")
 	}
 }
+
+// ЗАМЕТКА ЧЕЛОВЕКА С ГАЛОЧКОЙ ЗДЕСЬ НЕ ЗАВОДИТСЯ ВОВСЕ (решение владельца
+// 02.09.2026: «если галка отправки стоит, то свою не создаём, отправляем на НГС,
+// а с НГС забираем как обычно»).
+//
+// Проверяется НЕ «черновик завёлся», а то, что ядро НЕ звали публиковать здесь:
+// прежде заметка выходила ДВАЖДЫ, и весь смысл правки в том, что второй копии
+// больше нет. Плюс адрес перехода — в ЛЕНТУ, а не на заметку: заметки ещё нет, и
+// её номер станет известен, только когда зеркало принесёт её с сайта.
+func TestЗаметкаСГалочкойУходитНаНГСВместоПлощадки(t *testing.T) {
+	auth := newFakeAuth()
+	const ngsID = testProfileID
+	auth.users[ngsID] = platform.User{ID: ngsID, Nick: testNick, Kind: platform.KindMember}
+	token, _, err := auth.CreateSession(context.Background(), ngsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantConsents(t, auth, ngsID)
+	wr := &fakeWriter{ngsSend: map[int64]bool{ngsID: true}}
+	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
+
+	w := do(h, postAs(t, "/new", url.Values{"body": {"пойдёт на сайт"}}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("публикация: код %d", w.Code)
+	}
+	if got := w.Header().Get("Location"); got != "/?ngs=1" {
+		t.Errorf("после отправки повели на %q, а заметки здесь ещё нет", got)
+	}
+	if wr.note.Body != "" {
+		t.Error("заметка всё-таки заведена здесь — она выйдет дважды")
+	}
+	if wr.ngsDraft == nil || wr.ngsDraft.Body != "пойдёт на сайт" {
+		t.Fatalf("на сайт не отдали ничего: %+v", wr.ngsDraft)
+	}
+	// Лента говорит, что заметка в пути: полторы минуты тишины читаются как
+	// пропажа текста.
+	if body := do(h, as(guest(t, "GET", "/?ngs=1"), token)).Body.String(); !strings.Contains(body, "появится здесь сама") {
+		t.Error("лента молчит о том, что заметка ушла на сайт")
+	}
+}
+
+// БЕЗ ГАЛОЧКИ ВСЁ КАК БЫЛО: заметка заводится здесь, и переход ведёт на неё.
+// Тест парный к предыдущему — порознь они не значат ничего: первый один прошёл
+// бы и на сломанном условии, отправляющем на сайт вообще всё.
+func TestБезГалочкиЗаметкаОстаётсяЗдесь(t *testing.T) {
+	auth := newFakeAuth()
+	const ngsID = testProfileID
+	auth.users[ngsID] = platform.User{ID: ngsID, Nick: testNick, Kind: platform.KindMember}
+	token, _, err := auth.CreateSession(context.Background(), ngsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantConsents(t, auth, ngsID)
+	wr := &fakeWriter{nextID: 100000000500}
+	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
+
+	w := do(h, postAs(t, "/new", url.Values{"body": {"останется тут"}}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("публикация: код %d", w.Code)
+	}
+	if got := w.Header().Get("Location"); got != "/n/100000000500" {
+		t.Errorf("после публикации повели на %q, а заметка здесь", got)
+	}
+	if wr.ngsDraft != nil {
+		t.Error("заметка ушла на сайт без галочки")
+	}
+	if wr.note.Body != "останется тут" {
+		t.Errorf("ядро не завело заметку: %q", wr.note.Body)
+	}
+}
+
+// ЗАМЕТКА В ПУТИ НАЗЫВАЕТСЯ НА «МОЕЙ СТРАНИЦЕ». Её нет ни в ленте, ни у автора —
+// и без этой строки минута ожидания выглядит как потерянный текст.
+func TestЗаметкаВПутиВиднаНаСвоейСтранице(t *testing.T) {
+	auth := newFakeAuth()
+	const ngsID = testProfileID
+	auth.users[ngsID] = platform.User{ID: ngsID, Nick: testNick, Kind: platform.KindMember}
+	token, _, err := auth.CreateSession(context.Background(), ngsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantConsents(t, auth, ngsID)
+	wr := &fakeWriter{
+		ngsSend:    map[int64]bool{ngsID: true},
+		ngsPending: map[int64]int{ngsID: 1},
+	}
+	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
+
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	if !strings.Contains(body, "ещё не вернулась сюда") {
+		t.Error("страница молчит о заметке, которая в пути")
+	}
+	wr.ngsPending = map[int64]int{ngsID: 0}
+	if body := do(h, as(guest(t, "GET", "/me"), token)).Body.String(); strings.Contains(body, "ещё не вернулась сюда") {
+		t.Error("строка осталась после того, как заметка доехала")
+	}
+}
