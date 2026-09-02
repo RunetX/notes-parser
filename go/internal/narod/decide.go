@@ -83,7 +83,33 @@ type Decision struct {
 	// заметку» РОВНО ОДИН РАЗ за её жизнь, и тридцать жителей не могли дать
 	// больше двадцати девяти корней ни при какой вероятности.
 	Root bool
+
+	// P и Roll — вероятность, по которой решалась эта точка, и сам бросок.
+	// Решению они не нужны вовсе: это ЖУРНАЛ. Колонки `dice.p` и `dice.roll`
+	// стоя́т в схеме мира с первого дня и всё это время заполнялись нулями,
+	// отчего «никто не пришёл, потому что не повезло» и «никто не пришёл,
+	// потому что вероятность нулевая» были в журнале неразличимы — а чинят их
+	// по-разному. Цена слепоты названа боем: 02.09.2026 на пустой песочнице по
+	// этой самой колонке вышло «ожидание 0,00 корня, вероятность нуля 100 %», и
+	// чинить чуть не пошли кубик вместо журнала.
+	//
+	// Пишется тот бросок, который ТОЧКУ И РЕШИЛ: у вернувшегося в заметку это
+	// корневой, у всех остальных основной. Второго броска в журнале нет
+	// намеренно — строка отвечает на вопрос «с какой вероятностью вышло то, что
+	// вышло», а не пересказывает ход вычисления.
+	P, Roll float64
+
+	// Why — почему броска не было ВОВСЕ. Пусто значит «бросали»: без этого
+	// различения нулевая вероятность в журнале снова читалась бы двояко, только
+	// теперь как «не бросали».
+	Why string
 }
+
+// WhyThreadCap — единственная причина, по которой точка остаётся без броска:
+// личный потолок реплик на тред. Список закрытый и лежит в коде, как
+// `EpisodeKinds`: свободная строка через месяц даст десяток формулировок одного
+// и того же, и сравнивать прогоны станет нечем.
+const WhyThreadCap = "потолок реплик на тред"
 
 // Decider — «прийти или смолчать». Модель здесь не участвует: это формула, и
 // потому решение меряется в каждой точке, а не в выборочных.
@@ -109,7 +135,7 @@ func (d *CardDecider) Decide(_ context.Context, p DecisionPoint) (Decision, erro
 	// в замере полтора десятка реплик за тред, на шестидесяти выглядел бы
 	// одержимым.
 	if dice.MaxPerThread > 0 && p.Said >= dice.MaxPerThread {
-		return Decision{}, nil
+		return Decision{Why: WhyThreadCap}, nil
 	}
 
 	prob, dist := chanceOf(d.Card, p)
@@ -122,10 +148,17 @@ func (d *CardDecider) Decide(_ context.Context, p DecisionPoint) (Decision, erro
 	if p.TriggerID == 0 {
 		prob = min(prob*d.Card.Rhythm.HourWeight(p.Now.Add(after)), MaxChance)
 	}
-	if rng.Float64() < prob {
-		return Decision{Speak: true, After: after}, nil
+	roll := rng.Float64()
+	if roll < prob {
+		return Decision{Speak: true, After: after, P: prob, Roll: roll}, nil
 	}
-	return d.rootAgain(p)
+	got, err := d.rootAgain(p)
+	if err != nil || got.Speak {
+		return got, err
+	}
+	// Корневой бросок не выпал (или его не на чем было делать) — точку решил
+	// основной, его и записываем.
+	return Decision{P: prob, Roll: roll}, nil
 }
 
 // rootAgain — второй бросок той же возможности: ВЕРНУТЬСЯ В ЗАМЕТКУ и начать
@@ -163,10 +196,12 @@ func (d *CardDecider) rootAgain(p DecisionPoint) (Decision, error) {
 	// — связь, которой в замере нет.
 	rng := rand.New(rand.NewPCG(pointSeed(d.Seed, p)^rootSalt, uint64(p.TriggerID)+1))
 	after := sampleDist(d.Card.Latency.ToReplySec, rng.Float64())
-	if rng.Float64() >= min(prob, MaxChance) {
+	prob = min(prob, MaxChance)
+	roll := rng.Float64()
+	if roll >= prob {
 		return Decision{}, nil
 	}
-	return Decision{Speak: true, Root: true, After: after}, nil
+	return Decision{Speak: true, Root: true, After: after, P: prob, Roll: roll}, nil
 }
 
 // rootSalt разводит две монетки одной возможности. Час суток здесь не

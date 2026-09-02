@@ -628,8 +628,12 @@ func (s *Service) roll(ctx context.Context, p Player, event string, pt DecisionP
 	if got.Speak {
 		verdict = DiceCome
 	}
+	// Вероятность и бросок идут в журнал ВМЕСТЕ с исходом: сам по себе исход не
+	// отличает невезения от нулевой вероятности, а это два разных диагноза (см.
+	// Decision.P). Причина стои́т только там, где броска не было вовсе.
 	if _, fresh, err := s.world.Roll(ctx, Dice{
-		ActorID: p.Card.ID, EventID: event, Verdict: verdict, At: pt.Now,
+		ActorID: p.Card.ID, EventID: event, Verdict: verdict,
+		P: got.P, Roll: got.Roll, Reason: got.Why, At: pt.Now,
 	}); err != nil || !fresh {
 		return false, err
 	}
