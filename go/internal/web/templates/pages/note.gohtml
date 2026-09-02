@@ -76,8 +76,8 @@
       {{end}}
       {{template "reactions" (rx $ 0)}}
       <div class="nfoot">
-        {{when $n.PublishedAt $n.PublishedExact}}
         {{with origin $n.ID $n.Stage .NoteNGSSent}}{{template "origmark" .}}{{end}}
+        {{when $n.PublishedAt $n.PublishedExact}}
         {{/* «Исправлено» стоит рядом с датой, а не вместо неё: текст под уже
              написанными ответами изменился, и читатель обязан узнать об этом со
              страницы, а не из сравнения с памятью. Метки этой на НГС не было —

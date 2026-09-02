@@ -608,10 +608,19 @@ func TestMobileTextIsBiggerAndControlsFitOneLine(t *testing.T) {
 	if !strings.Contains(mobile, ".text { font-size: 16px;") {
 		t.Error("на телефоне текст остался кеглем десктопа")
 	}
-	// inline-flex, а не flex: только так три блока текут ОДНОЙ строкой и
-	// переносятся сами, когда не помещаются.
-	if !strings.Contains(mobile, ".rx, .cact, .modbar { display: inline-flex;") {
-		t.Error("на телефоне служебное под репликой снова занимает три строки")
+	// Правило про ОДНУ строку 02.09.2026 уехало из этого блока в базовые
+	// стили — на десктопе «+» занимал лишнюю строку по той же причине, — и
+	// телефон берёт его оттуда. Проверяется поэтому база, а копии в медиа-
+	// запросе нет намеренно: две копии одного правила разъехались бы молча.
+	css := cssText(t)
+	for _, sel := range []string{".rx {", ".cact {", ".modbar {"} {
+		i := strings.Index(css, sel)
+		if i < 0 {
+			t.Fatalf("правила %s в стилях нет вовсе", sel)
+		}
+		if rule := css[i : i+strings.Index(css[i:], "}")]; !strings.Contains(rule, "inline-flex") {
+			t.Errorf("%s снова блочный — служебное под репликой занимает свою строку", sel)
+		}
 	}
 }
 

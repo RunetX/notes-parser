@@ -482,7 +482,13 @@ a:hover { text-decoration: underline; }
 /* Кнопки-фишки под заметкой и под репликой. Смайлы в наборе разнокалиберные
    (15×15 … 100×20), поэтому в фишке задана высота, а ширина считается: иначе
    ряд фишек прыгал бы по высоте вслед за картинками. */
-.rx { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 6px 0 0; }
+/* ОДНОЙ СТРОКОЙ с «Ответить» и полоской модератора — inline-flex, а не flex
+   (жалоба владельца 02.09.2026: «„+“ на добавление эмоции занимает целую
+   лишнюю строку»). Под репликой без реакций в этом ряду стоит один «плюс», и
+   блочный флексбокс отдавал ему всю ширину карточки. На телефоне правило
+   стояло с 23.08.2026 и по тому же доводу; десктоп получил его последним,
+   потому что там ширины хватало на всё, кроме здравого смысла. */
+.rx { display: inline-flex; vertical-align: middle; flex-wrap: wrap; gap: 4px; align-items: center; margin: 8px 12px 0 0; }
 .rxb {
   display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px;
   border: 1px solid var(--rule); border-radius: 11px; background: var(--btn);
@@ -558,8 +564,24 @@ span.rxb { cursor: default; }
    внимание ей по-прежнему незачем; пунктир снизу снят — подчёркивать больше
    нечего. Правил для ссылки здесь больше нет: с 27.08.2026 метка никуда не
    ведёт, и курсор у неё один — «help». */
-.orig { margin-left: 10px; color: var(--meta); display: inline-flex; align-items: center; vertical-align: -2px; cursor: help; }
-.orig .ico { width: 14px; height: 14px; }
+/* Стоит она ПЕРВОЙ в строке и крупнее прежнего (решение владельца 02.09.2026).
+   Прежние 14px выбирались, когда метка была припиской в хвосте: там ей и
+   полагалось не спорить с датой. Первой в строке она отвечает на вопрос
+   «откуда это» ДО того, как читатель начал читать запись, — и вопрос этот
+   стоит того, чтобы знак был виден: стрелку внутри зеркала в 14 точек не
+   разглядеть (замер владельца по живой странице).
+
+   Отступ задаёт МЕСТО, а не сама метка: в строке даты у реплики это gap
+   флексбокса, в подвале заметки — правое поле. Своего margin-left у метки
+   больше нет вовсе — он был у хвостовой и в начале строки означал бы отступ
+   от края карточки.
+
+   vertical-align: middle, а не поправка в пикселях: 18-точечный знак рядом с
+   12-точечной датой браузер ставит по половине x-height, и число подгонять не
+   надо — оно уедет вслед за кеглем. */
+.orig { color: var(--meta); display: inline-flex; align-items: center; vertical-align: middle; cursor: help; }
+.orig .ico { width: 18px; height: 18px; }
+.nfoot .orig { margin-right: 10px; }
 .clink { margin-left: 18px; }
 /* «Добавить комментарий» стоит той же строкой, что и ссылка на обсуждение, и
    тем же кеглем: это второй вход в тот же разговор, а не отдельное действие. */
@@ -699,7 +721,11 @@ span.rxb { cursor: default; }
 .cbody { flex: 1 1 auto; min-width: 0; }
 /* Ник, под ним дата — как в комментариях на сайте. */
 .chead { margin-bottom: 6px; }
-.cdate { font-size: 12px; margin-top: 1px; }
+/* Строка даты — РЯД: в ней стоят метка происхождения и сама дата, и метка
+   идёт первой. Флексбокс, а не инлайн с поправкой: знак вдвое выше текста, и
+   выравнивать их по базовой линии значило бы подбирать число заново после
+   каждой правки кегля. */
+.cdate { font-size: 12px; margin-top: 1px; display: flex; align-items: center; gap: 8px; }
 .anchor { color: var(--meta); font-size: 12px; margin-left: 8px; visibility: hidden; }
 .c:hover .anchor, .c:target .anchor { visibility: visible; }
 
@@ -751,7 +777,7 @@ span.rxb { cursor: default; }
 /* Подвал комментария: «Ответить» и число ответов в одной строке. «Ответить»
    первым — на сайте оно тоже слева и это главное действие; «Ответы N» скрипт
    подменяет кнопкой сворачивания, поэтому вид у них общий. */
-.cact { margin: 8px 0 0; font-size: 12px; color: var(--meta); display: flex; gap: 14px; }
+.cact { margin: 8px 12px 0 0; font-size: 12px; color: var(--meta); display: inline-flex; vertical-align: middle; gap: 14px; }
 .rcount { cursor: default; }
 .rep { color: var(--link); }
 .rep:hover { text-decoration: underline; }
@@ -1037,7 +1063,7 @@ span.rxb { cursor: default; }
 /* Полоска действий под публикацией. Мелкая и приглушённая намеренно: она стоит
    под КАЖДОЙ репликой, и если её видно так же, как текст, страница перестаёт
    быть разговором и становится пультом. */
-.modbar { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.modbar { margin: 8px 12px 0 0; display: inline-flex; vertical-align: middle; flex-wrap: wrap; gap: 8px; align-items: center; }
 .minline { display: inline-flex; gap: 6px; align-items: center; margin: 6px 0 0; }
 .mbtn {
   font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
@@ -1231,11 +1257,10 @@ span.rxb { cursor: default; }
   .text { font-size: 16px; line-height: 1.5; }
   .chead .nick { font-size: 15px; }
   .cact { font-size: 13px; gap: 12px; }
-  /* Реакции, «Ответить» и полоска модератора идут ОДНОЙ строкой. inline-flex, а
-     не flex: так они текут в общей строке и переносятся сами, когда не
-     помещаются, — то есть на узком экране это по-прежнему их собственный
-     порядок, а не сетка, которую надо было бы держать руками. */
-  .rx, .cact, .modbar { display: inline-flex; vertical-align: middle; margin: 8px 12px 0 0; }
+  /* Правило «реакции, „Ответить“ и полоска модератора идут ОДНОЙ строкой»
+     стояло здесь с 23.08.2026, а 02.09.2026 уехало в базовые стили: на
+     десктопе «+» занимал лишнюю строку ровно по той же причине. Второй копии
+     тут нет намеренно — разъехались бы они молча. */
   .c { gap: 12px; padding: 10px 0 8px; }
   .ttl { font-size: 22px; }
   .note { min-height: 0; }
@@ -1269,7 +1294,10 @@ span.rxb { cursor: default; }
      означает «целься». Строка от этого не выросла: три этажа занимали больше,
      чем один ряд с запасом. */
   .nfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; font-size: 13px; }
+  /* Подвал здесь — флексбокс с собственным зазором, поэтому поля у меток
+     снимаются: иначе к 12px зазора прибавилось бы правое поле метки. */
   .date, .orig, .edited { margin-left: 0; }
+  .nfoot .orig { margin-right: 0; }
   .clink, .addc {
     margin-left: 0; display: inline-flex; align-items: center; gap: 5px;
     min-height: 34px; font-size: 14px;

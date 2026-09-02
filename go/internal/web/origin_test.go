@@ -228,6 +228,39 @@ func TestCommentOriginSitsInsideTheDateLine(t *testing.T) {
 	}
 }
 
+// МЕТКА СТОИТ ПЕРВОЙ В СТРОКЕ, а не после даты (решение владельца 02.09.2026:
+// «значок как сейчас, но надо сделать его крупнее и перенести в начало строки»).
+// Вопрос «откуда это» задают ДО чтения записи, поэтому и ответ идёт первым.
+//
+// Проверяется ПОРЯДОК, а не наличие: обе метки живут в одной строке, и
+// перестановка их местами не роняет ни один тест на присутствие — увидеть её
+// можно только глазом на странице. Держится сразу в двух местах показа: у
+// реплики и у заметки в ленте, — разъехаться они могут молча.
+func TestOriginMarkStandsFirstInTheLine(t *testing.T) {
+	st := noteStore()
+	st.thread = sampleThread()
+	h := newTestServer(t, st, Config{})
+
+	for _, c := range []struct{ what, url, open, close string }{
+		{"реплика", "/n/312811", `<div class="cdate">`, "</div>"},
+		{"лента", "/", `<div class="nfoot">`, "</div>"},
+	} {
+		body := do(h, guest(t, "GET", c.url)).Body.String()
+		i := strings.Index(body, c.open)
+		if i < 0 {
+			t.Fatalf("%s: строки со временем нет вовсе", c.what)
+		}
+		line := body[i : i+strings.Index(body[i:], c.close)]
+		mark, date := strings.Index(line, `class="orig"`), strings.Index(line, `class="date`)
+		if mark < 0 || date < 0 {
+			t.Fatalf("%s: в строке нет метки (%d) или даты (%d)", c.what, mark, date)
+		}
+		if mark > date {
+			t.Errorf("%s: метка снова стоит после даты", c.what)
+		}
+	}
+}
+
 // Третье состояние: реплика написана здесь И её копия уехала на НГС (решение
 // владельца 02.09.2026). Значок обязан отличаться от «своей» — иначе состояние
 // есть, а показать его нечем.
