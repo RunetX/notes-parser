@@ -25,12 +25,12 @@ import (
 // полминуты.
 func (s *Sink) OwnEcho(ctx context.Context, kind, siteID, noteID, authorID, body string,
 	at time.Time) (bool, error) {
+	// Автора у анонимной записи НГС нет, и с 02.09.2026 это НЕ повод молчать:
+	// анонимные заметки мы туда уносим, и возвращаются они оттуда именно
+	// безымянными. Спрашивать про анонимную РЕПЛИКУ по-прежнему незачем —
+	// анонимных комментариев не бывает ни здесь, ни там, — и отсекает это само
+	// ядро (ClaimNGSEcho), чтобы правило стояло в одном месте.
 	author := profileID(authorID)
-	if author == 0 {
-		// Аноним НГС: анонимные заметки мы туда не уносим вовсе (см.
-		// platform.enqueueNGS), значит и опознавать нечего.
-		return false, nil
-	}
 	var note int64
 	if noteID != "" {
 		n, err := siteID64(noteID)

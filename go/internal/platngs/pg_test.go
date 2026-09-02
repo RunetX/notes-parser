@@ -66,11 +66,19 @@ type fakeSite struct {
 	replyTo string
 	text    string
 	posts   int
+	// hideMe — с какой анонимностью ушла заметка. Ради этого поля тест и
+	// заведён: отправь мы анонимную заметку открытой, имя человека встало бы
+	// под текстом, который он публиковал скрытно, и починить это было бы нечем.
+	hideMe bool
 	// page — что отдаёт страница треда после отправки (вычитывание номера).
 	page []love.Comment
 }
 
-func (f *fakeSite) PostNote(context.Context, []*http.Cookie, string, bool) error { return nil }
+func (f *fakeSite) PostNote(_ context.Context, _ []*http.Cookie, text string, anonymous bool) error {
+	f.text, f.hideMe = text, anonymous
+	f.posts++
+	return nil
+}
 
 func (f *fakeSite) PostComment(_ context.Context, _ []*http.Cookie, noteID, comAPIID, text string) error {
 	f.noteID, f.replyTo, f.text = noteID, comAPIID, text
@@ -285,5 +293,38 @@ func TestНомерСвоейРепликиВычитываетсяСоСтра�
 	}
 	if got != "63300007" {
 		t.Errorf("за строкой закреплён номер %q, ожидался 63300007", got)
+	}
+}
+
+// АНОНИМНОСТЬ ДОЕЗЖАЕТ ДО САЙТА (02.09.2026, вопрос владельца «почему заметка
+// не улетела из Зазеркалья на НГС»). До этого дня анонимную заметку не уносили
+// вовсе, и довод стоял неверный — сайт принимает её сам, hideme=1.
+//
+// Тест стои́т НА ПУТИ ДАННЫХ и смотрит, ЧТО легло в POST, а не что посчиталось:
+// урок оплачен дважды — пол собеседника считался верно и не доезжал до промпта,
+// обращение считалось верно и точно так же могло не доехать до сайта.
+func TestАнонимностьЗаметкиДоезжаетДоСайта(t *testing.T) {
+	for _, c := range []struct {
+		имя  string
+		anon bool
+	}{{"открытая", false}, {"анонимная", true}} {
+		t.Run(c.имя, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			author := member(t, e, 1493279, "Рио")
+			if _, err := e.p.CreateNote(ctx, platform.NewNote{
+				AuthorID: author, Anonymous: c.anon, Body: "текст заметки"}); err != nil {
+				t.Fatalf("заметка: %v", err)
+			}
+			if err := e.svc.pass(ctx); err != nil {
+				t.Fatalf("проход: %v", err)
+			}
+			if e.site.posts != 1 {
+				t.Fatalf("отправок %d, ожидалась одна", e.site.posts)
+			}
+			if e.site.hideMe != c.anon {
+				t.Errorf("на сайт ушло с анонимностью %v, а заметка %s", e.site.hideMe, c.имя)
+			}
+		})
 	}
 }

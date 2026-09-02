@@ -51,6 +51,11 @@ type mePage struct {
 	// отказом, площадка не рисует (тот же довод, что у «Обновить аватар»).
 	NGSSend     bool
 	NGSSendable bool
+	// NGSStuck — сколько записей застряло из-за отсутствующей сессии сайта и с
+	// каких пор. Ноль означает «уходит»: строка гаснет сама, как только
+	// следующая запись уезжает.
+	NGSStuck   int
+	NGSStuckAt time.Time
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -108,12 +113,25 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 	// Галочка выноса на НГС. Её отказ страницу не роняет: «Моя страница» нужна
 	// человеку и ради согласий, и ради списка скрытого, а состояние одной
 	// галочки этого не стоит.
-	var ngsSend bool
+	var (
+		ngsSend    bool
+		ngsStuck   int
+		ngsStuckAt time.Time
+	)
 	if s.wr != nil && platform.IsNGS(u.ID) {
 		if on, err := s.wr.NGSSendOn(r.Context(), u.ID); err == nil {
 			ngsSend = on
 		} else {
 			s.log.Warn("состояние отправки на НГС не прочитано", "user", u.ID, "err", err)
+		}
+		// Спрашиваем ТОЛЬКО у включивших: у остальных очередь пуста по замыслу,
+		// и лишний запрос на каждый заход был бы платой ни за что.
+		if ngsSend {
+			if n, since, err := s.wr.NGSStuck(r.Context(), u.ID); err == nil {
+				ngsStuck, ngsStuckAt = n, since
+			} else {
+				s.log.Warn("застрявшее на НГС не прочитано", "user", u.ID, "err", err)
+			}
 		}
 	}
 	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
@@ -131,6 +149,8 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		Jump:        s.jumpFresh(r),
 		NGSSend:     ngsSend,
 		NGSSendable: platform.IsNGS(u.ID) && u.Kind == platform.KindMember,
+		NGSStuck:    ngsStuck,
+		NGSStuckAt:  ngsStuckAt,
 	})
 }
 

@@ -52,6 +52,11 @@ type Writer interface {
 	// сессий не имеет вовсе.
 	SetNGSSend(ctx context.Context, userID int64, on bool) error
 	NGSSendOn(ctx context.Context, userID int64) (bool, error)
+	// NGSStuck — сколько записей не ушло из-за сессии сайта и с каких пор. Ноль
+	// значит «сейчас работает». Нужен затем, чтобы галочка не обещала того, чего
+	// не делает: сессия живёт у демона, и морда о ней узнать иначе не может —
+	// зато видит СЛЕД, оставленный им в очереди.
+	NGSStuck(ctx context.Context, userID int64) (int, time.Time, error)
 	// React — нажать, переключить или снять реакцию. Правкой чужого это не
 	// является: строка своя, а объект остаётся нетронутым.
 	React(ctx context.Context, in platform.NewReaction) error

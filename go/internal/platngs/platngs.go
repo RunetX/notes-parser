@@ -126,7 +126,11 @@ func (s *Service) one(ctx context.Context, j platform.NGSJob) {
 	)
 	switch j.Kind {
 	case platform.NGSNote:
-		err = s.site.PostNote(ctx, cookies, text, false)
+		// Анонимность едет КАК ЕСТЬ: сайт принимает её сам (hideme=1), и
+		// обещание, данное человеку здесь, там не нарушается. Сессия при этом
+		// всё равно АВТОРСКАЯ — своей подписывать чужую заметку мы не вправе, а
+		// маску на странице ставит НГС.
+		err = s.site.PostNote(ctx, cookies, text, j.Anonymous)
 	case platform.NGSComment:
 		parent, nick, ok, terr := s.p.NGSReplyTarget(ctx, j.ObjectID)
 		if terr != nil {
@@ -179,7 +183,7 @@ func (s *Service) cookies(ctx context.Context, j platform.NGSJob) ([]*http.Cooki
 	if errors.Is(err, store.ErrNotFound) {
 		// Галочка стоит, а сессии нет: человек её не заводил или она протухла.
 		// Это не сбой и не его вина — пропускаем, не тратя попыток.
-		s.skip(ctx, j, "нет живой сессии сайта")
+		s.skip(ctx, j, platform.NGSNoSession)
 		return nil, false
 	}
 	if err != nil {
@@ -188,12 +192,12 @@ func (s *Service) cookies(ctx context.Context, j platform.NGSJob) ([]*http.Cooki
 	}
 	json, valid, err := s.st.SessionCookies(ctx, messenger, userID)
 	if err != nil || !valid {
-		s.skip(ctx, j, "сессия сайта недействительна")
+		s.skip(ctx, j, platform.NGSSessionInvalid)
 		return nil, false
 	}
 	cookies, err := love.CookiesFromJSON([]byte(json), time.Now())
 	if err != nil || len(cookies) == 0 {
-		s.skip(ctx, j, "сессия сайта не читается")
+		s.skip(ctx, j, platform.NGSSessionUnread)
 		return nil, false
 	}
 	return cookies, true

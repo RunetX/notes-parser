@@ -32,6 +32,9 @@ type fakeWriter struct {
 	cleared int64
 	// ngsSend — состояние галочки «отправлять на НГС» по участникам.
 	ngsSend map[int64]bool
+	// ngsStuck — сколько записей застряло из-за сессии сайта, и с каких пор.
+	ngsStuck   map[int64]int
+	ngsStuckAt time.Time
 	nextID  int64
 	fail    error
 	// shot — что дошло до ядра вместе с заметкой; nil означает «картинки не
@@ -686,4 +689,10 @@ func (f *fakeWriter) SetNGSSend(_ context.Context, userID int64, on bool) error 
 
 func (f *fakeWriter) NGSSendOn(_ context.Context, userID int64) (bool, error) {
 	return f.ngsSend[userID], nil
+}
+
+// NGSStuck — сколько записей не уехало из-за сессии сайта. Дубль отвечает тем,
+// что в него положили: у большинства тестов это ноль, то есть «всё уходит».
+func (f *fakeWriter) NGSStuck(_ context.Context, userID int64) (int, time.Time, error) {
+	return f.ngsStuck[userID], f.ngsStuckAt, nil
 }

@@ -48,6 +48,58 @@ const (
 // опубликовать недельной давности реплику в остывший тред.
 const NGSMaxAttempts = 3
 
+// Причины пропуска, названные ЗДЕСЬ, а не в самой службе выноса. Их читает не
+// только лог: по ним страница /me говорит человеку, что его записи никуда не
+// уходят, — а галочка, которая молча ничего не делает, хуже отсутствующей.
+// Оплачено живым случаем 02.09.2026: у участницы семь ответов подряд легли в
+// skipped «нет живой сессии сайта», и узнать об этом ей было неоткуда. Две
+// копии одного текста (в службе и в запросе страницы) разъехались бы молча.
+const (
+	NGSNoSession      = "нет живой сессии сайта"
+	NGSSessionInvalid = "сессия сайта недействительна"
+	NGSSessionUnread  = "сессия сайта не читается"
+)
+
+// ngsSessionCauses — те причины, что лечатся ОДНИМ И ТЕМ ЖЕ: войти в РюмкинЪ
+// заново. Человеку разница между ними не нужна, ему нужно действие.
+var ngsSessionCauses = []string{NGSNoSession, NGSSessionInvalid, NGSSessionUnread}
+
+// NGSStuck — сколько записей человека не ушло на НГС из-за сессии и с каких пор.
+//
+// Ноль означает «сейчас работает»: считаются строки, только пока ПОСЛЕДНЯЯ в
+// очереди — такой же пропуск. Иначе строка на /me осталась бы навсегда: старые
+// пропуски не переигрываются, и однажды не ушедшая заметка попрекала бы человека
+// год спустя, когда всё давно наладилось. Как только следующая запись уезжает,
+// предупреждение гаснет само.
+//
+// Индекса по author_id у ngs_outbox нет, и заводить его сюда незачем: страница
+// «Моя страница» открывается редко и одним человеком, а тем же способом эту
+// таблицу уже читает опознание эха.
+func (p *Platform) NGSStuck(ctx context.Context, userID int64) (int, time.Time, error) {
+	var (
+		n     int
+		since *time.Time
+	)
+	err := p.pool.QueryRow(ctx, `
+		WITH last AS (
+		    SELECT state, last_error FROM ngs_outbox
+		     WHERE author_id = $1
+		     ORDER BY created_at DESC, id DESC LIMIT 1
+		)
+		SELECT count(*), min(o.created_at)
+		  FROM ngs_outbox o, last
+		 WHERE o.author_id = $1 AND o.state = $2 AND o.last_error = ANY($3)
+		   AND last.state = $2 AND last.last_error = ANY($3)`,
+		userID, NGSSkipped, ngsSessionCauses).Scan(&n, &since)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("непрошедшее на НГС у %d: %w", userID, err)
+	}
+	if since == nil {
+		return n, time.Time{}, nil
+	}
+	return n, *since, nil
+}
+
 // NGSJob — что демону предстоит унести.
 type NGSJob struct {
 	ID       int64
@@ -61,6 +113,13 @@ type NGSJob struct {
 	// очереди и получить номер в её середине.
 	Body     string
 	Attempts int
+	// Anonymous — заметка была опубликована здесь анонимно, и на НГС она уходит
+	// такой же (hideme=1). Читается на ВЫДАЧЕ строки, а не при постановке в
+	// очередь: там это стоило бы лишнего условия в самой горячей транзакции
+	// площадки, а здесь заметка и так читается ради тела. Разойтись с тем, что
+	// было при публикации, признак не может — анонимность правкой не меняется
+	// («автор и анонимность не редакторский вопрос», см. EditNoteAsAdmin).
+	Anonymous bool
 }
 
 // SetNGSSend переключает галочку «Отправлять».
@@ -102,12 +161,23 @@ func (p *Platform) NGSSendOn(ctx context.Context, userID int64) (bool, error) {
 //
 // Три причины промолчать, и все три — норма, а не отказ:
 //   - галочка не стоит (умолчание);
-//   - анонимная заметка: на НГС её пришлось бы публиковать от имени автора, а он
-//     именно этого и не хотел; анонимность у нас и анонимность там — разные
-//     обещания, и подменять одно другим нельзя;
 //   - комментарий под НАТИВНОЙ заметкой: на НГС такой заметки нет вовсе, нести
 //     реплику некуда. Тред двойника и песочницы сюда же — их на сайте нет.
 //   - ПЕСОЧНИЦА, и это ЧЕТВЁРТЫЙ её выход наружу.
+//
+// ЧЕТВЁРТОЙ ПРИЧИНОЙ БЫЛА АНОНИМНОСТЬ, и она снята 02.09.2026 — вместе с
+// доводом, который оказался неверен. Стояло: «на НГС её пришлось бы публиковать
+// от имени автора, а он именно этого и не хотел». На самом деле сайт принимает
+// анонимную заметку (`action_note[hideme]=1`), love.Client.PostNote берёт этот
+// признак параметром, и РюмкинЪ публикует так с самого начала
+// (/add_anonymous_note). То есть анонимность переносится КАК ЕСТЬ: обещание,
+// данное здесь, там не нарушается.
+//
+// Настоящая причина, по которой анонимную заметку нельзя было отпускать, лежала
+// в ЭХЕ и держится теперь явно: своя копия опознаётся по тройке «автор, место,
+// отпечаток текста», а у анонимной записи НГС автора нет вовсе — она вернулась
+// бы зеркалом второй строкой в ленту и постами в оба канала. Поэтому вместе с
+// этой правкой ClaimNGSEcho научен узнавать заметку БЕЗ автора (см. там же).
 //
 // Четвёртая причина оплачена боем 01.09.2026: двойник (заметка 100000000036,
 // тело — служебная строка synthBody «Смежное обсуждение: о заметке говорят
@@ -126,8 +196,8 @@ func (p *Platform) NGSSendOn(ctx context.Context, userID int64) (bool, error) {
 // в нативной песочнице не уносит «под нативной заметкой некуда», а вот у
 // ЗЕРКАЛЬНОЙ заметки, переведённой в песочницу (narod stage), на сайте есть
 // настоящий тред — туда машинная сцена и легла бы.
-func enqueueNGS(ctx context.Context, q querier, kind string, objectID, authorID, noteID int64, anonymous, stage bool) error {
-	if anonymous || authorID == 0 || stage {
+func enqueueNGS(ctx context.Context, q querier, kind string, objectID, authorID, noteID int64, stage bool) error {
+	if authorID == 0 || stage {
 		return nil
 	}
 	if kind == NGSComment && !IsNGS(noteID) {
@@ -225,8 +295,8 @@ func fillNGSJob(ctx context.Context, q querier, j *NGSJob) error {
 	switch j.Kind {
 	case NGSNote:
 		err := q.QueryRow(ctx, `
-			SELECT body FROM notes WHERE id = $1 AND status = 0 AND NOT anonymous`,
-			j.ObjectID).Scan(&j.Body)
+			SELECT body, anonymous FROM notes WHERE id = $1 AND status = 0`,
+			j.ObjectID).Scan(&j.Body, &j.Anonymous)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -360,7 +430,12 @@ const NGSEchoWindow = 24 * time.Hour
 // уехала.
 func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, authorID int64,
 	body, ngsID string, at time.Time) (bool, error) {
-	if authorID == 0 || ngsID == "" || body == "" {
+	// Автор неизвестен — это АНОНИМНАЯ запись сайта, и наша анонимная заметка
+	// возвращается оттуда именно такой: масок у НГС две («аноним» в ленте и
+	// пусто в разборе), а ниточки к анкете нет ни одной. Для заметки это
+	// рабочий случай, для реплики — нет: анонимных комментариев не бывает ни
+	// здесь, ни там, значит спрашивают не про то.
+	if ngsID == "" || body == "" || (authorID == 0 && kind != NGSNote) {
 		return false, nil
 	}
 	tx, err := p.pool.Begin(ctx)
@@ -374,9 +449,15 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 	// иначе означала бы дубль на следующем такте. Опознание идемпотентно по id
 	// записи — значит память зеркала остаётся оптимизацией.
 	var seen int
-	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM ngs_outbox WHERE kind = $1 AND author_id = $2 AND ngs_id = $3`,
-		kind, authorID, ngsID).Scan(&seen); err != nil {
+	// У анонимной записи автора нет, и спрашивать по нему нечего: ngs_id сам по
+	// себе однозначен — это номер записи на сайте.
+	seenSQL := `SELECT count(*) FROM ngs_outbox WHERE kind = $1 AND ngs_id = $2`
+	seenArgs := []any{kind, ngsID}
+	if authorID != 0 {
+		seenSQL += ` AND author_id = $3`
+		seenArgs = append(seenArgs, authorID)
+	}
+	if err := tx.QueryRow(ctx, seenSQL, seenArgs...).Scan(&seen); err != nil {
 		return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
 	}
 	if seen > 0 {
@@ -387,17 +468,32 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 		rows pgx.Rows
 		from = at.Add(-NGSEchoWindow)
 	)
-	switch kind {
-	case NGSNote:
+	switch {
+	case kind == NGSNote && authorID == 0:
+		// АНОНИМНАЯ ЗАМЕТКА: автора у записи нет, и невод остаётся о двух
+		// нитях — текст да окно. Грубее обычного, и это названо ценой, а не
+		// недосмотром: арифметический предохранитель цел (ngs_id проставляется
+		// строке РОВНО ОДИН РАЗ), поэтому погасить эха больше, чем мы отправили,
+		// нельзя ни при какой сверке текстов, а худшее, что выйдет, — один раз
+		// принять за своё чужую анонимку с тем же началом внутри суток.
 		rows, err = tx.Query(ctx, `
 			SELECT o.id, n.body
 			  FROM ngs_outbox o JOIN notes n ON n.id = o.object_id
-			 WHERE o.kind = $1 AND o.author_id = $2
+			 WHERE o.kind = $1 AND n.anonymous
+			   AND o.attempts > 0 AND o.ngs_id = ''
+			   AND o.created_at > $2
+			 ORDER BY o.created_at
+			   FOR UPDATE OF o`, NGSNote, from)
+	case kind == NGSNote:
+		rows, err = tx.Query(ctx, `
+			SELECT o.id, n.body
+			  FROM ngs_outbox o JOIN notes n ON n.id = o.object_id
+			 WHERE o.kind = $1 AND o.author_id = $2 AND NOT n.anonymous
 			   AND o.attempts > 0 AND o.ngs_id = ''
 			   AND o.created_at > $3
 			 ORDER BY o.created_at
 			   FOR UPDATE OF o`, NGSNote, authorID, from)
-	case NGSComment:
+	case kind == NGSComment:
 		rows, err = tx.Query(ctx, `
 			SELECT o.id, c.body
 			  FROM ngs_outbox o JOIN comments c ON c.id = o.object_id
