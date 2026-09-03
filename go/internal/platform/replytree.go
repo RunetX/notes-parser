@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -89,28 +90,84 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		byID[list[i].id] = &list[i]
 		parent[list[i].id] = list[i].replyTo
 	}
+	// НАШИ РЕПЛИКИ НА САЙТЕ ЗОВУТСЯ ИНАЧЕ, и дерево называет именно те номера.
+	//
+	// Написанное здесь уезжает на НГС (platngs) и получает ТАМ свой номер, а у
+	// нас лежит нативной строкой со своим. Дерево мобильной версии говорит
+	// номерами САЙТА — значит ответ живого человека нашей реплике приезжает с
+	// родителем, которого в этой заметке нет вовсе, и без перевода такой ответ
+	// вставал в КОРЕНЬ, теряя адресата.
+	//
+	// Живой приём при этом отрабатывал ПРАВИЛЬНО: он ищет адресата по обращению
+	// «Ник, …» (AddresseeInNote) и нашу строку находит, — а обход дерева следом
+	// заменял верное ребро несуществующим номером. Со стороны это и выглядело
+	// как «прикрепилось, а потом отвязалось» (жалоба владельца 03.09.2026;
+	// замер по бою: пять реплик в заметках 313146 и 313158).
+	own, err := ngsOwnComments(ctx, tx, list)
+	if err != nil {
+		return st, err
+	}
 	for id, p := range tree {
 		if _, ok := byID[id]; !ok {
-			continue // комментарий есть на сайте, но не у нас — не наше дело
+			// Комментарий есть на сайте, но не у нас — не наше дело. Сюда же
+			// попадают НАШИ уехавшие реплики: у них номер сайта, и ребро им
+			// сайтом не правится. Так и надо — оно поставлено ЗДЕСЬ и знает
+			// больше: родителя, которого на НГС нет, вынос кладёт в корень
+			// треда, а у нас эта реплика отвечает кому следует.
+			continue
 		}
 		st.Known++
+		if native, ok := own[p]; ok {
+			p = native
+		}
 		parent[id] = p
 	}
 
-	// Пути перекладываются одним проходом по возрастанию id: ответ всегда
-	// новее того, кому отвечает, поэтому путь родителя к этому моменту готов.
+	// Пути перекладываются ОТ РОДИТЕЛЯ К РЕБЁНКУ, а не одним проходом по
+	// возрастанию id.
+	//
+	// Прежде проход опирался на «ответ всегда новее того, кому отвечает» —
+	// верное на НГС, где id растут по времени, и НЕВЕРНОЕ у нас: наша реплика
+	// лежит в нативной полосе, то есть её номер больше номера любого ответа,
+	// который придёт на неё с сайта. Родитель оказывался «в будущем», путь его
+	// не брался — и переведённое строкой выше ребро всё равно легло бы в корень.
+	// Тот же класс ошибки, что уже трижды ловили на курсорах: порядок по id
+	// верен только ВНУТРИ полосы.
 	paths := make(map[int64]string, len(list))
-	for i := range list {
-		r := &list[i]
+	laying := make(map[int64]bool, len(list))
+	var layout func(id int64) (string, error)
+	layout = func(id int64) (string, error) {
+		if p, ok := paths[id]; ok {
+			return p, nil
+		}
+		laying[id] = true
+		defer delete(laying, id)
 		pp := ""
-		if pid := parent[r.id]; pid != 0 && pid < r.id {
-			pp = paths[pid]
+		// laying[pid] — кольцо. В данных его быть не может (всякое ребро
+		// указывает назад по времени, и сайтовое, и наше), но без проверки
+		// цена ошибки — бесконечная рекурсия на боевом треде, то есть упавший
+		// демон. Кольцо разрывается РАСКЛАДКОЙ: путь становится корневым, а
+		// ребро остаётся настоящим — то же разделение, что у ClampParent.
+		if pid := parent[id]; pid != 0 && !laying[pid] {
+			if _, ok := byID[pid]; ok {
+				got, err := layout(pid)
+				if err != nil {
+					return "", err
+				}
+				pp = got
+			}
 		}
-		np, err := ChildPath(ClampParent(pp), r.id)
+		np, err := ChildPath(ClampParent(pp), id)
 		if err != nil {
-			return st, fmt.Errorf("путь комментария %d: %w", r.id, err)
+			return "", fmt.Errorf("путь комментария %d: %w", id, err)
 		}
-		paths[r.id] = np
+		paths[id] = np
+		return np, nil
+	}
+	for i := range list {
+		if _, err := layout(list[i].id); err != nil {
+			return st, err
+		}
 	}
 
 	// moved — тронул ли проход хоть одну ВИДИМУЮ строку. Нужен ради звонка в
@@ -196,6 +253,63 @@ func (p *Platform) ApplyReplyTree(ctx context.Context, noteID int64, tree map[in
 		return st, fmt.Errorf("дерево заметки %d: %w", noteID, err)
 	}
 	return st, nil
+}
+
+// ngsOwnComments — перевод «номер на НГС → наш номер» для реплик заметки,
+// уехавших на сайт. Обратная сторона NGSReplyTarget: тот переводит наш номер в
+// сайтовый перед отправкой, этот — сайтовый в наш при возврате дерева.
+//
+// Спрашиваются только НАТИВНЫЕ номера, как в NGSSentObjects, и по той же
+// причине: зеркальной строки в очереди не бывает по построению — уносим мы
+// своё, — а у заметки, где своих реплик нет вовсе, запроса не будет ни одного.
+// Замер 03.09.2026: своё сказано в 422 заметках из 117 818, то есть обход
+// дерева платит за перевод в одной заметке из трёхсот. Вход — уникальный
+// индекс ngs_outbox_object по паре (kind, object_id).
+//
+// Номер берётся у ЛЮБОЙ строки, а не только у sent: он проставляется тогда,
+// когда реплику удалось опознать на странице сайта (findPosted либо эхо), а
+// сайт отвечает 500 и на ПРИНЯТУЮ реплику — то есть у строки с failed на НГС
+// сплошь и рядом стоит живая копия, и ответы приходят именно ей.
+func ngsOwnComments(ctx context.Context, q querier, list []treeRow) (map[int64]int64, error) {
+	native := make([]int64, 0, len(list))
+	for _, r := range list {
+		if IsNative(r.id) {
+			native = append(native, r.id)
+		}
+	}
+	if len(native) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT ngs_id, object_id FROM ngs_outbox
+		 WHERE kind = $1 AND object_id = ANY($2) AND ngs_id <> ''`, NGSComment, native)
+	if err != nil {
+		return nil, fmt.Errorf("наши реплики на НГС: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]int64, len(native))
+	for rows.Next() {
+		var (
+			ngsID string
+			ours  int64
+		)
+		if err := rows.Scan(&ngsID, &ours); err != nil {
+			return nil, fmt.Errorf("наши реплики на НГС: %w", err)
+		}
+		// Номер сайта нечислом не бывает: его вычитывает findPosted из анкора
+		// страницы. Но колонка — свободный текст, и падать всей заметкой из-за
+		// одной странной строки незачем.
+		id, err := strconv.ParseInt(ngsID, 10, 64)
+		if err != nil || id == 0 {
+			continue
+		}
+		out[id] = ours
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("наши реплики на НГС: %w", err)
+	}
+	return out, nil
 }
 
 // legacyAddressRe — обращение, каким его рисовал сайт в первые месяцы архива:
