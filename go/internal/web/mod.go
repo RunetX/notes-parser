@@ -417,7 +417,15 @@ func (s *Server) handleReportSubmit(w http.ResponseWriter, r *http.Request) {
 	case err == nil, errors.Is(err, platform.ErrNothingToDo):
 		// Повторная жалоба на то же — не ошибка: человек просто не помнит, что
 		// уже жаловался, и говорить ему «отказано» незачем.
-		http.Redirect(w, r, noteURL(noteID, false, 1), http.StatusSeeOther)
+		//
+		// Возврат БЕЗ «?view=», и это не мелочь оформления: вид треда —
+		// предпочтение ЧИТАТЕЛЯ, живущее кукой, а явный вид в адресе её
+		// перезаписывает (threadLinear). Адрес здесь собирался noteURL с
+		// «деревом» наглухо, то есть жалоба из линейного вида молча переводила
+		// человека в дерево — и не на одну страницу, а до следующего нажатия
+		// значка (03.09.2026). Плоское «/n/<id>» не решает за него ничего:
+		// как читал, так и продолжит.
+		http.Redirect(w, r, "/n/"+strconv.FormatInt(noteID, 10), http.StatusSeeOther)
 		return
 	case errors.Is(err, platform.ErrNotFound):
 		problem = "Этой записи больше нет."
