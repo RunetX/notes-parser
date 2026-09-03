@@ -18,6 +18,7 @@ package web
 import (
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -334,6 +335,53 @@ func TestViewSwitcherIsLinks(t *testing.T) {
 			t.Errorf("в переключателе нет %q", want)
 		}
 	}
+}
+
+// Переключатель ЛЕЖИТ ПОВЕРХ карточки заметки, и держит это z-index.
+//
+// Дефект складывался из двух половин, поэтому тест называет обе: значки стоят в
+// разметке ПЕРЕД карточкой, а карточка позиционирована, — значит без своего
+// слоя она рисуется поверх них и съедает нажатие. 03.09.2026 переключатель на
+// десктопе не работал вовсе, а на телефоне работал, потому что там он
+// возвращается в поток; глазами это неотличимо от исправного — значки на месте.
+//
+// Слой при этом обязан остаться НИЖЕ липкой шапки, иначе значки проступят
+// сквозь неё при прокрутке.
+func TestViewSwitcherIsAboveTheNoteCard(t *testing.T) {
+	body := do(openServer(t, &fakeStore{note: sampleNote()}), guest(t, "GET", "/n/312811")).Body.String()
+	sw, card := strings.Index(body, `class="switch"`), strings.Index(body, `class="note notebox"`)
+	if sw < 0 || card < 0 {
+		t.Fatalf("на странице нет переключателя (%d) или карточки заметки (%d)", sw, card)
+	}
+	if sw > card {
+		t.Fatal("переключатель стоит в разметке после карточки — правило про слой надо перечитать заново")
+	}
+	css := cssText(t)
+	if !strings.Contains(cssRule(t, css, ".note {"), "position:") {
+		t.Fatal("карточка заметки больше не позиционирована — правило про слой надо перечитать заново")
+	}
+	layer, header := cssZIndex(t, css, ".switch {"), cssZIndex(t, css, ".top {")
+	if layer <= 0 {
+		t.Error("у переключателя нет своего слоя: карточка заметки нарисуется поверх и съест нажатие")
+	}
+	if layer >= header {
+		t.Errorf("переключатель (слой %d) проступит сквозь липкую шапку (слой %d)", layer, header)
+	}
+}
+
+// cssZIndex — номер слоя из правила. Ноль означает «слой не назначен»: у CSS
+// это z-index: auto, то есть «рисуюсь в порядке разметки».
+func cssZIndex(t *testing.T, css, header string) int {
+	t.Helper()
+	m := regexp.MustCompile(`z-index:\s*(-?\d+)`).FindStringSubmatch(cssRule(t, css, header))
+	if m == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("непонятный z-index в правиле %s: %v", header, err)
+	}
+	return n
 }
 
 // [Ф][Э] Обращение «Ник, » на сайте выделено жирным и стоит началом первой
