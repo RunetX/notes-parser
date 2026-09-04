@@ -481,8 +481,13 @@ func (p *Platform) CommentsSince(ctx context.Context, v Viewer, noteID int64, af
 const MaxThreadRows = 5000
 
 // Thread — древовидный вид: ВСЕ комментарии заметки одним range-scan по
-// (note_id, path). Сортировки в памяти нет — порядок даёт сам индекс, потому что
-// путь устроен так, что побайтовое сравнение и есть обход дерева.
+// (note_id, path). Дерево строит сам индекс, потому что путь устроен так, что
+// побайтовое сравнение и есть обход дерева.
+//
+// А вот СЁСТЕР переставляет OrderSiblingsByTime: сегмент пути — это номер, и
+// между полосами идентификаторов номер расходится со временем (см. её
+// комментарий). Сортировка идёт по уже прочитанным строкам, которых не больше
+// MaxThreadRows, — в базу за порядком мы по-прежнему не ходим.
 func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64) ([]CommentView, error) {
 	q := threadQuery
 	if v.CanModerate() {
@@ -496,7 +501,7 @@ func (p *Platform) Thread(ctx context.Context, v Viewer, noteID int64) ([]Commen
 	if err != nil {
 		return nil, fmt.Errorf("тред заметки %d: %w", noteID, err)
 	}
-	return out, nil
+	return OrderSiblingsByTime(out), nil
 }
 
 // Flat — линейный вид: страница комментариев от НОВЫХ к старым.

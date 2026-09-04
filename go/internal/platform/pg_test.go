@@ -190,6 +190,60 @@ func TestThreadOrderIsTreeOrder(t *testing.T) {
 	}
 }
 
+// Смешанный тред — тот, ради которого сортировка сестёр вообще заведена. Тест
+// стои́т НА ПУТИ ДАННЫХ, а не на формуле: формулу проверяет tree_test, а дефект
+// живёт в том, доходит ли она до выдачи. Порядок по номерам дал бы здесь
+// 100, 200, 5000000002, 101, 5000000001 — то есть всё своё в хвосте ветки,
+// независимо от того, когда это было сказано.
+func TestThreadMixesBandsByTime(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	// Люди разные не для правдоподобия: потолок частоты — одна реплика в десять
+	// секунд на человека, и вторая ушла бы в «слишком часто».
+	author := mustUser(t, p, "Паноптикум")
+	other := mustUser(t, p, "Фемида")
+	ingestNote(t, p, 312811, 175869, "Гадёныш")
+
+	ingestComment(t, p, 100, 312811, 1, 0)   // зеркальная корневая
+	ingestComment(t, p, 101, 312811, 2, 0)   // зеркальная корневая
+	ingestComment(t, p, 200, 312811, 3, 100) // зеркальный ответ на 100
+
+	root, err := p.CreateComment(ctx, NewComment{NoteID: 312811, AuthorID: author, Body: "своя корневая"})
+	if err != nil {
+		t.Fatalf("своя корневая: %v", err)
+	}
+	reply, err := p.CreateComment(ctx, NewComment{NoteID: 312811, AuthorID: other,
+		Body: "свой ответ", ReplyToID: 100})
+	if err != nil {
+		t.Fatalf("свой ответ: %v", err)
+	}
+
+	// Время расставляем сами: собственные реплики публикуются «сейчас», а весь
+	// смысл проверки в том, что своя реплика бывает СТАРШЕ зеркальной.
+	for i, id := range []int64{root, 100, reply, 200, 101} {
+		if _, err := p.pool.Exec(ctx, `UPDATE comments SET published_at = $2 WHERE id = $1`,
+			id, testTime.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("время реплики %d: %v", id, err)
+		}
+	}
+
+	got, err := p.Thread(ctx, Viewer{}, 312811)
+	if err != nil {
+		t.Fatalf("тред: %v", err)
+	}
+	wantIDs := []int64{root, 100, reply, 200, 101}
+	wantDepth := []int{1, 1, 2, 2, 1}
+	if len(got) != len(wantIDs) {
+		t.Fatalf("в треде %d реплик, ожидалось %d", len(got), len(wantIDs))
+	}
+	for i := range wantIDs {
+		if got[i].ID != wantIDs[i] || got[i].Depth != wantDepth[i] {
+			t.Fatalf("позиция %d: id=%d depth=%d, ожидалось id=%d depth=%d",
+				i, got[i].ID, got[i].Depth, wantIDs[i], wantDepth[i])
+		}
+	}
+}
+
 // Живой добор отдаёт реплику вместе с её МЕСТОМ в дереве: глубиной и адресатом.
 // Без них страница не знает, куда её поставить, и ответ на давнюю реплику уехал
 // бы в конец треда.

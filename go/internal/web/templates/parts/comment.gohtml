@@ -12,11 +12,19 @@
      обращений), а таскать его вторым аргументом шаблоны не умеют.
 
      data-parent и data-depth нужны показу: по ним скрипт понимает, в какое
-     место ветки встала новая реплика. Пусто — ответ в корень треда. */}}
+     место ветки встала новая реплика. Пусто — ответ в корень треда.
+
+     data-time — ключ порядка СЕСТЁР, миллисекунды эпохи. Номера мало: свои и
+     зеркальные реплики лежат в разных полосах, и нативный номер больше любого
+     ngs'ного, — то есть по номеру ответ, написанный на НГС минутой позже, встал
+     бы ВЫШЕ реплики, на которую отвечает сосед. Тем же ключом идёт страница
+     (platform.OrderSiblingsByTime), и разойтись им нельзя: место, куда добор
+     кладёт строку, обязано совпасть с местом, куда её положит перезагрузка. */}}
 {{define "comment"}}
 {{- $c := .Comment}}
 <li class="c {{depth $c.Depth}}{{if ne $c.Status 0}} chid{{end}}" id="c{{$c.ID}}"
-    data-depth="{{$c.Depth}}" data-parent="{{with $c.ReplyTo}}{{.CommentID}}{{end}}">
+    data-depth="{{$c.Depth}}" data-parent="{{with $c.ReplyTo}}{{.CommentID}}{{end}}"
+    data-time="{{$c.PublishedAt.UnixMilli}}">
   <div class="cava">{{template "avatar" (av $c.Author.AvatarURL $c.Author.Gender $c.Anonymous)}}</div>
   <div class="cbody">
     <div class="chead">

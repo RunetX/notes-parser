@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRootAndChildPath(t *testing.T) {
@@ -148,4 +149,95 @@ func TestTrimLegacyAddress(t *testing.T) {
 			t.Errorf("%q → %q (%v), ожидалось %q (%v)", c.in, got, ok, c.want, c.ok)
 		}
 	}
+}
+
+// ---------------------------------------------------------------- порядок сестёр
+
+// atMin — время в минутах от условного полудня: тесты порядка читаются по этим
+// минутам, а не по номерам.
+func atMin(m int) time.Time {
+	return time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC).Add(time.Duration(m) * time.Minute)
+}
+
+func row(id int64, path string, m int) CommentView {
+	return CommentView{ID: id, Path: path, PublishedAt: atMin(m)}
+}
+
+func orderOf(rows []CommentView) []int64 {
+	out := make([]int64, len(rows))
+	for i, c := range rows {
+		out[i] = c.ID
+	}
+	return out
+}
+
+func sameOrder(t *testing.T, got []CommentView, want []int64) {
+	t.Helper()
+	ids := orderOf(got)
+	if len(ids) != len(want) {
+		t.Fatalf("строк %d, ожидалось %d: %v", len(ids), len(want), ids)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("порядок разошёлся на позиции %d:\nполучено %v\nожидалось %v", i, ids, want)
+		}
+	}
+}
+
+// Тот самый случай, ради которого всё и заведено: своя реплика в 12:00,
+// зеркальный ответ соседа в 12:05. По номерам зеркальный меньше нативного в
+// шесть раз и встаёт ВЫШЕ; по времени — там, где сказан.
+func TestSiblingsMixBandsByTime(t *testing.T) {
+	native := row(100000000001, RootPath(100000000001), 0)
+	ngs := row(63238900, RootPath(63238900), 5)
+
+	got := OrderSiblingsByTime([]CommentView{ngs, native}) // порядок, каким его даёт путь
+	sameOrder(t, got, []int64{100000000001, 63238900})
+}
+
+// Переставляются СЁСТРЫ, а не строки: ветка обязана остаться веткой, иначе
+// «упорядочили по времени» превратится в линейный вид с отступами.
+func TestSiblingOrderKeepsTheTree(t *testing.T) {
+	g1 := RootPath(63238900)
+	nc, _ := ChildPath(g1, 100000000002)
+	gc, _ := ChildPath(g1, 63238910)
+
+	got := OrderSiblingsByTime([]CommentView{
+		row(63238900, g1, 5),
+		row(63238910, gc, 7),
+		row(100000000002, nc, 6),
+		row(100000000001, RootPath(100000000001), 0),
+	})
+	// Своя корневая (12:00) встаёт первой, дети зеркальной — по своим минутам.
+	sameOrder(t, got, []int64{100000000001, 63238900, 100000000002, 63238910})
+}
+
+// Чисто зеркальный тред — а таких в базе 117 тысяч — не должен шелохнуться:
+// внутри одной полосы номер и время идут заодно. Отдельно проверяется НИЧЬЯ:
+// у реплик сайта время с точностью до секунды, и две реплики одной секунды
+// обязаны остаться в прежнем порядке, иначе тред перетасовывался бы просто так.
+func TestMirrorOnlyThreadKeepsItsOrder(t *testing.T) {
+	same := []CommentView{
+		row(63238900, RootPath(63238900), 1),
+		row(63238901, RootPath(63238901), 1), // та же минута
+		row(63238902, RootPath(63238902), 2),
+	}
+	sameOrder(t, OrderSiblingsByTime(same), []int64{63238900, 63238901, 63238902})
+}
+
+// Родителя снесла модерация, и его дети остались в выдаче сиротами — строка
+// стоит внутри ветки деда. Ключа у пропавшего нет, поэтому ветка ставится по
+// самой ранней реплике, которая в ней уцелела.
+func TestHiddenParentIsPlacedByItsEarliestVisibleChild(t *testing.T) {
+	root := RootPath(63238900)
+	hidden, _ := ChildPath(root, 63238950) // строки с этим id в выдаче нет
+	orphan, _ := ChildPath(hidden, 63238999)
+	native, _ := ChildPath(root, 100000000001)
+
+	got := OrderSiblingsByTime([]CommentView{
+		row(63238900, root, 0),
+		row(63238999, orphan, 9), // уцелевшая внучка скрытой ветки
+		row(100000000001, native, 1),
+	})
+	sameOrder(t, got, []int64{63238900, 100000000001, 63238999})
 }

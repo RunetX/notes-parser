@@ -60,13 +60,19 @@ func TestFreshReturnsBareItems(t *testing.T) {
 	}
 }
 
-// Куда встанет строка, решает КЛИЕНТ, и решает по этим двум атрибутам. Без них
-// ответ на давнюю реплику уехал бы в конец треда.
+// Куда встанет строка, решает КЛИЕНТ, и решает по этим трём атрибутам. Без
+// data-parent и data-depth ответ на давнюю реплику уехал бы в конец треда, а
+// без data-time — в конец ВЕТКИ: сёстры упорядочены по времени, потому что
+// номера своих и зеркальных реплик лежат в разных полосах и со временем не
+// согласованы (platform.OrderSiblingsByTime). Разойдись эти два порядка, и
+// строка встала бы не туда, куда её ставит перезагрузка.
 func TestFreshItemCarriesItsPlaceInTree(t *testing.T) {
 	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{freshComment(9, 2, 2)}}
 	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=3,0")).Body.String()
 
-	for _, want := range []string{`id="c9"`, `data-depth="2"`, `data-parent="2"`} {
+	// 1787482800000 — те же 23.08.2026 11:00 UTC в миллисекундах эпохи.
+	for _, want := range []string{`id="c9"`, `data-depth="2"`, `data-parent="2"`,
+		`data-time="1787482800000"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("в строке нет %s:\n%s", want, body)
 		}
