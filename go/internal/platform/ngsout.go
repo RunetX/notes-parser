@@ -477,7 +477,7 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 		// нельзя ни при какой сверке текстов, а худшее, что выйдет, — один раз
 		// принять за своё чужую анонимку с тем же началом внутри суток.
 		rows, err = tx.Query(ctx, `
-			SELECT o.id, n.body
+			SELECT o.id, n.body, ''
 			  FROM ngs_outbox o JOIN notes n ON n.id = o.object_id
 			 WHERE o.kind = $1 AND n.anonymous
 			   AND o.attempts > 0 AND o.ngs_id = ''
@@ -486,7 +486,7 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 			   FOR UPDATE OF o`, NGSNote, from)
 	case kind == NGSNote:
 		rows, err = tx.Query(ctx, `
-			SELECT o.id, n.body
+			SELECT o.id, n.body, ''
 			  FROM ngs_outbox o JOIN notes n ON n.id = o.object_id
 			 WHERE o.kind = $1 AND o.author_id = $2 AND NOT n.anonymous
 			   AND o.attempts > 0 AND o.ngs_id = ''
@@ -495,8 +495,10 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 			   FOR UPDATE OF o`, NGSNote, authorID, from)
 	case kind == NGSComment:
 		rows, err = tx.Query(ctx, `
-			SELECT o.id, c.body
+			SELECT o.id, c.body, COALESCE(pu.nick, '')
 			  FROM ngs_outbox o JOIN comments c ON c.id = o.object_id
+			  LEFT JOIN comments pc ON pc.id = c.reply_to_id
+			  LEFT JOIN users pu ON pu.id = pc.author_id
 			 WHERE o.kind = $1 AND o.author_id = $2 AND c.note_id = $3
 			   AND o.attempts > 0 AND o.ngs_id = ''
 			   AND o.created_at > $4
@@ -511,12 +513,31 @@ func (p *Platform) ClaimNGSEcho(ctx context.Context, kind string, noteID, author
 	var claim int64
 	for rows.Next() {
 		var (
-			id   int64
-			sent string
+			id         int64
+			sent, nick string
 		)
-		if err := rows.Scan(&id, &sent); err != nil {
+		if err := rows.Scan(&id, &sent, &nick); err != nil {
 			rows.Close()
 			return false, fmt.Errorf("опознание эха %s %s: %w", kind, ngsID, err)
+		}
+		// СВЕРЯЕМ С ТЕМ, ЧТО ОТПРАВИЛИ, а не с тем, что храним. Обращение
+		// «Ник, » живёт у нас РЕБРОМ и дорисовывается на показе, а на сайте оно
+		// стоит в самом теле — дописывает его вынос (platngs), ровно той же
+		// склейкой, что и здесь. Пока сверка брала голое тело, она сравнивала не
+		// те тексты, и лишнее слово ломало невод с обоих концов: у короткой
+		// реплики список слов сверяется точно, у длинной лишний токен опускает
+		// совпадение под девять десятых — то есть у всякой реплики короче
+		// десятка значимых слов, а медиана их 64 знака. Дублей это дало мало
+		// (два на 58 отправок) лишь потому, что почти всегда успевал ПЕРВЫЙ
+		// рубеж — номер, вычитанный findPosted; сверка же и есть страховка на те
+		// секунды, пока номера ещё нет, и для ответов её не было вовсе (боевой
+		// случай 04.09.2026, заметка 313171: дубль в треде и в обоих каналах).
+		//
+		// Ник берётся ТЕКУЩИЙ, а отправляли с тогдашним. Между отправкой и
+		// возвратом эха лежат секунды, и переименование в этот зазор — названная
+		// цена: второй невод рядом с первым стоил бы дороже, чем стережёт.
+		if nick != "" {
+			sent = nick + ", " + sent
 		}
 		// Правило сверки зависит от ВИДА, и это про форму данных, а не про
 		// строгость: реплику сайт отдаёт целиком, а заметку лента показывает

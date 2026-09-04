@@ -375,3 +375,84 @@ func TestОтветНаНативнуюРеплику(t *testing.T) {
 		t.Fatalf("адресат вышел (%d, %q, %v), ожидалось (63300001, «Рио», true)", parent, nick, ok)
 	}
 }
+
+// БОЕВОЙ СЛУЧАЙ 04.09.2026 (заметка 313171): своя реплика вернулась с НГС
+// ДУБЛЕМ — в треде площадки, в Telegram и в MAX.
+//
+// Обращение «Ник, » дописывает ВЫНОС при отправке: у нас адресат ребро, на сайте
+// он живёт префиксом в теле. Сверка же брала тело из `comments`, то есть БЕЗ
+// префикса, — и сравнивала не с тем, что мы отправили. Лишнее слово ломает невод
+// на обоих его концах: у короткой реплики список слов сверяется точно («Добавил»
+// против «ПростоТа, Добавил»), а у длинной лишний токен опускает совпадение под
+// девять десятых ровно до девяти значимых слов — то есть у большинства реплик,
+// медиана которых 64 знака.
+//
+// Почему дубли были редки (2 из 58 отправок), а не поголовны: гасил их ПЕРВЫЙ
+// рубеж — номер сайта, вычитанный findPosted сразу после отправки. Между
+// появлением реплики на сайте и записью номера лежат секунды, и зеркало дважды
+// за день в это окно попало. Сверка текстов — второй рубеж и есть страховка
+// ровно на этот случай; для ответов она не работала вовсе.
+func TestОбращениеДописанноеВыносомОпознаниюНеМешает(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"длинная", `Привлечь не знаю, но на удивление почему-то сама поется "Широка река"`},
+		{"короткая", "Добавил"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := testPlatform(t)
+			ctx := context.Background()
+			author, noteID := sentReply(t, p, tc.body)
+
+			// Ровно то, что вернётся со страницы сайта: наш текст с обращением,
+			// которое дописал вынос.
+			own, err := p.ClaimNGSEcho(ctx, NGSComment, noteID, author,
+				"ПростоТа, "+tc.body, "63262504", time.Now())
+			if err != nil {
+				t.Fatalf("опознание: %v", err)
+			}
+			if !own {
+				t.Fatal("своя реплика-ответ не опознана: зеркало принесло бы её дублем в тред и в оба канала")
+			}
+		})
+	}
+}
+
+// sentReply — своя реплика в ОТВЕТ на зеркальную, отданная демону и ушедшая на
+// сайт, но ещё без вычитанного номера: findPosted не успел, и всё решает сверка
+// текстов. Пара к sentComment, у которой ответ корневой и обращения не получает.
+func sentReply(t *testing.T, p *Platform, body string) (author, noteID int64) {
+	t.Helper()
+	ctx := context.Background()
+	author = mustNGSMember(t, p, 1493279, "Рио")
+	if err := p.SetNGSSend(ctx, author, true); err != nil {
+		t.Fatalf("галочка: %v", err)
+	}
+	noteID = 312811
+	if _, err := p.IngestNote(ctx, MirroredNote{
+		ID: noteID, Author: MirroredAuthor{ID: 498196, Nick: "ДВ"},
+		Body: "зеркальная заметка", PublishedAt: time.Now().Add(-time.Hour), PublishedExact: true,
+	}); err != nil {
+		t.Fatalf("приём заметки: %v", err)
+	}
+	// Адресат назван БОЕВЫМ ником, и это не украшение: невод выбрасывает слова
+	// короче трёх букв, поэтому обращение к «ДВ» он проглотил бы сам — и тест
+	// зеленел бы на сломанном коде, ничего не стерегя (проверено: с «ДВ» падает
+	// только короткая половина).
+	if _, err := p.IngestComment(ctx, MirroredComment{
+		ID: 63238879, NoteID: noteID, Author: MirroredAuthor{ID: 1519000, Nick: "ПростоТа"},
+		Body: "чужая реплика", PublishedAt: time.Now().Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatalf("приём реплики: %v", err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: noteID, AuthorID: author, ReplyToID: 63238879, Body: body}); err != nil {
+		t.Fatalf("комментарий: %v", err)
+	}
+	jobs, err := p.NextNGSJobs(ctx, 5)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("выдача: %d строк, %v", len(jobs), err)
+	}
+	if err := p.FinishNGSJob(ctx, jobs[0].ID, "", nil); err != nil {
+		t.Fatalf("запись исхода: %v", err)
+	}
+	return author, noteID
+}
