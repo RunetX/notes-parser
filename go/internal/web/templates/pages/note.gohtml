@@ -34,7 +34,8 @@
        смыслу, что у скрытой реплики: nhid к chid, и правило в CSS у них общее. */}}
   <div class="note notebox{{if ne $n.Status 0}} nhid{{end}}">
     <div class="author">
-      {{if $n.SynthOf}}{{template "synthmark"}}{{else}}
+      {{if $n.SynthOf}}{{template "synthmark"}}
+      {{- else if $n.Author.System}}{{template "sitemark" "own"}}{{else}}
       {{template "avatar" (av $n.Author.AvatarURL $n.Author.Gender $n.Anonymous)}}
       {{template "nick" (nk $n.Author $n.Name $n.Anonymous .SignedIn)}}
       {{end}}

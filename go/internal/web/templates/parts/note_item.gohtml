@@ -6,10 +6,13 @@
 <li class="note{{if $n.Pinned}} pinned{{end}}{{if ne $n.Status 0}} nhid{{end}}" id="n{{$n.ID}}">
   {{/* Автор — колонка слева: квадратный аватар, ник под ним. Ровно как на
        НГС; это первое, по чему постоянный читатель узнаёт страницу. */}}
-  {{/* У ДВОЙНИКА в колонке автора стоит знак площадки, а не лицо: смежное
-       обсуждение — запись самой площадки, а не чья-то заметка. См. parts/synth. */}}
+  {{/* У ЗАПИСИ САМОЙ ПЛОЩАДКИ в колонке автора стоит её знак, а не лицо, и
+       таких записей две: двойник (смежное обсуждение — со значком песочницы,
+       разговор в нём ведёт машина) и недельный ВЫПУСК, который с 05.09.2026
+       выходит от служебной анкеты площадки. См. parts/sitemark. */}}
   <div class="author">
-    {{if $n.SynthOf}}{{template "synthmark"}}{{else}}
+    {{if $n.SynthOf}}{{template "synthmark"}}
+    {{- else if $n.Author.System}}{{template "sitemark" "own"}}{{else}}
     {{template "avatar" (av $n.Author.AvatarURL $n.Author.Gender $n.Anonymous)}}
     {{template "nick" (nk $n.Author $n.Name $n.Anonymous .Page.SignedIn)}}
     {{end}}

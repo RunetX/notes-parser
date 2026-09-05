@@ -17,10 +17,7 @@
      (platform.SynthOrigins), копии текста по-прежнему нет нигде — и потому она
      не может разойтись с оригиналом ни правкой, ни обезличиванием. */}}
 
-{{define "synthmark"}}
-<span class="ava sitemark" aria-hidden="true">{{template "ico-origin" "stage"}}</span>
-<span class="nick _site">{{site}}</span>
-{{end}}
+{{define "synthmark"}}{{template "sitemark" "stage"}}{{end}}
 
 {{/* Подпись стоит НАД цитатой: сперва читателю говорят, куда он попал, потом
      показывают, о чём речь. Значка песочницы здесь нет — он и так стоит в
