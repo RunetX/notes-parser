@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -367,4 +368,47 @@ func explain(t *testing.T, p *platform.Platform, sql string, args ...any) string
 		t.Fatal(err)
 	}
 	return b.String()
+}
+
+// САМА ПЛОЩАДКА в рубрики про людей не идёт.
+//
+// Под служебной анкетой (KindService) с 05.09.2026 выходит недельный выпуск —
+// нативной заметкой, в том же окне, по которому считается следующий выпуск. Без
+// условия она объявила бы себя «новым лицом» ровно один раз, на второй неделе
+// после заведения: сводка про сообщество представила бы читателю саму сводку.
+//
+// Контроль здесь обязателен: без живого автора рядом тест зеленел бы и на
+// запросе, который не возвращает вообще ничего.
+func TestПлощадкаНеПопадаетВНовыеЛица(t *testing.T) {
+	src, p := newSource(t)
+	ctx := t.Context()
+	// Нативную заметку пишет CreateNote часами базы, поэтому окно скользящее —
+	// та же причина, что у TestBuildCountsNativeAndMirrored.
+	start, end := time.Now().Add(-24*time.Hour), time.Now().Add(time.Hour)
+
+	sys, err := p.EnsureSystemUser(ctx, "Зазеркалье")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.CreateNote(ctx, platform.NewNote{AuthorID: sys, Body: "Дайджест недели"}); err != nil {
+		t.Fatalf("выпуск: %v", err)
+	}
+	ingestNote(t, p, 312811, 175869, "Гадёныш", start.Add(time.Hour))
+
+	seen, err := src.NoteAuthorHistory(ctx, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var human bool
+	for _, s := range seen {
+		if s.Author == strconv.FormatInt(sys, 10) {
+			t.Errorf("служебная анкета площадки попала в авторов недели: %+v", s)
+		}
+		if s.Author == "175869" {
+			human = true
+		}
+	}
+	if !human {
+		t.Fatal("живой автор из окна пропал — проверять нечего")
+	}
 }

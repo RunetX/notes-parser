@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -325,17 +324,13 @@ func digestPublishSite(ctx context.Context, cfg *config.Config, st *store.Store,
 	if cfg.Platform.BaseURL == "" {
 		return errors.New("digest: platform.base_url пуст — ссылки в выпуске вели бы в никуда")
 	}
-	author, err := digestAuthorID(cfg)
-	if err != nil {
-		return err
-	}
 	p, err := platform.Open(ctx, cfg.Platform.DSN)
 	if err != nil {
 		return err
 	}
 	defer p.Close()
 
-	site := digestSite{p: p, author: author}
+	site := digestSite{p: p}
 	noteID, created, err := digest.PublishPlatform(ctx, st, site, d, w.ID, cfg.Platform.BaseURL)
 	if err != nil {
 		return err
@@ -397,48 +392,66 @@ func publishPublishers(cfg *config.Config, only string) ([]digest.Publisher, err
 }
 
 // digestSite — площадка глазами дайджеста (реализация digest.Site): выпуск
-// выходит нативной заметкой от анкеты подписанта и закрепляется наверху ленты.
+// выходит нативной заметкой ОТ САМОЙ ПЛОЩАДКИ и закрепляется наверху ленты.
 //
 // Прослойка нужна затем, чтобы `digest` не знал ни про pgx, ни про Viewer: у
 // него всего два дела с площадкой, и список этих дел — часть ответа на вопрос
 // «что выпуск вправе с ней сделать».
+//
+// ПОДПИСАНТА БОЛЬШЕ НЕ НАСТРАИВАЮТ (05.09.2026). До этого дня им был живой
+// человек — своя настройка `digest.author_profile_id`, иначе владелец амвона, —
+// и 05.09 сводка про Зазеркалье уехала заметкой на love.ngs.ru под его именем:
+// галочка «отправлять мои записи на НГС» стои́т у АВТОРА, а не у текста. Чинить
+// это исключением для дайджеста значило бы завести второе место, где написано,
+// что выпуск особенный; вместо этого у площадки появилась своя анкета, и
+// правило стало одним: чьё это слово, тот его и уносит.
 type digestSite struct {
-	p      *platform.Platform
-	author int64
+	p *platform.Platform
+}
+
+// author — служебная анкета площадки. Спрашивается КАЖДЫЙ раз, а не на старте
+// демона: анкету заводит `platform migrate`, то есть рука администратора в
+// известный момент, и запомненный на старте отказ пережил бы саму починку —
+// демон, поднятый до миграции, молчал бы и после неё до перезапуска. Стоит
+// вопрос одного range-scan по частичному индексу, а задают его раз в неделю.
+func (s digestSite) author(ctx context.Context) (platform.User, error) {
+	id, err := s.p.SystemUserID(ctx)
+	if err != nil {
+		return platform.User{}, err
+	}
+	return s.p.UserByID(ctx, id)
 }
 
 func (s digestSite) PublishNote(ctx context.Context, body string) (int64, error) {
-	return s.p.CreateNote(ctx, platform.NewNote{AuthorID: s.author, Body: body})
+	u, err := s.author(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return s.p.CreateNote(ctx, platform.NewNote{AuthorID: u.ID, Body: body})
 }
 
-// PinNote закрепляет и открепляет выпуск. Роль подписанта читается КАЖДЫЙ раз,
-// а не запоминается на старте: закреп бывает раз в неделю, а права меняются
-// командой `platform role` — запомненная роль соврала бы при первой же смене.
+// PinNote закрепляет и открепляет выпуск.
+//
+// Роль подписанта читается КАЖДЫЙ раз, а не запоминается на старте: закреп
+// бывает раз в неделю, а права меняются командой `platform role` — запомненная
+// роль соврала бы при первой же смене.
+//
+// «Состояние уже такое» — УСПЕХ, а не отказ: у метода спрашивают «сделай, чтобы
+// было так», а не «переключи». Довод не теоретический — 05.09.2026 прошлый
+// выпуск оказался откреплён руками, ErrNothingToDo с его открепления уехал
+// наверх, и свежий выпуск не закрепился вовсе; PinIssue при этом ровно про этот
+// случай и написала в комментарии, что он не повод.
 func (s digestSite) PinNote(ctx context.Context, noteID int64, pinned bool) error {
-	u, err := s.p.UserByID(ctx, s.author)
+	u, err := s.author(ctx)
 	if err != nil {
 		return err
 	}
-	return s.p.SetNotePinned(ctx, platform.Viewer{UserID: u.ID, Role: u.Role},
+	err = s.p.SetNotePinned(ctx, platform.Viewer{UserID: u.ID, Role: u.Role},
 		noteID, pinned, "выпуск дайджеста")
-}
-
-// digestAuthorID — анкета подписанта выпуска: своя настройка, иначе владелец
-// амвона. Один и тот же человек, но настройки разные: амвон можно выключить
-// целиком, а выпуску подписант нужен всегда.
-func digestAuthorID(cfg *config.Config) (int64, error) {
-	raw := cfg.Digest.AuthorProfileID
-	if raw == "" {
-		raw = cfg.Pulpit.OwnerProfileID
+	if errors.Is(err, platform.ErrNothingToDo) {
+		return nil
 	}
-	if raw == "" {
-		return 0, errors.New("не задан подписант выпуска: digest.author_profile_id (или pulpit.owner_profile_id)")
-	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("подписант выпуска %q: не число", raw)
-	}
-	return id, nil
+	return err
 }
 
 // digestSource — по чему считать выпуск. С площадкой — по ней: сводку

@@ -902,11 +902,7 @@ func (d *daemon) setupDigest() error {
 		if cfg.Platform.BaseURL == "" {
 			return errors.New("дайджест: площадка включена, но platform.base_url пуст — ссылки в выпуске вели бы в никуда")
 		}
-		author, err := digestAuthorID(cfg)
-		if err != nil {
-			return fmt.Errorf("дайджест: %w", err)
-		}
-		dcfg.Site = digestSite{p: d.plat, author: author}
+		dcfg.Site = digestSite{p: d.plat}
 		dcfg.SiteBaseURL = cfg.Platform.BaseURL
 	}
 	for _, s := range d.sinks {

@@ -24,6 +24,7 @@ import (
 	"lovegw/internal/platimport"
 	"lovegw/internal/platsink"
 	"lovegw/internal/store"
+	"lovegw/internal/web"
 )
 
 // Команда platform — обслуживание собственной площадки «Зазеркалье»: схема и
@@ -508,6 +509,18 @@ func platformMigrate(ctx context.Context, cfg *config.Config) error {
 	for _, d := range docs {
 		fmt.Printf("согласие %s: редакция v%d\n", d.Kind, d.Version)
 	}
+
+	// Служебная анкета площадки — здесь же и по тому же доводу, что тексты
+	// согласий: это содержимое базы, которое меняет администратор в известный
+	// момент, а не робот на старте. Ник приходит из морды (web.SiteName): имя
+	// площадки живёт одной константой, и cmd — то самое место, где её знают оба
+	// пакета сразу.
+	sysID, err := p.EnsureSystemUser(ctx, web.SiteName)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("служебная анкета площадки: %s (%d) — под ней выходит выпуск дайджеста\n",
+		web.SiteName, sysID)
 	return nil
 }
 

@@ -30,8 +30,7 @@
     "hour": 9,
     "tz": "Asia/Novosibirsk",
     "out_dir": "",
-    "auto_publish": false,
-    "author_profile_id": ""
+    "auto_publish": false
   },
   "llm": {
     "api_key": "<ключ Anthropic API или env LOVEGW_LLM_KEY; пусто — LLM выключен>",

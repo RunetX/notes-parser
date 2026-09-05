@@ -81,6 +81,15 @@ const (
 	notStageComment = ` AND NOT EXISTS (SELECT 1 FROM notes sn WHERE sn.id = c.note_id AND sn.stage)`
 )
 
+// notSystemAuthor — сама площадка в рубрики про ЛЮДЕЙ не идёт. Под служебной
+// анкетой (platform.KindService) выходит этот самый выпуск, и без условия она
+// объявила бы себя «новым лицом» ровно один раз — на второй неделе после
+// заведения. Сводка про сообщество, а не про того, кто её пишет.
+//
+// Число подставлено в текст по тому же доводу, что и в systemUserQuery: под
+// `kind = 2` подходит частичный индекс, под параметр — нет.
+var notSystemAuthor = fmt.Sprintf(` AND u.kind <> %d`, platform.KindService)
+
 // commentColumns — общая выборка комментария. Ник берётся ТЕКУЩИЙ из users, а
 // author_display остаётся фолбэком: у зеркального комментатора без ссылки на
 // анкету другого имени нет.
@@ -275,7 +284,7 @@ func (s *Source) NoteAuthorHistory(ctx context.Context, start, end time.Time) ([
 			GROUP BY n.author_id)
 		SELECT w.author_id, COALESCE(NULLIF(u.nick, ''), ''), w.cnt, prev.published_at
 		FROM win w
-		JOIN users u ON u.id = w.author_id
+		JOIN users u ON u.id = w.author_id`+notSystemAuthor+`
 		LEFT JOIN LATERAL (
 			SELECT n2.published_at FROM notes n2
 			WHERE n2.author_id = w.author_id AND n2.status = 0 AND NOT n2.anonymous

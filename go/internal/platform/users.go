@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -128,6 +129,80 @@ func (p *Platform) CreatePersonaUser(ctx context.Context, nick string) (int64, e
 		RETURNING id`, nick, KindMember).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("создание жителя %q: %w", nick, err)
+	}
+	return id, nil
+}
+
+// ErrNoSystemUser — служебной анкеты площадки в базе нет. Ошибка отдельная и
+// говорит, ЧТО делать: заводит строку `platform migrate`, и молчаливое
+// «пользователь не найден» посреди публикации выпуска отправило бы искать её в
+// конфиге, где её больше нет.
+var ErrNoSystemUser = errors.New("служебной анкеты площадки нет: накатите platform migrate")
+
+// systemUserQuery — служебная анкета площадки. Число KindService подставлено В
+// ТЕКСТ, а не параметром, намеренно: под условие `kind = 2` подходит частичный
+// уникальный индекс users_system (миграция 0026), а по параметру планировщик
+// доказать этого не может и пошёл бы перебором сотен тысяч строк. Тот же приём,
+// что у notStageNote в platdigest.
+var systemUserQuery = fmt.Sprintf(`SELECT id FROM users WHERE kind = %d`, KindService)
+
+// SystemUserID — номер служебной анкеты площадки.
+func (p *Platform) SystemUserID(ctx context.Context) (int64, error) {
+	var id int64
+	err := p.pool.QueryRow(ctx, systemUserQuery).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNoSystemUser
+	}
+	if err != nil {
+		return 0, fmt.Errorf("служебная анкета площадки: %w", err)
+	}
+	return id, nil
+}
+
+// EnsureSystemUser заводит АНКЕТУ САМОЙ ПЛОЩАДКИ и возвращает её номер.
+// Идемпотентна.
+//
+// Нужна она затем, что у площадки есть СВОИ публикации — недельный выпуск, а в
+// будущем и объявления, — и до 05.09.2026 их подписывал живой человек, владелец.
+// Стоило это выноса выпуска на love.ngs.ru под его именем: галочка «отправлять
+// мои записи на НГС» стои́т у автора, а не у текста, и отличить сводку площадки
+// от заметки человека было нечем. Своя подпись отвечает на это структурно —
+// enqueueNGS спрашивает `kind = KindMember`, и служебная анкета не проходит
+// сама, без единого условия про дайджест.
+//
+// Роль МОДЕРАТОРСКАЯ, и ровно по двум делам: закрепить свой выпуск наверху
+// ленты (SetNotePinned требует CanModerate) и не встать самой себе в очередь
+// автомата (enqueueCheck пропускает role >= RoleModerator). Администратором её
+// делать незачем — прав администратора ей не нужно ни для чего, а анкета,
+// в которую нельзя войти, но которой всё можно, однажды станет дверью.
+// Войти в неё и правда нельзя: вход по коду сверяет номер анкеты НГС, а он
+// лежит ниже нативной полосы, откуда взят её id.
+//
+// Ник — latest-wins, как у тени: площадка зовётся одной константой (web.SiteName),
+// и переименование обязано доезжать до подписи прошлых выпусков само. Имя
+// приходит ПАРАМЕТРОМ, потому что константа живёт в морде, а второе её написание
+// здесь разошлось бы с первым молча.
+func (p *Platform) EnsureSystemUser(ctx context.Context, nick string) (int64, error) {
+	nick = strings.TrimSpace(nick)
+	if nick == "" {
+		return 0, ErrBadNick
+	}
+	id, err := p.SystemUserID(ctx)
+	switch {
+	case err == nil:
+		if _, err := p.pool.Exec(ctx,
+			`UPDATE users SET nick = $2 WHERE id = $1 AND nick <> $2`, id, nick); err != nil {
+			return 0, fmt.Errorf("переименование служебной анкеты: %w", err)
+		}
+		return id, nil
+	case !errors.Is(err, ErrNoSystemUser):
+		return 0, err
+	}
+	if err := p.pool.QueryRow(ctx, `
+		INSERT INTO users (id, nick, kind, role)
+		VALUES (nextval('users_native_seq'), $1, $2, $3)
+		RETURNING id`, nick, KindService, RoleModerator).Scan(&id); err != nil {
+		return 0, fmt.Errorf("создание служебной анкеты %q: %w", nick, err)
 	}
 	return id, nil
 }
