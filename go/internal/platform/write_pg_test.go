@@ -137,6 +137,90 @@ func TestRateLimitCountsHiddenToo(t *testing.T) {
 	}
 }
 
+// Отказ по частоте НЕСЁТ СРОК, и срок этот доезжает до вызывающего.
+//
+// Тест стои́т на пути данных, а не на формуле: посчитать «когда снова можно»
+// несложно, а дефект живёт в том, доходит ли посчитанное до того, кто рисует
+// страницу, — ровно так уже случалось с полом собеседника и с обращением «Ник, ».
+func TestRateRefusalCarriesRetryTime(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Мурена")
+
+	first, err := p.CreateNote(ctx, NewNote{AuthorID: author, Body: "первая"})
+	if err != nil {
+		t.Fatalf("первая заметка: %v", err)
+	}
+	var published time.Time
+	if err := p.pool.QueryRow(ctx,
+		`SELECT published_at FROM notes WHERE id = $1`, first).Scan(&published); err != nil {
+		t.Fatalf("время первой заметки: %v", err)
+	}
+
+	_, err = p.CreateNote(ctx, NewNote{AuthorID: author, Body: "вторая"})
+	var rl *RateLimited
+	if !errors.As(err, &rl) {
+		t.Fatalf("вторая заметка подряд: %v, ожидался *RateLimited", err)
+	}
+	// Обёртка обязана оставаться прозрачной: про ErrRateLimited спрашивают и те,
+	// кто про срок ничего не знает (реакции, жалобы, морда).
+	if !errors.Is(err, ErrRateLimited) {
+		t.Error("errors.Is(ErrRateLimited) перестал работать")
+	}
+	if rl.Window != 5*time.Minute || rl.Max != 1 {
+		t.Errorf("сработавшее правило названо как %v/%d, а это правило заметки", rl.Window, rl.Max)
+	}
+	if want := published.Add(5 * time.Minute); !rl.RetryAt.Equal(want) {
+		t.Errorf("снова можно с %v, ожидалось %v (первая заметка вышла в %v)",
+			rl.RetryAt, want, published)
+	}
+}
+
+// Ждать надо (n − Max + 1)-ю по старшинству, а не самую раннюю.
+//
+// На живом пути этот случай не возникает: пока потолок не трогали, счёт упирается
+// в него ровно, лишняя всегда одна. Возникает он после ПОНИЖЕНИЯ потолка — тогда
+// в окне лежит больше публикаций, чем оно теперь разрешает, и обещание «через
+// минуту» вместо «через час» отправило бы человека на второй такой же отказ.
+// Поэтому арифметика проверяется прямым вызовом: другого способа её увидеть нет.
+func TestRetryTimeWaitsForEveryExtraOne(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	author := mustUser(t, p, "Ягода")
+
+	for range 5 {
+		mustNote(t, p, author, "заметка")
+	}
+	rows, err := p.pool.Query(ctx,
+		`SELECT published_at FROM notes WHERE author_id = $1 ORDER BY published_at`, author)
+	if err != nil {
+		t.Fatalf("времена заметок: %v", err)
+	}
+	var times []time.Time
+	for rows.Next() {
+		var at time.Time
+		if err := rows.Scan(&at); err != nil {
+			t.Fatalf("время заметки: %v", err)
+		}
+		times = append(times, at)
+	}
+	rows.Close()
+	if len(times) != 5 {
+		t.Fatalf("заметок %d, ожидалось 5", len(times))
+	}
+
+	// Потолок «понижен» до трёх: лишних две, значит выйти за край окна должны
+	// первая и вторая — ждём ТРЕТЬЮ.
+	err = enforceRate(ctx, p.pool, notesRate, author, time.Now(), []rateRule{{24 * time.Hour, 3}})
+	var rl *RateLimited
+	if !errors.As(err, &rl) {
+		t.Fatalf("пять заметок при потолке три: %v, ожидался *RateLimited", err)
+	}
+	if want := times[2].Add(24 * time.Hour); !rl.RetryAt.Equal(want) {
+		t.Errorf("снова можно с %v, ожидалось %v — то есть ждём не ту заметку", rl.RetryAt, want)
+	}
+}
+
 // Кто писать не вправе: тень (за неё никто не доказал владения анкетой),
 // забаненный и тот, кто отозвал согласие на распространение. Последнее не
 // формальность: публиковать при отозванном согласии значило бы распространять

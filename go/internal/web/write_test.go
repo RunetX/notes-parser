@@ -246,6 +246,51 @@ func TestRefusalKeepsTheText(t *testing.T) {
 	}
 }
 
+// Отказ по частоте называет СРОК — и возвращает к форме.
+//
+// Прежний текст «Слишком часто. Подождите немного» описывал правило десяти
+// секунд; когда упирается часовое, ждать надо минуты, и молчание об этом
+// прочиталось как пропажа реплики (06.09.2026, заметка 313183). Здесь же
+// проверяется вторая половина той же починки — autofocus: форма ответа стоит
+// ПОД адресатом, то есть посреди треда, а перерисованная страница открывается с
+// начала, и без него человек остаётся смотреть на верхушку, где ничего не
+// изменилось.
+func TestRateRefusalNamesTheWaitAndReturnsToTheForm(t *testing.T) {
+	h, wr, token := writeServer(t, noteStore())
+	wr.fail = &platform.RateLimited{Window: time.Hour, Max: 90, RetryAt: time.Now().Add(11 * time.Minute)}
+
+	w := do(h, postAs(t, "/n/312811/reply", url.Values{
+		"body": {"важный ответ"}, "reply_to": {"2"},
+	}, token))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("код %d, ожидался 429", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "важный ответ") {
+		t.Error("набранный текст потерян")
+	}
+	if !strings.Contains(body, "через 11 минут") {
+		t.Error("срок отказа не назван")
+	}
+	if !strings.Contains(body, "не больше 90") {
+		t.Error("потолок, в который упёрлись, не назван")
+	}
+	if !strings.Contains(body, "autofocus") {
+		t.Error("страница не возвращает к форме: отказ остаётся ниже экрана")
+	}
+}
+
+// А без отказа autofocus не ставится: обычное открытие треда не должно ни
+// уводить прокрутку к форме, ни поднимать клавиатуру на телефоне.
+func TestQuietPageDoesNotGrabFocus(t *testing.T) {
+	h, _, token := writeServer(t, noteStore())
+
+	page := do(h, as(guest(t, "GET", "/n/312811?reply=2"), token)).Body.String()
+	if strings.Contains(page, "autofocus") {
+		t.Error("форма перехватывает фокус на странице, где ничего не случилось")
+	}
+}
+
 // ---------------------------------------------------------------- ответ в тред
 
 func TestReplyGoesToTheChosenComment(t *testing.T) {

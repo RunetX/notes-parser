@@ -12,6 +12,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -663,6 +664,67 @@ func (s *Server) writer(w http.ResponseWriter, r *http.Request) (platform.User, 
 	return u, true
 }
 
+// rateProblem — отказ по частоте словами, и главное слово в нём СРОК.
+//
+// «Подождите немного» — это про правило десяти секунд. Когда срабатывает
+// часовое, немного оказывается одиннадцатью минутами, а человек, у которого
+// набранное осталось в форме где-то посреди длинного треда, читает такой отказ
+// как пропажу текста — так и вышло 06.09.2026. Поэтому называем и потолок, и
+// время, начиная с которого можно снова.
+//
+// Срок знает не всякий отказ: реакции и жалобы считают частоту своими правилами
+// и RateLimited не отдают. Для них текст остаётся прежним — расплывчатым, но
+// честным: там и ждать нечего, там надо перестать нажимать.
+func rateProblem(err error) string {
+	var rl *platform.RateLimited
+	if !errors.As(err, &rl) || rl.RetryAt.IsZero() {
+		return "Слишком часто. Подождите немного и попробуйте снова."
+	}
+	wait := time.Until(rl.RetryAt)
+	if wait < time.Minute {
+		return "Слишком часто. Попробуйте снова через несколько секунд."
+	}
+	limit := fmt.Sprintf("не больше %d %s", rl.Max,
+		plural(rl.Max, "публикации", "публикаций", "публикаций"))
+	if rl.Max == 1 {
+		limit = "только одну публикацию"
+	}
+	return fmt.Sprintf("Слишком часто: за %s площадка принимает %s. "+
+		"Написать снова можно будет через %s — набранное здесь никуда не денется.",
+		rateWindow(rl.Window), limit, waitWords(wait))
+}
+
+// waitWords — сколько ждать. Округление ВВЕРХ, а не к ближайшему: обещать
+// раньше, чем на самом деле можно, — значит отправить человека на второй такой
+// же отказ. Часы появляются с полутора часов, потому что «через 700 минут» —
+// это не срок, а издевательство; дольше суток здесь не бывает по построению
+// (самое длинное окно правила — сутки).
+func waitWords(d time.Duration) string {
+	m := int((d + time.Minute - 1) / time.Minute)
+	if m < 90 {
+		return strconv.Itoa(m) + " " + plural(m, "минуту", "минуты", "минут")
+	}
+	h := (m + 59) / 60
+	return strconv.Itoa(h) + " " + plural(h, "час", "часа", "часов")
+}
+
+// rateWindow — окно правила по-русски. Четыре случая, потому что правил в ядре
+// ровно четыре (platform/write.go); пятое доедет сюда числом и не соврёт.
+func rateWindow(d time.Duration) string {
+	switch d {
+	case 10 * time.Second:
+		return "десять секунд"
+	case 5 * time.Minute:
+		return "пять минут"
+	case time.Hour:
+		return "час"
+	case 24 * time.Hour:
+		return "сутки"
+	}
+	m := int(d / time.Minute)
+	return strconv.Itoa(m) + " " + plural(m, "минуту", "минуты", "минут")
+}
+
 // writeProblem переводит отказ ядра в текст для человека. Пустая строка
 // означает «это не отказ по правилам, а поломка» — такое уходит в oops.
 func writeProblem(err error) (int, string) {
@@ -672,7 +734,7 @@ func writeProblem(err error) (int, string) {
 	case errors.Is(err, platform.ErrTooLong):
 		return http.StatusBadRequest, "Текст слишком длинный."
 	case errors.Is(err, platform.ErrRateLimited):
-		return http.StatusTooManyRequests, "Слишком часто. Подождите немного и попробуйте снова."
+		return http.StatusTooManyRequests, rateProblem(err)
 	case errors.Is(err, platform.ErrThreadLocked):
 		return http.StatusForbidden, "Обсуждение закрыто модератором."
 	case errors.Is(err, platform.ErrBanned):

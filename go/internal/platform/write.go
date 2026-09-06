@@ -50,7 +50,9 @@ var (
 	// меняется обещание (23.08.2026 — открытие страниц поисковикам), и
 	// публиковать под новыми условиями по старой подписи нельзя.
 	ErrConsentOutdated = errors.New("согласия обновились: подпишите новую редакцию")
-	// ErrRateLimited — слишком часто.
+	// ErrRateLimited — слишком часто. Остаётся ЧАСОВЫМ (errors.Is) поверх
+	// RateLimited: спрашивают о нём в разных местах и по-разному — реакции и
+	// жалобы считают свою частоту сами и срока назвать не могут.
 	ErrRateLimited = errors.New("слишком часто")
 	// ErrThreadLocked — обсуждение закрыл НАШ модератор (а не отметка НГС).
 	ErrThreadLocked = errors.New("обсуждение закрыто")
@@ -70,6 +72,30 @@ var (
 	ErrPersonaOffStage = errors.New("житель пишет только в песочнице")
 )
 
+// RateLimited — отказ по частоте, который знает, КОГДА снова можно.
+//
+// Заведён 06.09.2026 по живому случаю: две реплики подряд получили «Слишком
+// часто. Подождите немного», а ждать надо было одиннадцать минут — и отказ был
+// прочитан как пропажа написанного. Срок здесь не украшение: без него человек
+// либо жмёт кнопку снова и снова, либо уходит писать в другое место.
+//
+// Ошибка ОБЁРНУТА над ErrRateLimited, а не заменяет его: половина мест площадки
+// (реакции, жалобы) считает частоту своими правилами и срока не знает, а
+// errors.Is у всех остаётся один.
+type RateLimited struct {
+	// RetryAt — момент, начиная с которого публикация пройдёт. Нулевое время
+	// значит «не сложилось посчитать»; текст на странице тогда прежний.
+	RetryAt time.Time
+	Window  time.Duration // какое правило сработало…
+	Max     int           // …и с каким потолком
+}
+
+func (e *RateLimited) Error() string { return ErrRateLimited.Error() }
+
+// Unwrap держит errors.Is(err, ErrRateLimited) работающим у всех, кто про срок
+// не спрашивает, — то есть у большинства.
+func (e *RateLimited) Unwrap() error { return ErrRateLimited }
+
 // Виды объектов очереди проверки. Строками, а не числами: очередь читают люди и
 // SQL, и «note» понятнее нуля.
 const (
@@ -86,17 +112,44 @@ type rateRule struct {
 // Пороги частоты. Меряются по НАТИВНЫМ публикациям автора: зеркальный след
 // прошлых лет к тому, как часто человек пишет здесь, отношения не имеет.
 //
-// Числа взяты из плана эпика E и защищают от шторма, а не от разговорчивости:
-// тридцать реплик в час — это вдвое больше, чем пишет самый быстрый комментатор
-// зеркала в свой самый людный час.
+// ЧАСОВОЙ ПОТОЛОК РЕПЛИК ПОДНЯТ 06.09.2026, и поднят он ЗАМЕРОМ, отменившим
+// прежний довод. Стояло тридцать, и рядом было написано, что это «вдвое больше,
+// чем пишет самый быстрый комментатор зеркала в свой самый людный час». Замер по
+// архиву (10,8 млн реплик) говорит обратное: рекорд одного автора — 84 реплики
+// за час, автор-часов свыше тридцати 8332, а сами тридцать лежат между 99-й
+// долей (24) и 99,9-й (37). То есть порог отсекал не шторм, а разговорчивого
+// человека в людном треде — что и случилось: владелец написал в заметку 313183
+// тридцать реплик за 47 минут, и следующие две получили 429.
+//
+// Календарный час замера вдобавок ЗАНИЖАЕТ, а окно здесь скользящее: всплеск,
+// легший на стык часов, в замере разрезан надвое. Отсюда девяносто — замеренный
+// максимум плюс запас на этот разрез; от шторма держит не этот порог, а соседний
+// («одна в десять секунд»), и он остаётся как был.
 var (
 	noteRates    = []rateRule{{5 * time.Minute, 1}, {24 * time.Hour, 5}}
-	commentRates = []rateRule{{10 * time.Second, 1}, {time.Hour, 30}}
+	commentRates = []rateRule{{10 * time.Second, 1}, {time.Hour, 90}}
 )
 
-const (
-	notesRecentQuery    = `SELECT count(*) FROM notes    WHERE author_id = $1 AND id >= $2 AND published_at > $3`
-	commentsRecentQuery = `SELECT count(*) FROM comments WHERE author_id = $1 AND id >= $2 AND published_at > $3`
+// rateQuery — пара запросов к одной очереди публикаций: СКОЛЬКО их у автора в
+// окне и КОГДА самая ранняя из лишних выйдет за его край.
+//
+// Второй спрашивается ТОЛЬКО на отказе, и потому он себе позволен: на счастливом
+// пути не выполняется вовсе, а без него человеку остаётся «подождите немного»,
+// где немного бывает часом. Отказ, не называющий срока, читается как поломка —
+// ровно так он и был прочитан 06.09.2026.
+type rateQuery struct{ count, nth string }
+
+var (
+	notesRate = rateQuery{
+		count: `SELECT count(*) FROM notes WHERE author_id = $1 AND id >= $2 AND published_at > $3`,
+		nth: `SELECT published_at FROM notes WHERE author_id = $1 AND id >= $2 AND published_at > $3
+		      ORDER BY published_at LIMIT 1 OFFSET $4`,
+	}
+	commentsRate = rateQuery{
+		count: `SELECT count(*) FROM comments WHERE author_id = $1 AND id >= $2 AND published_at > $3`,
+		nth: `SELECT published_at FROM comments WHERE author_id = $1 AND id >= $2 AND published_at > $3
+		      ORDER BY published_at LIMIT 1 OFFSET $4`,
+	}
 )
 
 // writeGuard — общая проверка «этому человеку сейчас можно публиковать».
@@ -319,21 +372,45 @@ func (p *Platform) MayPublishNote(ctx context.Context, userID int64) error {
 	if err := publishGuard(ctx, p.pool, userID); err != nil {
 		return err
 	}
-	return enforceRate(ctx, p.pool, notesRecentQuery, userID, time.Now(), noteRates)
+	return enforceRate(ctx, p.pool, notesRate, userID, time.Now(), noteRates)
 }
 
 // enforceRate проверяет пороги частоты по нативным публикациям автора.
-func enforceRate(ctx context.Context, q querier, query string, authorID int64, now time.Time, rules []rateRule) error {
+//
+// Отказ несёт СРОК (RateLimited.RetryAt): ради него на отказе делается второй
+// запрос — какая по счёту публикация должна выйти за край окна, чтобы место
+// освободилось. Стоит он одного round-trip на отказ, а даёт единственное, что
+// человеку в этот момент нужно знать.
+func enforceRate(ctx context.Context, q querier, rq rateQuery, authorID int64, now time.Time, rules []rateRule) error {
 	for _, r := range rules {
 		var n int
-		if err := q.QueryRow(ctx, query, authorID, NativeIDBase, now.Add(-r.Window)).Scan(&n); err != nil {
+		if err := q.QueryRow(ctx, rq.count, authorID, NativeIDBase, now.Add(-r.Window)).Scan(&n); err != nil {
 			return fmt.Errorf("частота публикаций автора %d: %w", authorID, err)
 		}
 		if n >= r.Max {
-			return ErrRateLimited
+			return &RateLimited{Window: r.Window, Max: r.Max, RetryAt: retryAt(ctx, q, rq, authorID, now, r, n)}
 		}
 	}
 	return nil
+}
+
+// retryAt — когда автору снова можно, если сейчас нельзя.
+//
+// В окне лежит n публикаций при потолке Max, значит выпасть должны n-Max+1 самых
+// ранних: как только край окна перевалит через время (n-Max+1)-й, счёт станет
+// меньше потолка. Обычно n равно Max, и это просто «самая ранняя плюс окно», но
+// считаем общим случаем — потолок могут и понизить, а «через минуту» вместо
+// «через час» хуже молчания.
+//
+// Нулевое время означает «срок неизвестен» и на страницу выходит прежним
+// расплывчатым текстом: отказ по частоте не должен превращаться в отказ по
+// поломке из-за того, что не сложился второй запрос.
+func retryAt(ctx context.Context, q querier, rq rateQuery, authorID int64, now time.Time, r rateRule, n int) time.Time {
+	var oldest time.Time
+	if err := q.QueryRow(ctx, rq.nth, authorID, NativeIDBase, now.Add(-r.Window), n-r.Max).Scan(&oldest); err != nil {
+		return time.Time{}
+	}
+	return oldest.Add(r.Window)
 }
 
 // enqueueCheck ставит публикацию в очередь проверки. Той же транзакцией, что и

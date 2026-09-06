@@ -21,6 +21,12 @@
   <p class="fine">В этой заметке говорят её жители — ответить нельзя.
   <a href="/help#narod">Что это такое</a>.</p>
 {{else if .CanWrite}}
+  {{/* Отказ обязан быть ВИДЕН. Форма стоит под адресатом, то есть посреди
+       треда, а страница после отказа перерисовывается целиком и открывается с
+       начала — и красная строка вместе с набранным текстом остаётся на экранов
+       пять ниже. Ровно так отказ по частоте 06.09.2026 и был прочитан: «реплика
+       будто пропала». Возвращает к ней autofocus: браузер сам прокручивает
+       страницу к полю и ставит в него курсор, а скрипт для этого не нужен. */}}
   {{if .Compose.Problem}}<p class="bad">{{.Compose.Problem}}</p>{{end}}
 
   {{if .ReplyTo}}
@@ -41,7 +47,8 @@
   <form method="post" action="/n/{{$n.ID}}/reply" class="wform">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="reply_to" value="{{.Compose.ReplyTo}}">
-    <textarea name="body" rows="5" required placeholder="Ваш ответ">{{.Compose.Body}}</textarea>
+    <textarea name="body" rows="5" required placeholder="Ваш ответ"
+      {{- if .Compose.Problem}} autofocus{{end}}>{{.Compose.Body}}</textarea>
     {{template "smilepick"}}
     {{template "markpick"}}
     {{/* Галочки «анонимно» тут нет и не будет: анонимной бывает заметка, а

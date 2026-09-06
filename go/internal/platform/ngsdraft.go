@@ -55,15 +55,25 @@ type NGSDraft struct {
 	Attempts  int
 }
 
-// ngsDraftRecentQuery — потолок частоты для такого автора.
+// ngsDraftRate — потолок частоты для такого автора.
 //
 // Считать по одним лишь notes нельзя: его заметки приезжают сюда ЗЕРКАЛОМ, то
-// есть в полосе НГС, а notesRecentQuery отсекает всё ниже NativeIDBase — и
+// есть в полосе НГС, а запрос notesRate отсекает всё ниже NativeIDBase — и
 // потолок у него не сработал бы ни разу. Поэтому складываем: нативные заметки
 // (человек мог писать и до галочки, и после её снятия) плюс черновики.
-const ngsDraftRecentQuery = `
-	SELECT (SELECT count(*) FROM notes      WHERE author_id = $1 AND id >= $2 AND published_at > $3)
-	     + (SELECT count(*) FROM ngs_drafts WHERE author_id = $1 AND created_at > $3)`
+var ngsDraftRate = rateQuery{
+	count: `
+		SELECT (SELECT count(*) FROM notes      WHERE author_id = $1 AND id >= $2 AND published_at > $3)
+		     + (SELECT count(*) FROM ngs_drafts WHERE author_id = $1 AND created_at > $3)`,
+	// «Когда снова можно» складывается из тех же двух источников, и складывать их
+	// приходится второй раз: у сумм нет общего порядка, а нужен именно он.
+	nth: `
+		SELECT t FROM (
+			SELECT published_at AS t FROM notes      WHERE author_id = $1 AND id >= $2 AND published_at > $3
+			UNION ALL
+			SELECT created_at   AS t FROM ngs_drafts WHERE author_id = $1 AND created_at > $3
+		) q ORDER BY t LIMIT 1 OFFSET $4`,
+}
 
 // QueueNGSNote принимает заметку, которая пойдёт на НГС вместо площадки.
 //
@@ -96,7 +106,7 @@ func (p *Platform) QueueNGSNote(ctx context.Context, in NewNote) (int64, error) 
 	if err := publishGuard(ctx, tx, in.AuthorID); err != nil {
 		return 0, err
 	}
-	if err := enforceRate(ctx, tx, ngsDraftRecentQuery, in.AuthorID, time.Now(), noteRates); err != nil {
+	if err := enforceRate(ctx, tx, ngsDraftRate, in.AuthorID, time.Now(), noteRates); err != nil {
 		return 0, err
 	}
 	var id int64
