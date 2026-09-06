@@ -299,6 +299,40 @@ func TestParseTime(t *testing.T) {
 	}
 }
 
+// ArchiveAges отдаёт возраст СТРОКОЙ, как его написал сайт, и молчит о тех, у
+// кого его нет. Разбор в число живёт у вызывающего (love.AgeYears) — одна
+// формула на живой поток и на добор, иначе они разошлись бы на «21 год».
+func TestArchiveAges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "archive.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+		age TEXT NOT NULL DEFAULT '', last_seen TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, name, age) VALUES
+		(515996, 'Ягода', '48 лет'), (175869, 'Гадёныш', ''), (1331380, 'Мавр', '41 год')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close() // openArchive требует закрытой базы: рядом не должно быть непустого -wal
+
+	got, err := ArchiveAges(t.Context(), path)
+	if err != nil {
+		t.Fatalf("возраст из архива: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("анкет с возрастом %d (%v), ожидалось две", len(got), got)
+	}
+	if got[515996] != "48 лет" || got[1331380] != "41 год" {
+		t.Errorf("возрасты = %v", got)
+	}
+	if _, ok := got[175869]; ok {
+		t.Error("в выборку попал тот, у кого возраста нет")
+	}
+}
+
 func TestGenderOf(t *testing.T) {
 	cases := map[string]platform.Gender{
 		"male": platform.GenderMale, "female": platform.GenderFemale,

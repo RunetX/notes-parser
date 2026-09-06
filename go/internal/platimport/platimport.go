@@ -671,6 +671,47 @@ func Analyze(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// ArchiveAges — «номер анкеты → возраст, как его написал сайт» из архива.
+//
+// Нужна разовому добору (`platform ages`). Возраст на площадку приносит зеркало,
+// но у него в SQLite лежат только те реплики, которые оно видело САМО: остальные
+// 10,7 млн приехали сюда раскаткой архива, и возраста при ней не переносилось —
+// колонки для него тогда не было. Отсюда разрыв: 273 человека с возрастом на 699
+// писавших за год (замер 06.09.2026).
+//
+// Источник у этого возраста ТОТ ЖЕ, что у живого потока, — alt аватара на
+// странице комментариев (`grab.go` кладёт туда `love.Comment.AuthorAge`), а не
+// обход анкет. Это важно не для чистоты: Политика площадки говорит, что возраст
+// приходит «не из анкеты, а с той же страницы обсуждения», и добор из другого
+// места сделал бы её текст неправдой.
+//
+// Свежесть проверяемая: `users.last_seen` в архиве у записей с возрастом лежит в
+// пределах двух месяцев (14 957 из 15 478 — июль 2026), то есть числа
+// сегодняшние, а не времён 2014 года.
+func ArchiveAges(ctx context.Context, path string) (map[int64]string, error) {
+	db, err := openArchive(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `SELECT id, age FROM users WHERE age <> ''`)
+	if err != nil {
+		return nil, fmt.Errorf("возраст из архива: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var age string
+		if err := rows.Scan(&id, &age); err != nil {
+			return nil, fmt.Errorf("возраст из архива: %w", err)
+		}
+		out[id] = age
+	}
+	return out, rows.Err()
+}
+
 // ---------------------------------------------------------------- мелочи
 
 func nullID(id int64) any {

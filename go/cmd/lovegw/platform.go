@@ -103,7 +103,7 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	case "media":
 		return platformMedia(ctx, cfg, *limit)
 	case "ages":
-		return platformAges(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
+		return platformAges(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath), *archivePath)
 	case "avatar":
 		ids, err := parseUserIDs(tail)
 		if err != nil {
@@ -230,7 +230,7 @@ func platformMedia(ctx context.Context, cfg *config.Config, limit int) error {
 // На сайт команда не ходит вовсе: она переносит уже прочитанное. Безопасна при
 // работающем демоне — SQLite только читается, а в Postgres идут точечные UPDATE,
 // каждый со своим условием.
-func platformAges(ctx context.Context, cfg *config.Config, dbPath string) error {
+func platformAges(ctx context.Context, cfg *config.Config, dbPath, archivePath string) error {
 	p, err := platform.Open(ctx, cfg.Platform.DSN)
 	if err != nil {
 		return err
@@ -256,21 +256,39 @@ func platformAges(ctx context.Context, cfg *config.Config, dbPath string) error 
 	defer st.Close()
 
 	start := time.Now()
+	byID := map[int64]int{}
+	// Архив идёт ПЕРВЫМ, зеркало вторым и перекрывает его: в SQLite лежит то,
+	// что зеркало видело своими глазами и совсем недавно, а в архиве — снимок
+	// обхода. Возраст растёт, и при расхождении свежее вернее.
+	fromArchive := 0
+	if archivePath != "" {
+		ages, err := platimport.ArchiveAges(ctx, archivePath)
+		if err != nil {
+			return err
+		}
+		for id, age := range ages {
+			if years := love.AgeYears(age); years > 0 {
+				byID[id] = years
+				fromArchive++
+			}
+		}
+	}
 	byLink, err := st.LatestAuthorAges(ctx)
 	if err != nil {
 		return fmt.Errorf("возраст из зеркала: %w", err)
 	}
-	byID := make(map[int64]int, len(byLink))
+	fromMirror := 0
 	for link, age := range byLink {
 		if id := love.ProfileIDFromLink(link); id != 0 {
 			if years := love.AgeYears(age); years > 0 {
 				byID[id] = years
+				fromMirror++
 			}
 		}
 	}
 	changed, err := p.SetShadowAges(ctx, byID)
-	fmt.Printf("возраст за %s: в зеркале %d авторов, проставлено %d\n",
-		time.Since(start).Truncate(time.Second), len(byID), changed)
+	fmt.Printf("возраст за %s: из архива %d, из зеркала %d, всего анкет %d, проставлено %d\n",
+		time.Since(start).Truncate(time.Second), fromArchive, fromMirror, len(byID), changed)
 	return err
 }
 
