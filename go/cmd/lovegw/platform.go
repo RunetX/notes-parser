@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -39,6 +41,7 @@ var platformSubcommands = map[string]bool{
 	"doctor":          true,
 	"reconcile":       true,
 	"media":           true,
+	"ages":            true,
 	"avatar":          true,
 	"gender":          true,
 	"reply-scan":      true,
@@ -168,10 +171,21 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		}
 		return platformBan(ctx, cfg, id, sub == "ban", *days, *reason)
 	default:
-		return fmt.Errorf("platform: укажите подкоманду " +
-			"(migrate, doctor, reconcile, media, avatar, gender, reply-scan, invite, post, role, " +
-			"moderation, events, ban, unban, anonymize, export, import-archive, import-restored)")
+		// Список СЧИТАЕТСЯ, а не переписывается руками: третья копия имён
+		// подкоманд разъехалась бы с первыми двумя ровно так же, как разъехались
+		// они сами (см. subcommands_test.go).
+		return fmt.Errorf("platform: укажите подкоманду (%s)", knownSubcommands(platformSubcommands))
 	}
+}
+
+// knownSubcommands — имена подкоманд одной строкой, для текста отказа.
+func knownSubcommands(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // platformMedia добирает байты медиа по уже известным ссылкам.
