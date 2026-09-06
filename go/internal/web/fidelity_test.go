@@ -178,6 +178,40 @@ func TestAuthorColumnIsSquareAvatarWithNickBelow(t *testing.T) {
 	}
 }
 
+// [Ф] Возраст стоит ПОСЛЕ ника и через запятую: в мобильной версии НГС подпись
+// под репликой собрана как `<a …>Ягода</a>, <span>48 лет</span>`
+// (love/testdata/mobile_note_312870.html, блок lvmb-notes__name-user); в
+// десктопной он же лежит в alt аватара — `alt="Ирма Соколова, 43 года"`.
+//
+// Склонение проверяется тремя числами не для красоты: «год», «года» и «лет» —
+// три разные ветки правила, и ошибка в любой видна на каждой странице.
+func TestAgeFollowsTheNickAfterAComma(t *testing.T) {
+	thread := []platform.CommentView{
+		{ID: 1, Author: platform.Author{ID: 1, Nick: "Ягода", Age: 48}, Body: "раз", Depth: 1},
+		{ID: 2, Author: platform.Author{ID: 2, Nick: "Мавр", Age: 41}, Body: "два", Depth: 1},
+		{ID: 3, Author: platform.Author{ID: 3, Nick: "Пух", Age: 21}, Body: "три", Depth: 1},
+		{ID: 4, Author: platform.Author{ID: 4, Nick: "Паноптикум"}, Body: "четыре", Depth: 1},
+	}
+	h := openServer(t, &fakeStore{notes: []platform.NoteView{sampleNote()}, thread: thread})
+	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
+
+	for _, want := range []string{
+		`Ягода</span><span class="age">, 48 лет</span>`,
+		`Мавр</span><span class="age">, 41 год</span>`,
+		`Пух</span><span class="age">, 21 год</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("нет подписи %q", want)
+		}
+	}
+	// У кого возраста нет — нет и запятой: пустой хвост «Ник, » читался бы как
+	// оборванная строка. Это же случай ВОШЕДШЕГО участника, у которого возраста
+	// не заводится вовсе.
+	if strings.Contains(body, `Паноптикум</span><span class="age">`) {
+		t.Error("возраст нарисован там, где его нет")
+	}
+}
+
 // [Ф][Э] Дата вида 14.08.2026, 18:30:04 — с секундами и годом.
 func TestDateLooksLikeOriginal(t *testing.T) {
 	at := time.Date(2026, 8, 14, 11, 30, 4, 0, time.UTC) // 18:30:04 в Новосибирске

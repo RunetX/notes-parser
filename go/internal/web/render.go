@@ -63,6 +63,7 @@ var funcs = template.FuncMap{
 	"long":        isLongBody,
 	"when":        whenHTML,
 	"plural":      plural,
+	"age":         ageWords,
 	"depth":       depthClass,
 	"themes":      themeList,
 	"site":        func() string { return SiteName },
@@ -117,6 +118,10 @@ type nickArg struct {
 	Name  string
 	Class string
 	Link  bool
+	// Age — «48 лет» готовой строкой, пустая — не показываем. Склонение считает
+	// Go, а не шаблон: правило русского числительного одно на всю площадку и
+	// уже живёт в plural.
+	Age string
 }
 
 // nickOf собирает подпись. Решение «ссылка или текст» живёт в Go, а не в
@@ -133,7 +138,17 @@ func nickOf(a platform.Author, name string, anonymous, signedIn bool) nickArg {
 		Name:  name,
 		Class: class,
 		Link:  (signedIn || a.Persona) && !anonymous && a.ID != 0,
+		Age:   ageWords(a.Age),
 	}
+}
+
+// ageWords — «48 лет» из числа. Пусто, если возраста нет: у участника его не
+// заводится вовсе (см. 0027_users_age.sql), а у тени сайт мог его и не показать.
+func ageWords(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return itoa(n) + " " + plural(n, "год", "года", "лет")
 }
 
 // avatarArg — что показать на месте аватара: адрес картинки и признак того, что

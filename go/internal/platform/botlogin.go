@@ -161,8 +161,12 @@ func (p *Platform) CompleteBotLogin(ctx context.Context, userID int64) (int64, e
 	case anonymized != nil:
 		return 0, ErrAnonymized
 	}
+	// age = NULL — третья дверь входа и то же правило: возраст живёт только у
+	// тени (0027_users_age.sql). Ник и аватар здесь намеренно не трогаются, а
+	// возраст трогается, и это не противоречие: там вопрос «чьё свежее», здесь —
+	// «вправе ли мы это показывать».
 	if _, err := tx.Exec(ctx,
-		`UPDATE users SET kind = $2 WHERE id = $1`, userID, KindMember); err != nil {
+		`UPDATE users SET kind = $2, age = NULL WHERE id = $1`, userID, KindMember); err != nil {
 		return 0, fmt.Errorf("вход анкеты %d: %w", userID, err)
 	}
 	if _, err := tx.Exec(ctx, `

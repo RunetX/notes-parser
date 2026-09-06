@@ -51,6 +51,30 @@ func (p *Platform) SetPersonaBio(ctx context.Context, id int64, bio string) erro
 	return nil
 }
 
+// SetPersonaAge — возраст жителя, тот, что стоит после ника: «Мурена, 41 год».
+//
+// Своя дверь рядом с SetPersonaBio, а не поле в ней, — по тому же доводу, что у
+// пола: карточку кладут в Postgres тремя отдельными вызовами, у каждого свой
+// отказ, и у каждого своя причина существовать.
+//
+// А причина здесь такая: у ЖИВОГО человека колонка age заполняется только пока
+// он тень, зеркалом, и снимается на входе (auth.go) — так исполняется обещание
+// его согласий. У жителя персональных данных нет вовсе, возраст ему написал
+// оператор в рецепте, и запрещать его было бы запретом ни для кого. Проверка
+// `persona` стои́т здесь же и означает ровно это: чужой рукой возраст живому
+// человеку не поставить.
+func (p *Platform) SetPersonaAge(ctx context.Context, id int64, age int) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE users SET age = nullif($2::smallint, 0) WHERE id = $1 AND persona`, id, age)
+	if err != nil {
+		return wrapf(err, "возраст жителя %d", id)
+	}
+	if tag.RowsAffected() == 0 {
+		return p.whyNotPersona(ctx, id)
+	}
+	return nil
+}
+
 // SetPersonaAvatarAsAdmin — поставить жителю фото либо снять его (m == nil).
 //
 // Дверь администраторская по тому же доводу, что у песочницы: кто здесь

@@ -99,6 +99,8 @@ func cmdPlatform(ctx context.Context, args []string) error {
 		return platformReconcile(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
 	case "media":
 		return platformMedia(ctx, cfg, *limit)
+	case "ages":
+		return platformAges(ctx, cfg, cmp.Or(*dbPath, cfg.DBPath))
 	case "avatar":
 		ids, err := parseUserIDs(tail)
 		if err != nil {
@@ -200,6 +202,61 @@ func platformMedia(ctx context.Context, cfg *config.Config, limit int) error {
 	stats, err := platsink.NewMediaSweep(p, media, newSiteClient(cfg, log), log).Once(ctx, limit)
 	fmt.Printf("медиа за %s: аватаров %d, иллюстраций %d, не вышло %d\n",
 		time.Since(start).Truncate(time.Second), stats.Avatars, stats.Images, stats.Failed)
+	return err
+}
+
+// platformAges — разовый добор возраста из зеркала на площадку.
+//
+// Зачем руками и разово: живой поток кладёт возраст сам, вместе с ником и
+// аватаром, но кладёт его только НОВЫМ репликам. У тех, кто написал до
+// 06.09.2026, в Postgres не оказалось бы ничего, и подпись «Ник, 48 лет»
+// появлялась бы по человеку в день. Между тем возраст у них есть — он лежит в
+// SQLite колонкой comments.author_age с первого дня зеркала.
+//
+// На сайт команда не ходит вовсе: она переносит уже прочитанное. Безопасна при
+// работающем демоне — SQLite только читается, а в Postgres идут точечные UPDATE,
+// каждый со своим условием.
+func platformAges(ctx context.Context, cfg *config.Config, dbPath string) error {
+	p, err := platform.Open(ctx, cfg.Platform.DSN)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+
+	// Схему проверяем, как сверка: без колонки age команда упала бы посреди
+	// прохода невнятной ошибкой драйвера вместо «сначала migrate».
+	inDB, wanted, err := p.Version(ctx)
+	if err != nil {
+		return err
+	}
+	if inDB != wanted {
+		return fmt.Errorf("схема площадки v%d, бинарник рассчитан на v%d — сначала `platform migrate`", inDB, wanted)
+	}
+
+	// Ключ шифрования не нужен: сессий это не касается, читаются комментарии —
+	// то же правило, что у сверки.
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("боевая БД %s: %w", dbPath, err)
+	}
+	defer st.Close()
+
+	start := time.Now()
+	byLink, err := st.LatestAuthorAges(ctx)
+	if err != nil {
+		return fmt.Errorf("возраст из зеркала: %w", err)
+	}
+	byID := make(map[int64]int, len(byLink))
+	for link, age := range byLink {
+		if id := love.ProfileIDFromLink(link); id != 0 {
+			if years := love.AgeYears(age); years > 0 {
+				byID[id] = years
+			}
+		}
+	}
+	changed, err := p.SetShadowAges(ctx, byID)
+	fmt.Printf("возраст за %s: в зеркале %d авторов, проставлено %d\n",
+		time.Since(start).Truncate(time.Second), len(byID), changed)
 	return err
 }
 

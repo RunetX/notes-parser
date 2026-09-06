@@ -442,6 +442,80 @@ func seedComment(t *testing.T, st *store.Store, c store.Comment) {
 	}
 }
 
+// Возраст доезжает от alt аватара НГС до страницы — и пропадает, как только
+// человек вошёл.
+//
+// Тест стои́т НА ПУТИ ДАННЫХ, а не на формуле разбора: сама формула проверена в
+// love, а сломаться здесь может ровно то, что между ней и показом, — перевод в
+// приёме, оговорка `kind = KindShadow` в ensureShadow и колонка в выдаче треда.
+// Вторая половина важнее первой: на ней держится обещание согласий, что поля
+// анкеты, кроме ника, аватара и пола, участнику не показываются.
+func TestAgeRidesInWithTheMirrorAndLeavesOnLogin(t *testing.T) {
+	e := newEnv(t)
+	ctx := t.Context()
+	n := note("312811", "1495073", "Птичка")
+
+	thread, err := e.sink.StartThread(ctx, n, "")
+	if err != nil {
+		t.Fatalf("тред площадки: %v", err)
+	}
+	if _, err := e.sink.PostNote(ctx, n, nil); err != nil {
+		t.Fatalf("приём заметки: %v", err)
+	}
+	c := comment(63207290, n.ID, "Ягода", "515996", "первый")
+	c.AuthorAge = "48 лет" // ровно так это лежит в SQLite с первого дня зеркала
+	if _, err := e.sink.PostComment(ctx, n, thread, "", c, nil); err != nil {
+		t.Fatalf("приём реплики: %v", err)
+	}
+
+	got, err := e.p.Thread(ctx, platform.Viewer{}, 312811)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("в треде %d реплик, ожидалась одна", len(got))
+	}
+	if got[0].Author.Age != 48 {
+		t.Fatalf("возраст автора %d, ожидалось 48", got[0].Author.Age)
+	}
+
+	// Тот же человек вошёл на площадку. С этой минуты возраста у нас нет вовсе —
+	// ни на экране, ни в базе.
+	if _, err := e.p.CompleteBotLogin(ctx, 515996); err != nil {
+		t.Fatalf("вход: %v", err)
+	}
+	got, err = e.p.Thread(ctx, platform.Viewer{}, 312811)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Author.Age != 0 {
+		t.Errorf("после входа возраст остался: %d", got[0].Author.Age)
+	}
+	var age *int16
+	if err := e.p.Pool().QueryRow(ctx, `SELECT age FROM users WHERE id = 515996`).Scan(&age); err != nil {
+		t.Fatalf("возраст в базе: %v", err)
+	}
+	if age != nil {
+		t.Errorf("возраст остался в базе: %d", *age)
+	}
+
+	// А новая реплика с НГС его обратно не приносит: зеркало вошедшего не трогает.
+	c2 := comment(63207431, n.ID, "Ягода", "515996", "второй")
+	c2.AuthorAge = "48 лет"
+	if _, err := e.sink.PostComment(ctx, n, thread, "", c2, nil); err != nil {
+		t.Fatalf("приём второй реплики: %v", err)
+	}
+	got, err = e.p.Thread(ctx, platform.Viewer{}, 312811)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range got {
+		if v.Author.Age != 0 {
+			t.Errorf("зеркало вернуло возраст вошедшему: %d", v.Author.Age)
+		}
+	}
+}
+
 // testPNG — настоящая картинка: хранилище определяет тип по содержимому, а не
 // по ссылке (геоблок отдаёт на запрос картинки HTML с кодом 200).
 func testPNG(t *testing.T) []byte {

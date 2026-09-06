@@ -7,7 +7,11 @@
   <div class="uhead">
     <div class="author">{{template "avatar" (av $m.AvatarURL $m.Gender false)}}</div>
     <div class="umeta">
-      <h1 class="ttl">{{if $m.Nick}}{{$m.Nick}}{{else}}Участник №{{$m.ID}}{{end}}</h1>
+      {{/* Возраст здесь по тому же правилу, что в ленте и в треде: через запятую
+           после ника (parts/nick.gohtml). Кеглем он меньше — заголовок называет
+           ЧЕЛОВЕКА, а возраст к имени приписка. */}}
+      <h1 class="ttl">{{if $m.Nick}}{{$m.Nick}}{{else}}Участник №{{$m.ID}}{{end}}
+        {{- if $m.Age}}<span class="age">, {{age $m.Age}}</span>{{end}}</h1>
       <p class="fine">{{kindword $m}}
         {{- if lt $m.ID 100000000000}} · анкета НГС №{{$m.ID}}{{else}} · №{{$m.ID}}{{end}}
         {{- if eq $m.Role 1}} · модератор{{else if eq $m.Role 2}} · администратор{{end}}

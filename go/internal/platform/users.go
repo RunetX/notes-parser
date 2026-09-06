@@ -79,15 +79,24 @@ func ensureShadow(ctx context.Context, q querier, a MirroredAuthor) (int64, erro
 	//     переписывать (иначе смена ника на НГС отменяла бы выбор человека у нас);
 	//   * у обезличенного возврат ника из зеркала отменял бы исполненное
 	//     требование субъекта — то есть чинил бы нарушение закона каждым обходом.
+	// Возраст едет тем же upsert'ом и потому достаётся ТОЛЬКО тени: оговорка
+	// `users.kind = KindShadow` заведена ради ника, но правило у неё общее —
+	// зеркало не трогает того, кто сюда вошёл. У участника колонка остаётся
+	// пустой, и обещание его согласий исполняется без единой новой подписи.
+	//
+	// Ноль — «сайт возраста не показал»: затирать им уже известный нельзя, иначе
+	// одна страница без alt стёрла бы возраст всему треду.
 	_, err := q.Exec(ctx, `
-		INSERT INTO users (id, nick, ngs_avatar_url, kind)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO users (id, nick, ngs_avatar_url, kind, age)
+		VALUES ($1, $2, $3, $4, nullif($5::smallint, 0))
 		ON CONFLICT (id) DO UPDATE
-		   SET nick = excluded.nick, ngs_avatar_url = excluded.ngs_avatar_url
+		   SET nick = excluded.nick, ngs_avatar_url = excluded.ngs_avatar_url,
+		       age = coalesce(excluded.age, users.age)
 		 WHERE users.kind = $4
 		   AND users.anonymized_at IS NULL
-		   AND (users.nick <> excluded.nick OR users.ngs_avatar_url <> excluded.ngs_avatar_url)`,
-		a.ID, a.Nick, a.AvatarURL, KindShadow)
+		   AND (users.nick <> excluded.nick OR users.ngs_avatar_url <> excluded.ngs_avatar_url
+		        OR users.age IS DISTINCT FROM coalesce(excluded.age, users.age))`,
+		a.ID, a.Nick, a.AvatarURL, KindShadow, a.Age)
 	if err != nil {
 		return 0, fmt.Errorf("тень автора %d: %w", a.ID, err)
 	}
@@ -347,6 +356,37 @@ func (p *Platform) SetGenders(ctx context.Context, byID map[int64]Gender) (int, 
 			 WHERE id = $1 AND gender <> $2 AND anonymized_at IS NULL`, id, v)
 		if err != nil {
 			return changed, fmt.Errorf("пол участника %d: %w", id, err)
+		}
+		changed += int(tag.RowsAffected())
+	}
+	return changed, nil
+}
+
+// SetShadowAges — разовый добор возраста тем, кто уже лежит в базе тенью.
+//
+// Живой поток кладёт возраст сам, вместе с ником и аватаром (ensureShadow), но
+// кладёт его только НОВЫМ репликам: у тех, кто написал до 06.09.2026, в базе не
+// оказалось бы ничего, и страница выглядела бы наполовину пустой месяцами.
+// Между тем возраст у них есть — он лежит в SQLite зеркала колонкой
+// comments.author_age с первого дня, — и добор просто переносит его сюда.
+//
+// ТОЛЬКО ТЕНЯМ, и условие здесь стоит явным `kind = $3`, а не подразумевается,
+// как у ensureShadow: там оговорка досталась даром от правила про ник, а тут
+// вызывающий приходит со стороны и правило обязано быть видно в самом запросе.
+// Жителя добор тоже не трогает: возраст ему кладёт `narod enroll` из рецепта, и
+// зеркальному числу перебивать его незачем.
+func (p *Platform) SetShadowAges(ctx context.Context, byID map[int64]int) (int, error) {
+	changed := 0
+	for id, age := range byID {
+		if age <= 0 {
+			continue
+		}
+		tag, err := p.pool.Exec(ctx, `
+			UPDATE users SET age = $2
+			 WHERE id = $1 AND kind = $3 AND age IS DISTINCT FROM $2::smallint
+			   AND anonymized_at IS NULL`, id, age, KindShadow)
+		if err != nil {
+			return changed, fmt.Errorf("возраст участника %d: %w", id, err)
 		}
 		changed += int(tag.RowsAffected())
 	}

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -487,6 +488,31 @@ func splitNameAge(alt string) (name, age string) {
 		return strings.TrimSpace(alt[:i]), strings.TrimSpace(alt[i+1:])
 	}
 	return strings.TrimSpace(alt), ""
+}
+
+// AgeYears — число лет из строки возраста сайта («43 года», «21 год», «48 лет»).
+//
+// Ноль означает «сайт возраста не показал», и это рабочий случай, а не дрейф
+// вёрстки: возраст в анкете необязателен, а у части авторов alt приходит одним
+// ником. Поэтому разбор снисходительный — тот же довод, что у ParseGenders.
+//
+// Берётся ПЕРВОЕ число строки: всё, что мы про неё знаем, — что склонение стоит
+// после числа. Больше двухсот отбрасывается: это уже не возраст, а мусор из
+// чужой разметки, и класть его в базу незачем.
+func AgeYears(s string) int {
+	i := strings.IndexFunc(s, unicode.IsDigit)
+	if i < 0 {
+		return 0
+	}
+	j := i
+	for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+		j++
+	}
+	n, err := strconv.Atoi(s[i:j])
+	if err != nil || n <= 0 || n > 200 {
+		return 0
+	}
+	return n
 }
 
 // absolutize достраивает относительные ссылки сайта до абсолютных. Схему, кроме

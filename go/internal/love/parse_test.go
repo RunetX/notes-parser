@@ -418,6 +418,28 @@ func TestSplitNameAge(t *testing.T) {
 	}
 }
 
+// AgeYears читает то, что отдал сайт, и молчит обо всём остальном: пустой
+// возраст — рабочий случай (в анкете он необязателен), а число за двумя сотнями
+// это уже не возраст, а мусор из чужой разметки.
+func TestAgeYears(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"43 года", 43},
+		{"21 год", 21},
+		{"48 лет", 48},
+		{"", 0},
+		{"неизвестно", 0},
+		{"0 лет", 0},
+		{"1024 года", 0},
+	} {
+		if got := AgeYears(tc.in); got != tc.want {
+			t.Errorf("AgeYears(%q) = %d, ожидалось %d", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestDigitsOf(t *testing.T) {
 	if got := digitsOf("/profile/981563/"); got != "981563" {
 		t.Errorf("digitsOf: %q", got)

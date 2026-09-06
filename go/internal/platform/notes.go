@@ -55,6 +55,7 @@ const noteViewColumns = `
 	CASE WHEN n.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
 	CASE WHEN n.anonymous THEN false ELSE coalesce(u.persona, false) END,
 	CASE WHEN n.anonymous THEN false ELSE coalesce(u.kind, 0) = 2 END,
+	CASE WHEN n.anonymous THEN 0     ELSE coalesce(u.age, 0)        END,
 	coalesce(n.author_id = $1, false),
 	n.pinned_at IS NOT NULL,
 	n.stage,
@@ -76,15 +77,16 @@ func scanNoteView(row pgx.Row) (NoteView, error) {
 		shadow  bool
 		persona bool
 		system  bool
+		age     int16
 	)
 	err := row.Scan(&v.ID, &v.Anonymous, &v.Body, &v.Status, &v.CommentsClosed, &v.Locked, &v.CommentCount,
 		&v.PublishedAt, &v.PublishedExact, &v.LastCommentAt, &v.EditedAt,
-		&author, &nick, &sha, &mime, &gender, &shadow, &persona, &system, &v.Own, &v.Pinned, &v.Stage,
+		&author, &nick, &sha, &mime, &gender, &shadow, &persona, &system, &age, &v.Own, &v.Pinned, &v.Stage,
 		&v.SynthOf)
 	v.Author = Author{
 		ID: idOf(author), Nick: strOf(nick),
 		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
-		Persona: persona, System: system,
+		Persona: persona, System: system, Age: int(age),
 	}
 	return v, err
 }

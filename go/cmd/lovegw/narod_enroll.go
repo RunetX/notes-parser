@@ -79,6 +79,9 @@ func narodEnroll(ctx context.Context, cfg *config.Config, cardsDir, worldPath st
 			if err := p.SetPersonaBio(ctx, a.PlatformUserID, narod.PublicBio(card.Persona)); err != nil {
 				return fmt.Errorf("биография жителя %s: %w", card.ID, err)
 			}
+			if err := p.SetPersonaAge(ctx, a.PlatformUserID, card.Persona.Age); err != nil {
+				return fmt.Errorf("возраст жителя %s: %w", card.ID, err)
+			}
 			fmt.Printf("%s уже заведён: анкета %d, биография обновлена\n", card.ID, a.PlatformUserID)
 			continue
 		}
@@ -90,6 +93,11 @@ func narodEnroll(ctx context.Context, cfg *config.Config, cardsDir, worldPath st
 		// без неё это житель, про которого на площадке не сказано ничего.
 		if err := p.SetPersonaBio(ctx, id, narod.PublicBio(card.Persona)); err != nil {
 			return fmt.Errorf("биография жителя %s: %w", card.ID, err)
+		}
+		// Возраст — то, что стоит после ника в ленте и в треде. У живого он есть
+		// только пока тот тень; житель получает его отсюда, из рецепта.
+		if err := p.SetPersonaAge(ctx, id, card.Persona.Age); err != nil {
+			return fmt.Errorf("возраст жителя %s: %w", card.ID, err)
 		}
 		// Пол ставится сразу и из карточки: без него страница нарисует
 		// нейтральный силуэт, а житель у нас всегда мужчина или женщина — это

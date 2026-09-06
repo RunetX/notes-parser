@@ -331,6 +331,38 @@ func (s *Store) CommentIDs(ctx context.Context, noteID string) (map[int64]bool, 
 	return s.queryInt64Set(ctx, `SELECT id FROM comments WHERE note_id = ?`, noteID)
 }
 
+// LatestAuthorAges — «ссылка на анкету → возраст», по САМОЙ СВЕЖЕЙ реплике
+// каждого автора. Нужен разовому добору возраста на площадку: живой поток кладёт
+// его сам, но только новым репликам, а здесь он лежит с первого дня зеркала.
+//
+// Самая свежая, а не любая: возраст растёт. У человека с репликами 2014 года в
+// базе есть и «31 год», и «43 года», и правильный из них ровно один.
+//
+// MAX(id) внутри GROUP BY — приём SQLite «bare column»: остальные колонки строки
+// берутся из той, где максимум. В другой СУБД так нельзя, но у зеркала база
+// одна и другой не будет.
+func (s *Store) LatestAuthorAges(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT author_link, author_age, MAX(id)
+		  FROM comments
+		 WHERE author_age <> '' AND author_link <> ''
+		 GROUP BY author_link`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var link, age string
+		var id int64
+		if err := rows.Scan(&link, &age, &id); err != nil {
+			return nil, err
+		}
+		out[link] = age
+	}
+	return out, rows.Err()
+}
+
 func scanComment(rows *sql.Rows) (Comment, error) {
 	var c Comment
 	var published, createdAt sql.NullString

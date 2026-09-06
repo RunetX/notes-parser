@@ -47,7 +47,11 @@ type Profile struct {
 	// странице: читатель вправе знать, с кем говорит. Справка (/help#narod) имён
 	// не называет намеренно — список из десяти ников устареет через неделю, а
 	// признак у анкеты не устареет.
-	Persona      bool
+	Persona bool
+	// Age — возраст рядом с ником, как в мобильной версии НГС. Ноль означает
+	// «не показываем», и у вошедшего участника он ноль всегда: возраст живёт
+	// только у тени и у жителя (0027_users_age.sql).
+	Age          int
 	Bio          string
 	CreatedAt    time.Time
 	AnonymizedAt *time.Time
@@ -100,7 +104,7 @@ type PubComment struct {
 // которого обезличивание живёт командой, а не кнопкой.
 const profileQuery = `
 	SELECT u.id, u.nick, u.avatar_sha, m.mime, u.gender, u.kind, u.role, u.persona,
-	       u.bio, u.created_at, u.anonymized_at, u.banned_until, u.ban_reason,
+	       coalesce(u.age, 0), u.bio, u.created_at, u.anonymized_at, u.banned_until, u.ban_reason,
 	       (SELECT count(*) FROM notes n
 	         WHERE n.author_id = u.id AND n.status = 0 AND NOT n.anonymous),
 	       (SELECT count(*) FROM comments c
@@ -115,10 +119,11 @@ func (p *Platform) UserProfile(ctx context.Context, id int64) (Profile, error) {
 		v    Profile
 		sha  []byte
 		mime *string
+		age  int16
 	)
 	err := p.pool.QueryRow(ctx, profileQuery, id).Scan(
 		&v.ID, &v.Nick, &sha, &mime, &v.Gender, &v.Kind, &v.Role, &v.Persona,
-		&v.Bio, &v.CreatedAt, &v.AnonymizedAt, &v.BannedUntil, &v.BanReason,
+		&age, &v.Bio, &v.CreatedAt, &v.AnonymizedAt, &v.BannedUntil, &v.BanReason,
 		&v.Notes, &v.Comments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, fmt.Errorf("участник %d: %w", id, ErrNotFound)
@@ -126,6 +131,7 @@ func (p *Platform) UserProfile(ctx context.Context, id int64) (Profile, error) {
 	if err != nil {
 		return Profile{}, fmt.Errorf("участник %d: %w", id, err)
 	}
+	v.Age = int(age)
 	v.AvatarURL = MediaURL(sha, strOf(mime))
 	return v, nil
 }

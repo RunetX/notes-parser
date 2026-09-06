@@ -27,6 +27,7 @@ const commentViewColumns = `
 	CASE WHEN c.anonymous THEN 0     ELSE coalesce(u.gender, 0) END,
 	CASE WHEN c.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
 	CASE WHEN c.anonymous THEN false ELSE coalesce(u.persona, false) END,
+	CASE WHEN c.anonymous THEN 0     ELSE coalesce(u.age, 0)     END,
 	coalesce(c.author_id = $1, false),
 	rc.id, rc.anonymous,
 	CASE WHEN rc.anonymous THEN NULL
@@ -51,13 +52,14 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 		gender    Gender
 		shadow    bool
 		persona   bool
+		age       int16
 		replyID   *int64
 		replyAnon *bool
 		replyNick *string
 	)
 	err := row.Scan(&c.ID, &c.NoteID, &c.Anonymous, &c.Body, &c.Path, &depth, &c.Status,
 		&c.PublishedAt, &c.EditedAt,
-		&author, &nick, &sha, &mime, &display, &gender, &shadow, &persona, &c.Own,
+		&author, &nick, &sha, &mime, &display, &gender, &shadow, &persona, &age, &c.Own,
 		&replyID, &replyAnon, &replyNick)
 	if err != nil {
 		return CommentView{}, err
@@ -66,7 +68,7 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 	c.Author = Author{
 		ID: idOf(author), Nick: strOf(nick),
 		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
-		Persona: persona,
+		Persona: persona, Age: int(age),
 	}
 	c.Display = strOf(display)
 	// Адресат рисуется, только если строка адресата ещё существует: снесённого

@@ -229,6 +229,7 @@ func usage() {
   lovegw platform [-config config.json] migrate|doctor                                           # схема площадки и её состояние
   lovegw platform [-config config.json] [-db lovegw.db] reconcile                                # сверка зеркала с площадкой (она же бэкфилл)
   lovegw platform [-config config.json] [-limit N] media | avatar <id> …                         # добор байтов медиа; фото из анкеты НГС
+  lovegw platform [-config config.json] [-db lovegw.db] ages                                     # разовый добор возраста из зеркала (в сеть не ходит)
   lovegw platform [-config config.json] [-limit N] [-note ID] reply-scan                         # настоящее дерево ответов и пол из мобильной версии
   lovegw platform [-config config.json] [-bind <user_id>] [-days N] invite | role <id> <user|moderator|admin>
   lovegw platform [-config config.json] [-limit N] moderation                                    # очередь модерации и последние решения

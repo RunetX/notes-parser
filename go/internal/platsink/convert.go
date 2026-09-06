@@ -66,6 +66,11 @@ func commentFrom(noteID int64, c store.Comment, replyToID int64) platform.Mirror
 			ID:        love.ProfileIDFromLink(c.AuthorLink),
 			Nick:      c.AuthorName,
 			AvatarURL: avatarURL(c.AvatarURL),
+			// Возраст едет тем же путём, что ник и аватар, и из того же места
+			// разметки — alt аватара. Ничего нового зеркало ради него не читает:
+			// строка лежит в store.Comment с первого дня и с первого же дня
+			// стоит шапкой реплики в Telegram и MAX.
+			Age: love.AgeYears(c.AuthorAge),
 		},
 		Body:        body,
 		ReplyToID:   replyToID,

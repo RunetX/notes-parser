@@ -297,12 +297,18 @@ func (p *Platform) CompleteNGSLogin(ctx context.Context, prof MirroredAuthor, ge
 		// Но НЕ ник, выбранный у нас (nick_custom): текст согласия обещает «ник вы
 		// меняете сами», и без этой оговорки следующий же вход отменял бы выбор
 		// человека молча.
+		// Возраст СНИМАЕТСЯ. Он лежал на тени, где его писало зеркало, а
+		// вошедшему обещано, что поля анкеты, кроме ника, аватара и пола, не
+		// показываются, — значит с этой минуты его у нас нет вовсе, и не только
+		// на экране. Той же транзакцией, что и сам вход: «стал участником, а
+		// возраст ещё висит» — состояние, которого не должно быть.
 		if _, err := tx.Exec(ctx, `
 			UPDATE users
 			   SET kind = $2,
 			       nick = CASE WHEN nick_custom THEN nick ELSE $3 END,
 			       ngs_avatar_url = $4,
-			       gender = CASE WHEN $5::smallint = 0 THEN gender ELSE $5 END
+			       gender = CASE WHEN $5::smallint = 0 THEN gender ELSE $5 END,
+			       age = NULL
 			 WHERE id = $1`,
 			prof.ID, KindMember, prof.Nick, prof.AvatarURL, gender); err != nil {
 			return 0, fmt.Errorf("вход анкеты %d: %w", prof.ID, err)
@@ -434,8 +440,10 @@ func (p *Platform) RedeemInvite(ctx context.Context, code, nick string) (int64, 
 		if anonymized != nil {
 			return 0, ErrAnonymized
 		}
+		// age = NULL по тому же доводу, что и на входе по коду: возраст живёт
+		// только у тени, а пришедший по приглашению — участник.
 		if _, err := tx.Exec(ctx,
-			`UPDATE users SET kind = $2 WHERE id = $1`, userID, KindMember); err != nil {
+			`UPDATE users SET kind = $2, age = NULL WHERE id = $1`, userID, KindMember); err != nil {
 			return 0, fmt.Errorf("приглашение: %w", err)
 		}
 	}
