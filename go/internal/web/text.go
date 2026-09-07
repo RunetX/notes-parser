@@ -169,7 +169,7 @@ func docHTML(text string) template.HTML {
 	// Документ пишем мы сами: разметки НГС в нём нет, а вот ссылки живые. Гашение
 	// адресов (linksClickable) касается ЧУЖОГО текста — согласие с неработающей
 	// ссылкой на оператора было бы издевательством над правом, которое оно даёт.
-	st := bbState{era: era{links: linkAll}}
+	st := newBBState(era{links: linkAll}, text)
 	for i, para := range paragraphs(text) {
 		if i == 0 {
 			// Первая строка файла и есть заголовок документа — тот же, что
@@ -208,7 +208,7 @@ func renderBody(prefix template.HTML, text string, e era) template.HTML {
 	}
 	var b strings.Builder
 	b.Grow(len(text) + 32*len(paras))
-	st := bbState{era: e}
+	st := newBBState(e, text)
 	for i, p := range paras {
 		b.WriteString("<p>")
 		if i == 0 {
@@ -256,6 +256,9 @@ func writeLines(b *strings.Builder, para string, st *bbState) {
 			b.WriteString("<br>")
 		}
 		st.line(b, strings.TrimRight(line, " \t"))
+		// Конец строки — граница для тегов, которых никто не закрыл: они
+		// красят свою строку и дальше не идут (см. bbState.endLine).
+		st.endLine(b)
 	}
 }
 

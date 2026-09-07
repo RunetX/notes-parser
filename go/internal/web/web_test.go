@@ -1080,7 +1080,13 @@ func TestDarkPalettesRestateWhatBaseWroteForWhite(t *testing.T) {
 			continue
 		}
 		own := tokens(cssRule(t, css, themeBlock(th.ID)))
-		for _, k := range []string{"bb-red", "bb-green", "bb-blue", "bb-purple", "bb-orange", "bb-pink", "hl"} {
+		// Белого и чёрного здесь нет намеренно: они объявлены через var(--card)
+		// и var(--ink), то есть уже едут за темой, — а перечисленные заданы
+		// значением и на тёмном листе достались бы от белого.
+		for _, k := range []string{
+			"bb-red", "bb-green", "bb-blue", "bb-purple", "bb-orange", "bb-pink",
+			"bb-cyan", "bb-brown", "bb-yellow", "bb-grey", "hl",
+		} {
 			if own[k] == "" {
 				t.Errorf("тёмная «%s» не объявила --%s: достанется значение для белого листа", th.Name, k)
 			}

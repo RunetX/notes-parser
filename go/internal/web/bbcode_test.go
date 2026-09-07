@@ -51,6 +51,68 @@ func TestMarkupAfterSunsetStaysText(t *testing.T) {
 	}
 }
 
+// СТАРАЯ ЗАПИСЬ ЦВЕТА — через двоеточие, и в архиве она главная: 1 196
+// вхождений против 254 у знакомого «=» (замер 07.09.2026 по всему архиву).
+// Пришедшая ей на смену запись застала лишь последние три года разметки.
+func TestLegacyColorColonForm(t *testing.T) {
+	got := legacyNote("[color:red]красный[/color] обычный")
+	want := `<p><span class="bb-red">красный</span> обычный</p>`
+	if got != want {
+		t.Errorf("получено %q, ожидалось %q", got, want)
+	}
+	// «[color:Red]» в архиве 53 раза — регистр значения роли не играет.
+	if got := legacyNote("[color:Red]к[/color]"); got != `<p><span class="bb-red">к</span></p>` {
+		t.Errorf("верхний регистр значения: %q", got)
+	}
+}
+
+// Цвета, которые открыла старая запись: ими писали до 2011 года, и прежний
+// список их не знал. Белый красится фоном карточки, а не белым: им прятали
+// текст, и на тёмной теме буквальный белый показал бы спрятанное.
+func TestLegacyColorsOfTheColonEra(t *testing.T) {
+	for _, c := range []string{"cyan", "brown", "yellow", "grey", "white", "black"} {
+		got := legacyNote("[color:" + c + "]x[/color]")
+		if !strings.Contains(got, `<span class="bb-`+c+`">x</span>`) {
+			t.Errorf("цвет %s не покрасился: %s", c, got)
+		}
+	}
+	// Незнакомый цвет — не ошибка: тег снимается, текст остаётся. Инлайнового
+	// style у нас нет, поэтому «#666666» покрасить нечем.
+	if got := legacyNote("[color:#666666]серый[/color]"); got != "<p>серый</p>" {
+		t.Errorf("незнакомый цвет: %q", got)
+	}
+}
+
+// Тег, закрытый где-то ДАЛЬШЕ, строку переживает: в заметке 60950
+// «[color:purple]» открыт на второй строке, а закрыт на четвёртой, и покрашены
+// обязаны быть все три.
+func TestUnclosedTagsDoNotBreakMultilineColor(t *testing.T) {
+	got := legacyNote("[color:purple]первая\nвторая\nтретья[/color]")
+	if n := strings.Count(got, `<span class="bb-purple">`); n != 1 {
+		t.Errorf("цвет через строки разорван на %d кусков: %s", n, got)
+	}
+	if !strings.Contains(got, "третья</span>") {
+		t.Errorf("цвет не дожил до последней строки: %s", got)
+	}
+}
+
+// А тег, которого не закрыли ВОВСЕ, красит свою строку и дальше не идёт
+// (решение владельца 07.09.2026: так это выглядело на НГС). Прежде он красил
+// весь остаток заметки — по замеру до заката это 194 текста на 487 401.
+func TestUnclosedTagEndsWithItsLine(t *testing.T) {
+	got := legacyNote("[color:grey]серая строка\nобычная строка")
+	if !strings.Contains(got, `<span class="bb-grey">серая строка</span><br>обычная строка`) {
+		t.Errorf("незакрытый цвет не кончился строкой: %s", got)
+	}
+	if got := legacyNote("[b]жирная\nобычная"); !strings.Contains(got, "<b>жирная</b><br>обычная") {
+		t.Errorf("незакрытый [b] не кончился строкой: %s", got)
+	}
+	// И через абзац он тоже не возвращается: возвращается только закрытое.
+	if got := legacyNote("[b]жирная\n\nдругой абзац"); strings.Count(got, "<b>") != 1 {
+		t.Errorf("незакрытый [b] вернулся в следующем абзаце: %s", got)
+	}
+}
+
 // Живая разметка архива ПЕРЕКРЁСТНАЯ: «[b][i]…[/b][/i]» — обычное дело.
 // Элементы HTML так пересекаться не умеют, поэтому порядок чинится, а смысл
 // сохраняется; пустых пар при этом появляться не должно.
@@ -196,11 +258,12 @@ func TestNativeMarkupNeverLeaks(t *testing.T) {
 	}
 }
 
-// Справочник под формой и разбор — один список цветов, а не два похожих:
-// разъехавшись, подсказка пообещала бы человеку цвет, которого страница не
-// красит. Заодно проверяется, что образцы прогнаны РАЗБОРОМ, а не написаны
-// руками: скобки в них не остаются.
-func TestMarkupHelpCoversEveryColor(t *testing.T) {
+// Справочник под формой — ПОДМНОЖЕСТВО того, что разбор красит: показать мы
+// умеем и цвета 2008 года (белый, чёрный, cyan…), а предлагать их незачем.
+// Проверяется поэтому включение, а не равенство: каждый предложенный цвет
+// обязан краситься, иначе подсказка обещает то, чего не будет. Заодно — что
+// образцы прогнаны РАЗБОРОМ, а не написаны руками: скобки в них не остаются.
+func TestMarkupHelpCoversEveryOfferedColor(t *testing.T) {
 	rows := markupHelp()
 	if len(rows) == 0 {
 		t.Fatal("справочник разметки пуст")
@@ -211,8 +274,8 @@ func TestMarkupHelpCoversEveryColor(t *testing.T) {
 		}
 	}
 	colors := string(rows[len(rows)-1].Sample)
-	if n := strings.Count(colors, `<span class="bb-`); n != len(bbColors) {
-		t.Errorf("в справочнике %d цветов из %d", n, len(bbColors))
+	if n := strings.Count(colors, `<span class="bb-`); n != len(bbColorNames) {
+		t.Errorf("в справочнике %d цветов из %d предлагаемых", n, len(bbColorNames))
 	}
 	for _, c := range bbColorNames {
 		if !bbColors[c.Code] {

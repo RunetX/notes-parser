@@ -53,6 +53,17 @@
   --bb-purple: purple;
   --bb-orange: orange;
   --bb-pink: pink;
+  /* Цвета старой записи «[color:cyan]» — ими писали до 2011 года. На белом
+     листе они те же, что были на сайте: жёлтый и на нём читался еле-еле.
+     Белый и чёрный не свои, а тёмы: «белым» на сайте прятали текст в фоне,
+     «чёрным» писали цветом обычного текста, и взятые буквально они на тёмной
+     теме сделали бы ровно обратное. */
+  --bb-cyan: cyan;
+  --bb-brown: brown;
+  --bb-yellow: yellow;
+  --bb-grey: grey;
+  --bb-white: var(--card);
+  --bb-black: var(--ink);
   --hl: #f3f6f9;
   --step: 14px;
 }
@@ -76,6 +87,10 @@
   --bb-purple: #b48ae6;
   --bb-orange: #e39a45;
   --bb-pink: #f0a0c0;
+  --bb-cyan: #5fc9c9;
+  --bb-brown: #c08a5e;
+  --bb-yellow: #d8c455;
+  --bb-grey: #9aa3ab;
   --hl: #232a31;
   --sil-fade: .72;
 }
@@ -136,6 +151,10 @@
   --bb-purple: #b48ae6;
   --bb-orange: #e39a45;
   --bb-pink: #f0a0c0;
+  --bb-cyan: #5fc9c9;
+  --bb-brown: #c08a5e;
+  --bb-yellow: #d8c455;
+  --bb-grey: #9aa3ab;
   --hl: #2f3841;
   --sil-fade: .72;
 }
@@ -479,6 +498,12 @@ a:hover { text-decoration: underline; }
 .bb-purple { color: var(--bb-purple); }
 .bb-orange { color: var(--bb-orange); }
 .bb-pink { color: var(--bb-pink); }
+.bb-cyan { color: var(--bb-cyan); }
+.bb-brown { color: var(--bb-brown); }
+.bb-yellow { color: var(--bb-yellow); }
+.bb-grey { color: var(--bb-grey); }
+.bb-white { color: var(--bb-white); }
+.bb-black { color: var(--bb-black); }
 
 /* Смайлы НГС в тексте (:::popcorn:::). Размер у каждого свой (от 15×15 до
    100×20) и приезжает атрибутами width/height из самого файла, поэтому стилю
