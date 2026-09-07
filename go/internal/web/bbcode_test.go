@@ -253,6 +253,12 @@ func TestNoteTitleDropsMarkupWhereThePageParsesIt(t *testing.T) {
 			"[b]Объявление[/b] КПН",
 		},
 		{
+			"НГС до заката: старая форма кода снимается так же",
+			platform.NoteView{ID: 200000, Body: "Всем доброго утра ~flowers~",
+				PublishedAt: time.Date(2011, 5, 1, 0, 0, 0, 0, time.UTC)},
+			"Всем доброго утра",
+		},
+		{
 			"незнакомый код смайла остаётся текстом",
 			platform.NoteView{ID: platform.NativeIDBase + 16, Body: ":::такогонет::: и всё",
 				PublishedAt: time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)},

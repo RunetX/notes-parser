@@ -53,6 +53,48 @@ func TestUnknownSmileyStaysText(t *testing.T) {
 	}
 }
 
+// СТАРАЯ ФОРМА КОДА — тильда, и в заметках она была основной: 34 718 вхождений
+// в 14 998 заметках против полутора тысяч «:::». Замер 07.09.2026 по всему
+// архиву; рубеж у обеих форм один — август 2017-го.
+func TestOldTildeSmileyRendered(t *testing.T) {
+	got := smileNote("всем ~flowers~ и хорошего дня")
+	if !strings.Contains(got, `<img class="sm" src="/assets/smile/flowers.`) {
+		t.Fatalf("смайл старой формы не подставлен: %s", got)
+	}
+	// alt — то, что человек написал: у старой формы это тильды, а не двоеточия.
+	if !strings.Contains(got, `alt="~flowers~"`) {
+		t.Errorf("в alt не исходный код: %s", got)
+	}
+}
+
+// Рубеж у форм ОДИН: сайт выключил их разом, и второй эпохи не заводится.
+func TestOldTildeSmileyAfterSunsetStaysText(t *testing.T) {
+	after := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := string(noteBodyHTML(platform.NoteView{ID: 312811, Body: "жду ~popcorn~", PublishedAt: after}))
+	if got != "<p>жду ~popcorn~</p>" {
+		t.Errorf("смайл подставлен там, где сайт его не показывал: %s", got)
+	}
+}
+
+// Тильда сама по себе — знак препинания, а не разметка: приблизительное «~5»,
+// диапазон «10~20» и неизвестный код остаются текстом. Правило то же, что у
+// «:::», и держится оно набором картинок, а не видом строки.
+func TestTildeAroundNonSmileyStaysText(t *testing.T) {
+	for _, in := range []string{"ждать ~5~ минут", "цена 10~20~30", "неизвестный ~cofee~ код", "~ ~"} {
+		if got := smileNote(in); got != "<p>"+in+"</p>" {
+			t.Errorf("%q дало %q", in, got)
+		}
+	}
+}
+
+// Формы разбираются ОДНИМ проходом, поэтому соседство их не путает.
+func TestBothSmileyFormsInOneLine(t *testing.T) {
+	got := smileNote("~boogi~ и :::agree:::")
+	if n := strings.Count(got, "<img "); n != 2 {
+		t.Errorf("подставлено картинок: %d — %s", n, got)
+	}
+}
+
 // Два смайла подряд — обычное дело, и «:::» между ними принадлежит обоим кодам.
 func TestSmileysBackToBack(t *testing.T) {
 	got := smileNote(":::boogi::::::agree:::")
@@ -95,8 +137,8 @@ func TestMirroredTextAfterSunsetKeepsCodes(t *testing.T) {
 
 // Картинки вшиты в бинарник и адресуются хешем содержимого, как вся статика.
 func TestSmileAssetsEmbedded(t *testing.T) {
-	if len(smiles) != 64 {
-		t.Errorf("картинок смайлов %d, ожидалось 64", len(smiles))
+	if len(smiles) != 87 {
+		t.Errorf("картинок смайлов %d, ожидалось 87", len(smiles))
 	}
 	for code, s := range smiles {
 		if s.w == 0 || s.h == 0 {
@@ -113,10 +155,12 @@ func TestSmileAssetsEmbedded(t *testing.T) {
 // это человек нажал кнопку и не получил обещанного. Рубежи сайта своему тексту
 // не указ: у него свои правила, и они шире.
 func TestNativeTextRendersSmileysAndMarkup(t *testing.T) {
-	n := platform.NoteView{ID: platform.NativeIDBase + 7, Body: "[b]наши[/b] :::popcorn:::", PublishedAt: now}
+	n := platform.NoteView{ID: platform.NativeIDBase + 7, Body: "[b]наши[/b] :::popcorn::: ~agree~", PublishedAt: now}
 	got := string(noteBodyHTML(n))
-	if !strings.Contains(got, `<img class="sm"`) {
-		t.Errorf("смайл в своём тексте не подставлен: %s", got)
+	// Обе формы: рубежи сайта своему тексту не указ, а тильда у писавших
+	// заметки на НГС в пальцах — она была там основной все двенадцать лет.
+	if n := strings.Count(got, `<img class="sm"`); n != 2 {
+		t.Errorf("смайлов в своём тексте подставлено %d: %s", n, got)
 	}
 	if !strings.Contains(got, "<b>наши</b>") {
 		t.Errorf("BB-код в своём тексте не разобран: %s", got)

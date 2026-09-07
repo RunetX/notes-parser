@@ -260,7 +260,8 @@ func stripMarkup(text string, e era) string {
 	}
 	if e.smiles {
 		text = smileyRe.ReplaceAllStringFunc(text, func(m string) string {
-			if _, ok := smiles[strings.Trim(m, ":")]; ok {
+			// Снимаются знаки ОБЕИХ форм: «:::popcorn:::» и «~popcorn~».
+			if _, ok := smiles[strings.Trim(m, ":~")]; ok {
 				return ""
 			}
 			return m
