@@ -64,9 +64,7 @@
          перезагрузки. Поэтому условие про СТРАНИЦУ, а не про число. */}}
     {{if .InThread}}
     <a class="hcount" href="#comments" title="Комментариев в этой заметке">
-      <svg class="ico" viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false">
-        <path d="M3 4.6A1.6 1.6 0 0 1 4.6 3h10.8A1.6 1.6 0 0 1 17 4.6v7.2a1.6 1.6 0 0 1-1.6 1.6H8.2L4.4 17a.6.6 0 0 1-1-.45v-2.95A1.6 1.6 0 0 1 3 11.8z"/>
-      </svg>
+      {{template "ico-comment" 18}}
       <span class="n">{{.Thread}}</span>
     </a>
     {{end}}
@@ -88,10 +86,7 @@
          (page.Capped), потому что это про потолок запроса, а не про вёрстку. */}}
     <a class="bell{{if .Unread}} has{{end}}" href="/events"
        title="События: ответы вам, упоминания и решения модерации">
-      <svg class="ico" viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true" focusable="false">
-        <path d="M10 2a1.2 1.2 0 0 1 1.2 1.2v.5A5 5 0 0 1 15 8.5v3l1.3 2.1a.6.6 0 0 1-.5.9H4.2a.6.6 0 0 1-.5-.9L5 11.5v-3a5 5 0 0 1 3.8-4.8v-.5A1.2 1.2 0 0 1 10 2z"/>
-        <path d="M8.1 16.2h3.8a1.9 1.9 0 0 1-3.8 0z"/>
-      </svg>
+      {{template "ico-bell"}}
       {{if .Unread}}<span class="cnt">{{if .Capped}}99+{{else}}{{.Unread}}{{end}}</span>{{end}}
     </a>
     {{end}}

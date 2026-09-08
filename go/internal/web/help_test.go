@@ -202,3 +202,60 @@ func TestHelpMessengersFollowTheSettings(t *testing.T) {
 		t.Error("рассказали про MAX, которого у площадки нет")
 	}
 }
+
+// ── Иллюстрации ───────────────────────────────────────────────────────────
+
+// Значок в справке обязан быть ТЕМ САМЫМ, что стоит на странице, а не его
+// портретом: справка, показавшая непохожий знак, учит искать несуществующее.
+// Держится это общим шаблоном (parts/icons.gohtml), и вот проверка, что оба
+// места берут его оттуда, — иначе первая же правка значка разведёт их молча.
+func TestHelpDrawsTheSameIconsAsPages(t *testing.T) {
+	st := &fakeStore{total: 1, notes: []platform.NoteView{sampleNote()}, note: sampleNote()}
+	h := openServer(t, st)
+
+	// Переключатель вида: страница заметки и раздел «Как читать».
+	note := do(h, guest(t, "GET", "/n/312811")).Body.String()
+	read := do(h, guest(t, "GET", "/help/read")).Body.String()
+	for _, want := range []string{
+		`<rect x="5" y="6.8" width="10" height="2.4" rx="1.2"/>`, // лесенка — дерево
+		`<rect x="1" y="6.8" width="14" height="2.4" rx="1.2"/>`, // вровень — линейный
+	} {
+		if !strings.Contains(note, want) || !strings.Contains(read, want) {
+			t.Errorf("значок переключателя разошёлся между страницей и справкой: %s", want)
+		}
+	}
+
+	// Значок реплики: липкая шапка треда и та же страница справки.
+	const speech = `<path d="M3 4.6A1.6 1.6 0 0 1 4.6 3h10.8A1.6 1.6`
+	if !strings.Contains(note, speech) || !strings.Contains(read, speech) {
+		t.Error("значок реплики в справке не тот, что в шапке")
+	}
+}
+
+// Демо-карточка ленты — ЖИВОЙ фрагмент, и врать значком ей нельзя. Номер у неё
+// из нативной полосы: с нулём она объявляла себя копией с НГС, то есть
+// противоречила соседней теме, которая этот значок и объясняет.
+func TestHelpDemoCardIsNative(t *testing.T) {
+	body := helpBody(t, "/help/read", Config{})
+	if !strings.Contains(body, `class="demo"`) {
+		t.Fatal("на странице нет живого снимка карточки")
+	}
+	if got := demoNote(); !platform.IsNative(got.ID) {
+		t.Errorf("демо-заметка №%d лежит вне нативной полосы: значок объявит её копией с НГС", got.ID)
+	}
+	// Нажимать в снимке нечего: ссылка ведёт в заметку, которой нет.
+	if !strings.Contains(body, "<div class=\"demo\" inert>") {
+		t.Error("снимок не помечен inert: ссылки внутри него живые")
+	}
+}
+
+// Набор кнопок реакций приезжает из ядра — как окно правки и пороги частоты.
+// Второй такой же список, набранный в шаблоне руками, разошёлся бы с настоящим.
+func TestHelpReactionsComeFromTheCore(t *testing.T) {
+	body := helpBody(t, "/help/signs", Config{})
+	for _, code := range platform.ReactionCodes {
+		if !strings.Contains(body, "/assets/smile/"+code+".") {
+			t.Errorf("в справке нет кнопки реакции %q", code)
+		}
+	}
+}

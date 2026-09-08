@@ -1272,6 +1272,58 @@ span.rxb { cursor: default; }
 /* «Справка → Как читать»: строка над заголовком темы. Мелкая и приглушённая —
    это дорога назад, а не содержание. */
 .crumb { font-size: 12px; color: var(--meta); margin: 0 0 6px; }
+/* Значок ВНУТРИ строки справки. Тот же svg, что в интерфейсе, поэтому размер и
+   цвет задаются здесь, а не в шаблоне: значок обязан читаться в тексте, а не
+   спорить с ним, — отсюда приглушённый цвет и выравнивание по строке. */
+.hico { display: inline-flex; align-items: center; vertical-align: -4px; color: var(--meta); }
+.hico .ico { width: 18px; height: 18px; }
+/* Список, где у каждого пункта свой значок: маркер убран — его роль исполняет
+   сам значок, а два маркера в строке читаются как опечатка. */
+.hicons { list-style: none; padding-left: 0; }
+/* Значок ВЫНЕСЕН в поле, а текст пункта течёт как обычно. Через flex нельзя:
+   он делает flex-элементом каждого ребёнка, и жирное имя со ссылками внутри
+   пункта разъезжается по колонкам (поймано глазом на первом же рендере). */
+.hicons li { position: relative; padding-left: 26px; }
+.hicons > li > .hico { position: absolute; left: 0; top: 3px; }
+/* ЖИВОЙ СНИМОК куска интерфейса внутри справки: та же разметка и те же стили,
+   что на настоящей странице, — поэтому он не устаревает и живёт во всех
+   палитрах. Рамка и подпись отделяют его от текста: без них карточка читается
+   как настоящая заметка, попавшая в справку по ошибке.
+
+   Нажатия внутри запрещены дважды. inert снимает и фокус, и клики — но он
+   моложе площадки, поэтому под ним лежит pointer-events: ссылка «Комментарии»
+   ведёт в заметку, которой не существует. */
+.demo {
+  margin: 14px 0 4px; padding: 10px; border: 1px dashed var(--rule);
+  border-radius: 3px; pointer-events: none;
+}
+.demo .notes { margin: 0; }
+.demo .note { border: 0; padding: 0; }
+/* Панель смайлов внутри снимка обязана открываться — это единственное нажатие,
+   которое здесь осмысленно (справочник), и pointer-events ему возвращаются. */
+.demo .smbox { pointer-events: auto; }
+/* Ряд образцов: кнопки реакций и смайлы с их кодами. */
+.hrow { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+/* Схема устройства — РЯД ТЕКСТОВЫХ КОРОБОК, а не картинка.
+   Причина не в лени: рисунок, сведённый к ширине телефона, отдал бы подписям
+   шесть точек кегля, а здесь текст остаётся текстом — его можно увеличить,
+   прочитать вслух читалкой и выделить. Ряд складывается в столбец сам
+   (flex-wrap), и на узком экране стрелка поворачивается вниз.
+   Цвета — токены, значит все четыре палитры даром. */
+.flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 14px 0; }
+.fbox {
+  flex: 1 1 9rem; min-width: 8rem; padding: 8px 10px;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--btn);
+}
+.fbox b { display: block; font-size: 13px; }
+.fbox span { display: block; margin-top: 2px; font-size: 11px; color: var(--meta); }
+/* Стрелка — знак, а не картинка: читалке она не нужна (aria-hidden), а глазу
+   говорит направление. Ширина фиксирована, чтобы коробки не прыгали. */
+.farr { flex: 0 0 auto; align-self: center; color: var(--meta); font-size: 15px; }
+@media (max-width: 560px) {
+  .flow { flex-direction: column; }
+  .farr { align-self: flex-start; margin-left: 12px; transform: rotate(90deg); }
+}
 /* Оглавление внизу темы отделено чертой: под ним уже не текст раздела. */
 .more { margin: 30px 0 0; padding-top: 14px; border-top: 1px solid var(--rule); }
 .more h2 { font-size: 15px; margin: 0 0 10px; }

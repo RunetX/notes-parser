@@ -14,19 +14,11 @@
   <nav class="switch">
     <a class="sw tree{{if not .Linear}} on{{end}}" href="{{.TreeURL}}"
        title="Древовидный вид комментариев" aria-label="Древовидный вид комментариев">
-      <svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false">
-        <rect x="1" y="2" width="14" height="2.4" rx="1.2"/>
-        <rect x="5" y="6.8" width="10" height="2.4" rx="1.2"/>
-        <rect x="9" y="11.6" width="6" height="2.4" rx="1.2"/>
-      </svg>
+      {{template "ico-view" "tree"}}
     </a>
     <a class="sw lin{{if .Linear}} on{{end}}" href="{{.FlatURL}}"
        title="Линейный вид комментариев" aria-label="Линейный вид комментариев">
-      <svg class="ico" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true" focusable="false">
-        <rect x="1" y="2" width="14" height="2.4" rx="1.2"/>
-        <rect x="1" y="6.8" width="14" height="2.4" rx="1.2"/>
-        <rect x="1" y="11.6" width="14" height="2.4" rx="1.2"/>
-      </svg>
+      {{template "ico-view" "linear"}}
     </a>
   </nav>
   {{/* Скрытая заметка ЗАТЕНЯЕТСЯ, а не исчезает, — но видит её только модератор
