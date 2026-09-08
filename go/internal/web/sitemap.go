@@ -75,7 +75,9 @@ func (s *Server) handleSitemapPage(w http.ResponseWriter, r *http.Request) {
 	// Первая страница карты начинается с самой площадки и бумаг: они меняются
 	// редко, но найтись обязаны, а из ленты на них ведёт только шапка с подвалом.
 	if num == 1 {
-		for _, p := range []string{"/", "/help", "/consents", "/privacy", "/disclaimer"} {
+		static := append([]string{"/"}, s.helpPaths()...)
+		static = append(static, "/consents", "/privacy", "/disclaimer")
+		for _, p := range static {
 			fmt.Fprintf(w, "<url><loc>%s%s</loc></url>\n", base, p)
 		}
 	}

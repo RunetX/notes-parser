@@ -357,8 +357,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemapIndex)
 	mux.HandleFunc("GET /sitemap/{name}", s.handleSitemapPage)
 	// Справка открыта всем, включая не вошедших: правила, которые видно только
-	// изнутри, — это не правила, а сюрприз.
+	// изнутри, — это не правила, а сюрприз. Тема — своя страница (help.go), а
+	// /help — оглавление: одна простыня отвечала на всякий вопрос и ни на один
+	// сразу.
 	mux.HandleFunc("GET /help", s.handleHelp)
+	mux.HandleFunc("GET /help/{topic}", s.handleHelpTopic)
 	// Бумаги — по той же причине и с добавкой от закона: политику обработки
 	// оператор обязан опубликовать так, чтобы её прочёл ЛЮБОЙ (ч. 2 ст. 18.1),
 	// значит за вход её убирать нельзя. /consents (множественное) — чтение

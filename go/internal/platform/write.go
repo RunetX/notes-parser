@@ -125,9 +125,24 @@ type rateRule struct {
 // легший на стык часов, в замере разрезан надвое. Отсюда девяносто — замеренный
 // максимум плюс запас на этот разрез; от шторма держит не этот порог, а соседний
 // («одна в десять секунд»), и он остаётся как был.
+// Числа порогов названы ПОИМЁННО, потому что читает их не только enforceRate:
+// справка обязана называть те же, что и отказ формы. Написанные в ней словами,
+// они разъехались ровно так, как этого и боялись, — 06.09.2026 часовой потолок
+// реплик стал девяноста, а в справке до 08.09.2026 стояли тридцать.
+const (
+	// NoteWindow — не чаще одной заметки за это время.
+	NoteWindow = 5 * time.Minute
+	// NotesPerDay — и не больше стольких за сутки.
+	NotesPerDay = 5
+	// CommentWindow — не чаще одной реплики за это время.
+	CommentWindow = 10 * time.Second
+	// CommentsPerHour — и не больше стольких за час.
+	CommentsPerHour = 90
+)
+
 var (
-	noteRates    = []rateRule{{5 * time.Minute, 1}, {24 * time.Hour, 5}}
-	commentRates = []rateRule{{10 * time.Second, 1}, {time.Hour, 90}}
+	noteRates    = []rateRule{{NoteWindow, 1}, {24 * time.Hour, NotesPerDay}}
+	commentRates = []rateRule{{CommentWindow, 1}, {time.Hour, CommentsPerHour}}
 )
 
 // rateQuery — пара запросов к одной очереди публикаций: СКОЛЬКО их у автора в

@@ -1246,14 +1246,47 @@ span.rxb { cursor: default; }
    крупным системным шрифтом даёт viewport 288px) такая строка распирает
    страницу вбок. Тот же приём, что у .text и .upub a. */
 #contacts a { overflow-wrap: anywhere; }
-/* Оглавление — плитками, а не списком: на телефоне список из девяти пунктов
-   занимает экран целиком, и до первого раздела человек доходит прокруткой. */
+/* Оглавление — плитками, а не списком: на телефоне список из одиннадцати
+   названий занимает экран целиком. Стоит оно ВНИЗУ темы («Другие разделы»):
+   наверху страницы место ответа, ради которого сюда и пришли. */
 .toc { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0 0 24px; }
 .toc a {
   font-size: 13px; padding: 4px 10px; border: 1px solid var(--rule);
   border-radius: 3px; background: var(--btn);
 }
 .toc a:hover { text-decoration: none; border-color: var(--link); }
+/* Карточки на оглавлении: название темы и строка, чем она отличается от
+   соседней. Колонки набираются сами (auto-fill), поэтому на телефоне это один
+   столбец, а на широком экране — три; отдельной мобильной ветки не нужно. */
+.hcards {
+  display: grid; gap: 10px; margin: 0 0 26px;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+}
+.hcard {
+  display: block; padding: 10px 12px; border: 1px solid var(--rule);
+  border-radius: 3px; background: var(--btn); color: var(--ink);
+}
+.hcard:hover { text-decoration: none; border-color: var(--link); }
+.hcard b { display: block; color: var(--link); }
+.hcard span { display: block; margin-top: 2px; font-size: 12px; color: var(--meta); }
+/* «Справка → Как читать»: строка над заголовком темы. Мелкая и приглушённая —
+   это дорога назад, а не содержание. */
+.crumb { font-size: 12px; color: var(--meta); margin: 0 0 6px; }
+/* Оглавление внизу темы отделено чертой: под ним уже не текст раздела. */
+.more { margin: 30px 0 0; padding-top: 14px; border-top: 1px solid var(--rule); }
+.more h2 { font-size: 15px; margin: 0 0 10px; }
+.more .toc { margin: 0; }
+/* Команды бота: слева команда, справа что делает. На узком экране столбцы
+   складываются в строки — определение уходит под термин, а не жмётся в колонку
+   шириной в слово. */
+.cmds { margin: 10px 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; }
+.cmds dt { white-space: nowrap; }
+.cmds dd { margin: 0; }
+@media (max-width: 560px) {
+  .cmds { display: block; }
+  .cmds dt { margin-top: 10px; }
+  .cmds dd { margin: 2px 0 0 14px; color: var(--meta); }
+}
 /* Номер правила виден: на него ссылаются в решениях модератора. */
 .rules li { margin: 8px 0; }
 .help code {

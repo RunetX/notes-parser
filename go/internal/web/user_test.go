@@ -99,7 +99,7 @@ func TestСтраницаЖителяНазываетСебя(t *testing.T) {
 	if !strings.Contains(body, "гараж в Первомайке") {
 		t.Error("биографии жителя нет на его странице")
 	}
-	if !strings.Contains(body, "/help#narod") {
+	if !strings.Contains(body, "/help/narod") {
 		t.Error("нет ссылки на объяснение в справке")
 	}
 }

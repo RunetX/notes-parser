@@ -1339,6 +1339,17 @@ func TestSitemapListsNotesInChunks(t *testing.T) {
 	if !strings.Contains(body, "<loc>https://t3h.ru/help</loc>") {
 		t.Errorf("в карте нет справки:\n%s", body)
 	}
+	// И каждая её тема отдельной строкой: справка теперь не одна страница, а
+	// одиннадцать, и ищут поиском именно их («правила», «как войти»). Про
+	// мессенджеры у этой сборки адресов нет, поэтому темы нет вовсе.
+	for _, topic := range helpTopics {
+		if topic.Slug == "messengers" {
+			continue
+		}
+		if want := "<loc>https://t3h.ru/help/" + topic.Slug + "</loc>"; !strings.Contains(body, want) {
+			t.Errorf("в карте нет темы справки /help/%s", topic.Slug)
+		}
+	}
 	if second := do(h, guest(t, "GET", "/sitemap/2.xml")).Body.String(); strings.Contains(second, "/help") {
 		t.Error("бумаги повторяются в каждом файле карты")
 	}

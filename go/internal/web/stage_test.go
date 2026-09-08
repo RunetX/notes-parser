@@ -53,7 +53,7 @@ func TestStageExplainsWhyThereIsNoForm(t *testing.T) {
 	if strings.Contains(body, `class="wform"`) {
 		t.Error("гостю в песочнице показали форму ответа")
 	}
-	if !strings.Contains(body, "жители") || !strings.Contains(body, "/help#narod") {
+	if !strings.Contains(body, "жители") || !strings.Contains(body, "/help/narod") {
 		t.Errorf("гостю не объяснили, почему формы нет:\n%s", tailOf(body))
 	}
 
@@ -62,7 +62,7 @@ func TestStageExplainsWhyThereIsNoForm(t *testing.T) {
 	if strings.Contains(member, `class="wform"`) {
 		t.Error("участнику в песочнице показали форму ответа")
 	}
-	if !strings.Contains(member, "/help#narod") {
+	if !strings.Contains(member, "/help/narod") {
 		t.Error("участнику не объяснили, почему формы нет")
 	}
 }
@@ -84,7 +84,7 @@ func TestOrdinaryNoteStillHasTheForm(t *testing.T) {
 	if !strings.Contains(body, `action="/n/312811/reply"`) {
 		t.Error("у обычной заметки пропала форма ответа")
 	}
-	if strings.Contains(body, "/help#narod") {
+	if strings.Contains(body, "/help/narod") {
 		t.Error("обычная заметка объявила себя песочницей")
 	}
 }
