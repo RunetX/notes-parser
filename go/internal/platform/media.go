@@ -255,12 +255,39 @@ func (p *Platform) missingMedia(ctx context.Context, what, sql string, limit int
 	return out, rows.Err()
 }
 
-// NoteThumbs — ПЕРВАЯ иллюстрация каждой из названных заметок.
+// mainImageFirst — порядок иллюстраций заметки, ГЛАВНАЯ первой.
+//
+// Понадобился он потому, что у одной заметки картинок бывает НЕСКОЛЬКО, а
+// показать в ленте, в канале и наверху страницы можно ровно одну. Копятся они у
+// ЗЕРКАЛЬНОЙ заметки: автор меняет иллюстрацию на НГС, а мы видим не замену, а
+// новый адрес — ключ у строки её ссылка (0003_note_images_url.sql), поэтому
+// прежняя остаётся лежать. У заметки 313234 так собралось четыре штуки: наша,
+// неверная с НГС, исправленная там же и снятая с нашей страницы.
+//
+// Правило владельца (10.09.2026): главная — НАША, если она есть, иначе
+// ПОСЛЕДНЯЯ с НГС. Своё поставил администратор осознанно; среди чужих верна
+// свежая — прежнюю потому и заменили. «Наше» отличается ПУСТЫМ
+// media.source_url, а не видом адреса (см. шапку файла): у картинки,
+// принесённой участником, источника нет вовсе, и по этой пустоте своё
+// отделяется от привезённого в обеих ветках SetNoteImageAsAdmin.
+//
+// Первым ключом идут БАЙТЫ: строка, у которой известна одна ссылка, не
+// нарисуется вовсе (MediaURL у неё пуст), и главной ей быть нельзя. Строку
+// media она при этом не находит, source_url читается пустым — то есть без этого
+// ключа не забранная картинка НГС притворилась бы нашей.
+//
+// Порядок ОДИН на все три места намеренно: разойдись они, читатель увидел бы в
+// ленте одну картинку, на странице другую, а в канале третью. Алиасы в нём
+// зашиты (i — note_images, mi — media), поэтому все три запроса зовут таблицы
+// одинаково.
+const mainImageFirst = `(i.sha256 IS NOT NULL) DESC, (coalesce(mi.source_url, '') = '') DESC, i.position DESC`
+
+// NoteThumbs — ГЛАВНАЯ иллюстрация каждой из названных заметок (mainImageFirst).
 //
 // Отдельный метод, а не NoteImages в цикле: лента показывает двадцать заметок, и
 // двадцать запросов вместо одного — это ровно тот расход, из-за которого лента
-// когда-то и получила свой индекс. Первая, а не все: в ленте карточка одна, и
-// вторая картинка в ней означала бы галерею, которой у заметки нет.
+// когда-то и получила свой индекс. Одна, а не все: в ленте карточка одна, а
+// галерея живёт на странице заметки.
 //
 // Строки без байтов (sha256 IS NULL — знаем ссылку, файла ещё нет) пропускаются:
 // показывать в ленте нечего, а гонять читателя на hsmedia.ru мы не станем.
@@ -271,12 +298,12 @@ func (p *Platform) NoteThumbs(ctx context.Context, ids []int64) (map[int64]Media
 	}
 	rows, err := p.pool.Query(ctx, `
 		SELECT DISTINCT ON (i.note_id)
-		       i.note_id, i.sha256, coalesce(m.mime, ''),
-		       coalesce(m.width, 0), coalesce(m.height, 0)
+		       i.note_id, i.sha256, coalesce(mi.mime, ''),
+		       coalesce(mi.width, 0), coalesce(mi.height, 0)
 		  FROM note_images i
-		  JOIN media m ON m.sha256 = i.sha256
+		  JOIN media mi ON mi.sha256 = i.sha256
 		 WHERE i.note_id = ANY($1)
-		 ORDER BY i.note_id, i.position`, ids)
+		 ORDER BY i.note_id, `+mainImageFirst, ids)
 	if err != nil {
 		return nil, fmt.Errorf("иллюстрации ленты: %w", err)
 	}
@@ -319,16 +346,23 @@ func (p *Platform) NoteImageCounts(ctx context.Context) (map[int64]int, error) {
 	return out, rows.Err()
 }
 
-// NoteImages — иллюстрации заметки в порядке показа. URL наш; у не забранных
-// байтов он пуст, и шаблон такую картинку просто не рисует.
+// NoteImages — иллюстрации заметки в порядке показа, ГЛАВНАЯ первой
+// (mainImageFirst). URL наш; у не забранных байтов он пуст, и шаблон такую
+// картинку просто не рисует.
+//
+// SourceURL здесь — источник ФАЙЛА (media.source_url), а не адрес строки
+// note_images: по его пустоте и отличается наша картинка от привезённой, и
+// спрашивают её ровно за этим. Прежде сюда попадала i.url, то есть у зеркальной
+// строки чужой адрес на hsmedia.ru; читателей у поля не было ни одного, а смысл
+// его расходился с тем, что кладёт Put.
 func (p *Platform) NoteImages(ctx context.Context, noteID int64) ([]Media, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT i.sha256, coalesce(m.mime, ''), coalesce(m.bytes, 0),
-		       coalesce(m.width, 0), coalesce(m.height, 0), i.url
+		SELECT i.sha256, coalesce(mi.mime, ''), coalesce(mi.bytes, 0),
+		       coalesce(mi.width, 0), coalesce(mi.height, 0), coalesce(mi.source_url, '')
 		  FROM note_images i
-		  LEFT JOIN media m ON m.sha256 = i.sha256
+		  LEFT JOIN media mi ON mi.sha256 = i.sha256
 		 WHERE i.note_id = $1
-		 ORDER BY i.position`, noteID)
+		 ORDER BY `+mainImageFirst, noteID)
 	if err != nil {
 		return nil, fmt.Errorf("иллюстрации заметки %d: %w", noteID, err)
 	}

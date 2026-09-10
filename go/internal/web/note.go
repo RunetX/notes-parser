@@ -62,9 +62,14 @@ type compose struct {
 
 type notePage struct {
 	page
-	Note     platform.NoteView
-	Images   []platform.Media
-	Comments []platform.CommentView
+	Note platform.NoteView
+	// Shots — иллюстрации заметки, ГЛАВНАЯ первой (порядок задаёт ядро), уже без
+	// строк, которые нечем нарисовать. Полосу и стрелки решает их число, поэтому
+	// считать оно обязано ровно то, что читатель увидит (см. shots.go).
+	Shots []shotView
+	// ShotsAnchor — куда возвращает «закрыть» в просмотрщике.
+	ShotsAnchor string
+	Comments    []platform.CommentView
 	// Linear — тред показан линейно (новые сверху), а не деревом.
 	Linear bool
 	// Replies — сколько ответов в ветке каждого комментария. Дерево показывается
@@ -234,7 +239,8 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		Note:        note,
 		NoteNGSSent: noteSent,
 		Origin:      origin,
-		Images:      images,
+		Shots:       shotsView(id, images),
+		ShotsAnchor: shotsAnchor(id),
 		Linear:      linear,
 		TreeURL:     noteURL(id, false, 1),
 		FlatURL:     noteURL(id, true, 1),

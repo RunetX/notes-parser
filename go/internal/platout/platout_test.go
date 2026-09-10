@@ -52,6 +52,22 @@ func (s *source) OutboundComments(_ context.Context, afterID int64, limit int) (
 	return out, nil
 }
 
+// Проход иллюстраций спрашивает ТЕ ЖЕ заметки, у которых картинка есть, — и
+// подделка обязана уважать курсор так же, как остальные два чтения: на нём
+// держится петля.
+func (s *source) OutboundNoteImages(_ context.Context, afterID int64, limit int) ([]platform.OutNoteImage, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	var out []platform.OutNoteImage
+	for _, n := range s.notes {
+		if n.ID > afterID && len(n.ImageSHA) > 0 && len(out) < limit {
+			out = append(out, n.Image())
+		}
+	}
+	return out, nil
+}
+
 type call struct {
 	kind     string // note | comment | thread
 	noteID   string
@@ -647,5 +663,100 @@ func TestNoteImageWithoutFileIsSkipped(t *testing.T) {
 	}
 	if svc.noteAt != platform.NativeIDBase {
 		t.Errorf("курсор на %d", svc.noteAt)
+	}
+}
+
+// Картинку приложили ПОЗЖЕ, когда курсор заметок уже ушёл вперёд: заметка
+// уходит в канал без неё, а следующий такт доносит иллюстрацию. Это и есть
+// живой случай 10.09.2026 (100000000041 — картинка через полтора часа после
+// поста), и чинит его отдельный проход с петлёй, а не курсор заметок: тот
+// назад не возвращается по построению.
+func TestLateImageIsCaughtUpAfterTheCursorMovedOn(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	plain := platform.OutNote{
+		ID: platform.NativeIDBase, AuthorID: 1443311, AuthorNick: "Рио",
+		Body: "пока без картинки", PublishedAt: time.Now(),
+	}
+	src := &source{notes: []platform.OutNote{plain}}
+	sk := &threadSink{}
+	svc := New(src, st, mediaWithFile(t), []mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 0 {
+		t.Fatalf("картинок отправлено %d, а её ещё не было", got)
+	}
+	if svc.noteAt != platform.NativeIDBase {
+		t.Fatalf("курсор заметок на %d: заметка ушла целиком", svc.noteAt)
+	}
+
+	// Администратор приложил иллюстрацию к уже отправленной заметке.
+	src.notes[0].ImageSHA, src.notes[0].ImageMIME = []byte{0xab, 0xcd}, "image/webp"
+
+	stats, err := svc.Once(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Images != 1 {
+		t.Errorf("в сводке иллюстраций %d, ждали 1", stats.Images)
+	}
+	if got := counts(sk.calls, "image"); got != 1 {
+		t.Fatalf("картинок отправлено %d, ждали 1", got)
+	}
+	if got := counts(sk.calls, "note"); got != 1 {
+		t.Errorf("заметка запощена %d раз", got)
+	}
+
+	// И третий такт ничего не повторяет: петля вернётся к этой заметке снова, а
+	// отправленное помнит message_targets, а не память процесса.
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 1 {
+		t.Errorf("картинка отправлена повторно: %d", got)
+	}
+}
+
+// Петля: дойдя до конца полосы, проход иллюстраций начинается сначала — иначе
+// он проверил бы каждую заметку ровно один раз за жизнь процесса и оказался бы
+// вторым курсором с той же бедой, что и первый.
+func TestImagePassLoopsBackToTheStart(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	plain := platform.OutNote{
+		ID: platform.NativeIDBase, AuthorID: 1443311, AuthorNick: "Рио",
+		Body: "пока без картинки", PublishedAt: time.Now(),
+	}
+	src := &source{notes: []platform.OutNote{plain}}
+	sk := &threadSink{}
+	svc := New(src, st, mediaWithFile(t), []mirror.Sink{sk}, "https://t3h.ru", quiet())
+
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Курсор иллюстраций угнан ЗА эту заметку — так он и стоит посреди круга по
+	// длинной полосе, — а картинку приложили к ней только теперь.
+	svc.imageAt = platform.NativeIDBase + 100
+	src.notes[0].ImageSHA, src.notes[0].ImageMIME = []byte{0xab, 0xcd}, "image/webp"
+
+	// Порция пуста: край полосы. Картинка ещё не ушла, круг только закрылся.
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if svc.imageAt != platform.NativeIDBase-1 {
+		t.Fatalf("курсор иллюстраций на %d, а порция была пуста", svc.imageAt)
+	}
+	if got := counts(sk.calls, "image"); got != 0 {
+		t.Fatalf("картинок отправлено %d, а круг ещё не вернулся", got)
+	}
+
+	// Следующий такт идёт с начала полосы — и находит её.
+	if _, err := svc.Once(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(sk.calls, "image"); got != 1 {
+		t.Errorf("картинок отправлено %d: круг к заметке не вернулся", got)
 	}
 }

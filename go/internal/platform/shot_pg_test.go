@@ -416,13 +416,23 @@ func TestАдминистраторСтавитКартинкуЗеркальн�
 	if len(imgs) != 1 || imgs[0].URL != shot.URL {
 		t.Fatalf("иллюстрации заметки: %+v", imgs)
 	}
-	if imgs[0].SourceURL != "https://hsmedia.ru/old.jpg" {
-		t.Fatalf("ссылка зеркальной строки потерялась: %q", imgs[0].SourceURL)
+	// А вот источник ФАЙЛА теперь наш — он и отличает своё от привезённого, и
+	// по нему же порядок показа ставит эту картинку главной: администратор
+	// выбрал её осознанно.
+	if imgs[0].SourceURL != "" {
+		t.Fatalf("источник файла %q, а файл принесли мы", imgs[0].SourceURL)
 	}
+	// Ссылка САМОЙ СТРОКИ при этом на месте — она ключ сверки, и спрашивается
+	// SQL'ем: показу этот адрес не нужен вовсе (страница собирает свой из
+	// sha256), а NoteImages отдаёт по колонке source_url источник файла.
+	var rowURL string
 	var rows int
-	if err := p.pool.QueryRow(ctx,
-		`SELECT count(*) FROM note_images WHERE note_id = 312811`).Scan(&rows); err != nil {
+	if err := p.pool.QueryRow(ctx, `
+		SELECT count(*), min(url) FROM note_images WHERE note_id = 312811`).Scan(&rows, &rowURL); err != nil {
 		t.Fatal(err)
+	}
+	if rowURL != "https://hsmedia.ru/old.jpg" {
+		t.Fatalf("ссылка зеркальной строки потерялась: %q", rowURL)
 	}
 	if rows != 1 {
 		t.Fatalf("строк иллюстраций %d, сверка досылала бы недостающие", rows)

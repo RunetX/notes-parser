@@ -78,6 +78,7 @@ const threadGrace = time.Hour
 type Source interface {
 	OutboundNotes(ctx context.Context, afterID int64, limit int) ([]platform.OutNote, error)
 	OutboundComments(ctx context.Context, afterID int64, limit int) ([]platform.OutComment, error)
+	OutboundNoteImages(ctx context.Context, afterID int64, limit int) ([]platform.OutNoteImage, error)
 }
 
 // MediaSource — где лежат байты аватара. Может быть nil: тогда заметка и
@@ -90,11 +91,12 @@ type MediaSource interface {
 // Stats — что обход сделал за проход.
 type Stats struct {
 	Notes    int
+	Images   int
 	Comments int
 }
 
 // Empty — делать было нечего (обычное состояние).
-func (s Stats) Empty() bool { return s.Notes+s.Comments == 0 }
+func (s Stats) Empty() bool { return s.Notes+s.Images+s.Comments == 0 }
 
 // Service — сам обход.
 type Service struct {
@@ -110,6 +112,11 @@ type Service struct {
 	// проверкой message_targets — она и так делается на каждом такте.
 	noteAt    int64
 	commentAt int64
+
+	// imageAt — курсор прохода иллюстраций, и он единственный ХОДИТ ПО КРУГУ:
+	// картинку прикладывают к заметке и через час, и через год, поэтому конца у
+	// этого обхода нет — дойдя до края полосы, он начинает сначала.
+	imageAt int64
 
 	// quiet — про какие заметки уже сказано «треда нет»: без этого лог
 	// заполнялся бы одной строкой раз в пятнадцать секунд.
@@ -127,7 +134,8 @@ func New(src Source, st *store.Store, media MediaSource, sinks []mirror.Sink, ba
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		log:     log,
 		noteAt:  platform.NativeIDBase - 1, commentAt: platform.NativeIDBase - 1,
-		quiet: map[string]bool{},
+		imageAt: platform.NativeIDBase - 1,
+		quiet:   map[string]bool{},
 	}
 }
 
@@ -156,14 +164,17 @@ func (s *Service) Run(ctx context.Context) error {
 				continue
 			}
 			if !st.Empty() {
-				s.log.Info("площадка отдана в каналы", "notes", st.Notes, "comments", st.Comments)
+				s.log.Info("площадка отдана в каналы",
+					"notes", st.Notes, "images", st.Images, "comments", st.Comments)
 			}
 		}
 	}
 }
 
-// Once — один проход: сперва заметки, потом комментарии. Порядок обязателен —
-// комментарий уходит в тред своей заметки, а тред заводится постом.
+// Once — один проход: заметки, иллюстрации, комментарии. Порядок обязателен —
+// комментарий уходит в тред своей заметки, а тред заводится постом; картинка же
+// стоит в треде первым сообщением, и пустив её после реплик, мы поставили бы её
+// под ответами на заметку, которой отвечавшие ещё не видели.
 func (s *Service) Once(ctx context.Context) (Stats, error) {
 	var st Stats
 	n, err := s.sendNotes(ctx)
@@ -171,6 +182,7 @@ func (s *Service) Once(ctx context.Context) (Stats, error) {
 	if err != nil {
 		return st, err
 	}
+	st.Images = s.sendLateImages(ctx)
 	c, err := s.sendComments(ctx)
 	st.Comments = c
 	return st, err
@@ -227,7 +239,7 @@ func (s *Service) sendNotes(ctx context.Context) (int, error) {
 			// теряется: следующий такт прочитает её снова, SentTargets скажет,
 			// что пост уже сделан, и повторится только картинка. Ровно та же
 			// механика, которой ждут треда комментарии.
-			switch s.sendNoteImage(ctx, sink, n) {
+			switch s.sendNoteImage(ctx, sink, n.Image()) {
 			case imageSent, imageSkipped:
 			case imageWaiting:
 				done[i] = false
@@ -238,6 +250,86 @@ func (s *Service) sendNotes(ctx context.Context) (int, error) {
 	}
 	s.noteAt = advance(s.noteAt, done, func(i int) int64 { return notes[i].ID })
 	return sent, nil
+}
+
+// sendLateImages — иллюстрации, приложенные к заметке ПОСЛЕ того, как она ушла
+// в канал.
+//
+// Курсор заметок идёт вперёд и живёт в памяти: запись, у которой на момент
+// прохода картинки не было, не спрашивается больше никогда. А приложить её
+// можно и час спустя — администратор ставит иллюстрацию любой заметке формой
+// правки, и 10.09.2026 так и вышло: у 100000000041 картинка появилась через
+// полтора часа после поста и не ушла ни в один канал, при том что тред был давно
+// пойман. То есть дело не в отправке, а в том, что спросить было НЕКОМУ.
+//
+// Поэтому проход свой и с ПЕТЛЁЙ: он идёт по нативным заметкам, у которых
+// картинка есть, а дойдя до края полосы, начинает сначала. Горизонта у него нет
+// намеренно — иллюстрацию прикладывают и к прошлогодней записи, — а цена петли
+// постоянна и равна цене прохода заметок: один запрос к Postgres и одна пакетная
+// проверка message_targets на приёмник. Своей отметки проход не заводит вовсе:
+// «уже отнесли» знает та же таблица, и потому лишний круг ничего не повторяет.
+//
+// Чего он НЕ делает — не переотправляет ЗАМЕНУ. Отметка ключуется заметкой, а не
+// файлом, и это правило площадки, а не недосмотр: картинка у нативной заметки
+// одна, и вторая в том же треде читалась бы как вторая иллюстрация. У зеркальной
+// всё иначе — там замена приезжает НОВОЙ строкой (ключ у неё адрес), и зеркало
+// честно несёт в тред обе.
+func (s *Service) sendLateImages(ctx context.Context) int {
+	imgs, err := s.noteImages(ctx)
+	if err != nil {
+		s.log.Error("чтение иллюстраций площадки", "err", err)
+		return 0
+	}
+	// Порция короче предела означает «дошли до конца», и следующий круг
+	// начинается с начала полосы. Курсор двигается ДО отправки: он про то, что
+	// прочитано, а не про то, что отправлено, — отправленное помнит SQLite.
+	if len(imgs) < batch {
+		s.imageAt = platform.NativeIDBase - 1
+	} else {
+		s.imageAt = imgs[len(imgs)-1].ID
+	}
+	if len(imgs) == 0 {
+		return 0
+	}
+	refs := make([]string, len(imgs))
+	for i, img := range imgs {
+		refs[i] = strconv.FormatInt(img.ID, 10)
+	}
+
+	sent := 0
+	for _, sink := range s.sinks {
+		already, err := s.st.SentTargets(ctx, sink.Name(), store.TargetNoteImage, refs)
+		if err != nil {
+			s.log.Error("чтение отправленных иллюстраций", "sink", sink.Name(), "err", err)
+			continue
+		}
+	perSink:
+		for i, img := range imgs {
+			if already[refs[i]] {
+				continue
+			}
+			switch s.sendNoteImage(ctx, sink, img) {
+			case imageSent:
+				s.log.Info("иллюстрация площадки отправлена", "note", img.ID, "sink", sink.Name())
+				sent++
+			case imageSkipped, imageWaiting:
+				// Держать здесь нечего: круг вернётся к этой заметке сам, а
+				// «треда нет» проход заметок уже отсчитал по threadGrace.
+			case imageFailed:
+				// Приёмник отказал — дальше по нему в этот такт не идём, чтобы
+				// не долбиться в занятый канал всей порцией.
+				break perSink
+			}
+		}
+	}
+	return sent
+}
+
+// noteImages — чтение иллюстраций под тем же сроком, что и остальные два.
+func (s *Service) noteImages(ctx context.Context) ([]platform.OutNoteImage, error) {
+	ctx, cancel := context.WithTimeout(ctx, readBudget)
+	defer cancel()
+	return s.src.OutboundNoteImages(ctx, s.imageAt, batch)
 }
 
 // imageResult — чем кончилась попытка отнести картинку заметки в её тред.
@@ -256,8 +348,8 @@ const (
 // картинка одна, а нативная полоса начинается со ста миллиардов, так что с
 // ref'ами зеркала (там это номер строки note_images в SQLite, число в тысячах)
 // она не столкнётся никогда.
-func (s *Service) sendNoteImage(ctx context.Context, sink mirror.Sink, n platform.OutNote) imageResult {
-	if len(n.ImageSHA) == 0 {
+func (s *Service) sendNoteImage(ctx context.Context, sink mirror.Sink, n platform.OutNoteImage) imageResult {
+	if len(n.SHA) == 0 {
 		return imageSkipped
 	}
 	ref := strconv.FormatInt(n.ID, 10)
@@ -277,14 +369,14 @@ func (s *Service) sendNoteImage(ctx context.Context, sink mirror.Sink, n platfor
 		s.warnOnce(sink.Name(), n.ID, "иллюстрацию площадки некуда отнести: треда заметки в этом канале нет")
 		return imageSkipped
 	}
-	data := s.mediaBytes(n.ImageSHA, n.ImageMIME)
+	data := s.mediaBytes(n.SHA, n.MIME)
 	if data == nil {
 		// Файла на диске нет — нести нечего, и ждать его неоткуда: хранилище
 		// наполняем мы сами, а не чужой сайт.
 		s.warnOnce(sink.Name(), n.ID, "иллюстрация площадки не найдена на диске")
 		return imageSkipped
 	}
-	msgID, err := sink.PostNoteImage(ctx, thread, s.mediaURL(n.ImageSHA, n.ImageMIME), data)
+	msgID, err := sink.PostNoteImage(ctx, thread, s.mediaURL(n.SHA, n.MIME), data)
 	if err != nil {
 		s.log.Warn("иллюстрация площадки не отправлена", "note", n.ID, "sink", sink.Name(), "err", err)
 		return imageFailed

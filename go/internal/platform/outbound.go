@@ -76,7 +76,7 @@ const outNoteQuery = `
 	        FROM note_images i
 	        JOIN media mi ON mi.sha256 = i.sha256
 	       WHERE i.note_id = n.id
-	       ORDER BY i.position
+	       ORDER BY ` + mainImageFirst + `
 	       LIMIT 1
 	  ) img ON true
 	 WHERE n.id > $1 AND n.id < $3 AND n.status = 0
@@ -119,6 +119,71 @@ func (p *Platform) OutboundNotes(ctx context.Context, afterID int64, limit int) 
 		n.AuthorID, n.AuthorNick, n.AvatarMIME = ngsIDOf(author), strOf(nick), strOf(mime)
 		if n.Anonymous {
 			n.AuthorNick = AnonNick
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// OutNoteImage — иллюстрация нативной заметки: всё, что нужно, чтобы отнести её
+// в тред мессенджера. Отдельным видом, а не OutNote с пустым автором: спрашивают
+// её у заметки, которая в канале УЖЕ стоит, и подпись с аватаром ей не нужны.
+type OutNoteImage struct {
+	ID          int64
+	PublishedAt time.Time
+	SHA         []byte
+	MIME        string
+}
+
+// Image — иллюстрация заметки тем же видом, каким её отдаёт OutboundNoteImages.
+// Нужно ради того, чтобы у отправки картинки была ОДНА дорога: свежую несёт
+// проход заметок, приложенную позже — проход иллюстраций, а функция у них общая.
+func (n OutNote) Image() OutNoteImage {
+	return OutNoteImage{ID: n.ID, PublishedAt: n.PublishedAt, SHA: n.ImageSHA, MIME: n.ImageMIME}
+}
+
+const outNoteImageQuery = `
+	SELECT n.id, n.published_at, img.sha256, img.mime
+	  FROM notes n
+	  LEFT JOIN users u ON u.id = n.author_id
+	  JOIN LATERAL (
+	      SELECT i.sha256, mi.mime
+	        FROM note_images i
+	        JOIN media mi ON mi.sha256 = i.sha256
+	       WHERE i.note_id = n.id
+	       ORDER BY ` + mainImageFirst + `
+	       LIMIT 1
+	  ) img ON true
+	 WHERE n.id > $1 AND n.id < $3 AND n.status = 0
+	   AND NOT n.stage AND NOT coalesce(u.persona, false)
+	 ORDER BY n.id
+	 LIMIT $2`
+
+// OutboundNoteImages — нативные заметки, у которых иллюстрация ЕСТЬ, после
+// afterID.
+//
+// Зачем отдельно от OutboundNotes. Картинку к заметке прикладывают и ПОСЛЕ
+// публикации — формой правки, решением администратора, — а курсор заметок к
+// этому времени давно ушёл вперёд и назад не возвращается. Спрашивать «а не
+// появилась ли картинка» надо, стало быть, не у свежих записей, а у ВСЕХ, у
+// которых она есть; вызывающий ходит по ним кругом.
+//
+// Отбор слово в слово повторяет OutboundNotes — полоса, status, песочница,
+// житель, — и это не совпадение: заметка, которой в канале быть не должно, не
+// должна отдать туда и свою иллюстрацию. JOIN LATERAL здесь внутренний, а не
+// LEFT: заметки без картинки в этом проходе не нужны вовсе.
+func (p *Platform) OutboundNoteImages(ctx context.Context, afterID int64, limit int) ([]OutNoteImage, error) {
+	rows, err := p.pool.Query(ctx, outNoteImageQuery, floorNative(afterID), clampLimit(limit), RestoredIDBase)
+	if err != nil {
+		return nil, fmt.Errorf("исходящие иллюстрации: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OutNoteImage
+	for rows.Next() {
+		var n OutNoteImage
+		if err := rows.Scan(&n.ID, &n.PublishedAt, &n.SHA, &n.MIME); err != nil {
+			return nil, fmt.Errorf("исходящие иллюстрации: %w", err)
 		}
 		out = append(out, n)
 	}

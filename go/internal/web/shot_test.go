@@ -413,6 +413,37 @@ func TestDropShotReachesCore(t *testing.T) {
 	}
 }
 
+// АДМИНИСТРАТОРСКАЯ ДВЕРЬ СИЛЬНЕЕ АВТОРСКОГО ОКНА, и проверяется это ровно там,
+// где было больно: на СВОЕЙ свежей нативной заметке (жалоба владельца
+// 10.09.2026 «не могу добавить картинку к своей же нативной заметке»). Прежде
+// editTarget первым проверял окно, и в свои десять минут администратор
+// проваливался в авторский режим — то есть поля файла на форме не было вовсе, а
+// на чужой зеркальной заметке было.
+func TestAdminGetsTheFileFieldOnHisOwnFreshNote(t *testing.T) {
+	st := noteStore()
+	target := makeEditable(st)
+	auth, token := signedInAs(t, platform.User{
+		ID: testProfileID, Nick: testNick, Kind: platform.KindMember, Role: platform.RoleAdmin,
+	})
+	srv := New(Config{BaseURL: "http://127.0.0.1", Log: quietLog()},
+		st, auth, &fakeWriter{}, newFakeMod(), nil)
+	t.Cleanup(func() { _ = srv.Close() })
+	srv.SetShots(newShots())
+
+	body := do(srv.routes(), as(guest(t, "GET", target+"/edit"), token)).Body.String()
+	if !strings.Contains(body, shotField) {
+		t.Fatal("поля файла нет: администратор в своё окно теряет собственную дверь")
+	}
+	if !strings.Contains(body, "multipart/form-data") {
+		t.Error("форма не принимает файл")
+	}
+	// И раз дверь администраторская — на форме стоит поле причины: правка
+	// пишется в журнал модерации, а не тратит авторское окно.
+	if !strings.Contains(body, "mreason") {
+		t.Error("поля причины нет: правка не попадёт в журнал")
+	}
+}
+
 // makeEditable делает заметку хранилища своей, нативной и свежей — то есть
 // такой, какую авторское окно править ещё даёт. Возвращает её адрес.
 func makeEditable(st *fakeStore) string {
