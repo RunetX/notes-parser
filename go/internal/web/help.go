@@ -87,6 +87,11 @@ type helpPage struct {
 	Contact  string
 	// EditMinutes — окно правки своей заметки (platform.EditWindow).
 	EditMinutes int
+	// LoginDays — сколько живёт код входа (platform.ChallengeTTL), в сутках.
+	// Из ядра, как и всё остальное на этой странице: 10.09.2026 выяснилось, что
+	// экран входа три недели обещал «час» рядом с честным «правку одобряет
+	// модератор», и разошлись эти фразы молча.
+	LoginDays int
 	// MaxPinned — сколько заметок можно закрепить наверху ленты.
 	MaxPinned int
 	// Пороги частоты — тоже из ядра (platform.NoteWindow и соседи).
@@ -168,6 +173,7 @@ func (s *Server) helpData(r *http.Request, current, title string) helpPage {
 		Operator:        op.Name,
 		Contact:         op.Contact,
 		EditMinutes:     int(platform.EditWindow / time.Minute),
+		LoginDays:       int(platform.ChallengeTTL / (24 * time.Hour)),
 		MaxPinned:       platform.MaxPinned,
 		NoteMinutes:     int(platform.NoteWindow / time.Minute),
 		NotesPerDay:     platform.NotesPerDay,

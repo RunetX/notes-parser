@@ -234,6 +234,14 @@ type codePage struct {
 	// для него нет вовсе.
 	Code    string
 	Problem string
+	// Days — сколько живёт код, В СУТКАХ и из ядра (platform.ChallengeTTL).
+	// Не словом в шаблоне: ровно так три недели и стояло «Код живёт час» рядом
+	// с честным «правку сначала одобряет модератор», и разошлись эти две фразы
+	// молча. Справка, разошедшаяся с поведением, хуже отсутствующей.
+	Days int
+	// Resumed — это та же проверка, что начата раньше, а не новый код. Человеку
+	// надо сказать разное: «вставьте код» и «код тот же, мы всё ещё ждём».
+	Resumed bool
 }
 
 // handleLoginStart читает анкету, заводит код и доставляет его.
@@ -271,6 +279,20 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 // надо вставить в поле «о себе». Проверка двусторонняя, поэтому код кладётся и
 // в куку: анкета докажет «анкета моя», кука — «проверку начал я».
 func (s *Server) startByProfileField(w http.ResponseWriter, r *http.Request, id int64, prof SiteProfile) {
+	// НАЧАТАЯ ПРОВЕРКА ВОЗОБНОВЛЯЕТСЯ, а не заменяется новым кодом, и это не
+	// удобство, а починка ловушки. Код теперь живёт неделю, потому что правку
+	// «о себе» одобряет модератор НГС; человек за эту неделю закроет вкладку и
+	// вернётся — и, введя номер анкеты заново, прежним поведением ВЫДАВАЛ СЕБЕ
+	// НОВЫЙ КОД, обесценивая тот, что уже лежит в анкете и вот-вот будет
+	// одобрен. То есть чем терпеливее человек, тем вернее он себе вредил.
+	//
+	// Показать код снова мы можем ровно потому, что он лежит в КУКЕ этого
+	// браузера, — правило «в базе только хеш, второй раз не покажем» не
+	// нарушено ни на букву: чужому коду взяться тут неоткуда.
+	if pid, code := s.pendingCode(r); pid == id && code != "" {
+		s.renderCodeState(w, r, http.StatusOK, id, prof, code, "", true)
+		return
+	}
 	ch, err := s.auth.StartProfileChallenge(r.Context(), id)
 	if err != nil {
 		s.oops(w, r, "выдача кода входа", err)
@@ -283,6 +305,12 @@ func (s *Server) startByProfileField(w http.ResponseWriter, r *http.Request, id 
 
 func (s *Server) renderCode(w http.ResponseWriter, r *http.Request, status int,
 	id int64, prof SiteProfile, code, problem string,
+) {
+	s.renderCodeState(w, r, status, id, prof, code, problem, false)
+}
+
+func (s *Server) renderCodeState(w http.ResponseWriter, r *http.Request, status int,
+	id int64, prof SiteProfile, code, problem string, resumed bool,
 ) {
 	// Аватар берём СВОЙ, из зеркала: CSP запрещает картинки с чужих хостов, и
 	// это тот случай, когда запрет полезен — иначе страница входа сообщала бы
@@ -299,6 +327,8 @@ func (s *Server) renderCode(w http.ResponseWriter, r *http.Request, status int,
 		Gender:    prof.Gender,
 		Code:      code,
 		Problem:   problem,
+		Days:      int(platform.ChallengeTTL / (24 * time.Hour)),
+		Resumed:   resumed,
 	})
 }
 
@@ -353,11 +383,18 @@ func (s *Server) checkCode(w http.ResponseWriter, r *http.Request,
 			"В поле «о себе» кода пока нет. Правку анкеты НГС проверяет модератор — "+
 				"возможно, она ещё не одобрена.")
 	case errors.Is(err, platform.ErrNoChallenge):
+		// Куку СНИМАЕМ: с возобновлением начатой проверки (startByProfileField)
+		// мёртвая кука заперла бы человека в кольце — «Начните заново» уводит
+		// на /login, а тот показал бы ему тот же мёртвый код снова.
+		s.setCookie(w, codeCookie, "", 0)
 		s.renderLogin(w, r, http.StatusUnauthorized,
 			"Код устарел или был заменён новым. Начните заново.")
 	case errors.Is(err, platform.ErrTooManyAttempts):
+		// Про минуту, а не про «возьмите новый код»: новый код теперь ХУЖЕ
+		// ожидания — он обесценит тот, что уже лежит в анкете на модерации.
 		s.renderCode(w, r, http.StatusTooManyRequests, id, prof, code,
-			"Слишком много проверок подряд. Возьмите новый код через час.")
+			"Слишком часто. Подождите минуту и нажмите снова — код цел, "+
+				"начинать заново не нужно.")
 	default:
 		s.oops(w, r, "проверка кода входа", err)
 	}

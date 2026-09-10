@@ -448,6 +448,68 @@ func TestLoginByProfileCode(t *testing.T) {
 	}
 }
 
+// Вернувшийся к НАЧАТОЙ проверке получает тот же код, а не новый.
+//
+// Регрессия на ловушку, вскрытую 10.09.2026 вместе с недельным сроком кода.
+// Правку «о себе» одобряет модератор НГС — значит человек закроет вкладку и
+// придёт через день; а прежнее поведение на повторный ввод номера анкеты
+// выдавало НОВЫЙ код и тем обесценивало тот, что уже лежал в анкете и вот-вот
+// был бы одобрен. То есть чем терпеливее человек, тем вернее он себе вредил.
+func TestReturningToPendingCheckKeepsTheSameCode(t *testing.T) {
+	auth := newFakeAuth()
+	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
+
+	w := do(h, post(t, "/login", url.Values{"profile": {"1493279"}}))
+	first := auth.codes[testProfileID]
+	jar := cookieOf(w, codeCookie)
+	if first == "" || jar == nil {
+		t.Fatal("первый код не выдан")
+	}
+
+	// Тот же человек, тот же браузер, снова называет свою анкету.
+	r := post(t, "/login", url.Values{"profile": {"1493279"}})
+	r.AddCookie(jar)
+	w = do(h, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("возврат к начатой проверке: код %d", w.Code)
+	}
+	if n := auth.starts[testProfileID]; n != 1 {
+		t.Fatalf("проверку заводили %d раза: прежний код обесценен, хотя он уже в анкете", n)
+	}
+	if !strings.Contains(w.Body.String(), first) {
+		t.Error("на странице возврата нет прежнего кода")
+	}
+
+	// И код этот по-прежнему рабочий — НГС наконец одобрил правку.
+	site.prof.AboutMe = "слеп, глуп, туп " + first
+	r = post(t, "/login/check", nil)
+	r.AddCookie(jar)
+	if got := do(h, r).Code; got != http.StatusSeeOther {
+		t.Fatalf("проверка прежним кодом: код %d, ожидался 303", got)
+	}
+}
+
+// Мёртвая кука проверки СНИМАЕТСЯ на отказе, иначе возобновление запирает
+// человека в кольце: «начните заново» ведёт на /login, а тот показывает всё тот
+// же мёртвый код.
+func TestDeadCheckCookieIsCleared(t *testing.T) {
+	auth := newFakeAuth()
+	site := &fakeSite{prof: SiteProfile{Nick: testNick}}
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, site, Config{})
+
+	r := post(t, "/login/check", nil)
+	r.AddCookie(&http.Cookie{Name: codeCookie, Value: "p:1493279:T3H-DEAD-0000"})
+	w := do(h, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("проверка мёртвым кодом: код %d, ожидался 401", w.Code)
+	}
+	c := cookieOf(w, codeCookie)
+	if c == nil || c.MaxAge >= 0 {
+		t.Fatal("мёртвая кука проверки не снята — человек заперт в кольце")
+	}
+}
+
 // Код в чужом «о себе» видит кто угодно, поэтому одной анкеты мало: проверку
 // засчитывают только вместе с кукой того, кто эту проверку начал.
 func TestVerificationNeedsBothHalves(t *testing.T) {

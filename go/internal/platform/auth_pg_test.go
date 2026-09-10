@@ -110,9 +110,20 @@ func TestChallengeIsReplacedNotDuplicated(t *testing.T) {
 	}
 }
 
-// Счётчик попыток обязан расти и на НЕУДАЧНОЙ проверке, иначе он не считает
-// ничего: каждая проверка — это наш запрос к НГС, и темп бережём именно так.
-func TestFailedAttemptsAreCounted(t *testing.T) {
+// Проверки ограничены ТЕМПОМ, а не числом, и тест этот — регрессия на живой
+// дефект, а не украшение.
+//
+// До 10.09.2026 стоял абсолютный потолок в двадцать проверок. Заводили его
+// против долбёжа по НГС, а защёлкивался он на том, кто ЖДЁТ одобрения правки
+// «о себе», — то есть на честном человеке, потому что ждущий жмёт много раз по
+// самой природе ожидания. Замер того дня: с 19.08 вход по коду начали десять
+// человек, дошёл ни один, а трое жали «Проверить» по 8, 16 и 20 раз — последнее
+// и есть потолок, в который упёрлись.
+//
+// Отсюда две проверки, и обе обязаны падать на прежнем коде: слишком частая
+// проверка отбивается и НЕ засчитывается, а много проверок, разнесённых во
+// времени, дверь не запирают.
+func TestChecksAreLimitedByPaceNotByCount(t *testing.T) {
 	p := testPlatform(t)
 	ctx := context.Background()
 
@@ -120,13 +131,54 @@ func TestFailedAttemptsAreCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < challengeMaxAttempts; i++ {
-		if err := p.VerifyProfileChallenge(ctx, 1493279, ch.Code, "тут кода нет"); !errors.Is(err, ErrCodeNotFound) {
-			t.Fatalf("попытка %d: %v", i, err)
+	// Отматываем отметку назад вместо ожидания: минута на тест — это минута.
+	rewind := func() {
+		if _, err := p.pool.Exec(ctx, `
+			UPDATE auth_challenges SET last_attempt_at = last_attempt_at - interval '2 minutes'
+			 WHERE subject = '1493279' AND verified_at IS NULL`); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if err := p.VerifyProfileChallenge(ctx, 1493279, ch.Code, ch.Code); !errors.Is(err, ErrTooManyAttempts) {
-		t.Fatalf("после потолка: %v, ожидалось ErrTooManyAttempts", err)
+	attempts := func() int16 {
+		var n int16
+		if err := p.pool.QueryRow(ctx, `
+			SELECT attempts FROM auth_challenges
+			 WHERE subject = '1493279' AND verified_at IS NULL`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	if err := p.VerifyProfileChallenge(ctx, 1493279, ch.Code, "тут кода нет"); !errors.Is(err, ErrCodeNotFound) {
+		t.Fatalf("первая проверка: %v", err)
+	}
+	if n := attempts(); n != 1 {
+		t.Fatalf("счётчик после неудачной проверки %d, ожидалась 1", n)
+	}
+	// Вторая сразу же — отбой по темпу.
+	if err := p.VerifyProfileChallenge(ctx, 1493279, ch.Code, "тут кода нет"); !errors.Is(err, ErrTooManyAttempts) {
+		t.Fatalf("проверка сразу за первой: %v, ожидалось ErrTooManyAttempts", err)
+	}
+	// И она не должна ни считаться, ни отодвигать следующую разрешённую:
+	// иначе двойной клик наказывал бы человека за нетерпение дважды.
+	if n := attempts(); n != 1 {
+		t.Fatalf("счётчик после отбитой по темпу проверки %d, ожидалась 1", n)
+	}
+
+	// Двадцать шесть проверок вразбивку — прежний потолок был двадцать.
+	for i := 0; i < 25; i++ {
+		rewind()
+		if err := p.VerifyProfileChallenge(ctx, 1493279, ch.Code, "тут кода нет"); !errors.Is(err, ErrCodeNotFound) {
+			t.Fatalf("проверка %d вразбивку: %v", i+2, err)
+		}
+	}
+	if n := attempts(); n != 26 {
+		t.Fatalf("счётчик %d, ожидалось 26", n)
+	}
+	// Дверь обязана открыться: человек ждал модерации и дождался.
+	rewind()
+	if err := p.VerifyProfileChallenge(ctx, 1493279, ch.Code, ch.Code); err != nil {
+		t.Fatalf("после 26 проверок вход не открылся: %v", err)
 	}
 }
 

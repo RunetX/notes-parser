@@ -22,6 +22,7 @@ const (
 
 type fakeAuth struct {
 	codes    map[int64]string            // выданный код по анкете (канал «о себе»)
+	starts   map[int64]int               // сколько раз заводили проверку: код у фейка детерминированный, и «выдали ли новый» видно только счётчиком
 	users    map[int64]platform.User     // кого знает площадка
 	tokens   map[string]int64            // живые сессии
 	consents map[int64]platform.Consents // что подписано
@@ -36,6 +37,7 @@ type fakeAuth struct {
 func newFakeAuth() *fakeAuth {
 	return &fakeAuth{
 		codes:    map[int64]string{},
+		starts:   map[int64]int{},
 		users:    map[int64]platform.User{},
 		tokens:   map[string]int64{},
 		consents: map[int64]platform.Consents{},
@@ -76,6 +78,7 @@ func (f *fakeAuth) StartProfileChallenge(_ context.Context, id int64) (platform.
 	}
 	code := "T3H-CODE-" + strconv.FormatInt(id%10000, 10)
 	f.codes[id] = code
+	f.starts[id]++
 	return platform.Challenge{Code: code, ExpiresAt: time.Now().Add(platform.ChallengeTTL)}, nil
 }
 
