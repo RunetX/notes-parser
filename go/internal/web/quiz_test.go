@@ -161,7 +161,7 @@ func TestMemberAnswerGoesToCore(t *testing.T) {
 func TestGuestCookieSurvivesGarbage(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: quizCookie, Value: "junk,7:1,8:,:2,9:99,-3:0,10:0"})
-	got := guestAnswers(req)
+	got := (&Server{}).guestAnswers(req)
 
 	if len(got) != 2 {
 		t.Fatalf("разобрано %v, ждали два годных ответа", got)
@@ -177,5 +177,44 @@ func TestGuestAnswerIsFinal(t *testing.T) {
 	have := map[int64]int{5: 0}
 	if got := addGuestAnswer(have, 5, 2); got != "5:0" {
 		t.Errorf("ответ переписан: %q", got)
+	}
+}
+
+// Кука гостя обязана ПЕРЕЖИТЬ префикс `__Host-`, и это не педантизм.
+//
+// Пишет её setCookie именем от cookieName, а на https он добавляет префикс;
+// читал же показ голую константу — и на боевой странице 11.09.2026 ответивший
+// гость видел те же три кнопки вместо разгадки, при том что кука в браузере
+// стояла. Тестовый сервер живёт на http, где префикса нет вовсе, поэтому
+// прежние восемь тестов рубрики зеленели на сломанном коде.
+//
+// Проверка идёт КРУГОМ и через настоящий обработчик: ответ гостя — GET той же
+// страницы с тем, что сервер сам положил в Set-Cookie. Так она ловит любое
+// расхождение имён, а не только это.
+func TestGuestCookieSurvivesTheHostPrefix(t *testing.T) {
+	h := newTestServer(t, quizStore(-1), Config{BaseURL: "https://t3h.ru"})
+
+	rec := do(h, post(t, "/n/312811/quiz", url.Values{"comment": {"1"}, "choice": {"2"}}))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("ответ гостя отвергнут: %d", rec.Code)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("сервер не поставил куку вовсе")
+	}
+	if name := cookies[0].Name; name != "__Host-quiz" {
+		t.Fatalf("кука названа %q — на https ждали префикс", name)
+	}
+
+	req := guest(t, "GET", "/n/312811")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	page := do(h, req)
+	if page.Code != http.StatusOK {
+		t.Fatalf("страница отдала %d", page.Code)
+	}
+	if !strings.Contains(page.Body.String(), "Ответ сохранён в этом браузере") {
+		t.Error("ответившему гостю не показано, что его голос не считается: сервер не нашёл свою же куку")
 	}
 }

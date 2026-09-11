@@ -273,7 +273,7 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		Quiz:      quiz,
 		// Ответы ГОСТЯ читаются из куки и только когда есть чему отвечать:
 		// разбирать её на каждой странице треда незачем.
-		QuizGuest: guestQuizOf(r, quiz),
+		QuizGuest: s.guestQuizOf(r, quiz),
 		ReactOpen: reactTarget(r),
 		PageNum:   1,
 	}

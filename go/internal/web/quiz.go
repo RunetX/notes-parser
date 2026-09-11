@@ -175,7 +175,7 @@ func (s *Server) handleQuizAnswer(w http.ResponseWriter, r *http.Request) {
 	// ГОСТЬ: ответ остаётся в его браузере. В базу не идёт ничего — ни строки,
 	// ни счётчика, ни следа.
 	if !signedIn || s.wr == nil {
-		s.setCookie(w, quizCookie, addGuestAnswer(guestAnswers(r), commentID, choice), quizCookieTTL)
+		s.setCookie(w, quizCookie, addGuestAnswer(s.guestAnswers(r), commentID, choice), quizCookieTTL)
 		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
@@ -206,20 +206,27 @@ func (s *Server) handleQuizAnswer(w http.ResponseWriter, r *http.Request) {
 //
 // Куку не разбираем там, где вопросов нет вовсе: страниц треда тысячи, а
 // вступительная заметка одна в неделю.
-func guestQuizOf(r *http.Request, quiz map[int64]platform.Quiz) map[int64]int {
+func (s *Server) guestQuizOf(r *http.Request, quiz map[int64]platform.Quiz) map[int64]int {
 	if len(quiz) == 0 {
 		return nil
 	}
-	return guestAnswers(r)
+	return s.guestAnswers(r)
 }
 
 // guestAnswers читает ответы гостя из куки.
 //
 // Мусор в значении — рабочий случай, а не ошибка: куку правит кто угодно. Всё,
 // что не разбирается, просто пропускается; врать это может только самому гостю.
-func guestAnswers(r *http.Request) map[int64]int {
+// Имя куки спрашивается у СЕРВЕРА (`cookieName`), а не берётся константой: на
+// https он добавляет префикс `__Host-`, и написанное здесь голым именем читало
+// бы не то, что пишет setCookie. Поймано на боевой странице 11.09.2026 — кука
+// вставала как `__Host-quiz`, а показ её не находил, и ответивший гость видел
+// те же три кнопки вместо разгадки. Тесты этого увидеть не могли: тестовый
+// сервер живёт на http, где префикса нет вовсе, — поэтому рядом стоит тест на
+// https (TestGuestCookieSurvivesTheHostPrefix).
+func (s *Server) guestAnswers(r *http.Request) map[int64]int {
 	out := map[int64]int{}
-	c, err := r.Cookie(quizCookie)
+	c, err := r.Cookie(s.cookieName(quizCookie))
 	if err != nil || c.Value == "" {
 		return out
 	}
