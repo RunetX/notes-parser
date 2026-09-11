@@ -32,7 +32,20 @@
            строки: ядро на все причины отвечает одним отказом намеренно, и
            объяснять здесь то, что оно скрывает, значило бы его обойти. */}}
       {{if .MailTo}}<p class="uact"><a class="btnlink" href="{{.MailTo}}">Написать</a></p>
-      {{else if .MailWhy}}<p class="fine">{{.MailWhy}}</p>{{end}}
+      {{else if .MailWhy}}<p class="fine">{{.MailWhy}}</p>
+        {{/* Свой запрет снимается тут же: отсылать человека на другую страницу
+             за кнопкой, которую можно поставить сюда, значит добавить переход и
+             повод забыть, зачем шёл. Чужой запрет кнопки не даёт вовсе — снять
+             его нельзя ничем. */}}
+        {{if .MailUnblock}}
+        <form method="post" action="/mail/unblock" class="avaform">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="to" value="{{$m.ID}}">
+          <input type="hidden" name="back" value="/u/{{$m.ID}}">
+          <button type="submit">Снять запрет</button>
+        </form>
+        {{end}}
+      {{end}}
     </div>
   </div>
 

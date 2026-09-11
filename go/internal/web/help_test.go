@@ -12,16 +12,19 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"lovegw/internal/platform"
 )
 
 func helpBody(t *testing.T, path string, cfg Config) string {
 	t.Helper()
-	h := newTestServer(t, &fakeStore{}, cfg)
-	w := do(h, guest(t, "GET", path))
+	srv := newServerFor(t, &fakeStore{}, newFakeAuth(), nil, nil, nil, cfg)
+	srv.SetMail(newFakeMail())
+	w := do(srv.routes(), guest(t, "GET", path))
 	if w.Code != http.StatusOK {
 		t.Fatalf("%s: код %d, ожидался 200", path, w.Code)
 	}
@@ -48,8 +51,9 @@ func withLinks() Config {
 // Правила, которые видно только изнутри, — это не правила, а сюрприз. Открыта
 // каждая тема, а не одна лишь первая страница.
 func TestHelpIsOpenToGuests(t *testing.T) {
-	cfg := withLinks()
-	h := newTestServer(t, &fakeStore{}, cfg)
+	srv := newServerFor(t, &fakeStore{}, newFakeAuth(), nil, nil, nil, withLinks())
+	srv.SetMail(newFakeMail())
+	h := srv.routes()
 	for _, topic := range helpTopics {
 		w := do(h, guest(t, "GET", "/help/"+topic.Slug))
 		if w.Code != http.StatusOK {
@@ -390,5 +394,37 @@ func TestSupportPageLoadsNothingForeign(t *testing.T) {
 		if strings.Contains(body, bad) {
 			t.Errorf("на странице сбора появилось чужое или платёжная форма: %q", bad)
 		}
+	}
+}
+
+// Числа о письмах приезжают ИЗ ЯДРА, и ожидаемое здесь собирается из тех же
+// констант, а не написано цифрами.
+//
+// Разница с соседней проверкой намеренная. Там литералы сторожат сами значения
+// («90 в час» — это решение, и менять его молча нельзя); здесь сторожится
+// СОВПАДЕНИЕ страницы с ядром, потому что часть этих чисел не наша вовсе:
+// сроки хранения установлены пунктом 3 части 1 статьи 10.1, и ошибиться в них
+// значит обещать людям не то, что велит закон. Потолки же у писем свои, и
+// справка, разошедшаяся с отказом формы, хуже отсутствующей — на этом площадка
+// уже обожглась 08.09.2026, когда обещала тридцать реплик в час при девяноста.
+func TestСправкаОПисьмахБерётЧислаИзЯдра(t *testing.T) {
+	body := helpBody(t, "/help/mail", withLinks())
+	for _, c := range []struct{ want, what string }{
+		{strconv.Itoa(int(platform.MessageWindow/time.Second)) + " секунд", "окно частоты писем"},
+		{strconv.Itoa(platform.MessagesPerHour) + " в час", "часовой потолок писем"},
+		{strconv.Itoa(int(platform.FirstWindow/time.Minute)) + " минут", "окно первых писем"},
+		{strconv.Itoa(platform.FirstsPerDay) + " в сутки", "суточный потолок новых собеседников"},
+		{strconv.Itoa(platform.UnansweredMax) + " письма", "письма подряд без ответа"},
+		{strconv.Itoa(int(platform.KeepMessageBody/(24*time.Hour))) + " дней", "срок хранения содержания"},
+		{strconv.Itoa(int(platform.KeepMessageMeta/(24*time.Hour))) + " дней", "срок хранения сведений о передаче"},
+	} {
+		if !strings.Contains(body, c.want) {
+			t.Errorf("%s не совпадает с ядром (нет %q)", c.what, c.want)
+		}
+	}
+	// И статья названа: срок без основания читается как наша прихоть, а он не
+	// наш — отсюда и «стереть раньше нельзя», которое иначе выглядит отказом.
+	if !strings.Contains(body, "10.1") {
+		t.Error("справка называет сроки, не называя статьи, которая их устанавливает")
 	}
 }

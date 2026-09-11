@@ -55,6 +55,14 @@ type Mail interface {
 	MarkDialogRead(ctx context.Context, userID, dialogID, uptoID int64) error
 	UnreadMail(ctx context.Context, userID int64) (int, error)
 	HideDialog(ctx context.Context, userID, dialogID int64) error
+	// Чёрный список. Решение ЛИЧНОЕ, а не модераторское: «мне от этого
+	// человека писем не нужно» — не обвинение и разбирательства не требует,
+	// поэтому в audit_log ядро об этом не пишет ни строки. Для жалобы есть
+	// отдельная дорога (Ш4), и путать их нельзя: закрытая переписка никого не
+	// зовёт разбираться, а жалоба зовёт.
+	BlockUser(ctx context.Context, userID, blockedID int64) error
+	UnblockUser(ctx context.Context, userID, blockedID int64) error
+	BlockedList(ctx context.Context, userID int64) ([]platform.Author, error)
 }
 
 // SetMail подключает переписку. Отдельным вызовом, а не седьмым аргументом
@@ -122,6 +130,12 @@ type dialogPage struct {
 	// второй их список здесь разошёлся бы с первым.
 	CanWrite bool
 	Why      string
+	// Blocked — закрыл ли переписку Я САМ. Берётся из той же ошибки ядра
+	// (ErrBlockedByYou), а не отдельным вопросом: кнопка «Закрыть» у уже
+	// закрытой переписки — мёртвая, а площадка мёртвых кнопок не печатает.
+	// Обратный случай (закрыли МЕНЯ) кнопки не даёт вовсе: снять чужой запрет
+	// нельзя, и предлагать это значило бы врать.
+	Blocked bool
 }
 
 type mailNewPage struct {
@@ -266,6 +280,7 @@ func (s *Server) showDialog(w http.ResponseWriter, r *http.Request, u platform.U
 	// решается кнопка «Написать» на странице участника.
 	if _, err := s.mail.CanWriteTo(r.Context(), u.ID, head.Peer.ID); err != nil {
 		_, p.Why = mailProblem(err)
+		p.Blocked = errors.Is(err, platform.ErrBlockedByYou)
 	} else {
 		p.CanWrite = true
 	}
@@ -452,6 +467,57 @@ func (s *Server) handleMailHide(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/mail", http.StatusSeeOther)
 }
 
+// handleMailBlock и handleMailUnblock — чёрный список.
+//
+// Отдельно от «убрать у себя», и различие это НЕ оттенок. Скрытие прячет
+// переписку в своём списке и ничего не отнимает у собеседника — новое письмо
+// поднимет её обратно; закрытие отнимает у него право писать, и он видит
+// прямой отказ, а не тишину. Молчаливой блокировки у площадки нет вовсе
+// (решение владельца 11.09.2026): она копит у отправителя переписку, которой
+// никто не читает, — та же травля, только невидимая, и притом обоюдная.
+//
+// Адресат берётся из формы, и подделать его нечем: ядро кладёт запрет от имени
+// вошедшего, то есть подставленный номер закроет переписку с кем-то ещё — себе
+// же. Чужого запрета этим не снять и чужого не поставить.
+func (s *Server) handleMailBlock(w http.ResponseWriter, r *http.Request) {
+	s.setBlock(w, r, true)
+}
+
+func (s *Server) handleMailUnblock(w http.ResponseWriter, r *http.Request) {
+	s.setBlock(w, r, false)
+}
+
+func (s *Server) setBlock(w http.ResponseWriter, r *http.Request, on bool) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.mailReader(w, r)
+	if !ok {
+		return
+	}
+	to, err := strconv.ParseInt(r.FormValue("to"), 10, 64)
+	if err != nil || to <= 0 {
+		s.fail(w, r, http.StatusNotFound, "Некого закрывать.")
+		return
+	}
+	act := s.mail.UnblockUser
+	if on {
+		act = s.mail.BlockUser
+	}
+	if err := act(r.Context(), u.ID, to); err != nil {
+		code, problem := mailProblem(err)
+		if problem == "" {
+			s.oops(w, r, "чёрный список", err)
+			return
+		}
+		s.fail(w, r, code, problem)
+		return
+	}
+	// Возврат туда, откуда нажали: закрывают из переписки, снимают чаще со
+	// своей страницы. Адрес проверяется localPath — своим, а не любым.
+	http.Redirect(w, r, localPath(r.FormValue("back")), http.StatusSeeOther)
+}
+
 // handleMailConsent — четвёртый документ.
 //
 // Своим экраном, а не абзацем под формой письма: подпись, данная мимоходом под
@@ -567,12 +633,23 @@ func mailProblem(err error) (int, string) {
 		return http.StatusForbidden,
 			"Этот участник закрыл от вас переписку. Письмо не отправлено."
 	case errors.Is(err, platform.ErrBlockedByYou):
+		// Место, где снимать, здесь НЕ называется: кнопка стои́т рядом с этой
+		// строкой везде, где строка показывается, — и в переписке, и на
+		// странице участника. Назови мы одну страницу, текст спорил бы с
+		// соседней кнопкой.
 		return http.StatusForbidden,
-			"Вы закрыли переписку с этим участником. Снимите запрет на своей странице, чтобы написать."
+			"Вы закрыли переписку с этим участником: писать ему нельзя, пока не снят запрет."
 	case errors.Is(err, platform.ErrUnanswered):
+		n := platform.UnansweredMax
 		return http.StatusTooManyRequests,
-			"Вы уже написали " + strconv.Itoa(platform.UnansweredMax) +
-				" письма подряд, а ответа не было. Подождите ответа — так честнее и вам, и собеседнику."
+			"Вы уже написали " + strconv.Itoa(n) + " " + plural(n, "письмо", "письма", "писем") +
+				" подряд, а ответа не было. Подождите ответа — так честнее и вам, и собеседнику."
+	case errors.Is(err, platform.ErrRateLimited):
+		// Отказ по частоте перехватывается ЗДЕСЬ, а не отдаётся общему
+		// writeProblem, ради одного слова: у писем свои правила частоты
+		// (platform.MessageWindow и соседи), а общий текст называл письмо
+		// публикацией — то есть говорил про заметки там, где считались письма.
+		return http.StatusTooManyRequests, rateProblem(err, rateLetters)
 	}
 	return writeProblem(err)
 }

@@ -22,6 +22,24 @@
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button type="submit" class="danger">Убрать у себя</button>
     </form>
+    {{/* А это уже чёрный список: закрытый не сможет написать и увидит прямой
+         отказ. Кнопка одна из двух — у закрытой переписки «Закрыть» было бы
+         мёртвой. */}}
+    {{if .Blocked}}
+    <form method="post" action="/mail/unblock">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="to" value="{{$h.Peer.ID}}">
+      <input type="hidden" name="back" value="/mail/{{$h.DialogID}}">
+      <button type="submit">Снять запрет</button>
+    </form>
+    {{else}}
+    <form method="post" action="/mail/block">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="to" value="{{$h.Peer.ID}}">
+      <input type="hidden" name="back" value="/mail">
+      <button type="submit" class="danger">Закрыть переписку</button>
+    </form>
+    {{end}}
   </div>
 </div>
 
@@ -57,6 +75,11 @@
   <p class="warn">{{.Why}}</p>
 {{end}}
 </section>
+
+<p class="fine">«Убрать у себя» прячет переписку в вашем списке и ничего не
+отнимает у собеседника: новое письмо поднимет её обратно. «Закрыть переписку» —
+другое: писать вам этот человек больше не сможет и увидит прямой отказ, а не
+тишину. Снять запрет можно здесь же или на своей странице.</p>
 
 <p class="fine">Новые письма появляются при обновлении страницы: переписка пока
 не дописывает себя сама. О том, что вам написали, скажет колокольчик.</p>

@@ -299,13 +299,22 @@ func newTestServer(t *testing.T, st Store, cfg Config) http.Handler {
 // «модерации нет»: страницы /mod не существует, кнопок под репликами тоже.
 func newFullServer(t *testing.T, st Store, auth Auth, wr Writer, mod Moderator, site Site, cfg Config) http.Handler {
 	t.Helper()
+	return newServerFor(t, st, auth, wr, mod, site, cfg).routes()
+}
+
+// newServerFor — тот же сервер, но ДО routes(): нужен тем, кто подключает
+// необязательную способность отдельным вызовом — SetEvents, SetMail. Иначе
+// такую сборку приходится собирать заново своими тремя строками, и настройки
+// вроде BaseURL у неё молча расходятся с общей.
+func newServerFor(t *testing.T, st Store, auth Auth, wr Writer, mod Moderator, site Site, cfg Config) *Server {
+	t.Helper()
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "http://127.0.0.1"
 	}
 	cfg.Log = quietLog()
 	srv := New(cfg, st, auth, wr, mod, site)
 	t.Cleanup(func() { _ = srv.Close() })
-	return srv.routes()
+	return srv
 }
 
 func openServer(t *testing.T, st Store) http.Handler {
@@ -1410,12 +1419,17 @@ func TestSitemapListsNotesInChunks(t *testing.T) {
 		t.Errorf("в карте нет справки:\n%s", body)
 	}
 	// И каждая её тема отдельной строкой: справка теперь не одна страница, а
-	// дюжина, и ищут поиском именно их («правила», «как войти»). Тем с гейтом —
-	// про мессенджеры и про сбор пожертвований — у этой сборки нет вовсе: ни тех
-	// адресов, ни того она не знает.
+	// дюжина, и ищут поиском именно их («правила», «как войти»).
+	//
+	// Список берётся из ОГЛАВЛЕНИЯ этой сборки, а не из helpTopics: часть тем
+	// стои́т за гейтом (мессенджеры, сбор пожертвований, письма), и перечислять
+	// их здесь поимённо значило бы дописывать тест при каждой новой. Заодно
+	// проверка становится той, которую и имели в виду: КАРТА СОВПАДАЕТ С
+	// ОГЛАВЛЕНИЕМ — робот не зовётся туда, куда человека не зовут, и наоборот.
+	topics := do(h, guest(t, "GET", "/help")).Body.String()
 	for _, topic := range helpTopics {
-		if topic.Slug == "messengers" || topic.Slug == "support" {
-			continue
+		if !strings.Contains(topics, `href="/help/`+topic.Slug+`"`) {
+			continue // тема с гейтом: этой сборке она не досталась
 		}
 		if want := "<loc>https://t3h.ru/help/" + topic.Slug + "</loc>"; !strings.Contains(body, want) {
 			t.Errorf("в карте нет темы справки /help/%s", topic.Slug)

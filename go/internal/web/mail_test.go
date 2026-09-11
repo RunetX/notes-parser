@@ -12,6 +12,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,10 @@ type fakeMail struct {
 	// senders — кто написал какое письмо. Отдельно от самих писем, потому что
 	// FromMe у вида это ответ КОНКРЕТНОМУ читателю, а не свойство письма.
 	senders map[int64]int64
+	// blocks — чёрный список, ключ НЕнормализованный: запрет односторонний, и
+	// «я закрыл его» с «он закрыл меня» это разные строки. Нормализуй пару — и
+	// тест зеленел бы на том, чего в ядре нет.
+	blocks map[[2]int64]bool
 }
 
 func newFakeMail() *fakeMail {
@@ -45,6 +50,7 @@ func newFakeMail() *fakeMail {
 		letters: map[int64][]platform.MessageView{},
 		pair:    map[[2]int64]int64{},
 		senders: map[int64]int64{},
+		blocks:  map[[2]int64]bool{},
 		peers: map[int64]platform.Author{
 			testProfileID: {ID: testProfileID, Nick: testNick},
 			peerID:        {ID: peerID, Nick: "Полынь-Трава"},
@@ -66,7 +72,23 @@ func (f *fakeMail) CanWriteTo(_ context.Context, me, peer int64) (int64, error) 
 	if me == peer {
 		return 0, platform.ErrSelfMessage
 	}
+	if err := f.blockedBetween(me, peer); err != nil {
+		return 0, err
+	}
 	return f.pair[key(me, peer)], nil
+}
+
+// blockedBetween — обе стороны разом, и ответы РАЗНЫЕ: «вы закрыли» снимается
+// своей же кнопкой, «вас закрыли» не снимается ничем, и говорить об этих двух
+// одинаково значило бы обещать человеку кнопку, которой нет.
+func (f *fakeMail) blockedBetween(me, peer int64) error {
+	switch {
+	case f.blocks[[2]int64{me, peer}]:
+		return platform.ErrBlockedByYou
+	case f.blocks[[2]int64{peer, me}]:
+		return platform.ErrBlockedByPeer
+	}
+	return nil
 }
 
 func (f *fakeMail) SendMessage(_ context.Context, from, to int64, body string) (platform.MessageSent, error) {
@@ -75,6 +97,9 @@ func (f *fakeMail) SendMessage(_ context.Context, from, to int64, body string) (
 	}
 	if strings.TrimSpace(body) == "" {
 		return platform.MessageSent{}, platform.ErrEmptyBody
+	}
+	if err := f.blockedBetween(from, to); err != nil {
+		return platform.MessageSent{}, err
 	}
 	k := key(from, to)
 	id, first := f.pair[k], false
@@ -160,6 +185,29 @@ func (f *fakeMail) HideDialog(_ context.Context, _, id int64) error {
 	return nil
 }
 
+func (f *fakeMail) BlockUser(_ context.Context, me, peer int64) error {
+	if me == peer {
+		return platform.ErrSelfMessage
+	}
+	f.blocks[[2]int64{me, peer}] = true
+	return nil
+}
+
+func (f *fakeMail) UnblockUser(_ context.Context, me, peer int64) error {
+	delete(f.blocks, [2]int64{me, peer})
+	return nil
+}
+
+func (f *fakeMail) BlockedList(_ context.Context, me int64) ([]platform.Author, error) {
+	var out []platform.Author
+	for k := range f.blocks {
+		if k[0] == me {
+			out = append(out, f.peers[k[1]])
+		}
+	}
+	return out, nil
+}
+
 // mailServer — сервер с перепиской и ДВУМЯ вошедшими: писать в одиночку
 // бессмысленно, а вторая сессия нужна, чтобы прочесть письмо глазами адресата.
 func mailServer(t *testing.T, m Mail) (http.Handler, string, string) {
@@ -175,6 +223,10 @@ func mailServer(t *testing.T, m Mail) (http.Handler, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Обязательные согласия подписаны у обоих: без них «Моя страница» уводит на
+	// экран подписи, и раздел про письма на ней не увидеть вовсе.
+	grantConsents(t, auth, testProfileID)
+	grantConsents(t, auth, peerID)
 	st := &fakeStore{profile: platform.Profile{
 		ID: peerID, Nick: "Полынь-Трава", Kind: platform.KindMember, CreatedAt: time.Now()}}
 	srv := New(Config{BaseURL: "http://127.0.0.1", Log: quietLog()}, st, auth, nil, nil, nil)
@@ -485,5 +537,168 @@ func TestВыдержкаВСпискеБезЗнаковРазметки(t *tes
 	}
 	if !strings.Contains(line, "помню") || !strings.Contains(line, "отлично") {
 		t.Errorf("выдержка потеряла сам текст: %s", line)
+	}
+}
+
+// ------------------------------------------------------------------ Ш3
+
+// ЗАКРЫТОМУ ГОВОРЯТ ПРЯМО — главная проверка этапа (решение владельца
+// 11.09.2026). Молчаливая блокировка копит у отправителя переписку, которой
+// никто не читает; здесь проверяется, что причина названа в обоих местах, где
+// человек её ищет: на странице участника (вместо кнопки) и в отказе отправки.
+func TestЗакрытыйПолучаетНазваннуюПричину(t *testing.T) {
+	m := newFakeMail()
+	h, mine, theirs := mailServer(t, m)
+
+	// Переписка заводится ДО запрета: закрывают обычно того, кто уже написал.
+	if _, err := m.SendMessage(context.Background(), testProfileID, peerID, "письмо"); err != nil {
+		t.Fatal(err)
+	}
+	// Собеседник закрывает переписку кнопкой со своей стороны.
+	w := do(h, postAs(t, "/mail/block",
+		url.Values{"to": {strconv.FormatInt(testProfileID, 10)}, "back": {"/mail"}}, theirs))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/mail" {
+		t.Fatalf("закрытие ответило %d → %q", w.Code, w.Header().Get("Location"))
+	}
+	if !m.blocks[[2]int64{peerID, testProfileID}] {
+		t.Fatal("запрет не дошёл до ядра")
+	}
+
+	// Закрытый видит ПРИЧИНУ на странице собеседника, а не пустое место и не
+	// кнопку, которая ответит отказом.
+	body := do(h, as(guest(t, "GET", "/u/1372959"), mine)).Body.String()
+	if !strings.Contains(body, "закрыл от вас переписку") {
+		t.Error("закрытому не названа причина на странице участника")
+	}
+	if strings.Contains(body, `href="/mail/new?to=`) {
+		t.Error("закрытому нарисована кнопка «Написать»")
+	}
+	// И НИКАКОЙ кнопки снятия: чужой запрет не снимается ничем, а кнопка,
+	// обещающая обратное, — это ложь, за которую нажавший заплатит надеждой.
+	if strings.Contains(body, `action="/mail/unblock"`) {
+		t.Error("закрытому предложено снять ЧУЖОЙ запрет")
+	}
+	// И в отказе отправки — той же причиной, а не «не получилось».
+	w = do(h, postAs(t, "/mail/new", url.Values{"to": {"1372959"}, "body": {"пусти"}}, mine))
+	if !strings.Contains(w.Body.String(), "закрыл от вас переписку") {
+		t.Errorf("отказ отправки не называет причину: %s", w.Body.String())
+	}
+
+	// А ТОТ, КТО ЗАКРЫЛ, видит у себя кнопку снятия — и не видит второй кнопки
+	// «Закрыть», которая ничего бы не сделала.
+	body = do(h, as(guest(t, "GET", "/mail/1"), theirs)).Body.String()
+	if !strings.Contains(body, `action="/mail/unblock"`) {
+		t.Error("у закрывшего нет кнопки «Снять запрет»")
+	}
+	if strings.Contains(body, `action="/mail/block"`) {
+		t.Error("у закрытой переписки осталась кнопка «Закрыть»: она мёртвая")
+	}
+}
+
+// Снять запрет можно со своей страницы — и это единственное место, куда за этим
+// идти: закрытая переписка ушла из списка писем, а строка на странице закрытого
+// отсылает сюда же.
+func TestЗакрытыеПеречисленыНаСвоейСтранице(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m)
+	if err := m.BlockUser(context.Background(), testProfileID, peerID); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/me"), mine)).Body.String()
+	if !strings.Contains(body, "Закрытая переписка") || !strings.Contains(body, "Полынь-Трава") {
+		t.Fatal("на своей странице нет закрытых")
+	}
+	if !strings.Contains(body, `value="1372959"`) {
+		t.Error("в форме снятия нет номера закрытого")
+	}
+	w := do(h, postAs(t, "/mail/unblock", url.Values{"to": {"1372959"}, "back": {"/me"}}, mine))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/me" {
+		t.Fatalf("снятие ответило %d → %q", w.Code, w.Header().Get("Location"))
+	}
+	if m.blocks[[2]int64{testProfileID, peerID}] {
+		t.Fatal("запрет остался после снятия")
+	}
+	if body = do(h, as(guest(t, "GET", "/me"), mine)).Body.String(); strings.Contains(body, "Закрытая переписка") {
+		t.Error("раздел остался при пустом списке")
+	}
+}
+
+// Пустой чёрный список раздела не рисует, а выключенная переписка не спрашивает
+// его вовсе: заголовок над пустотой отвечает на вопрос, которого не задавали.
+func TestБезПерепискиЧёрногоСпискаНет(t *testing.T) {
+	h, mine, _ := mailServer(t, nil)
+	body := do(h, as(guest(t, "GET", "/me"), mine)).Body.String()
+	if strings.Contains(body, "Закрытая переписка") {
+		t.Error("раздел чёрного списка стои́т при выключенной переписке")
+	}
+}
+
+// ОТКАЗ ПО ЧАСТОТЕ НАЗЫВАЕТ СРОК И ГОВОРИТ О ПИСЬМАХ.
+//
+// Две половины, и обе оплачены: «подождите немного» при часовом правиле
+// означало одиннадцать минут (жалоба 06.09.2026), а общий текст отказа называл
+// письмо ПУБЛИКАЦИЕЙ — то есть говорил про заметки там, где считались письма.
+func TestОтказПоЧастотеПисемНазываетМинутыИПисьма(t *testing.T) {
+	m := newFakeMail()
+	m.deny = &platform.RateLimited{
+		Window: time.Hour, Max: platform.MessagesPerHour,
+		RetryAt: time.Now().Add(11 * time.Minute),
+	}
+	h, mine, _ := mailServer(t, m)
+	body := do(h, postAs(t, "/mail/new", url.Values{"to": {"1372959"}, "body": {"письмо"}}, mine)).Body.String()
+	switch {
+	case strings.Contains(body, "Подождите немного"):
+		t.Error("отказ по частоте остался расплывчатым")
+	case !strings.Contains(body, "11 минут"):
+		t.Errorf("отказ не называет срок: %s", body)
+	case !strings.Contains(body, "писем"):
+		t.Errorf("отказ не говорит о письмах: %s", body)
+	case strings.Contains(body, "публикаци"):
+		t.Errorf("отказ называет письмо публикацией: %s", body)
+	}
+	// Набранное при этом остаётся в форме — иначе отказ означает пропажу
+	// письма, которое человек только что написал.
+	if !strings.Contains(body, "письмо</textarea>") {
+		t.Error("отказ по частоте потерял набранное")
+	}
+}
+
+// Справка о письмах гаснет ВМЕСТЕ с перепиской: тема, зовущая в /mail, который
+// отвечает «нет такой страницы», отправляет человека в никуда. Тот же гейт, что
+// у тем про мессенджеры и про сбор пожертвований.
+func TestСправкаОПисьмахГаснетСГейтом(t *testing.T) {
+	h, _, _ := mailServer(t, nil)
+	if w := do(h, guest(t, "GET", "/help/mail")); w.Code != http.StatusNotFound {
+		t.Errorf("/help/mail при выключенной переписке ответил %d", w.Code)
+	}
+	if body := do(h, guest(t, "GET", "/help")).Body.String(); strings.Contains(body, "/help/mail") {
+		t.Error("оглавление ведёт на тему, которой нет")
+	}
+	h, _, _ = mailServer(t, newFakeMail())
+	if w := do(h, guest(t, "GET", "/help/mail")); w.Code != http.StatusOK {
+		t.Errorf("/help/mail при включённой переписке ответил %d", w.Code)
+	}
+}
+
+// СВОЙ запрет снимается там же, где о нём сказано. Кнопка стои́т на странице
+// участника рядом с причиной — иначе строка отсылала бы на «Мою страницу» за
+// кнопкой, которую можно поставить сюда.
+func TestСвойЗапретСнимаетсяСоСтраницыУчастника(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m)
+	if err := m.BlockUser(context.Background(), testProfileID, peerID); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/u/1372959"), mine)).Body.String()
+	if !strings.Contains(body, `action="/mail/unblock"`) {
+		t.Fatal("на странице закрытого нет кнопки снятия")
+	}
+	if !strings.Contains(body, `value="/u/1372959"`) {
+		t.Error("после снятия человека не вернут туда, где он нажал")
+	}
+	// Место снятия в самом тексте НЕ называется: кнопка рядом, и назови текст
+	// другую страницу — он спорил бы с ней.
+	if strings.Contains(body, "на своей странице") {
+		t.Error("причина отсылает на другую страницу, хотя кнопка стои́т рядом")
 	}
 }

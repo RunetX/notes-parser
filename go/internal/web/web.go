@@ -488,6 +488,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /mail/{id}", s.handleDialogReply)
 	mux.HandleFunc("POST /mail/{id}/read", s.handleMailRead)
 	mux.HandleFunc("POST /mail/{id}/hide", s.handleMailHide)
+	mux.HandleFunc("POST /mail/block", s.handleMailBlock)
+	mux.HandleFunc("POST /mail/unblock", s.handleMailUnblock)
 	// Живой канал. Идёт мимо семафора и срока запроса (см. withGuard и шапку
 	// live.go): соединение живёт минутами, а общий потолок морды — двенадцать
 	// запросов в работе разом при пуле в четыре соединения к базе.

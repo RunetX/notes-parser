@@ -845,6 +845,26 @@ func (p *Platform) BlockUser(ctx context.Context, userID, blockedID int64) error
 		 WHERE user_id = $1 AND peer_id = $2`, userID, blockedID); err != nil {
 		return wrapf(err, "чёрный список %d", userID)
 	}
+	// Поводы шины гасятся ТОЙ ЖЕ транзакцией — как у HideDialog и по той же
+	// причине: письма ушли из списка и счётчик обнулён, а колокольчик горел бы
+	// дальше и вёл в переписку, которую человек только что закрыл. Двери у
+	// счётчика писем и у колокольчика разные, и закрывать их надо обе.
+	lo, hi := userID, blockedID
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	var dialogID int64
+	switch err := tx.QueryRow(ctx, dialogPairQuery, lo, hi).Scan(&dialogID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Переписки нет вовсе — закрывают и того, кто ещё не написал. Гасить
+		// нечего, и это не отказ.
+	case err != nil:
+		return wrapf(err, "чёрный список %d", userID)
+	default:
+		if err := readMailPokes(ctx, tx, userID, dialogID); err != nil {
+			return err
+		}
+	}
 	return wrapf(tx.Commit(ctx), "чёрный список %d", userID)
 }
 

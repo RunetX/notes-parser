@@ -65,6 +65,7 @@ var helpTopics = []helpTopic{
 	{"read", "Как читать", "Лента, дерево и линейный вид, живое обновление.", "help_read.gohtml"},
 	{"login", "Как войти", "Четыре способа без пароля и отправка записей на НГС.", "help_login.gohtml"},
 	{"write", "Как писать", "Заметка, ответ, картинка, правка, частота.", "help_write.gohtml"},
+	{"mail", "Письма", "Личная переписка: кому можно писать, что видно и сколько хранится.", "help_mail.gohtml"},
 	{"messengers", "Telegram и MAX", "Канал, обсуждение, бот РюмкинЪ, подписки.", "help_messengers.gohtml"},
 	{"signs", "Смайлы и разметка", "Реакции, коды смайлов, теги, ссылки на ролики.", "help_signs.gohtml"},
 	{"origin", "Откуда текст", "Значки у даты: своё, копия с НГС, песочница.", "help_origin.gohtml"},
@@ -100,6 +101,22 @@ type helpPage struct {
 	NotesPerDay     int
 	CommentSeconds  int
 	CommentsPerHour int
+	// Mail — есть ли у площадки переписка ВООБЩЕ. Не page.MailOn: тот означает
+	// «письма включены И человек вошёл», а справка открыта гостю, и рассказ о
+	// правилах не вправе зависеть от того, вошёл ли читающий. Гейт при этом
+	// общий — s.mail, — то есть тема и абзац гаснут вместе.
+	Mail bool
+	// Пороги переписки и сроки хранения. Все до единого из ядра
+	// (platform.MessageWindow и соседи): справка, разошедшаяся с отказом
+	// формы, хуже отсутствующей, а сроки здесь вдобавок не наши — они
+	// законные, и ошибиться в них значит обещать людям не то, что закон велит.
+	MailSeconds      int
+	MailPerHour      int
+	MailFirstMinutes int
+	MailFirstsPerDay int
+	MailUnanswered   int
+	MailKeepDays     int
+	MailMetaDays     int
 	// Reactions — какие кнопки реакций предлагает ядро. Список приезжает
 	// оттуда по тому же правилу, что окно правки и пороги частоты: набор задан
 	// замером корпуса (platform.ReactionCodes), и второй такой же, набранный в
@@ -151,6 +168,13 @@ func (s *Server) helpTopics() []helpTopic {
 		if t.Slug == "support" && !s.hasSupport() {
 			continue
 		}
+		// Третий гейт того же рода: пока переписки нет (`platform.mail.enabled`
+		// выключен, Ш0 не закрыт), тема рассказывала бы про кнопки, которых на
+		// страницах нет вовсе, — и звала бы в /mail, отвечающий «нет такой
+		// страницы».
+		if t.Slug == "mail" && s.mail == nil {
+			continue
+		}
 		out = append(out, t)
 	}
 	return out
@@ -198,13 +222,22 @@ func (s *Server) helpData(r *http.Request, current, title string) helpPage {
 		NotesPerDay:     platform.NotesPerDay,
 		CommentSeconds:  int(platform.CommentWindow / time.Second),
 		CommentsPerHour: platform.CommentsPerHour,
-		Reactions:       platform.ReactionCodes,
-		DemoNote:        demoNote(),
-		Contacts:        c,
-		HasContacts:     c.ProfileID != 0 || c.Telegram != "" || c.MAX != "",
-		HasTelegram:     c.Telegram != "" || c.BotTelegram != "",
-		HasMAX:          c.MAX != "" || c.BotMAX != "",
-		Support:         s.cfg.Support,
+		Mail:            s.mail != nil,
+
+		MailSeconds:      int(platform.MessageWindow / time.Second),
+		MailPerHour:      platform.MessagesPerHour,
+		MailFirstMinutes: int(platform.FirstWindow / time.Minute),
+		MailFirstsPerDay: platform.FirstsPerDay,
+		MailUnanswered:   platform.UnansweredMax,
+		MailKeepDays:     int(platform.KeepMessageBody / (24 * time.Hour)),
+		MailMetaDays:     int(platform.KeepMessageMeta / (24 * time.Hour)),
+		Reactions:        platform.ReactionCodes,
+		DemoNote:         demoNote(),
+		Contacts:         c,
+		HasContacts:      c.ProfileID != 0 || c.Telegram != "" || c.MAX != "",
+		HasTelegram:      c.Telegram != "" || c.BotTelegram != "",
+		HasMAX:           c.MAX != "" || c.BotMAX != "",
+		Support:          s.cfg.Support,
 	}
 }
 

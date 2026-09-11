@@ -692,7 +692,7 @@ func (s *Server) writer(w http.ResponseWriter, r *http.Request) (platform.User, 
 // Срок знает не всякий отказ: реакции и жалобы считают частоту своими правилами
 // и RateLimited не отдают. Для них текст остаётся прежним — расплывчатым, но
 // честным: там и ждать нечего, там надо перестать нажимать.
-func rateProblem(err error) string {
+func rateProblem(err error, what rateNoun) string {
 	var rl *platform.RateLimited
 	if !errors.As(err, &rl) || rl.RetryAt.IsZero() {
 		return "Слишком часто. Подождите немного и попробуйте снова."
@@ -701,15 +701,34 @@ func rateProblem(err error) string {
 	if wait < time.Minute {
 		return "Слишком часто. Попробуйте снова через несколько секунд."
 	}
-	limit := fmt.Sprintf("не больше %d %s", rl.Max,
-		plural(rl.Max, "публикации", "публикаций", "публикаций"))
+	limit := fmt.Sprintf("не больше %d %s", rl.Max, plural(rl.Max, what.one, what.few, what.many))
 	if rl.Max == 1 {
-		limit = "только одну публикацию"
+		limit = what.single
 	}
 	return fmt.Sprintf("Слишком часто: за %s площадка принимает %s. "+
 		"Написать снова можно будет через %s — набранное здесь никуда не денется.",
 		rateWindow(rl.Window), limit, waitWords(wait))
 }
+
+// rateNoun — ЧЕГО площадка принимает не больше стольких.
+//
+// Слово тут не украшение: правила частоты у писем свои (platform.MessageWindow
+// и соседи), а текст отказа был один на всех и говорил «не больше 90
+// публикаций» — то есть в переписке называл делом заметки, которых никто не
+// писал. Та же порода расхождения, из-за которой справка до 08.09.2026 обещала
+// тридцать реплик в час при девяноста настоящих: числа приезжали из ядра, а
+// слово рядом с ними стояло написанным однажды.
+//
+// Формы три, потому что столько же спрашивает plural: «не больше 21 письма»,
+// «не больше 2 писем», «не больше 90 писем». Четвёртая — для потолка в единицу,
+// где родительный падеж звучал бы поломкой («не больше 1 письма» вместо
+// «только одно письмо»).
+type rateNoun struct{ one, few, many, single string }
+
+var (
+	ratePosts   = rateNoun{"публикации", "публикаций", "публикаций", "только одну публикацию"}
+	rateLetters = rateNoun{"письма", "писем", "писем", "только одно письмо"}
+)
 
 // waitWords — сколько ждать. Округление ВВЕРХ, а не к ближайшему: обещать
 // раньше, чем на самом деле можно, — значит отправить человека на второй такой
@@ -751,7 +770,7 @@ func writeProblem(err error) (int, string) {
 	case errors.Is(err, platform.ErrTooLong):
 		return http.StatusBadRequest, "Текст слишком длинный."
 	case errors.Is(err, platform.ErrRateLimited):
-		return http.StatusTooManyRequests, rateProblem(err)
+		return http.StatusTooManyRequests, rateProblem(err, ratePosts)
 	case errors.Is(err, platform.ErrThreadLocked):
 		return http.StatusForbidden, "Обсуждение закрыто модератором."
 	case errors.Is(err, platform.ErrBanned):

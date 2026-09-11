@@ -400,6 +400,14 @@ a:hover { text-decoration: underline; }
   gap: 12px; flex-wrap: wrap; margin: 0 0 14px;
 }
 .dlgacts { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Закрытая переписка на «моей странице»: ряд с кнопкой справа — тот же, что у
+   дверей входа и у согласий. */
+.blocked { list-style: none; margin: 0; padding: 0; }
+.blocked li {
+  border-top: 1px solid var(--rule); padding: 12px 0;
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+.blocked form { margin-left: auto; }
 .lt { padding: 10px 0 12px; border-bottom: 1px solid var(--rule); }
 .lt:last-child { border-bottom: 0; }
 /* СВОЁ письмо отмечено полосой слева — той же приметой, что непрочитанный
