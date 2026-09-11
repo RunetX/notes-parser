@@ -28,20 +28,27 @@ func helpBody(t *testing.T, path string, cfg Config) string {
 	return w.Body.String()
 }
 
-// withMessengers — площадка, у которой мессенджеры настроены. Без них тема
-// «Telegram и MAX» не показывается вовсе, и половина проверок ниже искала бы
-// страницу, которой в этой сборке нет.
-func withMessengers() Config {
-	return Config{Contacts: Contacts{
-		Telegram: "https://t.me/group", MAX: "https://max.ru/group",
-		BotTelegram: "https://t.me/bot", BotMAX: "https://max.ru/bot",
-	}}
+// withLinks — площадка, у которой настроено всё необязательное: и мессенджеры, и
+// сбор пожертвований. Без первых нет темы «Telegram и MAX», без второго — темы
+// «Поддержать площадку», и проверки ниже искали бы страницы, которых в такой
+// сборке нет вовсе.
+func withLinks() Config {
+	return Config{
+		Contacts: Contacts{
+			Telegram: "https://t.me/group", MAX: "https://max.ru/group",
+			BotTelegram: "https://t.me/bot", BotMAX: "https://max.ru/bot",
+		},
+		Support: Support{
+			URL: "https://pay.example.org/p/test", InfraRub: 1200, ModelsRub: 800,
+			AsOf: "сентябрь 2026", Payee: "Иван",
+		},
+	}
 }
 
 // Правила, которые видно только изнутри, — это не правила, а сюрприз. Открыта
 // каждая тема, а не одна лишь первая страница.
 func TestHelpIsOpenToGuests(t *testing.T) {
-	cfg := withMessengers()
+	cfg := withLinks()
 	h := newTestServer(t, &fakeStore{}, cfg)
 	for _, topic := range helpTopics {
 		w := do(h, guest(t, "GET", "/help/"+topic.Slug))
@@ -58,7 +65,7 @@ func TestHelpIsOpenToGuests(t *testing.T) {
 // Оглавление ведёт на все темы: страница, до которой не дойти нажатием, для
 // читателя не существует.
 func TestHelpIndexLinksEveryTopic(t *testing.T) {
-	body := helpBody(t, "/help", withMessengers())
+	body := helpBody(t, "/help", withLinks())
 	for _, topic := range helpTopics {
 		if !strings.Contains(body, `href="/help/`+topic.Slug+`"`) {
 			t.Errorf("оглавление не ведёт на /help/%s", topic.Slug)
@@ -72,7 +79,7 @@ func TestHelpIndexLinksEveryTopic(t *testing.T) {
 // Тему видно с любой её соседки: возвращаться в оглавление ради перехода в
 // соседний раздел человек не должен.
 func TestHelpTopicLinksItsNeighbours(t *testing.T) {
-	body := helpBody(t, "/help/mod", withMessengers())
+	body := helpBody(t, "/help/mod", withLinks())
 	if !strings.Contains(body, `href="/help/rules"`) {
 		t.Error("со страницы темы не видно соседних разделов")
 	}
@@ -86,7 +93,7 @@ func TestHelpTopicLinksItsNeighbours(t *testing.T) {
 
 // Выдуманный адрес отвечает «нет такой страницы», а не пустой справкой.
 func TestHelpUnknownTopicIs404(t *testing.T) {
-	h := newTestServer(t, &fakeStore{}, withMessengers())
+	h := newTestServer(t, &fakeStore{}, withLinks())
 	if w := do(h, guest(t, "GET", "/help/kakoy-to-razdel")); w.Code != http.StatusNotFound {
 		t.Errorf("код %d, ожидался 404", w.Code)
 	}
@@ -256,6 +263,132 @@ func TestHelpReactionsComeFromTheCore(t *testing.T) {
 	for _, code := range platform.ReactionCodes {
 		if !strings.Contains(body, "/assets/smile/"+code+".") {
 			t.Errorf("в справке нет кнопки реакции %q", code)
+		}
+	}
+}
+
+// Про сбор площадка говорит, только если знает его адрес, — то же правило, что
+// у мессенджеров, и здесь оно нужнее: страница «поддержите» с пустой ссылкой
+// просит денег и не говорит куда.
+//
+// Проверяется при НАСТРОЕННЫХ мессенджерах намеренно: гейты независимы, и
+// прежняя форма helpTopics («настроены мессенджеры → верни весь список
+// целиком») пропустила бы тему без адреса именно в этом сочетании.
+func TestHelpSupportFollowsTheSettings(t *testing.T) {
+	cfg := withLinks()
+	cfg.Support = Support{}
+	h := newTestServer(t, &fakeStore{}, cfg)
+	if body := do(h, guest(t, "GET", "/help")).Body.String(); strings.Contains(body, "/help/support") {
+		t.Error("оглавление зовёт поддержать площадку, у которой нет адреса сбора")
+	}
+	if w := do(h, guest(t, "GET", "/help/support")); w.Code != http.StatusNotFound {
+		t.Errorf("тема без адреса сбора ответила %d, ожидался 404", w.Code)
+	}
+
+	body := helpBody(t, "/help/support", withLinks())
+	if !strings.Contains(body, `>https://pay.example.org/p/test</a>`) {
+		t.Error("адрес сбора показан не целиком: куда ведёт ссылка наружу, должно быть видно до нажатия")
+	}
+	if !strings.Contains(body, `rel="noopener nofollow"`) {
+		t.Error("у ссылки наружу нет rel")
+	}
+	// Имя получателя называется ДО перехода: незнакомое имя на чужой платёжной
+	// странице пугает сильнее, чем названное заранее. Не задано — молчим.
+	if !strings.Contains(body, "Иван") {
+		t.Error("получатель не назван, хотя имя в настройках есть")
+	}
+	noName := withLinks()
+	noName.Support.Payee = ""
+	if strings.Contains(helpBody(t, "/help/support", noName), "Получатель —") {
+		t.Error("страница говорит о получателе, которого не назвали")
+	}
+}
+
+// Цена месяца приезжает из настроек, а не написана в шаблоне словами, — то же
+// правило, что у порогов частоты выше. И печатается она ТОЛЬКО вместе с датой
+// замера: число без неё через полгода врёт молча.
+//
+// ИТОГ при этом считается, а не берётся третьим полем: рукой заполняемый, он
+// однажды разошёлся бы с парой, и разошёлся бы молча.
+func TestSupportCostComesFromConfig(t *testing.T) {
+	cfg := withLinks()
+	cfg.Support.InfraRub, cfg.Support.ModelsRub = 3141, 2718
+	cfg.Support.AsOf = "март 2027"
+	body := helpBody(t, "/help/support", cfg)
+	for _, want := range []string{rub(3141), rub(2718), rub(5859), "март 2027"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("на странице нет %q: числа месяца берутся из настроек, а итог считается по ним", want)
+		}
+	}
+
+	cfg.Support.AsOf = ""
+	if body := helpBody(t, "/help/support", cfg); strings.Contains(body, rub(3141)) {
+		t.Error("сумма напечатана без даты замера: такая молча стареет")
+	}
+}
+
+// Строка про статью расходов не печатается, пока её не посчитали: ноль рублей
+// рядом с «вызовы моделей» читался бы как замер, а это незаполненное поле.
+func TestSupportSkipsTheCostNobodyCounted(t *testing.T) {
+	cfg := withLinks()
+	cfg.Support.InfraRub, cfg.Support.ModelsRub = 1200, 0
+	body := helpBody(t, "/help/support", cfg)
+	if !strings.Contains(body, rub(1200)) {
+		t.Fatal("посчитанная статья расходов не показана")
+	}
+	if strings.Contains(body, "Вместе около") {
+		t.Error("напечатан итог по одной статье: складывать не с чем")
+	}
+	if strings.Contains(body, "вызовы языковых") {
+		t.Error("непосчитанная статья расходов показана строкой")
+	}
+}
+
+// Кривой адрес сбора в href не попадает — по тем же доводам, что у контактов
+// (см. TestКриваяСсылкаНаГруппуГаснет), и правило это намеренно одно на двоих:
+// две его копии разошлись бы как раз на той ссылке, где ошибка стоит чужих
+// денег. Погашенный адрес снимает тему целиком, так что молчание честнее.
+func TestКриваяСсылкаНаСборГаснет(t *testing.T) {
+	for _, bad := range []string{"pay.example.org/p/x", "http://pay.example.org/p/x", "javascript:alert(1)"} {
+		got := checkSupport(Support{URL: bad, InfraRub: 1200, AsOf: "сентябрь 2026"}, quietLog())
+		if got.URL != "" {
+			t.Errorf("ссылка %q уцелела", bad)
+		}
+		if got.InfraRub != 1200 || got.AsOf != "сентябрь 2026" {
+			t.Error("проверка ссылки не должна трогать цену месяца")
+		}
+	}
+	if got := checkSupport(Support{URL: "https://pay.example.org/p/x"}, quietLog()); got.URL == "" {
+		t.Error("годная ссылка потерялась")
+	}
+}
+
+// Страница обязана говорить, что взамен не будет НИЧЕГО, и это не стилистика.
+// Встречное предоставление превращает пожертвование в оплату услуги: неправдой
+// становится «платных услуг здесь нет» в «Отказе от ответственности», а знание
+// о том, кто заплатил, — новой категорией персональных данных, то есть новой
+// редакцией согласия и переподпиской ВСЕМИ. Сторож стоит против будущей
+// «маленькой» правки, которая сделает это тихо.
+func TestSupportPagePromisesNothingInReturn(t *testing.T) {
+	body := helpBody(t, "/help/support", withLinks())
+	if !strings.Contains(body, "Ничего.") {
+		t.Error("страница не говорит прямо, что пожертвование не даёт ничего")
+	}
+	for _, w := range []string{"привилег", "премиум", "подписчик", "ранний доступ", "спасибо всем, кто"} {
+		if strings.Contains(body, w) {
+			t.Errorf("на странице сбора появилось встречное предоставление: %q", w)
+		}
+	}
+}
+
+// Ссылка — и только ссылка. Первый же виджет, бейдж или QR с чужого хоста ломает
+// обещание политики («стороннего кода на страницах нет, и это держится не
+// обещанием: CSP запрещает…») и в бою упрётся в img-src/script-src молча.
+func TestSupportPageLoadsNothingForeign(t *testing.T) {
+	body := helpBody(t, "/help/support", withLinks())
+	for _, bad := range []string{`src="http`, `src='http`, "<iframe", "<form"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("на странице сбора появилось чужое или платёжная форма: %q", bad)
 		}
 	}
 }

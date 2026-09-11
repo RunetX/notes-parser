@@ -1402,10 +1402,11 @@ func TestSitemapListsNotesInChunks(t *testing.T) {
 		t.Errorf("в карте нет справки:\n%s", body)
 	}
 	// И каждая её тема отдельной строкой: справка теперь не одна страница, а
-	// одиннадцать, и ищут поиском именно их («правила», «как войти»). Про
-	// мессенджеры у этой сборки адресов нет, поэтому темы нет вовсе.
+	// дюжина, и ищут поиском именно их («правила», «как войти»). Тем с гейтом —
+	// про мессенджеры и про сбор пожертвований — у этой сборки нет вовсе: ни тех
+	// адресов, ни того она не знает.
 	for _, topic := range helpTopics {
-		if topic.Slug == "messengers" {
+		if topic.Slug == "messengers" || topic.Slug == "support" {
 			continue
 		}
 		if want := "<loc>https://t3h.ru/help/" + topic.Slug + "</loc>"; !strings.Contains(body, want) {

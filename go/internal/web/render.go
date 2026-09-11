@@ -63,6 +63,7 @@ var funcs = template.FuncMap{
 	"long":        isLongBody,
 	"when":        whenHTML,
 	"plural":      plural,
+	"rub":         rub,
 	"age":         ageWords,
 	"depth":       depthClass,
 	"themes":      themeList,
@@ -437,6 +438,25 @@ func whenHTML(t time.Time, exact bool) template.HTML {
 	return template.HTML(`<time class="` + class + `" datetime="` +
 		local.Format(time.RFC3339) + `"` + title + `>` +
 		template.HTMLEscapeString(local.Format(dateFormat)) + `</time>`)
+}
+
+// rub — число рублей с разделёнными разрядами: «11 500». Не украшение: на
+// странице сбора число и есть главное сообщение, а «11500» глаз читает вдвое
+// дольше. Пробел НЕРАЗРЫВНЫЙ — иначе «11» и «500 ₽» разъедутся по строкам на
+// узком экране, и сумма прочтётся как две.
+func rub(n int) string {
+	s := strconv.Itoa(n)
+	if n < 0 {
+		return s // отрицательной цены не бывает: портить тут нечего и чинить нечего
+	}
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteRune('\u00a0')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
 }
 
 // plural — русское склонение при числительном.

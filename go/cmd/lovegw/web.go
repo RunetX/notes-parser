@@ -100,6 +100,13 @@ func cmdWeb(ctx context.Context, args []string) error {
 			BotTelegram: cfg.Platform.Contacts.BotTelegram,
 			BotMAX:      cfg.Platform.Contacts.BotMAX,
 		},
+		Support: web.Support{
+			URL:       cfg.Platform.Support.URL,
+			InfraRub:  cfg.Platform.Support.InfraRub,
+			ModelsRub: cfg.Platform.Support.ModelsRub,
+			AsOf:      cfg.Platform.Support.AsOf,
+			Payee:     cfg.Platform.Support.Payee,
+		},
 		Log: log,
 	}, pf, pf, wr, wr, site)
 	// Шина событий: страница «События», колокольчик и живой канал. Морда только

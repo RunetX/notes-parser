@@ -137,6 +137,13 @@
       "bot_telegram": "",
       "bot_max": ""
     },
+    "support": {
+      "url": "",
+      "infra_rub": 0,
+      "models_rub": 0,
+      "as_of": "",
+      "payee": ""
+    },
     "moderation": {
       "enabled": false,
       "provider": "yandex",

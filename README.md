@@ -311,7 +311,7 @@ lovegw morning status
 | --- | --- |
 | `site` | базовый URL, User-Agent, интервал запросов |
 | `messengers.telegram` / `messengers.max` | гейт `enabled` + токены, id канала, чата обсуждения и админа. Старый плоский формат `mirror_bot`/`dm_bot` по-прежнему грузится как telegram-only |
-| `platform` | своя площадка: `enabled`, `dsn`, `listen`, `base_url`, `media_dir`, реквизиты оператора, `contacts`; подсекции `moderation` (автомат), `bus` (шина событий), `shots` (картинки к заметкам) |
+| `platform` | своя площадка: `enabled`, `dsn`, `listen`, `base_url`, `media_dir`, реквизиты оператора, `contacts`, `support` (адрес сбора пожертвований, цена месяца двумя статьями, имя получателя); подсекции `moderation` (автомат), `bus` (шина событий), `shots` (картинки к заметкам) |
 | `talks` | личная переписка: интервалы, лимиты, `allow_send`, `store_text`, `retention_days`, `exclude_users` |
 | `digest` | слот выпуска (`weekday`, `hour`, `tz`), `out_dir`, `auto_publish`, `author_profile_id` |
 | `pulpit` | амвон: `enabled`, анкета владельца, свежесть, бюджеты, пороги длины, потолки ответов |

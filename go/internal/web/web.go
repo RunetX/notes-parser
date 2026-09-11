@@ -57,7 +57,11 @@ type Config struct {
 	// Contacts — живые контакты площадки для страницы справки. Пустые поля не
 	// показываются: мёртвых ссылок и «пишите нам: —» площадка не печатает.
 	Contacts Contacts
-	Log      *slog.Logger
+	// Support — «Поддержать площадку»: адрес сбора и во что обходится месяц.
+	// Пустой адрес значит, что темы справки нет вовсе, — то же правило, по
+	// которому не печатается пустой контакт.
+	Support Support
+	Log     *slog.Logger
 }
 
 // Contacts — куда идти за живым человеком. Свой тип, а не config.Contacts:
@@ -81,6 +85,33 @@ type Contacts struct {
 	BotTelegram string
 	BotMAX      string
 }
+
+// Support — «Поддержать площадку»: адрес сбора и цена месяца.
+//
+// Денег площадка не принимает и ничего о них не хранит — ни платёжной формы, ни
+// чужого скрипта, ни строки в базе, — поэтому вся её монетизация помещается в
+// три поля и текст вокруг них. Узнай она о платеже хоть что-нибудь, это была бы
+// новая категория персональных данных, то есть новая редакция согласия и
+// переподписка всеми.
+type Support struct {
+	// URL — адрес сбора; пусто — темы «Поддержать площадку» нет вовсе.
+	URL string
+	// InfraRub и ModelsRub — во что обходится месяц: чем площадка живёт и во что
+	// встают вызовы моделей её службами. Считается только то, что тратится ИМЕННО
+	// на неё, — почему, сказано в шапке config.Support и на самой странице.
+	InfraRub  int
+	ModelsRub int
+	// AsOf — когда считали. Без него числа не печатаются вовсе: сумма без даты
+	// через полгода врёт молча.
+	AsOf string
+	// Payee — чьим именем подписан сбор на той стороне. Пусто — не называем.
+	Payee string
+}
+
+// TotalRub — итог месяца. СЧИТАЕТСЯ, а не хранится рядом третьим полем: то
+// разошлось бы с парой при первой же правке одного из чисел, и разошлось бы
+// молча. Ноль означает «цены не назвали» и гасит весь блок на странице.
+func (s Support) TotalRub() int { return s.InfraRub + s.ModelsRub }
 
 // Store — то, что морда спрашивает у ядра.
 //
@@ -284,15 +315,32 @@ func checkContacts(c Contacts, log *slog.Logger) Contacts {
 		"telegram": &c.Telegram, "max": &c.MAX,
 		"bot_telegram": &c.BotTelegram, "bot_max": &c.BotMAX,
 	} {
-		if *link == "" {
-			continue
-		}
-		if !strings.HasPrefix(*link, "https://") {
-			log.Warn("ссылка на группу не показана: нужна схема https", "где", name, "ссылка", *link)
-			*link = ""
-		}
+		keepHTTPS(name, link, log)
 	}
 	return c
+}
+
+// checkSupport — то же правило для адреса сбора, и оно намеренно ТО ЖЕ САМОЕ:
+// две копии правила «в наш href попадает ровно https» однажды разошлись бы, и
+// разошлись бы именно на той ссылке, где ошибка стоит чужих денег.
+//
+// Хост при этом не сверяется. Вшить в бинарник домен чужого платёжного сервиса
+// значит получить отказ на ровном месте в день, когда он сменится, — а защита
+// здесь другая и та же, что у контактов: адрес печатается в тексте ссылки
+// ЦЕЛИКОМ, и куда он ведёт, человек видит до нажатия.
+func checkSupport(s Support, log *slog.Logger) Support {
+	keepHTTPS("support.url", &s.URL, log)
+	return s
+}
+
+// keepHTTPS гасит одну ссылку, если схема не та. Общая для контактов и сбора:
+// довод целиком — в шапке checkContacts.
+func keepHTTPS(where string, link *string, log *slog.Logger) {
+	if *link == "" || strings.HasPrefix(*link, "https://") {
+		return
+	}
+	log.Warn("ссылка не показана: нужна схема https", "где", where, "ссылка", *link)
+	*link = ""
 }
 
 func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *Server {
@@ -320,6 +368,7 @@ func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *
 	// «карточек не бывает», и ссылки остаются текстом.
 	setVideoPreviews(cfg.MediaDir, log)
 	s.cfg.Contacts = checkContacts(cfg.Contacts, log)
+	s.cfg.Support = checkSupport(cfg.Support, log)
 	if site == nil {
 		log.Warn("клиент НГС не задан — вход по коду в анкете недоступен, остаются приглашения")
 	}
