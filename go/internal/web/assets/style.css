@@ -995,7 +995,12 @@ span.rxb { cursor: default; }
   border: 1px solid var(--rule); border-radius: 3px;
   background: var(--btn); color: var(--meta);
 }
-.sitemark .ico { width: 44px; height: 44px; }
+/* Значок — ДОЛЯ коробки, а не сорок четыре точки. Коробка ужимается в четырёх
+   местах (телефон, узкий телефон, колонка автора, колонка реплики), и жёсткий
+   размер держался, пока знак жил в одной заметке: у реплики на узком экране
+   коробка 48, и 44 точки прибивали значок к самой рамке. Доля переезжает вместе
+   с коробкой сама и второго числа рядом с первым не заводит. */
+.sitemark .ico { width: 44%; height: 44%; }
 .nick._site { color: var(--meta); font-weight: 600; }
 .synthcap { margin: 0 0 10px; color: var(--meta); font-size: 13px; }
 .synthq { margin: 0; padding: 0 0 0 12px; border-left: 3px solid var(--rule); }
