@@ -68,8 +68,13 @@ func TestConsentsPageShowsTheRealDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 2 {
-		t.Fatalf("согласий %d, а их два", len(docs))
+	// ТРИ, и третье — необязательное согласие на привязку мессенджера
+	// (11.09.2026). Стоит оно здесь по отдельному доводу: документ, который
+	// видит только нажавший «Привязать», прочесть заранее негде. Обязательным от
+	// присутствия в этом списке оно не становится — это стережёт соседний тест
+	// про дверь (TestOptionalConsentIsNotAskedAtTheDoor).
+	if len(docs) != 3 {
+		t.Fatalf("согласий %d, а их три", len(docs))
 	}
 	for _, d := range docs {
 		if !strings.Contains(body, d.Title) {

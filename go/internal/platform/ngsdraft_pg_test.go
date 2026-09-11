@@ -72,7 +72,7 @@ func TestЧерновикТребуетДействующегоСогласия(
 	if _, err := p.EnsureShadow(ctx, MirroredAuthor{ID: id, Nick: "Рио"}); err != nil {
 		t.Fatalf("тень: %v", err)
 	}
-	if _, err := p.CompleteBotLogin(ctx, id); err != nil {
+	if _, err := p.CompleteBotLogin(ctx, id, MethodBotDeeplink); err != nil {
 		t.Fatalf("вход: %v", err)
 	}
 	if _, err := p.QueueNGSNote(ctx, NewNote{AuthorID: id, Body: "без согласия"}); err == nil {

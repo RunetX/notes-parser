@@ -481,7 +481,7 @@ func TestAgeRidesInWithTheMirrorAndLeavesOnLogin(t *testing.T) {
 
 	// Тот же человек вошёл на площадку. С этой минуты возраста у нас нет вовсе —
 	// ни на экране, ни в базе.
-	if _, err := e.p.CompleteBotLogin(ctx, 515996); err != nil {
+	if _, err := e.p.CompleteBotLogin(ctx, 515996, platform.MethodBotDeeplink); err != nil {
 		t.Fatalf("вход: %v", err)
 	}
 	got, err = e.p.Thread(ctx, platform.Viewer{}, 312811)

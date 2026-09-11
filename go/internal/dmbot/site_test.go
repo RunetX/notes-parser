@@ -85,7 +85,7 @@ func TestSiteБезПлощадкиНеОтвечает(t *testing.T) {
 	if strings.Contains(tr.lastSent(), "Зазеркал") {
 		t.Errorf("ответил про площадку, которой нет: %q", tr.lastSent())
 	}
-	for _, c := range botCommands(false, true, true, false) {
+	for _, c := range botCommands(false, true, true, false, false) {
 		if c.Name == "site" {
 			t.Fatal("/site значится в меню без подключённой площадки")
 		}

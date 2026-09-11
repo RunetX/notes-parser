@@ -26,11 +26,11 @@ func TestВходИзБотаОдноразовый(t *testing.T) {
 		t.Fatalf("ключ %q, срок %v", key, expires)
 	}
 
-	got, err := p.RedeemBotLogin(ctx, key)
+	got, _, err := p.RedeemBotLogin(ctx, key)
 	if err != nil || got != profile {
 		t.Fatalf("погашение: %d, %v", got, err)
 	}
-	if _, err := p.CompleteBotLogin(ctx, profile); err != nil {
+	if _, err := p.CompleteBotLogin(ctx, profile, MethodBotDeeplink); err != nil {
 		t.Fatalf("вход: %v", err)
 	}
 	u, err := p.UserByID(ctx, profile)
@@ -42,7 +42,7 @@ func TestВходИзБотаОдноразовый(t *testing.T) {
 	}
 
 	// Второй раз тот же ключ не работает.
-	if _, err := p.RedeemBotLogin(ctx, key); !errors.Is(err, ErrBotKeyInvalid) {
+	if _, _, err := p.RedeemBotLogin(ctx, key); !errors.Is(err, ErrBotKeyInvalid) {
 		t.Errorf("повторное погашение: %v, ожидался ErrBotKeyInvalid", err)
 	}
 }
@@ -68,10 +68,10 @@ func TestНовыйКлючГаситПрежний(t *testing.T) {
 	if first == second {
 		t.Fatal("выдан тот же ключ — plaintext мы не храним, значит он новый всегда")
 	}
-	if _, err := p.RedeemBotLogin(ctx, first); !errors.Is(err, ErrBotKeyInvalid) {
+	if _, _, err := p.RedeemBotLogin(ctx, first); !errors.Is(err, ErrBotKeyInvalid) {
 		t.Errorf("прежний ключ пережил выдачу нового: %v", err)
 	}
-	if _, err := p.RedeemBotLogin(ctx, second); err != nil {
+	if _, _, err := p.RedeemBotLogin(ctx, second); err != nil {
 		t.Errorf("свежий ключ не работает: %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestОбезличенногоБотНеВпускает(t *testing.T) {
 		`UPDATE users SET anonymized_at = now() WHERE id = $1`, profile); err != nil {
 		t.Fatalf("обезличивание: %v", err)
 	}
-	if _, err := p.CompleteBotLogin(ctx, profile); !errors.Is(err, ErrAnonymized) {
+	if _, err := p.CompleteBotLogin(ctx, profile, MethodBotDeeplink); !errors.Is(err, ErrAnonymized) {
 		t.Errorf("вход обезличенного: %v, ожидался ErrAnonymized", err)
 	}
 }
@@ -113,7 +113,7 @@ func TestИстёкшийКлючНеГодится(t *testing.T) {
 		profile); err != nil {
 		t.Fatalf("состаривание: %v", err)
 	}
-	if _, err := p.RedeemBotLogin(ctx, key); !errors.Is(err, ErrBotKeyInvalid) {
+	if _, _, err := p.RedeemBotLogin(ctx, key); !errors.Is(err, ErrBotKeyInvalid) {
 		t.Errorf("истёкший ключ впустил: %v", err)
 	}
 }

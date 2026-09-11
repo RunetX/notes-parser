@@ -119,9 +119,11 @@ const (
 	// снова замок с нашей стороны двери.
 	challengeMinInterval = time.Minute
 
-	// SessionTTL — срок жизни сессии. Три месяца: площадка для сообщества, где
-	// заходят не каждый день, а перелогин руками — это ещё один визит на НГС за
-	// кодом.
+	// SessionTTL — срок жизни сессии, считаемый ОТ ПОСЛЕДНЕГО ВИЗИТА, а не от
+	// входа (11.09.2026, см. SessionUser). Три месяца: площадка для сообщества,
+	// где заходят не каждый день, — и заглянувший хотя бы раз в квартал не
+	// выпадает вовсе, потому что перелогин руками это ещё один визит на НГС за
+	// кодом, а у человека без анкеты и его нет.
 	SessionTTL = 90 * 24 * time.Hour
 )
 
@@ -723,9 +725,13 @@ func (p *Platform) CreateSession(ctx context.Context, userID int64, ua string) (
 
 // SessionUser отдаёт хозяина живой сессии. ErrNotFound — сессии нет, истекла или
 // отозвана; для морды это просто «гость».
-func (p *Platform) SessionUser(ctx context.Context, token string) (User, error) {
+//
+// Второе значение — НОВЫЙ срок сессии, если визит её продлил, и нулевое время,
+// если не продлил (см. ниже). Морда ставит по нему куку: срок обязан двигаться
+// в обоих местах разом, иначе скользит только половина.
+func (p *Platform) SessionUser(ctx context.Context, token string) (User, time.Time, error) {
 	if token == "" {
-		return User{}, ErrNotFound
+		return User{}, time.Time{}, ErrNotFound
 	}
 	sum := sha256.Sum256([]byte(token))
 	var lastSeen time.Time
@@ -738,20 +744,47 @@ func (p *Platform) SessionUser(ctx context.Context, token string) (User, error) 
 	// именно она и разошлась со списком колонок в Ш7.
 	err := row.Scan(append(userDest(&u), &lastSeen)...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return User{}, ErrNotFound
+		return User{}, time.Time{}, ErrNotFound
 	}
 	if err != nil {
-		return User{}, fmt.Errorf("чтение сессии: %w", err)
+		return User{}, time.Time{}, fmt.Errorf("чтение сессии: %w", err)
 	}
 	// Отметка визита огрублена: без порога строка сессии переписывалась бы на
 	// КАЖДЫЙ запрос страницы, то есть на пустом месте пухли бы и WAL, и таблица.
+	//
+	// ЗДЕСЬ ЖЕ СРОК ПРОДЛЕВАЕТСЯ, и это правка 11.09.2026. Прежде окно было
+	// АБСОЛЮТНЫМ: девяносто дней от входа, дальше «войдите заново» — то есть
+	// ещё один визит на НГС за кодом. Для человека, у которого анкеты больше
+	// нет, это не неудобство, а запертая дверь по расписанию: читает каждый
+	// день, а в назначенный день оказывается снаружи.
+	//
+	// Абсолютного потолка поверх скользящего окна нет НАМЕРЕННО: он вернул бы
+	// ровно ту же болезнь, только раз в год. Цена названа честно — украденная
+	// кука живёт, пока ею пользуются, — и оплачена соседней кнопкой «выйти на
+	// всех устройствах» (RevokeUserSessions): до этой правки она существовала
+	// только в комментарии, и заводится вместе с продлением не для полноты.
+	// ПРОДЛЕНИЕ ВОЗВРАЩАЕТСЯ НАРУЖУ, и без этого вся правка была бы напрасной:
+	// срок живёт в ДВУХ местах — строкой в базе и Max-Age у куки, — а кука
+	// ставится один раз при входе. Продлив только строку, мы получили бы ту же
+	// запертую дверь в тот же день: браузер выбросил бы куку по своему сроку, и
+	// предъявлять стало бы нечего. Морда переставляет её, получив здесь новый
+	// срок; ноль означает «не продлевали», то есть и переставлять нечего.
+	//
+	// Условия revoked_at/expires_at повторены НАМЕРЕННО: SELECT выше и этот
+	// UPDATE идут разными запросами, и между ними помещается «выйти на всех
+	// устройствах» из соседней вкладки. Без них продление воскресило бы ровно ту
+	// сессию, которую человек только что погасил.
 	if time.Since(lastSeen) > time.Hour {
-		if _, err := p.pool.Exec(ctx,
-			`UPDATE web_sessions SET last_seen_at = now() WHERE token_sha = $1`, sum[:]); err != nil {
-			return u, nil // отметка визита не повод отказать во входе
+		var until time.Time
+		if err := p.pool.QueryRow(ctx, `
+			UPDATE web_sessions SET last_seen_at = now(), expires_at = now() + make_interval(secs => $2)
+			 WHERE token_sha = $1 AND revoked_at IS NULL AND expires_at > now()
+			 RETURNING expires_at`, sum[:], SessionTTL.Seconds()).Scan(&until); err != nil {
+			return u, time.Time{}, nil // отметка визита не повод отказать во входе
 		}
+		return u, until, nil
 	}
-	return u, nil
+	return u, time.Time{}, nil
 }
 
 // RevokeSession гасит одну сессию — «выйти здесь».
@@ -842,9 +875,15 @@ func (p *Platform) SetRole(ctx context.Context, actor Viewer, id int64, role Rol
 
 // ---------------------------------------------------------------- коды
 
-func newCode() (string, error) {
+func newCode() (string, error) { return newCodeWith(codePrefix) }
+
+// newCodeWith — тот же код, но с другим началом. Префикс не украшение: код
+// входа человек вставляет в ПУБЛИЧНОЕ поле «о себе» на чужом сайте, а код
+// привязки отправляет боту, — и перепутав их, он опубликовал бы живой ключ от
+// своей учётной записи. Разные буквы в начале стоят дешевле любого объяснения.
+func newCodeWith(prefix string) (string, error) {
 	var b strings.Builder
-	b.WriteString(codePrefix)
+	b.WriteString(prefix)
 	max := big.NewInt(int64(len(codeAlphabet)))
 	for g := 0; g < codeGroups; g++ {
 		b.WriteByte('-')

@@ -442,7 +442,7 @@ func TestЗапретНеГаситСессии(t *testing.T) {
 	if err := p.BanUser(ctx, mod, author, time.Now().Add(24*time.Hour), "реклама"); err != nil {
 		t.Fatalf("запрет: %v", err)
 	}
-	u, err := p.SessionUser(ctx, token)
+	u, _, err := p.SessionUser(ctx, token)
 	if err != nil {
 		t.Fatalf("сессия погашена запретом: %v", err)
 	}

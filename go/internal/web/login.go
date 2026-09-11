@@ -126,9 +126,21 @@ func (s *Server) withViewer(next http.Handler) http.Handler {
 		if s.auth != nil && !strings.HasPrefix(r.URL.Path, "/assets/") &&
 			!strings.HasPrefix(r.URL.Path, "/media/") {
 			if token := s.session(r); token != "" {
-				u, err := s.auth.SessionUser(r.Context(), token)
+				u, until, err := s.auth.SessionUser(r.Context(), token)
 				switch {
 				case err == nil:
+					// СКОЛЬЗЯЩИЙ СРОК СКОЛЬЗИТ И В БРАУЗЕРЕ. Ядро продлевает
+					// строку сессии не чаще раза в час и говорит об этом новым
+					// сроком; здесь по нему переставляется кука. Без этого
+					// продлевалась бы только база, а браузер выбрасывал бы куку
+					// в тот же день, что и до правки, — то есть дверь запиралась
+					// бы по расписанию ровно как раньше.
+					//
+					// Ставится она в том же ритме, что и запись в базу: два
+					// срока, посчитанные порознь, разошлись бы молча.
+					if !until.IsZero() {
+						s.setCookie(w, sessCookie, token, time.Until(until))
+					}
 					r = r.WithContext(context.WithValue(r.Context(), userKey, u))
 				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 					// Человек ушёл со страницы, не дождавшись её, либо запрос
@@ -559,7 +571,9 @@ func (s *Server) handleBotLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/me", http.StatusSeeOther)
 		return
 	}
-	userID, err := s.auth.RedeemBotLogin(r.Context(), r.URL.Query().Get("key"))
+	// Способ морда не читает и читать не должна: она доносит до ядра то, что
+	// ядро же и записало в ключ, — а решает по нему CompleteBotLogin.
+	userID, method, err := s.auth.RedeemBotLogin(r.Context(), r.URL.Query().Get("key"))
 	switch {
 	case err == nil:
 	case errors.Is(err, platform.ErrBotKeyInvalid):
@@ -574,7 +588,7 @@ func (s *Server) handleBotLogin(w http.ResponseWriter, r *http.Request) {
 		s.oops(w, r, "вход по ссылке из бота", err)
 		return
 	}
-	if _, err := s.auth.CompleteBotLogin(r.Context(), userID); err != nil {
+	if _, err := s.auth.CompleteBotLogin(r.Context(), userID, method); err != nil {
 		if errors.Is(err, platform.ErrAnonymized) {
 			s.fail(w, r, http.StatusForbidden,
 				"Данные этой анкеты обезличены по требованию её владельца. "+

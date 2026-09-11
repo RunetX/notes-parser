@@ -10,11 +10,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
+	"lovegw/internal/dmbot"
 	"lovegw/internal/platform"
 )
 
@@ -48,6 +50,64 @@ func (b botSiteLogin) BotLoginLink(ctx context.Context, profileID int64, nick, m
 	return strings.TrimRight(b.baseURL, "/") + "/login/bot?key=" + url.QueryEscape(key), expires, nil
 }
 
+// BindOffer — чья запись стоит за кодом привязки. Код НЕ гасится: бот сперва
+// показывает ник, и только нажатие «Привязать» его тратит.
+func (b botSiteLogin) BindOffer(ctx context.Context, code string) (string, error) {
+	_, nick, err := b.p.BindingOffer(ctx, code)
+	return nick, bindErr(err)
+}
+
+// Bind гасит код и заводит привязку.
+func (b botSiteLogin) Bind(ctx context.Context, code, messenger string, messengerUserID int64) (string, error) {
+	_, nick, err := b.p.BindMessenger(ctx, code, messenger, messengerUserID)
+	return nick, bindErr(err)
+}
+
+// BoundLoginLink — ссылка входа по УЖЕ существующей привязке: та же дорога, что
+// у BotLoginLink, только право доказано не сессией НГС, а привязкой.
+//
+// EnsureShadow здесь не зовётся намеренно: привязка бывает только у участника,
+// то есть строка в users заведомо есть, — а освежать ник у участника нельзя
+// вовсе (ник, выбранный на площадке, сильнее ника с сайта).
+func (b botSiteLogin) BoundLoginLink(ctx context.Context, messenger string, messengerUserID int64) (string, time.Time, error) {
+	userID, _, err := b.p.MessengerLogin(ctx, messenger, messengerUserID)
+	if err != nil {
+		return "", time.Time{}, bindErr(err)
+	}
+	// Ключ помечается ПРИВЯЗКОЙ, а не анкетой: при завершении входа по нему
+	// решается, делать ли обряд анкеты, — а пришедший этой дорогой про НГС
+	// ничего не доказывал и анкеты может не иметь вовсе.
+	key, expires, err := b.p.StartBoundLogin(ctx, userID, messenger, messengerUserID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return strings.TrimRight(b.baseURL, "/") + "/login/bot?key=" + url.QueryEscape(key), expires, nil
+}
+
+// bindErr переводит отказы ядра в отказы диалогового ядра. Перевод стоит ЗДЕСЬ,
+// на границе, потому что dmbot не импортирует platform вовсе — про площадку он
+// знает ровно столько, сколько назвал интерфейс. Тот же приём, что у web.ErrNoProfile.
+func bindErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, platform.ErrBindCodeInvalid):
+		return dmbot.ErrBindCodeInvalid
+	case errors.Is(err, platform.ErrMessengerTaken):
+		return dmbot.ErrMessengerTaken
+	case errors.Is(err, platform.ErrNoBinding), errors.Is(err, platform.ErrUnknownMessenger):
+		return dmbot.ErrNoBinding
+	// bindableGuard зовётся ВТОРОЙ раз, уже при самой привязке, и к этому
+	// моменту человек мог перестать годиться: администратор обезличил его, отзыв
+	// согласия увёл запись в тень. Без перевода наружу уезжала бы сырая ошибка
+	// ядра, а человек видел бы «внутреннюю ошибку» вместо причины.
+	case errors.Is(err, platform.ErrAnonymized), errors.Is(err, platform.ErrNotMember),
+		errors.Is(err, platform.ErrNotFound):
+		return dmbot.ErrBindNotAllowed
+	}
+	return err
+}
+
 // setupSiteLogin подключает /site обоим ботам команд.
 //
 // Условий три, и каждое означает «команды просто нет», а не аварию: без площадки
@@ -62,10 +122,12 @@ func (d *daemon) setupSiteLogin() {
 	bots := 0
 	if d.dm != nil {
 		d.dm.SetSiteLogin(login)
+		d.dm.SetSiteBinding(login)
 		bots++
 	}
 	if d.maxDM != nil {
 		d.maxDM.SetSiteLogin(login)
+		d.maxDM.SetSiteBinding(login)
 		bots++
 	}
 	if bots > 0 {

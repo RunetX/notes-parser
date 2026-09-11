@@ -213,7 +213,7 @@ func mustNGSMember(t *testing.T, p *Platform, id int64, nick string) int64 {
 	if _, err := p.EnsureShadow(ctx, MirroredAuthor{ID: id, Nick: nick}); err != nil {
 		t.Fatalf("тень %d: %v", id, err)
 	}
-	if _, err := p.CompleteBotLogin(ctx, id); err != nil {
+	if _, err := p.CompleteBotLogin(ctx, id, MethodBotDeeplink); err != nil {
 		t.Fatalf("вход %d: %v", id, err)
 	}
 	mustConsent(t, p, id)

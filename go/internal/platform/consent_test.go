@@ -5,19 +5,22 @@ import (
 	"testing"
 )
 
-// Документов ровно два, и порядок фиксирован: сперва общее согласие, потом
+// Документов ТРИ, и порядок фиксирован: сперва общее согласие, потом
 // распространение — согласиться на публикацию, не согласившись на обработку,
-// бессмысленно.
+// бессмысленно, — а необязательное идёт последним, потому что и читается оно
+// последним. Обязательных при этом по-прежнему два, и это стережёт
+// TestOptionalConsentIsNotAskedAtTheDoor: список документов площадки и список
+// того, что спрашивают на входе, с 11.09.2026 разные вещи.
 func TestCurrentConsentDocs(t *testing.T) {
 	docs, err := CurrentConsentDocs(Operator{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 2 {
-		t.Fatalf("документов %d, ожидалось 2", len(docs))
+	if len(docs) != 3 {
+		t.Fatalf("документов %d, ожидалось 3", len(docs))
 	}
-	if docs[0].Kind != ConsentProcessing || docs[1].Kind != ConsentDistribution {
-		t.Fatalf("порядок документов: %s, %s", docs[0].Kind, docs[1].Kind)
+	if docs[0].Kind != ConsentProcessing || docs[1].Kind != ConsentDistribution || docs[2].Kind != ConsentBinding {
+		t.Fatalf("порядок документов: %s, %s, %s", docs[0].Kind, docs[1].Kind, docs[2].Kind)
 	}
 	for _, d := range docs {
 		if d.Version < 1 || d.Title == "" || len(d.SHA) != 32 {

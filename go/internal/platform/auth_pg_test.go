@@ -327,7 +327,7 @@ func TestAbortLoginRollsBack(t *testing.T) {
 	if err != nil || u.Kind != KindShadow {
 		t.Fatalf("после отката: kind %d, err %v — ожидалась тень", u.Kind, err)
 	}
-	if _, err := p.SessionUser(ctx, token); !errors.Is(err, ErrNotFound) {
+	if _, _, err := p.SessionUser(ctx, token); !errors.Is(err, ErrNotFound) {
 		t.Errorf("сессия пережила откат: %v", err)
 	}
 	var ids int
@@ -384,13 +384,13 @@ func TestSessionLifecycle(t *testing.T) {
 	if strings.Contains(stored, token) {
 		t.Error("в базе лежит сам токен, а не его хеш")
 	}
-	if u, err := p.SessionUser(ctx, token); err != nil || u.ID != id {
+	if u, _, err := p.SessionUser(ctx, token); err != nil || u.ID != id {
 		t.Fatalf("чтение сессии: %v", err)
 	}
 	if err := p.RevokeSession(ctx, token); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.SessionUser(ctx, token); !errors.Is(err, ErrNotFound) {
+	if _, _, err := p.SessionUser(ctx, token); !errors.Is(err, ErrNotFound) {
 		t.Errorf("отозванная сессия всё ещё жива: %v", err)
 	}
 }
@@ -552,4 +552,3 @@ func TestPublishedConsentIsImmutable(t *testing.T) {
 		t.Fatalf("подмена выпущенной редакции прошла молча: %v", err)
 	}
 }
-

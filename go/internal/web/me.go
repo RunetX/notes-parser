@@ -60,6 +60,22 @@ type mePage struct {
 	// заметка не заводится здесь вовсе, и полторы минуты между нажатием и
 	// появлением в ленте иначе выглядят как пропажа текста.
 	NGSPending int
+	// Bindings — привязанные мессенджеры: ВТОРАЯ дверь, не зависящая от НГС.
+	// Показываются здесь же, где согласия и вынос, потому что вопрос у них один
+	// и тот же — «чем я владею на этой площадке».
+	Bindings []platform.Binding
+	// NGSDoor — есть ли у человека анкета НГС (номер лежит в полосе НГС).
+	// SiteUp — доступен ли сам сайт: код входа читается со страницы анкеты, и
+	// без клиента НГС эта дверь не работает ни у кого. Состояний, стало быть,
+	// ТРИ, а не два, и различать их обязана страница: «анкеты нет вовсе» и
+	// «анкета есть, но сайт молчит» — разные ответы на один вопрос, и второй
+	// нельзя объявлять входом по приглашению.
+	// Нужен не для красоты: у вошедшего по приглашению этой двери нет вовсе, и
+	// сказать ему «войдёте кодом» значило бы соврать.
+	NGSDoor bool
+	// SiteUp — жив ли клиент НГС. Тот же довод, что у кнопки «Обновить аватар»:
+	// про дорогу, которая сейчас заведомо откажет, не обещаем.
+	SiteUp bool
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +100,7 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		http.Redirect(w, r, "/consent", http.StatusSeeOther)
 		return
 	}
-	docs, err := platform.CurrentConsentDocs(s.cfg.Operator)
+	docs, err := platform.RequiredConsentDocs(s.cfg.Operator)
 	if err != nil {
 		s.oops(w, r, "тексты согласий", err)
 		return
@@ -144,6 +160,14 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 			}
 		}
 	}
+	// Привязки читаются ВСЕГДА: это единственное место, где человек видит, каким
+	// ключом от его записи владеет мессенджер, — и единственное, где чужая
+	// привязка (подсунутый код) бросится в глаза.
+	bindings, err := s.auth.UserBindings(r.Context(), u.ID)
+	if err != nil {
+		s.oops(w, r, "привязки", err)
+		return
+	}
 	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
 		page:        s.newPage(r, "Моя страница"),
 		Member:      card,
@@ -162,6 +186,13 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		NGSStuck:    ngsStuck,
 		NGSStuckAt:  ngsStuckAt,
 		NGSPending:  ngsPending,
+		Bindings:    bindings,
+		// Дверь эта работает, только пока жив САЙТ: код читается со страницы
+		// анкеты. Нет клиента НГС — /login про неё и не говорит, и обещать её
+		// здесь значило бы нарисовать кнопку, отвечающую отказом. Тот же довод,
+		// по которому рядом прячется «Обновить аватар».
+		NGSDoor: platform.IsNGS(u.ID),
+		SiteUp:  s.site != nil,
 	})
 }
 
@@ -293,6 +324,9 @@ type revokePage struct {
 	Title string
 	// Processing — отзывается ОБЩЕЕ согласие: оно вдобавок закрывает вход.
 	Processing bool
+	// Binding — отзывается НЕОБЯЗАТЕЛЬНОЕ согласие на привязку. Последствия у
+	// него совсем другие и все обратимые, поэтому список на экране свой.
+	Binding bool
 }
 
 // handleMeConsent — отзыв и возврат согласия.
@@ -317,12 +351,19 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.FormValue("kind")
-	if kind != platform.ConsentProcessing && kind != platform.ConsentDistribution {
+	// НЕОБЯЗАТЕЛЬНОЕ согласие на привязку ОТЗЫВАЕТСЯ здесь же, а вот ДАЁТСЯ
+	// только на своём экране (/me/bind): подпись имеет смысл рядом с текстом и
+	// действием, ради которого её просят, а «дать снова» в общем списке
+	// завело бы согласие, под которым нет никакой привязки.
+	switch {
+	case kind == platform.ConsentProcessing, kind == platform.ConsentDistribution:
+	case kind == platform.ConsentBinding && r.FormValue("action") == "revoke":
+	default:
 		s.fail(w, r, http.StatusBadRequest, "Такого согласия нет.")
 		return
 	}
 	if r.FormValue("action") == "grant" {
-		docs, err := platform.CurrentConsentDocs(s.cfg.Operator)
+		docs, err := platform.RequiredConsentDocs(s.cfg.Operator)
 		if err != nil {
 			s.oops(w, r, "тексты согласий", err)
 			return
@@ -339,22 +380,26 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.FormValue("confirm") != "1" {
-		docs, err := platform.CurrentConsentDocs(s.cfg.Operator)
+		// Заголовок ищется среди ВСЕХ документов, а не среди обязательных:
+		// необязательного среди них нет по построению, и прежний поиск оставлял
+		// человеку сырое слово «binding» вместо названия.
+		doc, err := platform.ConsentDocOf(s.cfg.Operator, kind)
 		if err != nil {
 			s.oops(w, r, "тексты согласий", err)
 			return
 		}
-		title := kind
-		for _, d := range docs {
-			if d.Kind == kind {
-				title = d.Title
-			}
-		}
 		s.render(w, r, http.StatusOK, "revoke.gohtml", revokePage{
 			page:       s.newPage(r, "Отзыв согласия"),
 			Kind:       kind,
-			Title:      title,
+			Title:      doc.Title,
 			Processing: kind == platform.ConsentProcessing,
+			// Экран обезличивания — про распространение, и показывать его при
+			// отзыве НЕОБЯЗАТЕЛЬНОГО согласия нельзя: обезличивания не будет
+			// (RevokeConsent проходит по заметкам только у двух видов), писать
+			// человек не перестанет, и назад отыграется всё до последней буквы.
+			// Четыре обещания подряд, ни одно из которых не сбудется, — это не
+			// строгость, а неправда.
+			Binding: kind == platform.ConsentBinding,
 		})
 		return
 	}

@@ -135,7 +135,7 @@ func member(t *testing.T, e env, id int64, nick string) int64 {
 	if _, err := e.p.EnsureShadow(ctx, platform.MirroredAuthor{ID: id, Nick: nick}); err != nil {
 		t.Fatalf("тень: %v", err)
 	}
-	if _, err := e.p.CompleteBotLogin(ctx, id); err != nil {
+	if _, err := e.p.CompleteBotLogin(ctx, id, platform.MethodBotDeeplink); err != nil {
 		t.Fatalf("вход: %v", err)
 	}
 	docs, err := platform.CurrentConsentDocs(platform.Operator{})
@@ -414,7 +414,7 @@ func TestБезСессииЗаметкаВыходитЗдесьСразу(t *t
 	if _, err := e.p.EnsureShadow(ctx, platform.MirroredAuthor{ID: id, Nick: "Полынь-Трава"}); err != nil {
 		t.Fatalf("тень: %v", err)
 	}
-	if _, err := e.p.CompleteBotLogin(ctx, id); err != nil {
+	if _, err := e.p.CompleteBotLogin(ctx, id, platform.MethodBotDeeplink); err != nil {
 		t.Fatalf("вход: %v", err)
 	}
 	docs, err := platform.CurrentConsentDocs(platform.Operator{})

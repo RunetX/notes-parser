@@ -213,8 +213,11 @@ type Store interface {
 // делать с чужими данными», а здесь — операции над данными ОДНОГО человека, и
 // смешивать их в один список значило бы потерять это различие.
 type Auth interface {
-	RedeemBotLogin(ctx context.Context, key string) (int64, error)
-	CompleteBotLogin(ctx context.Context, userID int64) (int64, error)
+	// Второе значение — ЧЕМ доказано право (bot_deeplink либо messenger_bind).
+	// Морда его не толкует, а возвращает в CompleteBotLogin как есть: по нему
+	// ядро решает, делать ли обряд анкеты.
+	RedeemBotLogin(ctx context.Context, key string) (int64, string, error)
+	CompleteBotLogin(ctx context.Context, userID int64, method string) (int64, error)
 	StartProfileChallenge(ctx context.Context, profileID int64) (platform.Challenge, error)
 	VerifyProfileChallenge(ctx context.Context, profileID int64, code, aboutMe string) error
 	CompleteNGSLogin(ctx context.Context, prof platform.MirroredAuthor, gender platform.Gender) (int64, error)
@@ -222,8 +225,19 @@ type Auth interface {
 	RedeemInvite(ctx context.Context, code, nick string) (int64, error)
 
 	CreateSession(ctx context.Context, userID int64, ua string) (string, time.Time, error)
-	SessionUser(ctx context.Context, token string) (platform.User, error)
+	// Второе значение — новый срок сессии, если этот визит её продлил (ноль —
+	// не продлил). По нему переставляется кука: срок живёт и в базе, и в
+	// Max-Age, и двигать его надо в обоих местах разом.
+	SessionUser(ctx context.Context, token string) (platform.User, time.Time, error)
 	RevokeSession(ctx context.Context, token string) error
+	RevokeUserSessions(ctx context.Context, userID int64) error
+
+	// Привязка мессенджера — вторая природа доказательства (platform/binding.go).
+	// Морда здесь делает ровно половину дела: рождает код в живой сессии и
+	// показывает его. Гасит его БОТ, и только он знает, кто собеседник.
+	StartBinding(ctx context.Context, userID int64, ua string) (string, time.Time, error)
+	UserBindings(ctx context.Context, userID int64) ([]platform.Binding, error)
+	Unbind(ctx context.Context, userID int64, messenger string) error
 
 	MemberCard(ctx context.Context, id int64) (platform.Author, error)
 	MissingConsent(ctx context.Context, userID int64, op platform.Operator) (platform.ConsentDoc, error)
@@ -447,6 +461,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /me/avatar/clear", s.handleAvatarClear)
 	mux.HandleFunc("POST /me/jump", s.handleJump)
 	mux.HandleFunc("POST /me/ngssend", s.handleNGSSend)
+	mux.HandleFunc("GET /me/bind", s.handleBind)
+	mux.HandleFunc("POST /me/bind", s.handleBindStart)
+	mux.HandleFunc("POST /me/unbind", s.handleUnbind)
+	mux.HandleFunc("POST /me/logout-all", s.handleLogoutAll)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	// События: свои поводы и отметка прочитанного. Маршруты заведены всегда —
 	// без шины они отвечают «нет такой страницы», как /mod без модерации.

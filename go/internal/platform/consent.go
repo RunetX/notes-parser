@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,30 @@ var consentFS embed.FS
 const (
 	ConsentProcessing   = "processing"   // ст. 9: обработка вообще
 	ConsentDistribution = "distribution" // ст. 10.1: распространение
+	ConsentBinding      = "binding"      // привязка мессенджера, НЕОБЯЗАТЕЛЬНОЕ
+)
+
+// Согласия делятся на ОБЯЗАТЕЛЬНЫЕ и необязательные, и деление это — рычаг, а
+// не классификация (11.09.2026).
+//
+// Обязательных ровно два, и цена у них известна: выпуск новой редакции
+// обесценивает все прежние подписи (Has требует Version >= version), то есть
+// заставляет ПЕРЕПОДПИСАТЬСЯ всех до единого. Люди на это уже жаловались, и
+// владелец назвал правило прямо: так больше нельзя, разбегутся последние.
+//
+// Отсюда и третий документ. Привязка мессенджера — это новая категория
+// персональных данных (числовой идентификатор в чужой службе), и обойтись без
+// согласия нельзя; но спрашивается оно у ТОГО, КТО ПРЯМО СЕЙЧАС ПРИВЯЗЫВАЕТ, а
+// не у всех. Держится это не дисциплиной, а тем, что обязательный список
+// отдельно и короче: на экране входа спрашивается required (MissingConsent), у
+// публикации — тоже required (currentConsentVersions), и новый вид не может
+// случайно стать препятствием, даже если его забудут исключить.
+var (
+	requiredConsentKinds = []string{ConsentProcessing, ConsentDistribution}
+	// Порядок фиксирован: сперва общее согласие, потом распространение —
+	// согласиться на публикацию, не согласившись на обработку, бессмысленно, —
+	// а необязательное идёт последним, потому что оно и читается последним.
+	allConsentKinds = []string{ConsentProcessing, ConsentDistribution, ConsentBinding}
 )
 
 // Operator — реквизиты того, кто обрабатывает. Подставляются в текст ДО
@@ -117,9 +142,39 @@ func ConsentDocs(op Operator) ([]ConsentDoc, error) {
 	return out, nil
 }
 
-// CurrentConsentDocs — по одной, самой новой редакции каждого вида: именно их
-// спрашивают у входящего.
+// CurrentConsentDocs — по одной, самой новой редакции КАЖДОГО вида, включая
+// необязательные. Это список документов площадки: его печатает `platform
+// migrate` и показывает подвал страниц.
+//
+// Необязательный документ обязан читаться ДО того, как его предложат
+// подписать, — иначе выходит бумага, которую видит только тот, кто уже нажал.
 func CurrentConsentDocs(op Operator) ([]ConsentDoc, error) {
+	return currentDocs(op, allConsentKinds)
+}
+
+// RequiredConsentDocs — только обязательные: их спрашивают у входящего и у
+// публикующего. Отдельная функция, а не фильтр у вызывающего: забытый фильтр
+// превратил бы необязательный документ в стену на входе для ВСЕХ, и заметить
+// это можно было бы только на живых людях.
+func RequiredConsentDocs(op Operator) ([]ConsentDoc, error) {
+	return currentDocs(op, requiredConsentKinds)
+}
+
+// ConsentDocOf — действующая редакция одного вида. Нужна там, где документ
+// показывают поштучно: экран привязки мессенджера спрашивает своё согласие и
+// ничьё больше.
+func ConsentDocOf(op Operator, kind string) (ConsentDoc, error) {
+	docs, err := currentDocs(op, []string{kind})
+	if err != nil {
+		return ConsentDoc{}, err
+	}
+	if len(docs) == 0 {
+		return ConsentDoc{}, fmt.Errorf("текст согласия %q: нет ни одной редакции", kind)
+	}
+	return docs[0], nil
+}
+
+func currentDocs(op Operator, kinds []string) ([]ConsentDoc, error) {
 	all, err := ConsentDocs(op)
 	if err != nil {
 		return nil, err
@@ -130,10 +185,8 @@ func CurrentConsentDocs(op Operator) ([]ConsentDoc, error) {
 			best[d.Kind] = d
 		}
 	}
-	// Порядок фиксирован: сперва общее согласие, потом распространение —
-	// согласиться на публикацию, не согласившись на обработку, бессмысленно.
-	out := make([]ConsentDoc, 0, 2)
-	for _, k := range []string{ConsentProcessing, ConsentDistribution} {
+	out := make([]ConsentDoc, 0, len(kinds))
+	for _, k := range kinds {
 		if d, ok := best[k]; ok {
 			out = append(out, d)
 		}
@@ -148,7 +201,10 @@ func CurrentConsentDocs(op Operator) ([]ConsentDoc, error) {
 // Считается ОДИН раз на процесс: спрашивает их writeGuard, то есть каждая
 // публикация, а меняются они только вместе с бинарником.
 var currentConsentVersions = sync.OnceValues(func() (map[string]int, error) {
-	docs, err := CurrentConsentDocs(Operator{})
+	// ОБЯЗАТЕЛЬНЫЕ, и это здесь несущее: consentGuard сверяет по этому списку
+	// право публиковать, и попади сюда необязательный вид — писать на площадке
+	// смог бы только тот, кто привязал мессенджер.
+	docs, err := RequiredConsentDocs(Operator{})
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +225,7 @@ func parseConsentName(name string) (string, int, error) {
 	if err != nil || n < 1 {
 		return "", 0, fmt.Errorf("имя текста согласия %q: номер версии не разобран", name)
 	}
-	if kind != ConsentProcessing && kind != ConsentDistribution {
+	if !slices.Contains(allConsentKinds, kind) {
 		return "", 0, fmt.Errorf("имя текста согласия %q: неизвестный вид %q", name, kind)
 	}
 	return kind, n, nil
@@ -251,7 +307,10 @@ func (p *Platform) UserConsents(ctx context.Context, userID int64) (Consents, er
 // Спрашивается по одному, а не списком: два документа на одном экране — ровно
 // то, что закон и запрещает.
 func (p *Platform) MissingConsent(ctx context.Context, userID int64, op Operator) (ConsentDoc, error) {
-	docs, err := CurrentConsentDocs(op)
+	// ОБЯЗАТЕЛЬНЫЕ: экран входа не место для документа, без которого площадка
+	// работает как прежде. Необязательный спрашивается там, где им и
+	// пользуются, — на экране привязки.
+	docs, err := RequiredConsentDocs(op)
 	if err != nil {
 		return ConsentDoc{}, err
 	}
@@ -312,17 +371,35 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 
 	kinds := []string{kind}
 	if kind == ConsentProcessing {
-		// Распространение — частный случай обработки: отозвать общее и оставить
-		// его действующим невозможно даже формально.
-		kinds = []string{ConsentProcessing, ConsentDistribution}
+		// Распространение и привязка — частные случаи обработки: отозвать общее
+		// и оставить их действующими невозможно даже формально.
+		kinds = allConsentKinds
+	}
+	// ПРИВЯЗКИ УДАЛЯЮТСЯ ВМЕСТЕ С СОГЛАСИЕМ, а не остаются лежать отозванными.
+	// Документ обещает ровно это («строка удаляется… входить по мессенджеру
+	// больше нельзя»), и обещание тут не косметическое: пока строка identities
+	// жива, MessengerLogin по ней впустит, — то есть отозванное согласие
+	// осталось бы действующим ключом от учётной записи.
+	if slices.Contains(kinds, ConsentBinding) {
+		if err := dropBindings(ctx, tx, userID); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE consents SET revoked_at = now()
 		 WHERE user_id = $1 AND kind = ANY($2) AND revoked_at IS NULL`, userID, kinds); err != nil {
 		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 	}
-	if _, err := anonymizeOwnNotes(ctx, tx, userID); err != nil {
-		return fmt.Errorf("отзыв согласия %s: %w", kind, err)
+	// ОБЕЗЛИЧИВАНИЕ — исполнение отзыва РАСПРОСТРАНЕНИЯ (ст. 10.1), и завязано
+	// оно на предмет согласия, а не на сам факт отзыва. До появления третьего
+	// документа разницы не было — виды были двумя частными случаями одного, — и
+	// проход стоял безусловным. Необязательное согласие на привязку это
+	// сломало бы страшно: человек, снимающий способ ВХОДА, потерял бы имя со
+	// всех своих заметок, и вернуть его нельзя уже никогда.
+	if kind == ConsentProcessing || kind == ConsentDistribution {
+		if _, err := anonymizeOwnNotes(ctx, tx, userID); err != nil {
+			return fmt.Errorf("отзыв согласия %s: %w", kind, err)
+		}
 	}
 	if kind == ConsentProcessing {
 		if _, err := tx.Exec(ctx,

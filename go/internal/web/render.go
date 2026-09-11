@@ -81,6 +81,7 @@ var funcs = template.FuncMap{
 	"dec":         decisionArg,
 	"udec":        userDecisionsOf,
 	"kindword":    kindWord,
+	"msgname":     messengerName,
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
 	"smilelist":   smileList,

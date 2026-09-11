@@ -1169,6 +1169,23 @@ span.rxb { cursor: default; }
 }
 
 .sub { font-size: 20px; font-weight: 400; margin: 26px 0 10px; }
+/* ДВЕРИ — чем человек может войти. Список устроен как согласия рядом (строка,
+ * разделитель, действие справа): вопрос у них соседний, и разная разметка
+ * читалась бы как разные по важности разделы. */
+.doors { list-style: none; margin: 0; padding: 0; }
+.doors li {
+  border-top: 1px solid var(--rule); padding: 12px 0;
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+.doors form { margin-left: auto; }
+.doors button.danger { border-color: var(--female); color: var(--female); }
+/* Ссылка, которая ведёт себя как кнопка: привязка — это переход на отдельный
+ * экран с документом, а не POST, поэтому форма тут была бы неправдой. */
+.btnlink {
+  display: inline-block; font-size: 13px; padding: 5px 14px; text-decoration: none;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--btn); color: var(--ink);
+}
+.btnlink:hover { border-color: var(--accent); }
 .consents { list-style: none; margin: 0; padding: 0; }
 .consent {
   border-top: 1px solid var(--rule); padding: 12px 0;

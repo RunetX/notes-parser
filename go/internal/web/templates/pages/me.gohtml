@@ -192,6 +192,67 @@
 </ul>
 {{end}}
 
+{{/* КАК ВЫ ВХОДИТЕ — раздел про двери, а не про данные, и потому он стоит выше
+     согласий: человек приходит сюда чаще всего именно с этим вопросом.
+
+     Дверей у площадки четыре, но природы у них две. Код в поле «о себе» и ссылка
+     из бота доказывают право ОДНИМ И ТЕМ ЖЕ — живой анкетой на НГС, и
+     закрываются они разом, вместе с анкетой. Привязанный мессенджер от чужого
+     сайта не зависит вовсе, поэтому он здесь назван отдельной строкой, а не
+     мелким шрифтом под остальными. */}}
+<h2 class="sub">Как вы входите</h2>
+<ul class="doors">
+  <li>
+    {{if .NGSDoor}}<b>Анкета на НГС №{{.Member.ID}}</b> —
+      {{if .SiteUp}}вход по коду в поле «о себе».
+      {{else}}вход по коду сейчас не работает: НГС не отвечает нашему серверу.{{end}}
+    {{else}}<b>Анкеты на НГС у вас нет</b> — вход по коду вам не работает.{{end}}
+  </li>
+{{range .Bindings}}
+  <li>
+    <b>{{msgname .Messenger}}</b> — привязан {{when .VerifiedAt true}}.
+    <form method="post" action="/me/unbind" class="avaform">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <input type="hidden" name="messenger" value="{{.Messenger}}">
+      <button type="submit" class="danger">Отвязать</button>
+    </form>
+  </li>
+{{end}}
+</ul>
+
+<p><a class="btnlink" href="/me/bind">Привязать мессенджер</a></p>
+
+<p class="fine">Привязанный мессенджер — это способ вернуть вход, когда анкеты
+НГС не стало: бот узнаёт вас в личном разговоре и выдаёт одноразовую ссылку.
+Привязать можно и Telegram, и MAX — это два независимых ключа. Что при этом
+хранится, написано в отдельном согласии, и спрашивается оно только у того, кто
+привязывает.</p>
+
+{{/* ОТСУТСТВИЕ записи и ЖИВАЯ запись — разные вещи, и Live их не различает:
+     у нулевого ConsentRecord поле RevokedAt пусто, то есть Live честно
+     отвечает «да» тому, кто ничего не подписывал. Спрашивается поэтому
+     сперва сам факт подписи (GrantedAt), иначе строка про отзыв висела бы у
+     каждого, кто мессенджер не привязывал вовсе. */}}
+{{$bind := index .Have "binding"}}
+{{if and (not $bind.GrantedAt.IsZero) $bind.Live (not .Bindings)}}
+<p class="fine">Согласие на привязку дано, но ни один мессенджер не привязан.
+<form method="post" action="/me/consent" class="avaform">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="kind" value="binding">
+  <input type="hidden" name="action" value="revoke">
+  <button type="submit" class="danger">Отозвать согласие</button>
+</form></p>
+{{end}}
+
+<p class="fine">Пока вы заходите, эта сессия не истекает: срок отсчитывается от
+последнего визита, а не от входа. Если вошли с чужого устройства и забыли выйти
+— гасите все сессии разом.</p>
+
+<form method="post" action="/me/logout-all" class="avaform">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button type="submit" class="danger">Выйти на всех устройствах</button>
+</form>
+
 <h2 class="sub">Согласия</h2>
 <ul class="consents">
 {{range .Docs}}

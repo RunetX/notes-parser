@@ -19,6 +19,8 @@ import (
 	"context"
 	"strconv"
 	"time"
+
+	"lovegw/internal/love"
 )
 
 // SiteLogin (опц.) — площадка, умеющая впустить владельца анкеты по одноразовой
@@ -45,6 +47,14 @@ func (l *Logic) SetSiteLogin(s SiteLogin) {
 // handleSite выдаёт ссылку входа на площадку.
 func (l *Logic) handleSite(ctx context.Context, userID int64) {
 	if l.siteLogin == nil {
+		return
+	}
+	// ВТОРАЯ ДОРОГА — привязанный мессенджер, и пробуется она ровно там, где
+	// первая закрыта: у человека без анкеты НГС живой сессии нет и не будет.
+	// Порядок выбран так, чтобы для всех остальных не изменилось НИЧЕГО — у
+	// сессии по пути есть побочная работа (EnsureShadow освежает ник), и терять
+	// её ради ветки, которая почти всегда не нужна, незачем.
+	if !l.siteSessionLive(ctx, userID) && l.boundLink(ctx, userID) {
 		return
 	}
 	// Сессия нужна ЖИВАЯ, а не когда-то бывшая: ключ входа выдаётся под
@@ -105,4 +115,17 @@ func (l *Logic) siteProfileID(ctx context.Context, userID int64) (int64, string,
 		return 0, "", false
 	}
 	return id, nick, true
+}
+
+// siteSessionLive — есть ли живая сессия сайта, БЕЗ единого слова человеку.
+// Нужен ровно затем, чтобы /site успел попробовать привязку: siteCookies на
+// отказе сразу зовёт к /login, и два сообщения подряд («сначала войдите» и
+// готовая ссылка) читались бы как поломка.
+func (l *Logic) siteSessionLive(ctx context.Context, userID int64) bool {
+	cookiesJSON, valid, err := l.st.SessionCookies(ctx, l.messenger, userID)
+	if err != nil || !valid {
+		return false
+	}
+	cookies, err := love.CookiesFromJSON([]byte(cookiesJSON), time.Now())
+	return err == nil && len(cookies) > 0
 }

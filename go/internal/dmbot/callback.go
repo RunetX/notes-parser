@@ -48,7 +48,10 @@ const (
 	verbProfileAsk = "profask" // аргумент — argProfileBlock (что подтверждаем)
 	verbProfileSet = "profset" // аргумент — argProfileBlock/argProfileUnblock
 	verbCancel     = "cancel"
-	verbNews       = "news" // аргумент — id черновика новости
+	// Привязка мессенджера к записи на площадке: аргумент — сам код (он
+	// короткий и ASCII-шный, MSG-XXXX-XXXX, и в payload влезает с запасом).
+	verbBind = "bind"
+	verbNews = "news" // аргумент — id черновика новости
 	// Амвон: показать состояние, спросить подтверждение включения после
 	// предохранителя, переключить тумблер. Три глагола по той же причине, что у
 	// анкеты: тост у них разный, а у показа его нет вовсе.
@@ -138,6 +141,7 @@ var callbackVerbs = map[string]verbHandler{
 	verbProfileAsk:  {fn: (*Logic).cbProfileAsk},
 	verbProfileSet:  {ack: "Отправляю на сайт…", fn: (*Logic).cbProfileSet},
 	verbCancel:      {ack: "Отменил", talks: true, fn: (*Logic).cbCancel},
+	verbBind:        {ack: "Привязываю…", fn: (*Logic).cbBind},
 	verbNews:        {ack: "Публикую…", fn: (*Logic).cbNews},
 	verbPulpit:      {fn: (*Logic).cbPulpit},
 	verbPulpitAsk:   {fn: (*Logic).cbPulpitAsk},
@@ -414,12 +418,12 @@ func (l *Logic) askNoteKind(ctx context.Context, userID int64) {
 // PublishCommands публикует меню команд бота под его роль. Зовётся один раз на
 // старте; сбой не фатален — команды просто не появятся в списке мессенджера.
 func (l *Logic) PublishCommands(ctx context.Context) {
-	l.tr.SetCommands(ctx, botCommands(l.talksOnly, l.talks != nil, l.profile != nil, l.siteLogin != nil))
+	l.tr.SetCommands(ctx, botCommands(l.talksOnly, l.talks != nil, l.profile != nil, l.siteLogin != nil, l.siteBind != nil))
 }
 
 // botCommands — тот же набор, что и в приветствии: слэш-команды остаются
 // рабочими, кнопки их не отменяют. Админская /news в меню не значится.
-func botCommands(talksOnly, withTalks, withProfile, withSite bool) []kbd.Command {
+func botCommands(talksOnly, withTalks, withProfile, withSite, withBind bool) []kbd.Command {
 	if talksOnly {
 		return []kbd.Command{
 			{Name: "start", Description: "начать и показать меню"},
@@ -441,6 +445,9 @@ func botCommands(talksOnly, withTalks, withProfile, withSite bool) []kbd.Command
 	}
 	if withSite {
 		cmds = append(cmds, kbd.Command{Name: "site", Description: "войти на «Зазеркалье»"})
+	}
+	if withBind {
+		cmds = append(cmds, kbd.Command{Name: "bind", Description: "привязать этот мессенджер к «Зазеркалью»"})
 	}
 	if withProfile {
 		cmds = append(cmds, kbd.Command{Name: "profile", Description: "моя анкета на сайте"})
