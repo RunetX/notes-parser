@@ -72,6 +72,7 @@ var funcs = template.FuncMap{
 	"corigin":     commentOriginOf,
 	"replyURL":    replyURL,
 	"rx":          reactBoxOf,
+	"qz":          quizBoxOf,
 	"modn":        modNote,
 	"modf":        modFeedNote,
 	"modc":        modComment,

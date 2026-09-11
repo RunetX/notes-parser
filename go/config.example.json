@@ -88,6 +88,14 @@
     "source_timeout_s": 20,
     "fuse_misses": 2
   },
+  "friday": {
+    "enabled": false,
+    "mode": "dry-run",
+    "weekday": 5,
+    "hour": 16,
+    "questions": 6,
+    "gap_minutes": 60
+  },
   "narod": {
     "enabled": false,
     "mode": "dry-run",

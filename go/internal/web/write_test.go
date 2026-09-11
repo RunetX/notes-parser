@@ -21,12 +21,13 @@ import (
 // fakeWriter — ядро записи без Postgres. Помнит последний вызов: почти каждый
 // тест ниже спрашивает именно «что дошло до ядра».
 type fakeWriter struct {
-	note     platform.NewNote
-	comment  platform.NewComment
-	edited   string
-	nick     string
-	reaction platform.NewReaction
-	avatar   fakeAvatar
+	note       platform.NewNote
+	comment    platform.NewComment
+	edited     string
+	nick       string
+	reaction   platform.NewReaction
+	quizAnswer platform.QuizAnswer
+	avatar     fakeAvatar
 	// cleared — у кого сняли фото. Ноль означает «ядро об этом не просили», и
 	// половина тестов аватара проверяет именно это.
 	cleared int64
@@ -82,6 +83,11 @@ func (f *fakeWriter) CreateComment(_ context.Context, in platform.NewComment) (i
 
 func (f *fakeWriter) React(_ context.Context, in platform.NewReaction) error {
 	f.reaction = in
+	return f.fail
+}
+
+func (f *fakeWriter) AnswerQuiz(_ context.Context, in platform.QuizAnswer) error {
+	f.quizAnswer = in
 	return f.fail
 }
 

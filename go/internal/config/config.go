@@ -212,6 +212,29 @@ type Morning struct {
 	FuseMisses       int      `json:"fuse_misses"` // столько «заметки нет в ленте» подряд = выключаемся
 }
 
+// Friday — пятничная рубрика (эпик J): вступительная заметка и вопросы из
+// архива под ней.
+//
+// Умолчания выбраны так, чтобы забытая секция не могла ничего опубликовать:
+// выключено и сухо — то же правило и тот же довод, что у народа.
+//
+// Час слота — 16:00, и это НЕ «вечер» по недосмотру. Замер КПН (1114 заметок,
+// 650 тыс. реплик архива) говорит, что дневная заметка набирает за шесть часов
+// 55 % и живёт до полуночи, а вечерняя выгорает за час-полтора: толпа приходит
+// в 20–23 независимо от того, когда выложено. То есть «пятничный вечер» — это
+// когда тред гремит, а не когда он заведён.
+type Friday struct {
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"` // dry-run | live
+	// Weekday — день недели по time.Weekday (0 — воскресенье, 5 — пятница).
+	Weekday int `json:"weekday"`
+	Hour    int `json:"hour"`
+	// Questions — сколько вопросов за вечер, GapMinutes — через сколько выходит
+	// следующий. Шесть по часу: тред получает шесть толчков вместо одного.
+	Questions  int `json:"questions"`
+	GapMinutes int `json:"gap_minutes"`
+}
+
 // Narod — жители площадки (эпик «народ»): персонажи, реплики которых пишет
 // модель.
 //
@@ -519,6 +542,7 @@ type Config struct {
 	Pulpit        Pulpit      `json:"pulpit"`
 	Morning       Morning     `json:"morning"`
 	Narod         Narod       `json:"narod"`
+	Friday        Friday      `json:"friday"`
 	Platform      Platform    `json:"platform"`
 	NotesLimit    int         `json:"notes_limit"`
 	Signature     string      `json:"signature"`
@@ -677,6 +701,13 @@ func Load(path string) (*Config, error) {
 		// доводами в narod.Defaults — здесь они повторены, потому что конфиг
 		// читает человек, а не служба, и лезть за умолчанием в чужой пакет он не
 		// должен.
+		Friday: Friday{
+			Mode:       "dry-run",
+			Weekday:    5, // пятница по time.Weekday
+			Hour:       16,
+			Questions:  6,
+			GapMinutes: 60,
+		},
 		Narod: Narod{
 			Mode:           "dry-run",
 			CardsDir:       "data/narod/cards",
@@ -805,6 +836,12 @@ func (c *Config) validate() error {
 	// Режим народа проверяется на СБОРКЕ, а не на первом такте: служба, молча
 	// не работающая из-за опечатки в слове «dry-run», выглядит выключенной, и
 	// разбираться в этом придётся по пустой песочнице.
+	if c.Friday.Enabled && c.Friday.Mode != "dry-run" && c.Friday.Mode != "live" {
+		return fmt.Errorf("friday.mode: ожидалось dry-run или live, получено %q", c.Friday.Mode)
+	}
+	if c.Friday.Enabled && !c.Platform.Enabled {
+		return fmt.Errorf("friday.enabled без platform.enabled: рубрике неоткуда брать архив и некуда публиковать")
+	}
 	if c.Narod.Enabled && c.Narod.Mode != "dry-run" && c.Narod.Mode != "live" {
 		return fmt.Errorf("narod.mode: ожидалось dry-run или live, получено %q", c.Narod.Mode)
 	}

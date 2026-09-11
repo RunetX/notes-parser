@@ -131,6 +131,8 @@ func main() {
 		err = cmdMorning(ctx, os.Args[2:])
 	case "narod":
 		err = cmdNarod(ctx, os.Args[2:])
+	case "friday":
+		err = cmdFriday(ctx, os.Args[2:])
 	case "secrets":
 		err = cmdSecrets(ctx, os.Args[2:])
 	case "platform":
@@ -363,6 +365,11 @@ func runDaemon(ctx context.Context, cfg *config.Config, st *store.Store, seed bo
 	// Народ — последним: ему нужна поднятая площадка (сцена) и ЛС-боты (ручка
 	// /narod), то есть всё, что собирается выше.
 	if err := d.setupNarod(); err != nil {
+		return err
+	}
+	// Пятничная рубрика — после площадки: архив она берёт из того же Postgres,
+	// а публикует через ядро, со всеми его гейтами.
+	if err := d.setupFriday(); err != nil {
 		return err
 	}
 	return d.run(ctx)

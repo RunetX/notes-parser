@@ -9,12 +9,12 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +48,8 @@ type fakeStore struct {
 	thread []platform.CommentView
 
 	reactions   map[int64][]platform.Reaction
+	quiz        map[int64]platform.Quiz
+	quizViewer  int64
 	reactViewer int64
 
 	flat       []platform.CommentView
@@ -80,10 +82,10 @@ type fakeStore struct {
 	synthOf  int64
 	synthErr error
 	// Оригиналы двойников: что отдать и у кого их спросили.
-	origins      map[int64]platform.SynthOrigin
+	origins map[int64]platform.SynthOrigin
 	// ngsSent — ключ «вид:номер» (note:1 и comment:1 это разные объекты).
-	ngsSent    map[string]bool
-	ngsSentErr error
+	ngsSent      map[string]bool
+	ngsSentErr   error
 	originsAsked []int64
 	originsErr   error
 	facesErr     error
@@ -221,6 +223,12 @@ func (f *fakeStore) CommentViewByID(_ context.Context, _ platform.Viewer, _, id 
 func (f *fakeStore) NoteReactions(_ context.Context, viewerID, _ int64) (map[int64][]platform.Reaction, error) {
 	f.reactViewer = viewerID
 	return f.reactions, nil
+}
+
+// Пятничные вопросы: ключ — id реплики, которая вопрос задаёт (эпик J).
+func (f *fakeStore) NoteQuiz(_ context.Context, viewerID, _ int64) (map[int64]platform.Quiz, error) {
+	f.quizViewer = viewerID
+	return f.quiz, nil
 }
 
 func (f *fakeStore) Flat(_ context.Context, _ platform.Viewer, _ int64, offset, _ int) ([]platform.CommentView, error) {

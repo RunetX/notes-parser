@@ -1680,3 +1680,65 @@ span.rxb { cursor: default; }
 .synth { margin: 0 0 10px; }
 .synth a { display: inline-flex; align-items: center; gap: 6px; }
 .synth .cnt { font-weight: 600; }
+
+/* ─── Пятничный вопрос (эпик J, web/quiz.go) ───────────────────────────────
+   Варианты под репликой, которая их задаёт. СВОИХ ЦВЕТОВ здесь нет намеренно:
+   палитр у площадки четыре, и токен, объявленный в одной, молча ломает
+   остальные три (см. TestDarkPalettesRestateWhatBaseWroteForWhite). Верный
+   ответ показан --accent, который есть везде, а «мимо» — словом: красный
+   пришлось бы заводить четырежды ради одной строки.
+
+   Ширина полосы едет КЛАССОМ: CSP без unsafe-inline запрещает и атрибут style,
+   тем же правилом, по которому глубина ветки это d1…d12. Шаг пять процентов —
+   двадцать один класс вместо ста одного; точное число стоит рядом словом. */
+.quiz { margin: 8px 0 0; }
+.qopts { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.qform { margin: 0; }
+.qbtn {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: 8px 11px; border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--btn); color: var(--ink); font: inherit; line-height: 1.4;
+}
+.qbtn:hover { border-color: var(--accent); }
+/* Ответ дан: варианты перестают быть кнопками и становятся строками со счётом. */
+.qo {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 7px 11px; border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--btn); line-height: 1.4;
+}
+.qo.qright { border-color: var(--accent); }
+/* Свой выбор — жирным, а не заливкой: заливка спорила бы с полосой счёта. */
+.qo.qmine .qtext { font-weight: 600; }
+.qtext { flex: 1 1 12em; }
+.qbar {
+  display: block; flex: 0 0 84px; height: 6px; border-radius: 3px;
+  background: var(--page); overflow: hidden;
+}
+.qfill { display: block; height: 100%; background: var(--accent); }
+.qpct { flex: 0 0 auto; color: var(--meta); font-size: 12px; font-variant-numeric: tabular-nums; }
+.qverdict { margin: 8px 0 0; font-size: 14px; }
+.qhit { color: var(--accent); }
+.qmiss { color: var(--meta); }
+.qreveal { color: var(--ink); }
+.qsrc, .qguest, .qtotal { margin: 4px 0 0; font-size: 13px; color: var(--meta); }
+.qfill.qw0 { width: 0%; }
+.qfill.qw5 { width: 5%; }
+.qfill.qw10 { width: 10%; }
+.qfill.qw15 { width: 15%; }
+.qfill.qw20 { width: 20%; }
+.qfill.qw25 { width: 25%; }
+.qfill.qw30 { width: 30%; }
+.qfill.qw35 { width: 35%; }
+.qfill.qw40 { width: 40%; }
+.qfill.qw45 { width: 45%; }
+.qfill.qw50 { width: 50%; }
+.qfill.qw55 { width: 55%; }
+.qfill.qw60 { width: 60%; }
+.qfill.qw65 { width: 65%; }
+.qfill.qw70 { width: 70%; }
+.qfill.qw75 { width: 75%; }
+.qfill.qw80 { width: 80%; }
+.qfill.qw85 { width: 85%; }
+.qfill.qw90 { width: 90%; }
+.qfill.qw95 { width: 95%; }
+.qfill.qw100 { width: 100%; }

@@ -104,6 +104,14 @@ type notePage struct {
 	// Reactions — реакции заметки (ключ 0) и её комментариев: один запрос на
 	// страницу, а не по одному на реплику.
 	Reactions map[int64][]platform.Reaction
+	// Quiz — пятничные вопросы этого треда по id задавшей реплики (эпик J).
+	// Пусто у всех заметок, кроме вступительной: вопрос — редкость, а запрос
+	// один на страницу, как у реакций.
+	Quiz map[int64]platform.Quiz
+	// QuizGuest — ответы ГОСТЯ из его куки. Отдельной картой, а не внутри Quiz,
+	// потому что это разные вещи: голос вошедшего считается всеми, ответ гостя
+	// известен только его браузеру (см. web/quiz.go).
+	QuizGuest map[int64]int
 	// ReactOpen — под каким объектом раскрыт выбор реакции (0 — под заметкой,
 	// −1 — ни под кем). Раскрыт всегда не больше одного: выбиралка под каждой из
 	// девятисот реплик это пять тысяч кнопок на странице.
@@ -234,6 +242,14 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		s.oops(w, r, "реакции заметки", err)
 		return
 	}
+	// Пятничные вопросы — тем же приёмом и тем же одним запросом (эпик J).
+	// Пусто у всех заметок, кроме вступительной, и это нормально: карта на
+	// странице без вопросов просто не даёт ни одной коробки.
+	quiz, err := s.st.NoteQuiz(ctx, me.ID, id)
+	if err != nil {
+		s.oops(w, r, "вопросы заметки", err)
+		return
+	}
 	p := notePage{
 		page:        s.readingPage(r, synthTitle(note, origin)),
 		Note:        note,
@@ -254,6 +270,10 @@ func (s *Server) showNote(w http.ResponseWriter, r *http.Request, id int64, stat
 		Compose:   form,
 
 		Reactions: reactions,
+		Quiz:      quiz,
+		// Ответы ГОСТЯ читаются из куки и только когда есть чему отвечать:
+		// разбирать её на каждой странице треда незачем.
+		QuizGuest: guestQuizOf(r, quiz),
 		ReactOpen: reactTarget(r),
 		PageNum:   1,
 	}

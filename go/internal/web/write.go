@@ -68,6 +68,10 @@ type Writer interface {
 	// React — нажать, переключить или снять реакцию. Правкой чужого это не
 	// является: строка своя, а объект остаётся нетронутым.
 	React(ctx context.Context, in platform.NewReaction) error
+	// AnswerQuiz — ответ на пятничный вопрос (эпик J). Первый ответ окончателен:
+	// переголосовать после разгадки значило бы обнулить проценты под вопросом.
+	// Гость сюда не доходит вовсе — его ответ живёт в куке (см. web/quiz.go).
+	AnswerQuiz(ctx context.Context, in platform.QuizAnswer) error
 }
 
 // composePageName — один шаблон и на новую заметку, и на правку: поля те же, и

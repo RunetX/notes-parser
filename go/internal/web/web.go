@@ -171,6 +171,11 @@ type Store interface {
 	// полем в CommentView: реакции меняются чаще самих реплик и читаются одним
 	// запросом на страницу, а не по одному на строку.
 	NoteReactions(ctx context.Context, viewerID, noteID int64) (map[int64][]platform.Reaction, error)
+	// NoteQuiz — пятничные вопросы треда с ответом смотрящего (эпик J). Тем же
+	// приёмом, что реакции: один запрос на страницу. Счёт приезжает ТОЛЬКО
+	// ответившему — правило стоит в ядре, чтобы чужие голоса не оказались в
+	// разметке «на всякий случай» (см. platform/quiz.go).
+	NoteQuiz(ctx context.Context, viewerID, noteID int64) (map[int64]platform.Quiz, error)
 	// UserProfile, AuthorNotes и AuthorComments — страница участника (user.go).
 	// Три метода, а не один: карточка нужна и сама по себе (её спрашивает
 	// заголовок вкладки), а списки читаются по своим индексам и своими
@@ -470,6 +475,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /n/{id}/reply", s.handleReplyForm)
 	mux.HandleFunc("POST /n/{id}/reply", s.handleCreateComment)
 	mux.HandleFunc("POST /n/{id}/react", s.handleReact)
+	// Ответ на пятничный вопрос. Не под postWrite: отвечать вправе и ГОСТЬ, а
+	// токен формы выводится из сессии, которой у него нет (см. web/quiz.go).
+	mux.HandleFunc("POST /n/{id}/quiz", s.handleQuizAnswer)
 	// Модерация. Скрытие и возврат — единственные способности, которых нет у
 	// участника; правки чужого текста среди них по-прежнему нет, и это решение,
 	// а не недоделка: тихая правка под чужим ником хуже удаления.

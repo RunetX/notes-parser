@@ -742,6 +742,18 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 	if err := stageGuard(ctx, tx, in.AuthorID, stage); err != nil {
 		return 0, err
 	}
+	// ВОПРОС задаёт площадка, а не участник: под ним стоят кнопки, которых нет
+	// ни у кого другого, и «правильный ответ» объявляет он же (см. quizAskGuard).
+	// Проверка стоит в ядре, а не в морде, по общей конвенции: писать сюда можно
+	// и мостом из мессенджера.
+	if in.Quiz != nil {
+		if err := in.Quiz.clean(); err != nil {
+			return 0, err
+		}
+		if err := quizAskGuard(ctx, tx, in.AuthorID); err != nil {
+			return 0, err
+		}
+	}
 
 	var id int64
 	if err := tx.QueryRow(ctx, `SELECT nextval('comments_native_seq')`).Scan(&id); err != nil {
@@ -765,6 +777,13 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 		id, in.NoteID, in.AuthorID, body,
 		nullID(branchRoot), nullID(in.ReplyToID), source, path, PathDepth(path), now); err != nil {
 		return 0, fmt.Errorf("публикация комментария: %w", err)
+	}
+	// Варианты ответа — той же транзакцией, сразу за репликой, которая их
+	// задаёт (см. NewComment.Quiz и platform/quiz.go).
+	if in.Quiz != nil {
+		if err := insertQuiz(ctx, tx, id, in.NoteID, in.Quiz); err != nil {
+			return 0, err
+		}
 	}
 	if err := bumpNote(ctx, tx, in.NoteID, now); err != nil {
 		return 0, err

@@ -1,0 +1,57 @@
+{{/* Пятничный вопрос под репликой, которая его задаёт (эпик J, web/quiz.go).
+
+     Работает БЕЗ скрипта: каждый вариант — своя форма с POST, как у реакций.
+     Отдельными формами, а не одной с радиокнопками: ответ в один клик, и
+     промежуточной кнопки «ответить» между выбором и ответом быть не должно.
+
+     ДО ОТВЕТА в разметке нет ни правильного варианта, ни разгадки, ни счёта —
+     их не отдаёт само ядро (platform.NoteQuiz). Спрятать их шаблоном было бы
+     недостаточно: страница читается исходником, и рубрика кончилась бы в первый
+     же вечер. */}}
+{{define "quiz"}}
+{{- if .}}
+<div class="quiz{{if .Answered}} qdone{{end}}">
+  {{- if .Answered}}
+  <ul class="qopts">
+    {{range $i, $o := .Quiz.Options}}
+    <li class="qo{{if $.Right $i}} qright{{end}}{{if $.Mine $i}} qmine{{end}}">
+      <span class="qtext">{{$o.Text}}</span>
+      {{/* Полоса едет КЛАССОМ, а не атрибутом style: CSP без unsafe-inline
+           запрещает и атрибут — тем же правилом, по которому глубина ветки это
+           d1…d12. Классов не сто один, а двадцать один: ширина полосы округлена
+           до пяти процентов, а точное число стоит рядом словом. */}}
+      {{- if $.Total}}<span class="qbar"><i class="qfill qw{{$.Bar $i}}"></i></span><span class="qpct">{{$.Share $i}}%</span>{{end}}
+    </li>
+    {{end}}
+  </ul>
+  <p class="qverdict {{if .Hit}}qhit{{else}}qmiss{{end}}">
+    {{if .Hit}}Верно.{{else}}Мимо.{{end}}
+    {{- with .Quiz.Reveal}} <span class="qreveal">{{.}}</span>{{end}}
+  </p>
+  {{- with .Quiz.SourceNote}}
+  <p class="qsrc"><a href="/n/{{.}}">Дочитать тот разговор целиком →</a></p>
+  {{end}}
+  {{- if .Guest}}
+  {{/* Ответ гостя засчитан только в его браузере. Говорим об этом ровно здесь и
+       ровно сейчас — человек уже играет, и это лучший момент для приглашения,
+       какой у площадки бывает. */}}
+  <p class="qguest">Ответ сохранён в этом браузере. В общий счёт идут ответы участников — <a href="/login">войдите</a>, чтобы попасть в проценты.</p>
+  {{else if .Total}}
+  <p class="qtotal">Ответили: <b>{{.Total}}</b></p>
+  {{end}}
+  {{- else}}
+  <div class="qopts">
+    {{range $i, $o := .Quiz.Options}}
+    <form class="qform" method="post" action="{{$.PostURL}}">
+      <input type="hidden" name="comment" value="{{$.Quiz.CommentID}}">
+      <input type="hidden" name="choice" value="{{$i}}">
+      <input type="hidden" name="page" value="{{$.Page}}">
+      {{- with $.CSRF}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
+      <button class="qbtn" type="submit">{{$o.Text}}</button>
+    </form>
+    {{end}}
+  </div>
+  {{- end}}
+</div>
+{{- end}}
+{{end}}
