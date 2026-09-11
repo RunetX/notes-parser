@@ -327,22 +327,42 @@ func Build(ctx context.Context, src Source, day time.Time, want int) (Issue, err
 
 	issue := Issue{Week: week, Intro: intro}
 	kinds := []string{KindYear, KindCount, KindReply}
-	for _, n := range notes {
-		if len(issue.Questions) >= want {
-			break
-		}
-		// Виды ЧЕРЕДУЮТСЯ, но заметка пробуется всеми по кругу, начиная с
-		// очередного. Без этого выпуск застревал: не собрался вид — и все
-		// оставшиеся кандидаты меряются им же, а вечер выходит короче
-		// задуманного. Поймано тестом 11.09.2026 (два вопроса при плане в три).
-		start := len(issue.Questions) % len(kinds)
-		for i := range kinds {
-			q, err := question(ctx, src, kinds[(start+i)%len(kinds)], n, rnd)
-			if err != nil || q == nil {
+	used := make(map[int64]bool, want)
+	// ПРОХОДОВ ДВА, и оба нужны — порознь эти свойства не держатся.
+	//
+	// В первом заметка пробуется ТОЛЬКО очередным по кругу видом: так вечер
+	// получает разные вопросы. Во втором, когда очередной вид не собрался ни на
+	// одной заметке, берётся любой: иначе выпуск застревает и вечер выходит
+	// короче задуманного (поймано тестом 11.09.2026 — два вопроса при плане в
+	// три).
+	//
+	// Свободный перебор без первого прохода ВЫРОЖДАЕТСЯ в один вид, и это замер:
+	// первый боевой черновик дал пять «что ответили» из шести. Причина в том,
+	// что год и число реплик строятся из ТЕЛА ЗАМЕТКИ, а оно проходит фильтр
+	// заметно реже, чем короткая реплика, — то есть свободный перебор почти
+	// всегда добирался до третьего вида.
+	for pass := 0; pass < 2 && len(issue.Questions) < want; pass++ {
+		for _, n := range notes {
+			if len(issue.Questions) >= want {
+				break
+			}
+			if used[n.ID] {
 				continue
 			}
-			issue.Questions = append(issue.Questions, *q)
-			break
+			start := len(issue.Questions) % len(kinds)
+			tries := 1
+			if pass == 1 {
+				tries = len(kinds)
+			}
+			for i := 0; i < tries; i++ {
+				q, err := question(ctx, src, kinds[(start+i)%len(kinds)], n, rnd)
+				if err != nil || q == nil {
+					continue
+				}
+				issue.Questions = append(issue.Questions, *q)
+				used[n.ID] = true
+				break
+			}
 		}
 	}
 	if len(issue.Questions) == 0 {

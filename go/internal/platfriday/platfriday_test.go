@@ -205,3 +205,34 @@ func TestLeadingAddressIsRejected(t *testing.T) {
 		}
 	}
 }
+
+// Вечер обязан быть РАЗНЫМ: первый проход держит чередование видов, второй не
+// даёт выпуску застрять. Замер, оплативший первый проход, — боевой черновик
+// 11.09.2026: свободный перебор дал пять «что ответили» из шести, потому что
+// год и число реплик строятся из ТЕЛА заметки, а оно проходит фильтр реже.
+func TestQuestionKindsAlternate(t *testing.T) {
+	src := &fakeSource{notes: sampleNotes()}
+	issue, err := Build(context.Background(), src, time.Date(2026, 9, 11, 17, 0, 0, 0, time.UTC), 4)
+	if err != nil {
+		t.Fatalf("выпуск: %v", err)
+	}
+	seen := map[string]int{}
+	for _, q := range issue.Questions {
+		seen[q.Kind]++
+	}
+	// У подделки нет ни одной пары «реплика → ответ», поэтому вид «ответ» здесь
+	// не соберётся вовсе: проверяем, что оставшиеся два чередуются, а не что
+	// первый из них выбран четырежды.
+	if seen[KindYear] == 0 || seen[KindCount] == 0 {
+		t.Errorf("виды не чередуются: %v", seen)
+	}
+	// И заметка не идёт в выпуск дважды: два вопроса про один разговор читаются
+	// как повтор, даже когда они разного вида.
+	notes := map[int64]bool{}
+	for _, q := range issue.Questions {
+		if notes[q.Quiz.SourceNote] {
+			t.Errorf("заметка %d дала два вопроса", q.Quiz.SourceNote)
+		}
+		notes[q.Quiz.SourceNote] = true
+	}
+}
