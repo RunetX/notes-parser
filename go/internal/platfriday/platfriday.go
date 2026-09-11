@@ -147,6 +147,18 @@ func NewPG(pool *pgxpool.Pool) *PG { return &PG{pool: pool} }
 //
 // Окно дат считается по НОВОСИБИРСКОМУ времени: сайт жил по нему, и «пятница»
 // в архиве — это его пятница, а не UTC.
+//
+// ПОРЯДОК — хеш от номера и НЕДЕЛИ, а не «сначала свежие», и это замер, а не
+// вкусовщина. Пул у сегодняшнего окна — 1127 заметок, ровно размазанных по
+// 2014–2024 (по сотне на год), а `ORDER BY n.id DESC LIMIT 400` отрезал от него
+// ровно пять последних лет: первый черновик на боевом архиве дал пять вопросов
+// из шести из сентября 2021-го. Рубрика при этом обещает архив, а вопрос «в
+// каком году» с ответом «опять недавно» перестаёт быть вопросом.
+//
+// Случайности (`random()`) здесь быть не может: выпуск обязан быть
+// детерминирован неделей — владелец смотрит черновик заранее, а опубликоваться
+// должно ровно то, что он видел. Хеш даёт ту же перетасовку, но повторимую, и
+// сдвигается сам собой на следующей неделе.
 const candidatesQuery = `
 	SELECT n.id, n.body, n.published_at, n.comment_count
 	  FROM notes n
@@ -161,14 +173,14 @@ const candidatesQuery = `
 	         (extract(doy FROM n.published_at AT TIME ZONE 'Asia/Novosibirsk')
 	          - extract(doy FROM $7::timestamptz AT TIME ZONE 'Asia/Novosibirsk') + 182)::int % 365 - 182
 	       ) <= $8
-	 ORDER BY n.id DESC
-	 LIMIT $9`
+	 ORDER BY md5(n.id::text || $9)
+	 LIMIT $10`
 
 // Candidates — заметки того же времени года прошлых лет.
 func (s *PG) Candidates(ctx context.Context, day time.Time, limit int) ([]Note, error) {
 	rows, err := s.pool.Query(ctx, candidatesQuery,
 		platform.NativeIDBase, minThread, maxThread, minBody, maxBody,
-		day.AddDate(-minYearsAgo, 0, 0), day, weekSpan, limit)
+		day.AddDate(-minYearsAgo, 0, 0), day, weekSpan, WeekOf(day), limit)
 	if err != nil {
 		return nil, fmt.Errorf("кандидаты рубрики: %w", err)
 	}
@@ -259,6 +271,26 @@ var yearRe = regexp.MustCompile(`\b(19|20)\d{2}\b`)
 // кандидата из четырёхсот, а ник, уехавший в вопрос, — это имя живого человека,
 // выставленное в игру. Тем же доводом живут strangeName и SelfRole у народа.
 var nickRe = regexp.MustCompile(`[^.!?…]\s+[А-ЯЁ][а-яё]{2,}`)
+
+// addressRe — обращение в НАЧАЛЕ реплики: «Звёздная, ага..», «Алюминиевый
+// сквозняк, нет».
+//
+// Отдельным правилом, потому что nickRe ловит ник только в СЕРЕДИНЕ фразы, а у
+// обращения место ровно первое — и это самая частая его форма: на НГС адресат
+// живёт префиксом в теле, а сюда доезжают как раз те реплики, у которых приём
+// зеркала его НЕ распознал (у распознанных префикс срезан и стоит ребром).
+// Поймано первым же черновиком на боевом архиве 11.09.2026: три вопроса из
+// шести назвали живых людей по имени — при том что вступительная заметка
+// обещает обратное.
+//
+// Правило нарочно без списка исключений: «Да, конечно» и «Хорошо, подумаю»
+// отвергаются вместе с никами. Список зачинов, который спас бы их, — это ровно
+// тот список, который через полгода разойдётся с разговором; а цена ошибки
+// несимметрична, как у nickRe, и кандидатов у рубрики четыреста.
+var addressRe = regexp.MustCompile(`^\S+(\s+\S+)?,`)
+
+// looksAddressed — похоже ли, что реплика начинается с обращения по нику.
+func looksAddressed(s string) bool { return addressRe.MatchString(s) }
 
 // latinRe — латиница посреди русского текста: ники вида «Lady in red», «ML».
 var latinRe = regexp.MustCompile(`\b[A-Za-z]{2,}\b`)
@@ -408,13 +440,18 @@ func replyQuestion(ctx context.Context, src Source, n Note, rnd *rand.Rand) (*Qu
 		if !ok1 || !ok2 {
 			continue
 		}
+		// Обращение по нику — стоп для ОБЕИХ реплик пары: и та, что показана
+		// затравкой, и та, что объявлена ответом, читаются целиком.
+		if looksAddressed(seed) || looksAddressed(answer) {
+			continue
+		}
 		raw, err := dec.Decoys(ctx, n.ID, p.SeedID, 60)
 		if err != nil {
 			return nil, err
 		}
 		var decoys []string
 		for _, d := range raw {
-			if c, ok := clean(d, 40, 190); ok && c != answer && c != seed {
+			if c, ok := clean(d, 40, 190); ok && !looksAddressed(c) && c != answer && c != seed {
 				decoys = append(decoys, c)
 			}
 			if len(decoys) == 2 {
