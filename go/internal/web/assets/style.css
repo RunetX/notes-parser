@@ -441,12 +441,12 @@ a:hover { text-decoration: underline; }
   from { background-color: var(--hl); }
   to   { background-color: transparent; }
 }
-.c.fresh, .note.fresh { animation: fresh-in .28s ease-out, fresh-glow 6s ease-out .28s both; }
+.c.fresh, .note.fresh, .lt.fresh { animation: fresh-in .28s ease-out, fresh-glow 6s ease-out .28s both; }
 
 /* Кому движение мешает — тому только подсветка: она не движение, а указание,
    и без неё новая строка появлялась бы вовсе незаметно. */
 @media (prefers-reduced-motion: reduce) {
-  .c.fresh, .note.fresh { animation: fresh-glow 6s linear both; }
+  .c.fresh, .note.fresh, .lt.fresh { animation: fresh-glow 6s linear both; }
 }
 
 /* ПЕРЕЕЗД: строка стояла в угаданной ветке, обход мобильной версии заменил

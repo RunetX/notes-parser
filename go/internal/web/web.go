@@ -488,6 +488,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /mail/{id}", s.handleDialogReply)
 	mux.HandleFunc("POST /mail/{id}/read", s.handleMailRead)
 	mux.HandleFunc("POST /mail/{id}/hide", s.handleMailHide)
+	mux.HandleFunc("GET /mail/{id}/fresh", s.handleMailFresh)
 	mux.HandleFunc("POST /mail/block", s.handleMailBlock)
 	mux.HandleFunc("POST /mail/unblock", s.handleMailUnblock)
 	mux.HandleFunc("GET /mail/report", s.handleMailReport)

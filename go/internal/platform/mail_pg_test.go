@@ -967,3 +967,82 @@ func TestУборкаСноситЖалобуВместеСПисьмом(t *tes
 		t.Fatalf("цитата пережила содержание письма: %d строк", n)
 	}
 }
+
+// ЖИВОЙ ДОБОР ПЕРЕПИСКИ: письма после границы, и только свои (Ш5).
+//
+// Курсор здесь одно число, и это единственное место эпика, где полоса
+// идентификаторов не мешает: у писем своя последовательность с единицы. Тест
+// стережёт вторую половину — право: посторонний получает ПУСТО, а не отказ,
+// потому что добор молчалив по устройству.
+func TestДоборПисемПослеГраницы(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	a := mailMember(t, p, 1493279, "Рио")
+	b := mailMember(t, p, 175869, "Гадёныш")
+	c := mailMember(t, p, 606064, "Хатуль мадан")
+
+	first := sendMail(t, p, a, b, "первое")
+	rewindMail(t, p, time.Minute)
+	second := sendMail(t, p, a, b, "второе")
+
+	fresh, err := p.MessagesSince(ctx, b, first.DialogID, first.MessageID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh) != 1 || fresh[0].ID != second.MessageID || fresh[0].Body != "второе" {
+		t.Fatalf("после границы приехало: %+v", fresh)
+	}
+	// FromMe считается для СПРАШИВАЮЩЕГО, а не для письма: у отправителя то же
+	// письмо своё, и разойдись это с показом страницы — добор рисовал бы чужое
+	// письмо как своё.
+	if fresh[0].FromMe {
+		t.Error("чужое письмо приехало своим")
+	}
+	mine, err := p.MessagesSince(ctx, a, first.DialogID, first.MessageID, 50)
+	if err != nil || len(mine) != 1 || !mine[0].FromMe {
+		t.Fatalf("у отправителя своё письмо: %+v (%v)", mine, err)
+	}
+	// С нуля приезжает вся переписка: это законный случай — страница только что
+	// открыта и пуста.
+	if all, err := p.MessagesSince(ctx, b, first.DialogID, 0, 50); err != nil || len(all) != 2 {
+		t.Fatalf("с нуля приехало %d писем (%v)", len(all), err)
+	}
+	// ПОСТОРОННЕМУ — пусто, и это не отказ.
+	strangers, err := p.MessagesSince(ctx, c, first.DialogID, 0, 50)
+	if err != nil {
+		t.Fatalf("постороннему ответили отказом: %v", err)
+	}
+	if len(strangers) != 0 {
+		t.Fatalf("постороннему отдали %d писем", len(strangers))
+	}
+	// Без подписи не читают и добором: это то же чтение.
+	if err := p.RevokeConsent(ctx, b, ConsentTalks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.MessagesSince(ctx, b, first.DialogID, 0, 50); !errors.Is(err, ErrNoTalkConsent) {
+		t.Fatalf("добор после отзыва согласия: %v", err)
+	}
+}
+
+// ПОВОД О ПИСЬМЕ НЕСЁТ СВОЙ ВИД — без него живой канал не отличил бы письмо от
+// чужой реплики и ходил бы за добором на каждый повод подряд.
+func TestПоводОПисьмеНесётВид(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	a := mailMember(t, p, 1493279, "Рио")
+	b := mailMember(t, p, 175869, "Гадёныш")
+	sendMail(t, p, a, b, "письмо")
+	if _, err := p.FanOut(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	pokes, err := p.PokesSince(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pokes) != 1 {
+		t.Fatalf("поводов %d, ожидался один", len(pokes))
+	}
+	if pokes[0].Kind != EventMessage || pokes[0].UserID != b {
+		t.Fatalf("повод: вид %d, кому %d", pokes[0].Kind, pokes[0].UserID)
+	}
+}

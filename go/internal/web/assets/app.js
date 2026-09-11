@@ -308,15 +308,19 @@ smilePanel(document);
   // Что слушаем. Тред узнаём из адреса, а не из разметки: /n/312811 — это и
   // есть номер заметки, и лишний атрибут в шаблоне ради него не нужен.
   var m = location.pathname.match(/^\/n\/(\d+)$/);
+  // ПЕРЕПИСКА слушает БЕЗ параметров: сигнал о письме идёт по личной теме,
+  // которая есть у всякого слушателя, а темы «эта переписка» на сервере нет и
+  // заводить её не надо — хаб о переписках знать не должен.
+  var mail = location.pathname.match(/^\/mail\/(\d+)$/);
   var query = m ? '?note=' + m[1] : (location.pathname === '/' ? '?feed=1' : '');
-  if (!m && query === '') return; // на остальных страницах слушать нечего
+  if (!m && !mail && query === '') return; // на остальных страницах слушать нечего
 
   // Список, который дописывается, и граница добора. Атрибут data-fresh и есть
   // выключатель: его нет на страницах линейного вида кроме первой — там срез
   // истории, и дописывать в него хвост разговора значит врать о том, что
   // человек читает. Сигналы при этом принимаются всё равно: колокольчик живёт
   // на любой странице.
-  var list = document.querySelector(m ? '.thread' : '.notes');
+  var list = document.querySelector(mail ? '.lts' : (m ? '.thread' : '.notes'));
   var url = list && list.getAttribute('data-fresh-url');
   var cursor = list && list.getAttribute('data-fresh');
   var linear = !!list && list.classList.contains('linear');
@@ -340,6 +344,25 @@ smilePanel(document);
     }
     var n = parseInt(cnt.textContent, 10);
     cnt.textContent = isNaN(n) ? '1' : (n >= 99 ? '99+' : String(n + 1));
+  };
+
+  // Число у пункта «Письма» подкручивается так же и по той же причине, что
+  // колокольчик: лишний запрос ради одной цифры дороже самой цифры, а точное
+  // значение приедет со следующей страницей. Пункта нет, пока переписка
+  // выключена, — тогда и подкручивать нечего.
+  var letters = function () {
+    var link = document.querySelector('.acctmenu a[href="/mail"]');
+    if (!link) return;
+    var n = link.querySelector('.mn');
+    if (!n) {
+      n = document.createElement('span');
+      n.className = 'mn';
+      n.textContent = '0';
+      link.appendChild(document.createTextNode(' '));
+      link.appendChild(n);
+    }
+    var v = parseInt(n.textContent, 10);
+    n.textContent = isNaN(v) ? '1' : (v >= 99 ? '99+' : String(v + 1));
   };
 
   // Номер реплики — из её же id в разметке. Сравнивать обязательно ЧИСЛАМИ:
@@ -566,7 +589,11 @@ smilePanel(document);
     applyMoves(moves);
     for (i = 0; i < fresh.length; i++) {
       var f = fresh[i];
-      if (!m) { placeOnTop(f); }
+      // ПИСЬМО встаёт В КОНЕЦ, и места ему искать не надо: переписка идёт по
+      // порядку разговора, а не деревом и не от новых к старым, — сёстры, ветки
+      // и полосы идентификаторов здесь ни при чём.
+      if (mail) { list.appendChild(f); }
+      else if (!m) { placeOnTop(f); }
       else if (linear) { list.insertBefore(f, list.firstChild); }
       else { placeInTree(f); }
       // Подсветка — единственное, чем новое отличается от старого, и живёт она
@@ -678,6 +705,11 @@ smilePanel(document);
     src.onmessage = function (e) {
       var d;
       try { d = JSON.parse(e.data); } catch (err) { return; }
+      // ПИСЬМО — тоже повод (колокольчик считает его наравне со всеми), но
+      // вдобавок за ним идут: на открытой переписке оно допишется само. На
+      // всякой другой странице добор не зовётся вовсе — дописывать письмо в
+      // ленту или в тред некуда.
+      if (d.kind === 'letter') { poke(); letters(); if (mail) schedule(); return; }
       if (d.kind === 'poke') { poke(); return; }
       schedule();
     };

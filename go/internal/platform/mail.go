@@ -694,6 +694,47 @@ func (p *Platform) Dialog(ctx context.Context, userID, dialogID int64, offset, l
 // вошедшего, рядом с колокольчиком, поэтому устроен так же: частичный индекс
 // mail_sides_unread плюс потолок строк, чтобы запрос не зависел от того,
 // сколько у человека переписок.
+// mailSinceQuery — письма переписки после границы. Вход — тот же индекс
+// (dialog_id, id), что у страницы.
+//
+// Курсор здесь ОДНО ЧИСЛО, и это единственное место эпика, где полоса
+// идентификаторов не мешает: у писем своя последовательность с единицы, полос
+// нет вовсе, и «после номера N» значит ровно «позже» (у треда пришлось
+// ветвиться на две полосы — см. FreshAfter). Сказано об этом здесь потому, что
+// соблазн скопировать сюда устройство треда велик, а оно было бы вдвое сложнее
+// без всякой причины.
+const mailSinceQuery = `
+	SELECT m.id, m.sender_id = $2, m.body, m.sent_at, m.purged_at IS NOT NULL
+	  FROM mail_messages m
+	 WHERE m.dialog_id = $1 AND m.id > $3
+	   AND EXISTS (SELECT 1 FROM mail_sides s WHERE s.dialog_id = $1 AND s.user_id = $2)
+	 ORDER BY m.id LIMIT $4`
+
+// MessagesSince — письма, появившиеся после границы. Живому добору (Ш5).
+//
+// Право видеть переписку проверяет тот же EXISTS по mail_sides, что и чтение:
+// постороннему запрос отдаёт пусто, а не отказ, — добор молчалив по устройству,
+// и отвечать на него «это не ваша переписка» некому и незачем.
+func (p *Platform) MessagesSince(ctx context.Context, userID, dialogID, afterID int64, limit int) ([]MessageView, error) {
+	if err := talkGuard(ctx, p.pool, userID); err != nil {
+		return nil, err
+	}
+	rows, err := p.pool.Query(ctx, mailSinceQuery, dialogID, userID, afterID, clampLimit(limit))
+	if err != nil {
+		return nil, wrapf(err, "новые письма переписки %d", dialogID)
+	}
+	defer rows.Close()
+	var out []MessageView
+	for rows.Next() {
+		var m MessageView
+		if err := rows.Scan(&m.ID, &m.FromMe, &m.Body, &m.SentAt, &m.Purged); err != nil {
+			return nil, wrapf(err, "новые письма переписки %d", dialogID)
+		}
+		out = append(out, m)
+	}
+	return out, wrapf(rows.Err(), "новые письма переписки %d", dialogID)
+}
+
 const unreadMailQuery = `
 	SELECT coalesce(sum(unread), 0) FROM (
 	    SELECT unread FROM mail_sides

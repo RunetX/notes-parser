@@ -778,6 +778,15 @@ func (p *Platform) LiveSince(ctx context.Context, afterID int64, limit int) ([]L
 type Poke struct {
 	UserID  int64
 	EventID int64
+	// Kind — ЧТО случилось. Хабу это нужно ровно для одного различия: письмо
+	// против всего остального. У повода о реплике страница только подкручивает
+	// колокольчик, а у письма идёт ещё и за самим письмом — и звать добор на
+	// каждый чужой лайк значило бы платить запросом за всякий повод подряд.
+	//
+	// Ни номера письма, ни номера переписки здесь НЕТ и не будет: на проводе
+	// сигнал «вам написали», а куда идти, страница знает сама — она открыта на
+	// своей переписке.
+	Kind EventKind
 	// At — когда записан факт, породивший повод. Как и у LiveEvent, только для
 	// замера задержки.
 	At time.Time
@@ -791,7 +800,7 @@ type Poke struct {
 // по уже увиденным фактам.
 func (p *Platform) PokesSince(ctx context.Context, afterID int64, limit int) ([]Poke, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT n.user_id, n.event_id, e.at
+		SELECT n.user_id, n.event_id, e.at, e.kind
 		  FROM notifications n JOIN events e ON e.id = n.event_id
 		 WHERE n.event_id > $1 AND e.fanned_at IS NOT NULL
 		 ORDER BY n.event_id LIMIT $2`, afterID, clampLimit(limit))
@@ -802,7 +811,7 @@ func (p *Platform) PokesSince(ctx context.Context, afterID int64, limit int) ([]
 	var out []Poke
 	for rows.Next() {
 		var k Poke
-		if err := rows.Scan(&k.UserID, &k.EventID, &k.At); err != nil {
+		if err := rows.Scan(&k.UserID, &k.EventID, &k.At, &k.Kind); err != nil {
 			return nil, wrapf(err, "поводы после %d", afterID)
 		}
 		out = append(out, k)

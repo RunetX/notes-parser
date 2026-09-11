@@ -218,3 +218,38 @@ func waitFor(t *testing.T, ok func() bool) {
 	}
 	t.Fatal("не дождались состояния")
 }
+
+// ПИСЬМО НА ПРОВОДЕ — это одно слово и больше ничего (эпик L, Ш5).
+//
+// Главная проверка этапа, и смотрит она на САМ ПОТОК, а не на страницу: в
+// сигнале не должно быть ни текста письма, ни номера переписки, ни номера
+// самого письма. Страница знает, куда идти, потому что открыта на своей
+// переписке, — а хаб один на процесс, и знать ему о письмах нечего.
+func TestСигналОПисьмеНесётТолькоСлово(t *testing.T) {
+	src := &fakeLive{pokes: []platform.Poke{
+		{UserID: testProfileID, EventID: 11, Kind: platform.EventMessage},
+		{UserID: testProfileID, EventID: 12, Kind: platform.EventComment},
+	}}
+	srv := serverOf(t, src)
+	token := tokenOf(t, srv)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		srv.hub.tick(context.Background())
+	}()
+
+	body := do(srvRoutes(srv), liveRequest(t, token, "", 120*time.Millisecond)).Body.String()
+	if !strings.Contains(body, `{"kind":"letter"}`) {
+		t.Fatalf("сигнала о письме нет:\n%s", body)
+	}
+	// Повод о РЕПЛИКЕ остался прежним словом: различаются они ровно затем,
+	// чтобы страница ходила за письмом, а не за каждым чужим ответом.
+	if !strings.Contains(body, `{"kind":"poke"}`) {
+		t.Errorf("обычный повод перестал быть poke:\n%s", body)
+	}
+	// И ничего сверх слова: ни номера переписки, ни номера письма.
+	for _, bad := range []string{`"dialog"`, `"message"`, `"note"`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("в сигнале о письме нашлось %s:\n%s", bad, body)
+		}
+	}
+}

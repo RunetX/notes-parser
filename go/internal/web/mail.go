@@ -26,6 +26,7 @@ package web
 // и этого довольно.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"html/template"
@@ -69,6 +70,8 @@ type Mail interface {
 	// который отдал бы переписку модератору, здесь по-прежнему нет — и не
 	// появится: это и есть обещание «он видит только процитированное».
 	MailMessage(ctx context.Context, userID, messageID int64) (platform.MessageView, int64, error)
+	// MessagesSince — письма после границы, живому добору (Ш5).
+	MessagesSince(ctx context.Context, userID, dialogID, afterID int64, limit int) ([]platform.MessageView, error)
 	ReportMessage(ctx context.Context, reporterID, messageID int64, reason string) error
 }
 
@@ -131,6 +134,11 @@ type dialogPage struct {
 	// Markable — есть ли что отмечать. Кнопка, которой нечего делать, хуже её
 	// отсутствия.
 	Markable bool
+	// Live — дописывать ли эту страницу живым добором. Только ПОСЛЕДНЯЯ
+	// страница переписки: на прежних лежит середина разговора, и дописывать в
+	// её конец свежее письмо значило бы соврать о том, что человек читает. Тот
+	// же довод, по которому добор не трогает вторую страницу ленты.
+	Live bool
 	// CanWrite и Why — можно ли ответить и почему нельзя. Спрашивается это у
 	// ЯДРА (CanWriteTo), а не выводится из шапки: причин отказа больше, чем
 	// чёрный список (собеседник отозвал согласие, обезличился, его забанили), и
@@ -300,6 +308,7 @@ func (s *Server) showDialog(w http.ResponseWriter, r *http.Request, u platform.U
 		}
 	}
 	p.Markable = head.Unread > 0 && p.Top > head.LastReadID
+	p.Live = num == pages
 	// Право ответить спрашивается у ядра — одним вызовом, тем же самым, каким
 	// решается кнопка «Написать» на странице участника.
 	if _, err := s.mail.CanWriteTo(r.Context(), u.ID, head.Peer.ID); err != nil {
@@ -630,6 +639,50 @@ func (s *Server) messageID(w http.ResponseWriter, r *http.Request, raw string) (
 		return 0, false
 	}
 	return id, true
+}
+
+// handleMailFresh — живой добор переписки (Ш5).
+//
+// Те же два шага, что у треда: поток /live говорит «вам написали» и ничего
+// больше, страница приходит СЮДА за готовой строкой — и рисует её ТОТ ЖЕ
+// шаблон, что и саму переписку. Второго способа превратить письмо в разметку у
+// площадки не заводится, иначе в одном из двух однажды забудут про смайлы, про
+// разметку или про стёртое по сроку содержание.
+//
+// Сигнал при этом не называет ни переписки, ни письма: страница спрашивает про
+// ТУ переписку, которая у неё открыта, а чужая отдаст пусто — право проверяет
+// ядро тем же условием, что и чтение.
+func (s *Server) handleMailFresh(w http.ResponseWriter, r *http.Request) {
+	u, ok := s.mailReader(w, r)
+	if !ok {
+		return
+	}
+	id, ok := s.dialogID(w, r)
+	if !ok {
+		return
+	}
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	letters, err := s.mail.MessagesSince(r.Context(), u.ID, id, max(0, after), freshLimit)
+	if err != nil {
+		// Отказ добора страницу не роняет: человек видит ровно то, что видел, а
+		// следующий сигнал попробует снова. Тот же приём, что у треда.
+		s.freshEmpty(w, r, "новые письма", err)
+		return
+	}
+	var buf bytes.Buffer
+	cursor := max(0, after)
+	for _, l := range letters {
+		if err := s.renderPart(&buf, "letter", letterOf(l, s.mod != nil)); err != nil {
+			http.Error(w, "внутренняя ошибка", http.StatusInternalServerError)
+			return
+		}
+		cursor = max(cursor, l.ID)
+	}
+	// Счётчика у переписки нет вовсе — ни над письмами, ни в шапке, — поэтому
+	// X-Fresh-Count не отдаётся: заголовок, которому нечего сказать, страница
+	// прочтёт и применит к чужому числу. Непрочитанное в меню страница
+	// подкручивает сама по сигналу, как колокольчик.
+	s.sendFresh(w, &buf, strconv.FormatInt(cursor, 10), -1)
 }
 
 // handleMailConsent — четвёртый документ.

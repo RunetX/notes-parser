@@ -237,6 +237,21 @@ func (f *fakeMail) ReportMessage(ctx context.Context, reporter, id int64, reason
 	return nil
 }
 
+func (f *fakeMail) MessagesSince(_ context.Context, me, dialogID, after int64, limit int) ([]platform.MessageView, error) {
+	if !f.party(dialogID, me) {
+		return nil, nil
+	}
+	var out []platform.MessageView
+	for _, l := range f.letters[dialogID] {
+		if l.ID <= after || len(out) >= limit {
+			continue
+		}
+		l.FromMe = f.senders[l.ID] == me
+		out = append(out, l)
+	}
+	return out, nil
+}
+
 func (f *fakeMail) BlockUser(_ context.Context, me, peer int64) error {
 	if me == peer {
 		return platform.ErrSelfMessage
@@ -867,5 +882,102 @@ func TestБезМодерацииЖалобыНаПисьмаНет(t *testing.T
 	}
 	if w := do(h, as(guest(t, "GET", "/mail/report?m="+strconv.FormatInt(sent.MessageID, 10)), mine)); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("форма жалобы без модерации ответила %d", w.Code)
+	}
+}
+
+// ------------------------------------------------------------------ Ш5
+
+// Живой добор переписки: страница отдаёт ГОТОВУЮ разметку письма тем же
+// шаблоном, что и сама переписка, и двигает границу.
+func TestДоборПриноситПисьмоРазметкой(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m)
+	ctx := context.Background()
+	first, err := m.SendMessage(ctx, peerID, testProfileID, "первое")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Страница переписки несёт границу добора — номер самого свежего письма.
+	page := do(h, as(guest(t, "GET", "/mail/1"), mine)).Body.String()
+	want := `data-fresh="` + strconv.FormatInt(first.MessageID, 10) + `"`
+	if !strings.Contains(page, want) {
+		t.Fatalf("на странице нет границы добора (%s)", want)
+	}
+	if !strings.Contains(page, `data-fresh-url="/mail/1/fresh"`) {
+		t.Error("на странице нет адреса добора")
+	}
+
+	second, err := m.SendMessage(ctx, peerID, testProfileID, "второе, [b]жирным[/b]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := do(h, as(guest(t, "GET",
+		"/mail/1/fresh?after="+strconv.FormatInt(first.MessageID, 10)), mine))
+	if w.Code != http.StatusOK {
+		t.Fatalf("добор ответил %d", w.Code)
+	}
+	body := w.Body.String()
+	switch {
+	case !strings.Contains(body, "<b>жирным</b>"):
+		t.Errorf("письмо приехало без разбора разметки: %s", body)
+	case strings.Contains(body, "первое"):
+		t.Error("добор принёс то, что на странице уже стои́т")
+	case !strings.Contains(body, `id="l`+strconv.FormatInt(second.MessageID, 10)+`"`):
+		t.Errorf("у письма нет номера в разметке: %s", body)
+	}
+	if got := w.Header().Get("X-Fresh-After"); got != strconv.FormatInt(second.MessageID, 10) {
+		t.Errorf("граница после добора %q", got)
+	}
+	// Счётчика у переписки нет вовсе, и заголовка с числом быть не должно:
+	// страница применила бы его к чужому числу в шапке.
+	if got := w.Header().Get("X-Fresh-Count"); got != "" {
+		t.Errorf("добор переписки отдал число %q", got)
+	}
+}
+
+// Добор ЧУЖОЙ переписки молчит: не отказ, а пусто — право проверяет ядро тем же
+// условием, что и чтение, а живой добор молчалив по устройству.
+func TestДоборЧужойПерепискиМолчит(t *testing.T) {
+	m := newFakeMail()
+	h, _, theirs := mailServer(t, m)
+	ctx := context.Background()
+	// Переписка ДВОИХ других: сессия «theirs» к ней отношения не имеет.
+	if _, err := m.SendMessage(ctx, 606064, 1038894, "не для вас"); err != nil {
+		t.Fatal(err)
+	}
+	w := do(h, as(guest(t, "GET", "/mail/1/fresh?after=0"), theirs))
+	if w.Code != http.StatusOK {
+		t.Fatalf("добор чужой переписки ответил %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "не для вас") {
+		t.Error("добор отдал чужое письмо")
+	}
+}
+
+// Прежние страницы переписки живым добором НЕ дописываются: там середина
+// разговора, и дописывать в её конец свежее письмо значило бы соврать о том,
+// что человек читает. Тот же довод, что у второй страницы ленты.
+func TestПрежниеСтраницыПерепискиНеДописываются(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m)
+	ctx := context.Background()
+	for i := 0; i < letterPageSize+5; i++ {
+		if _, err := m.SendMessage(ctx, peerID, testProfileID, "письмо"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if body := do(h, as(guest(t, "GET", "/mail/1?page=1"), mine)).Body.String(); strings.Contains(body, "data-fresh") {
+		t.Error("первая страница длинной переписки дописывается живым добором")
+	}
+	if body := do(h, as(guest(t, "GET", "/mail/1?page=2"), mine)).Body.String(); !strings.Contains(body, "data-fresh") {
+		t.Error("последняя страница переписки не дописывается")
+	}
+}
+
+// Выключенная переписка добора не имеет вовсе — как и всего остального.
+func TestДоборПисемЗаГейтом(t *testing.T) {
+	h, mine, _ := mailServer(t, nil)
+	if w := do(h, as(guest(t, "GET", "/mail/1/fresh?after=0"), mine)); w.Code != http.StatusNotFound {
+		t.Errorf("добор при выключенной переписке ответил %d", w.Code)
 	}
 }

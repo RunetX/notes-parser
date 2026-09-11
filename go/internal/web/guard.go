@@ -341,9 +341,15 @@ func costOf(r *http.Request) float64 {
 	}
 }
 
-// isFresh — живой добор: «/fresh» у ленты и «/n/<id>/fresh» у треда.
+// isFresh — живой добор: «/fresh» у ленты, «/n/<id>/fresh» у треда и
+// «/mail/<id>/fresh» у переписки. Все трое отдают порцию по индексу, а не
+// страницу, и цена у них одна.
 func isFresh(p string) bool {
-	return p == "/fresh" || (strings.HasPrefix(p, "/n/") && strings.HasSuffix(p, "/fresh"))
+	if p == "/fresh" {
+		return true
+	}
+	return (strings.HasPrefix(p, "/n/") || strings.HasPrefix(p, "/mail/")) &&
+		strings.HasSuffix(p, "/fresh")
 }
 
 // isReplyForm — открытие формы ответа на месте. Ценой это страница, а не тред, и

@@ -539,7 +539,20 @@ func (h *hub) pumpPokes(ctx context.Context) {
 		return
 	}
 	for _, p := range list {
-		h.publish(userTopic(p.UserID), liveMsg{ID: p.EventID, Kind: "poke", at: p.At})
+		// ПИСЬМО отличается от прочих поводов ровно одним словом на проводе, и
+		// это слово стоит запроса: по «poke» страница подкручивает колокольчик,
+		// по «letter» идёт ещё и за самим письмом. Не различай мы их, добор
+		// уходил бы на каждый чужой ответ и на каждую реакцию.
+		//
+		// Больше на проводе не появляется НИЧЕГО: ни номера письма, ни номера
+		// переписки, ни тем более слова из неё. Куда идти, страница знает сама —
+		// она открыта на своей переписке, а хаб о содержании писем не знает по
+		// устройству (Poke несёт вид, а не текст).
+		kind := "poke"
+		if p.Kind == platform.EventMessage {
+			kind = "letter"
+		}
+		h.publish(userTopic(p.UserID), liveMsg{ID: p.EventID, Kind: kind, at: p.At})
 		from = max(from, p.EventID)
 	}
 	h.mu.Lock()
