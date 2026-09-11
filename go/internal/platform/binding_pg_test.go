@@ -399,12 +399,25 @@ func TestOptionalConsentIsNotAskedAtTheDoor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != len(req)+1 {
-		t.Fatalf("документов %d, обязательных %d — необязательный потерялся", len(all), len(req))
+	if len(all) <= len(req) {
+		t.Fatalf("документов %d, обязательных %d — необязательные потерялись", len(all), len(req))
 	}
+	// Проверяется не ЧИСЛО, а состав: с каждым новым необязательным документом
+	// разница росла бы, и тест пришлось бы править вместо того, чтобы он ловил.
+	// Ловить он обязан одно — что в обязательный список не просочился лишний
+	// вид: именно этим деление списков и стоит.
 	for _, d := range req {
-		if d.Kind == ConsentBinding {
-			t.Fatal("согласие на привязку числится обязательным")
+		if d.Kind != ConsentProcessing && d.Kind != ConsentDistribution {
+			t.Fatalf("в обязательных оказался %s: у входа выросла стена", d.Kind)
+		}
+	}
+	for _, kind := range []string{ConsentBinding, ConsentTalks} {
+		var listed bool
+		for _, d := range all {
+			listed = listed || d.Kind == kind
+		}
+		if !listed {
+			t.Fatalf("%s нет в списке документов площадки: прочесть его будет негде", kind)
 		}
 	}
 }

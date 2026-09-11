@@ -5,22 +5,31 @@ import (
 	"testing"
 )
 
-// Документов ТРИ, и порядок фиксирован: сперва общее согласие, потом
+// Документов ЧЕТЫРЕ, и порядок фиксирован: сперва общее согласие, потом
 // распространение — согласиться на публикацию, не согласившись на обработку,
-// бессмысленно, — а необязательное идёт последним, потому что и читается оно
-// последним. Обязательных при этом по-прежнему два, и это стережёт
-// TestOptionalConsentIsNotAskedAtTheDoor: список документов площадки и список
-// того, что спрашивают на входе, с 11.09.2026 разные вещи.
+// бессмысленно, — а необязательные идут последними, потому что и читаются они
+// последними (привязка мессенджера, затем личная переписка). Обязательных при
+// этом по-прежнему ДВА, и это стережёт TestOptionalConsentIsNotAskedAtTheDoor:
+// список документов площадки и список того, что спрашивают на входе, с
+// 11.09.2026 разные вещи, и разводились они ровно затем, чтобы необязательный
+// документ не мог однажды встать стеной на входе.
+//
+// Число берётся из allConsentKinds, а не пишется цифрой: двух мест, где сказано,
+// сколько у площадки документов, быть не должно — расходятся они молча. А вот
+// ПОРЯДОК назван поимённо: он и есть то, что стережёт этот тест.
 func TestCurrentConsentDocs(t *testing.T) {
 	docs, err := CurrentConsentDocs(Operator{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 3 {
-		t.Fatalf("документов %d, ожидалось 3", len(docs))
+	if len(docs) != len(allConsentKinds) {
+		t.Fatalf("документов %d, ожидалось %d", len(docs), len(allConsentKinds))
 	}
-	if docs[0].Kind != ConsentProcessing || docs[1].Kind != ConsentDistribution || docs[2].Kind != ConsentBinding {
-		t.Fatalf("порядок документов: %s, %s, %s", docs[0].Kind, docs[1].Kind, docs[2].Kind)
+	want := []string{ConsentProcessing, ConsentDistribution, ConsentBinding, ConsentTalks}
+	for i, kind := range want {
+		if docs[i].Kind != kind {
+			t.Fatalf("документ %d: %s, ожидался %s", i, docs[i].Kind, kind)
+		}
 	}
 	for _, d := range docs {
 		if d.Version < 1 || d.Title == "" || len(d.SHA) != 32 {

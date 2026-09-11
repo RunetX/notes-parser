@@ -43,6 +43,12 @@ type Store interface {
 	FanOut(ctx context.Context, limit int) (int, error)
 	NoticeReactions(ctx context.Context, limit int) (int, error)
 	PruneBus(ctx context.Context, limit int) (platform.BusPruned, error)
+	// PruneMail — сроки хранения переписки (эпик L). Живёт ЗДЕСЬ, а не своим
+	// тактом, и это решение: второе суточное расписание было бы вторым ответом
+	// на вопрос «когда площадка убирает». Природа работы та же — сроки меряются
+	// месяцами, — а вот довод другой и тяжелее: у шины срок это наша
+	// соразмерность цели, у писем прямая обязанность оператора по 149-ФЗ.
+	PruneMail(ctx context.Context, limit int) (platform.MailPruned, error)
 }
 
 // Дефолты службы.
@@ -129,6 +135,7 @@ type Pass struct {
 	Fanned    int
 	Reactions int
 	Pruned    platform.BusPruned
+	Mail      platform.MailPruned
 }
 
 // Once делает всё, что делает такт, но не глядя на расписание редких дел, и
@@ -147,7 +154,10 @@ func (s *Service) Once(ctx context.Context) (Pass, error) {
 	if p.Fanned, err = s.st.FanOut(ctx, s.cfg.Batch); err != nil {
 		return p, err
 	}
-	p.Pruned, err = s.prune(ctx)
+	if p.Pruned, err = s.prune(ctx); err != nil {
+		return p, err
+	}
+	p.Mail, err = s.pruneMail(ctx)
 	return p, err
 }
 
@@ -172,8 +182,20 @@ func (s *Service) tick(ctx context.Context) {
 			s.log.Info("уборка шины",
 				"прочитанных", p.Read, "непрочитанных", p.Unread, "фактов", p.Events)
 		}
+		if err != nil {
+			return err
+		}
+		// Уборка переписки — та же редкая работа и тот же единственный срок в
+		// сутках, поэтому и отметка расписания у них одна. Разведи их, и
+		// «сегодня прибрали шину, а письма нет» стало бы возможным состоянием.
+		m, err := s.pruneMail(ctx)
+		if err == nil && m.Any() {
+			s.log.Info("уборка переписки",
+				"стёрто содержаний", m.Bodies, "жалоб", m.Reports,
+				"писем", m.Messages, "переписок", m.Dialogs)
+		}
 		return err
-	}, "уборка шины")
+	}, "уборка")
 }
 
 // rare выполняет дело не чаще, чем раз в every. Отметка ставится ДО работы:
@@ -202,6 +224,27 @@ func (s *Service) prune(ctx context.Context) (platform.BusPruned, error) {
 		total.Unread += p.Unread
 		total.Events += p.Events
 		if !p.Any() {
+			break
+		}
+	}
+	return total, nil
+}
+
+// pruneMail исполняет сроки хранения переписки. Теми же порциями и тем же
+// потолком кругов, что и уборка шины: длинная транзакция здесь так же занимает
+// базу, а не успевшее уйти сегодня уйдёт завтра.
+func (s *Service) pruneMail(ctx context.Context) (platform.MailPruned, error) {
+	var total platform.MailPruned
+	for range pruneRounds {
+		m, err := s.st.PruneMail(ctx, pruneBatch)
+		if err != nil {
+			return total, err
+		}
+		total.Bodies += m.Bodies
+		total.Reports += m.Reports
+		total.Messages += m.Messages
+		total.Dialogs += m.Dialogs
+		if !m.Any() {
 			break
 		}
 	}

@@ -12,12 +12,26 @@ package platform
 //
 // ГЛАВНОЕ ПРАВИЛО ЖУРНАЛА — то же, что в шапке миграции 0012, и повторено здесь
 // намеренно: в events НЕТ КОЛОНКИ СО СВОБОДНЫМ ТЕКСТОМ ОТ УЧАСТНИКА. Событие
-// ссылается на публикацию, открытую всем и так, а details содержит только наше
-// служебное (код реакции, категория скрытия, срок запрета). Стоит появиться
-// колонке, куда один человек пишет другому произвольные слова, — и площадка
-// становится сервисом обмена сообщениями, то есть 149-ФЗ и реестром ОРИ. Это не
-// вопрос вкуса и не задача на будущее: отсутствие такой колонки и есть то, чем
-// граница держится.
+// ссылается на то, что открыто всем и так, а details содержит только наше
+// служебное (код реакции, категория скрытия, срок запрета).
+//
+// До 11.09.2026 рядом стояло: «стоит появиться колонке, куда один человек пишет
+// другому произвольные слова, — и площадка становится сервисом обмена
+// сообщениями, то есть 149-ФЗ и реестром ОРИ». Так и вышло, и сказано это здесь
+// прямо, а не вычеркнуто: площадка завела личную переписку (эпик L, миграция
+// 0031) и приняла обязанности организатора распространения информации —
+// хранение, выдачу по запросу, отказ от сквозного шифрования. Решение владельца,
+// цена названа в шапке 0031 и в тексте согласия.
+//
+// Правило журнала это не отменило, а УТОЧНИЛО, и уточнение здесь несущее: слова
+// участника участнику живут в СВОЕЙ таблице (mail.go), а событие о письме несёт
+// ссылку dialog_id — ровно такую же, как note_id и comment_id, — и текста не
+// видит. Выдержка в списке событий у письма выходит пустой САМА (у него нет ни
+// заметки, ни реплики, а выражение берёт left(coalesce(c.body, nt.body, ''))),
+// то есть на шину его текст не попадает не по дисциплине, а по устройству, — и
+// проверяется это тестом, ищущим подстроку письма в events и notifications.
+// Первое же, что окажется в events свободным текстом, площадка обязана быть
+// готова показать кому угодно.
 //
 // Почему запись факта и раздача поводов разведены. Факт пишется ТОЙ ЖЕ
 // транзакцией, что и действие (см. recordEvent рядом с enqueueCheck и audit) —
@@ -51,6 +65,7 @@ const (
 	EventBanned   EventKind = 5 // человеку запретили публиковать
 	EventUnbanned EventKind = 6 // запрет снят
 	EventReaction EventKind = 7 // на публикацию поставили реакции
+	EventMessage  EventKind = 8 // пришло личное письмо (эпик L)
 )
 
 // Reason — почему факт стал поводом ИМЕННО ДЛЯ ЭТОГО человека.
@@ -69,7 +84,12 @@ const (
 	ReasonMention        Reason = 3 // вас упомянули по нику
 	ReasonAboutYou       Reason = 4 // решение о вас или о вашей публикации
 	ReasonReaction       Reason = 5 // вашу публикацию отметили
+	ReasonMessage        Reason = 6 // вам написали письмо
 )
+
+// Номера у видов и поводов ТОЛЬКО НОВЫЕ, и перенумеровать их нельзя никогда: в
+// events.kind и notifications.reason лежат smallint уже написанных строк, а не
+// имена, — переставив значения, мы перепишем прошлое.
 
 const (
 	// EventHorizon — насколько свежей должна быть ЗЕРКАЛЬНАЯ публикация, чтобы о
@@ -114,7 +134,10 @@ type newEvent struct {
 	SubjectID int64 // о ком факт; 0 у тредовых
 	NoteID    int64
 	CommentID int64
-	Details   map[string]any
+	// DialogID — переписка, о которой факт (эпик L). ССЫЛКА, как две строки
+	// выше, и ничего кроме: текста письма в шине нет и не будет — см. шапку.
+	DialogID int64
+	Details  map[string]any
 }
 
 // errNoEventKind — страховка на случай, если вид факта забыли назвать. Отказ
@@ -137,10 +160,10 @@ func recordEvent(ctx context.Context, q querier, e newEvent) error {
 		raw = b
 	}
 	if _, err := q.Exec(ctx, `
-		INSERT INTO events (kind, actor_id, subject_user_id, note_id, comment_id, details)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
+		INSERT INTO events (kind, actor_id, subject_user_id, note_id, comment_id, dialog_id, details)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		e.Kind, nullID(e.ActorID), nullID(e.SubjectID),
-		nullID(e.NoteID), nullID(e.CommentID), raw); err != nil {
+		nullID(e.NoteID), nullID(e.CommentID), nullID(e.DialogID), raw); err != nil {
 		return wrapf(err, "событие %d", e.Kind)
 	}
 	// Звонок открытым страницам — ТОЙ ЖЕ транзакцией (live.go). Стоит он ровно
@@ -367,6 +390,26 @@ var fanOutRules = []fanRule{{
 	        JOIN users u ON u.id = coalesce(c.author_id, n.author_id)
 	       WHERE e.id = ANY($1) AND e.kind = ANY($3)
 	         AND coalesce(c.status, n.status, 1) = 0
+	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
+	      ON CONFLICT DO NOTHING`,
+}, {
+	// ПИСЬМО (эпик L). Отдельным правилом, а не добавкой к «решению о вас»,
+	// хотя запрос у них выходит слово в слово один: у повода другой заголовок
+	// и другой адрес, а решает это Reason, — слив их, мы получили бы
+	// колокольчик, ведущий из письма на страницу чужой реплики.
+	//
+	// Адресат назван в самой строке (subject_user_id), как у решений, — искать
+	// его правилу не приходится. Общие оговорки те же и повторены дословно:
+	// житель писем не получает (почтового ящика у персонажа нет),
+	// обезличенному не говорят ничего, тень сюда не входила.
+	name:   "письмо",
+	reason: ReasonMessage,
+	kinds:  []EventKind{EventMessage},
+	sql: `INSERT INTO notifications (user_id, event_id, reason)
+	      SELECT e.subject_user_id, e.id, $2::smallint
+	        FROM events e JOIN users u ON u.id = e.subject_user_id
+	       WHERE e.id = ANY($1) AND e.kind = ANY($3) AND e.subject_user_id IS NOT NULL
+	         AND e.actor_id IS DISTINCT FROM e.subject_user_id
 	         AND u.kind = $4 AND u.anonymized_at IS NULL AND NOT u.persona
 	      ON CONFLICT DO NOTHING`,
 }}
@@ -596,16 +639,21 @@ type NotificationView struct {
 	ActorNick string // пусто у машины, у реакций и у анонимной заметки
 	NoteID    int64
 	CommentID int64
-	Excerpt   string // выдержка из публичного текста; пусто, если он скрыт
-	Code      string // знак реакции
-	Count     int    // сколько реакций схлопнулось
-	Detail    string // наше служебное: причина модератора
-	Hidden    bool   // публикация сейчас скрыта — вести на неё некуда
+	// DialogID — переписка, если повод о письме. Ссылка и ничего больше:
+	// выдержки у письма нет и быть не может — её выражение берёт текст у
+	// заметки или реплики, которых у него нет, и отдаёт пустую строку САМО.
+	DialogID int64
+	Excerpt  string // выдержка из публичного текста; пусто, если он скрыт
+	Code     string // знак реакции
+	Count    int    // сколько реакций схлопнулось
+	Detail   string // наше служебное: причина модератора
+	Hidden   bool   // публикация сейчас скрыта — вести на неё некуда
 }
 
 const notificationColumns = `
 	e.id, e.kind, n.reason, e.at, n.read_at IS NOT NULL,
 	coalesce(a.nick, ''), coalesce(e.note_id, 0), coalesce(e.comment_id, 0),
+	coalesce(e.dialog_id, 0),
 	CASE WHEN coalesce(c.status, nt.status, 0) = 0
 	     THEN left(coalesce(c.body, nt.body, ''), $4) ELSE '' END,
 	coalesce(e.details->>'code', ''), coalesce((e.details->>'count')::int, 0),
@@ -638,7 +686,7 @@ func (p *Platform) Notifications(ctx context.Context, userID int64, offset, limi
 	for rows.Next() {
 		var v NotificationView
 		if err := rows.Scan(&v.EventID, &v.Kind, &v.Reason, &v.At, &v.Read,
-			&v.ActorNick, &v.NoteID, &v.CommentID, &v.Excerpt,
+			&v.ActorNick, &v.NoteID, &v.CommentID, &v.DialogID, &v.Excerpt,
 			&v.Code, &v.Count, &v.Detail, &v.Hidden); err != nil {
 			return nil, wrapf(err, "события участника %d", userID)
 		}

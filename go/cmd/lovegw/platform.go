@@ -55,6 +55,7 @@ var platformSubcommands = map[string]bool{
 	"events":          true,
 	"anonymize":       true,
 	"export":          true,
+	"mail-export":     true,
 	"ban":             true,
 	"unban":           true,
 }
@@ -73,7 +74,10 @@ func cmdPlatform(ctx context.Context, args []string) error {
 	onlyNotes := fs.Int("notes", 0, "import-archive / import-restored: взять только столько заметок (0 — все)")
 	keepIdx := fs.Bool("keep-indexes", false, "import-archive: не снимать индексы comments")
 	dry := fs.Bool("dry-run", false, "import-archive / import-restored: посчитать, ничего не записывая")
-	out := fs.String("out", "", "export: файл выгрузки (пусто — stdout)")
+	out := fs.String("out", "", "export / mail-export: файл выгрузки (пусто — stdout)")
+	mailUser := fs.Int64("user", 0, "mail-export: чью переписку выдаём")
+	mailFrom := fs.String("from", "", "mail-export: нижняя граница периода (2026-09-01, пусто — без границы)")
+	mailTo := fs.String("to", "", "mail-export: верхняя граница периода (пусто — без границы)")
 	model := fs.String("model", "", "triage: подменить модель классификатора, не трогая конфиг")
 	reason := fs.String("reason", "", "ban / unban: причина, её увидит сам человек")
 	yes := fs.Bool("yes", false, "anonymize: подтвердить необратимую операцию")
@@ -164,6 +168,8 @@ func cmdPlatform(ctx context.Context, args []string) error {
 			return err
 		}
 		return platformExport(ctx, cfg, id, *out)
+	case "mail-export":
+		return platformMailExport(ctx, cfg, *mailUser, *mailFrom, *mailTo, *out)
 	case "ban", "unban":
 		id, err := oneUserID(tail, "platform "+sub+" <id участника> [-days N] [-reason «…»]")
 		if err != nil {
@@ -834,6 +840,25 @@ func platformDoctor(ctx context.Context, cfg *config.Config) error {
 			}
 			fmt.Fprintf(w, "вынос на НГС\t%s\tждёт %d, ушло %d, отказов %d, пропущено %d, эхо погашено %d%s\n",
 				state, st.Queued, st.Sent, st.Failed, st.Skipped, st.Echoed, note)
+		}
+
+		// ПЕРЕПИСКА (эпик L). Главное здесь — возраст самого старого письма с
+		// непочищенным содержанием: уборка работает молча, а её молчаливый отказ
+		// означает нарушение срока хранения через полгода, и заметить это надо
+		// сильно раньше, чем через полгода. Поэтому срок назван вслух рядом.
+		if st, err := p.MailStats(ctx); err != nil {
+			fmt.Fprintf(w, "переписка\tОШИБКА\t%v\n", err)
+		} else {
+			state, oldest := "ok", "писем нет"
+			if st.Messages > 0 {
+				oldest = fmt.Sprintf("старшее содержание %s назад (срок %s)",
+					st.OldestBody.Round(time.Hour), platform.KeepMessageBody)
+				if st.OldestBody > platform.KeepMessageBody {
+					state = "СРОК ХРАНЕНИЯ ПРЕВЫШЕН"
+				}
+			}
+			fmt.Fprintf(w, "переписка\t%s\t%d переписок, %d писем, непрочитанных %d, закрытий %d, жалоб %d; %s\n",
+				state, st.Dialogs, st.Messages, st.Unread, st.Blocks, st.Reports, oldest)
 		}
 	}
 

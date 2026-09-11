@@ -442,7 +442,7 @@ func (p *Platform) CreateNote(ctx context.Context, in NewNote) (int64, error) {
 	// только рука администратора. Всё остальное — согласия, гейт песочницы,
 	// очередь модерации, событие шины — двойник проходит наравне со всеми.
 	if in.SynthOf == 0 {
-		if err := enforceRate(ctx, tx, notesRate, in.AuthorID, time.Now(), noteRates); err != nil {
+		if err := enforceRate(ctx, tx, notesRate, in.AuthorID, NativeIDBase, time.Now(), noteRates); err != nil {
 			return 0, err
 		}
 	}

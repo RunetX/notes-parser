@@ -715,7 +715,7 @@ func (p *Platform) CreateComment(ctx context.Context, in NewComment) (int64, err
 		return 0, err
 	}
 	now := time.Now()
-	if err := enforceRate(ctx, tx, commentsRate, in.AuthorID, now, commentRates); err != nil {
+	if err := enforceRate(ctx, tx, commentsRate, in.AuthorID, NativeIDBase, now, commentRates); err != nil {
 		return 0, err
 	}
 

@@ -211,7 +211,7 @@ func TestRetryTimeWaitsForEveryExtraOne(t *testing.T) {
 
 	// Потолок «понижен» до трёх: лишних две, значит выйти за край окна должны
 	// первая и вторая — ждём ТРЕТЬЮ.
-	err = enforceRate(ctx, p.pool, notesRate, author, time.Now(), []rateRule{{24 * time.Hour, 3}})
+	err = enforceRate(ctx, p.pool, notesRate, author, NativeIDBase, time.Now(), []rateRule{{24 * time.Hour, 3}})
 	var rl *RateLimited
 	if !errors.As(err, &rl) {
 		t.Fatalf("пять заметок при потолке три: %v, ожидался *RateLimited", err)

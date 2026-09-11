@@ -809,7 +809,41 @@ func seedForPlans(t *testing.T, p *Platform) {
 		ANALYZE notes, comments, users, media`); err != nil {
 		t.Fatalf("заливка: %v", err)
 	}
-
+	// ПЕРЕПИСКА (эпик L). Устроена заготовка по тому же правилу, что и
+	// комментарии: у выбора должна быть ЦЕНА, иначе проверяется она сама, а не
+	// запрос.
+	//
+	// Отсюда две вещи, каждая нарочно. Переписки РАЗМАЗАНЫ по двум сотням
+	// участников: сложи мы их все на одного, и «мои переписки» накрывали бы
+	// половину таблицы, где планировщик прав, выбирая перебор. А НЕПРОЧИТАННОЕ
+	// оставлено у немногих — так и бывает у живых, и частичный индекс
+	// mail_sides_unread имеет смысл ровно поэтому: счётчик в шапке спрашивается
+	// на каждой странице вошедшего, и обходить ради него все стороны нельзя.
+	if _, err := p.pool.Exec(ctx, `
+		INSERT INTO users (id, nick)
+		SELECT 2000000 + g, 'собеседник' || g FROM generate_series(1, 2000) g;
+		INSERT INTO mail_dialogs (id, lo_id, hi_id, started_by, created_at, last_message_at)
+		SELECT g, 1000000 + (g % 200) + 1, 2000000 + g, 1000000 + (g % 200) + 1,
+		       timestamptz '2026-08-17 12:00Z' + g * interval '1 minute',
+		       timestamptz '2026-08-17 12:00Z' + g * interval '1 minute'
+		  FROM generate_series(1, 2000) g;
+		INSERT INTO mail_sides (dialog_id, user_id, peer_id, sent, unread, last_message_at)
+		SELECT d.id, d.lo_id, d.hi_id, 25,
+		       CASE WHEN d.id % 200 = 0 THEN 3 ELSE 0 END, d.last_message_at
+		  FROM mail_dialogs d;
+		INSERT INTO mail_sides (dialog_id, user_id, peer_id, sent, unread, last_message_at)
+		SELECT d.id, d.hi_id, d.lo_id, 0, 0, d.last_message_at FROM mail_dialogs d;
+		INSERT INTO mail_messages (dialog_id, sender_id, body, sent_at)
+		SELECT d.id, d.lo_id, 'письмо ' || g,
+		       timestamptz '2026-08-17 12:00Z' + g * interval '1 second'
+		  FROM generate_series(1, 50000) g JOIN mail_dialogs d ON d.id = (g % 2000) + 1;
+		-- Закрытий нарочно МНОГО (половина переписок): на четырёх строках
+		-- планировщик прав, выбирая перебор, и тест проверял бы заготовку.
+		INSERT INTO mail_blocks (user_id, blocked_id)
+		SELECT d.hi_id, d.lo_id FROM mail_dialogs d WHERE d.id % 2 = 0;
+		ANALYZE mail_dialogs, mail_sides, mail_messages, mail_blocks`); err != nil {
+		t.Fatalf("заливка переписки: %v", err)
+	}
 }
 
 // Планы запросов — часть договора, а не деталь: молчаливый переезд ленты или
@@ -899,6 +933,31 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 		// только на боевых сотнях тысяч. А вот перебор comments ценой не
 		// оправдан ни на какой заготовке, и его ловит общая проверка ниже.
 		{"мордолента", personaFacesQuery, []any{60}, "comments_author_time", 1},
+		// ПЕРЕПИСКА (эпик L). Первые два запроса ходят чаще всего: список писем
+		// открывают вместо ленты, а счётчик в шапке спрашивается на КАЖДОЙ
+		// странице вошедшего — рядом с колокольчиком, то есть цена у него
+		// удваивается сама собой.
+		{"список переписок", dialogsQuery,
+			[]any{int64(1000001), 50, 0, excerptRunes}, "mail_sides_inbox", 1},
+		{"счётчик писем", unreadMailQuery, []any{int64(1000001), UnreadCap}, "mail_sides_unread", 1},
+		{"страница переписки", dialogMessagesQuery,
+			[]any{int64(5), int64(1000001), 50, 0}, "mail_messages_thread", 1},
+		// Потолки считаются ВНУТРИ транзакции отправки, то есть удлиняют самую
+		// чувствительную её часть: перебор здесь означал бы, что письмо тем
+		// дороже, чем больше написано на площадке за всё время.
+		{"частота писем", messagesRate.count,
+			[]any{int64(1000001), noIDBand, testTime}, "mail_messages_rate", 1},
+		{"первые письма", firstsRate.count,
+			[]any{int64(1000001), noIDBand, testTime}, "mail_dialogs_started", 1},
+		// Пара и чёрный список спрашиваются на каждую кнопку «Написать» у
+		// участника, то есть на показе чужой страницы.
+		{"переписка пары", dialogPairQuery, []any{int64(1000001), int64(2000201)}, "mail_dialogs_pair", 1},
+		{"чёрный список", blocksQuery, []any{int64(1000001), int64(2000500)}, "mail_blocks_pkey", 1},
+		// Уборка ходит раз в сутки, но по ВСЕЙ таблице писем: без своего индекса
+		// это ночной полный перебор растущей таблицы, а исполнять сроки хранения
+		// площадка обязана каждую ночь, а не когда успеет.
+		{"уборка содержания", purgeBodiesQuery,
+			[]any{KeepMessageBody.String(), 100}, "mail_messages_age", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -907,8 +966,13 @@ func TestQueryPlansUseIndexes(t *testing.T) {
 				t.Fatalf("план берёт индекс %s %d раз вместо %d:\n%s",
 					c.index, strings.Count(plan, c.index), want, plan)
 			}
-			if strings.Contains(plan, "Seq Scan on notes") || strings.Contains(plan, "Seq Scan on comments") {
-				t.Fatalf("полный перебор в плане:\n%s", plan)
+			// Перебор запрещён у ВСЕХ растущих таблиц разом, включая переписку:
+			// список тут важнее имён индексов выше — молчаливый переезд на
+			// перебор не проваливает ни одного теста на поведение.
+			for _, table := range []string{"notes", "comments", "mail_messages", "mail_sides", "mail_dialogs"} {
+				if strings.Contains(plan, "Seq Scan on "+table) {
+					t.Fatalf("полный перебор %s в плане:\n%s", table, plan)
+				}
 			}
 		})
 	}
@@ -935,7 +999,6 @@ func explain(t *testing.T, p *Platform, query string, args ...any) string {
 	}
 	return b.String()
 }
-
 
 // «Убрать фото» снимает ПРИВЯЗКУ, а файл остаётся лежать: имя файла есть его
 // содержимое, поэтому на ту же картинку ссылаются и чужие строки, а уборки

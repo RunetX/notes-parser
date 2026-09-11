@@ -106,7 +106,7 @@ func (p *Platform) QueueNGSNote(ctx context.Context, in NewNote) (int64, error) 
 	if err := publishGuard(ctx, tx, in.AuthorID); err != nil {
 		return 0, err
 	}
-	if err := enforceRate(ctx, tx, ngsDraftRate, in.AuthorID, time.Now(), noteRates); err != nil {
+	if err := enforceRate(ctx, tx, ngsDraftRate, in.AuthorID, NativeIDBase, time.Now(), noteRates); err != nil {
 		return 0, err
 	}
 	var id int64

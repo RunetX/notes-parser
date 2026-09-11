@@ -62,6 +62,7 @@ type AnonymizeResult struct {
 	Notes     int
 	Comments  int
 	Reactions int
+	Messages  int // писем (эпик L): имя уходит, текст остаётся
 }
 
 // AnonymizeUser исполняет требование субъекта об обезличивании.
@@ -113,6 +114,18 @@ func (p *Platform) AnonymizeUser(ctx context.Context, actor Viewer, userID int64
 	if _, err := moved(`UPDATE moderation_queue SET author_id = $2 WHERE author_id = $1`); err != nil {
 		return res, err
 	}
+	// ПЕРЕПИСКА (эпик L) — по тому же правилу, что и публикации: имя уходит,
+	// тексты остаются. Стереть их нельзя вдвойне: чужой половине разговора дыра
+	// в переписке так же непонятна, как дыра в ветке, а 149-ФЗ прямо запрещает
+	// стирать содержание раньше срока хранения. Сказано об этом в тексте
+	// согласия, чтобы человек знал, чего требование не даст.
+	if res.Messages, err = moved(
+		`UPDATE mail_messages SET sender_id = $2 WHERE sender_id = $1`); err != nil {
+		return res, err
+	}
+	if err := anonymizeMail(ctx, tx, userID, grave); err != nil {
+		return res, err
+	}
 	// Шина чистится, а не переезжает на могилу вместе с публикациями: событие
 	// «X ответил Y» — это связь между двумя людьми, и перенеся её, мы своей же
 	// рукой сохранили бы ту дополнительную информацию, отсутствие которой и
@@ -156,6 +169,57 @@ func (p *Platform) AnonymizeUser(ctx context.Context, actor Viewer, userID int64
 		return res, err
 	}
 	return res, wrapf(tx.Commit(ctx), "обезличивание %d", userID)
+}
+
+// anonymizeMail переносит на могилу ПЕРЕПИСКУ человека: стороны, пару и жалобы.
+//
+// Самый хитрый шаг эпика L — ПЕРЕНОРМАЛИЗАЦИЯ ПАРЫ. Ключ переписки это
+// упорядоченная пара (CHECK lo_id < hi_id), а могила получает свежий номер из
+// нативной последовательности, то есть заведомо больший обоих, — простая
+// подстановка развалила бы ограничение у каждой переписки, где человек был
+// СТАРШИМ номером. Поэтому обе колонки считаются заново через least/greatest, и
+// написано это общим случаем, а не «могила всегда справа»: правило про порядок
+// номеров, а не про то, откуда взялся этот.
+//
+// started_by переезжает ОБЯЗАТЕЛЬНО, и это не полнота ради полноты: строка
+// осталась бы указывать на настоящего человека рядом с могилой, которой он же и
+// стал, — то есть обезличивание вышло бы косметикой, снятой одним запросом.
+//
+// ЧЁРНЫЙ СПИСОК УДАЛЯЕТСЯ, а не переезжает, и довод здесь тот же, что у
+// dropUserEvents: «этот закрыл вот того» — связь между двумя людьми, и перенеся
+// её, мы своей же рукой сохранили бы ту дополнительную информацию, отсутствие
+// которой и делает обезличивание обезличиванием. Защиту это ни у кого не
+// отнимает: могиле писать нельзя (recipientGuard), и сама она не напишет.
+func anonymizeMail(ctx context.Context, q querier, userID, grave int64) error {
+	steps := []string{
+		`UPDATE mail_sides SET user_id = $2 WHERE user_id = $1`,
+		`UPDATE mail_sides SET peer_id = $2 WHERE peer_id = $1`,
+		`UPDATE mail_dialogs
+		    SET lo_id = least(CASE WHEN lo_id = $1 THEN $2 ELSE lo_id END,
+		                      CASE WHEN hi_id = $1 THEN $2 ELSE hi_id END),
+		        hi_id = greatest(CASE WHEN lo_id = $1 THEN $2 ELSE lo_id END,
+		                         CASE WHEN hi_id = $1 THEN $2 ELSE hi_id END),
+		        started_by = CASE WHEN started_by = $1 THEN $2 ELSE started_by END
+		  WHERE lo_id = $1 OR hi_id = $1`,
+		// Жалобы на письма — по тому же доводу, что и карточки очереди
+		// проверки: иначе разбирательство продолжало бы называть имя.
+		`UPDATE mail_reports SET reporter_id = $2 WHERE reporter_id = $1`,
+		`UPDATE mail_reports SET author_id = $2 WHERE author_id = $1`,
+	}
+	for _, sql := range steps {
+		if _, err := q.Exec(ctx, sql, userID, grave); err != nil {
+			return wrapf(err, "обезличивание переписки %d", userID)
+		}
+	}
+	// Чёрный список идёт отдельно, потому что могила ему не нужна вовсе: он не
+	// переезжает, а УДАЛЯЕТСЯ. Подставить сюда второй аргумент ради
+	// единообразия нельзя — Postgres считает параметры по наибольшему номеру в
+	// запросе и честно отказывается принимать лишний.
+	if _, err := q.Exec(ctx,
+		`DELETE FROM mail_blocks WHERE user_id = $1 OR blocked_id = $1`, userID); err != nil {
+		return wrapf(err, "обезличивание переписки %d", userID)
+	}
+	return nil
 }
 
 // ----------------------------------------------- обезличивание одних заметок
@@ -330,6 +394,35 @@ func (p *Platform) ExportUser(ctx context.Context, userID int64, w io.Writer) er
 			       decision AS решение_человека, checked_at AS проверено,
 			       decided_at AS решено, appealed_at AS пересмотр_запрошен
 			  FROM moderation_queue WHERE author_id = $1 ORDER BY queued_at) x`},
+		// ПЕРЕПИСКА (эпик L). Свои письма — с текстом: это его слова.
+		{"мои_письма", `SELECT to_jsonb(x) FROM (
+			SELECT id, dialog_id AS переписка, body AS текст, sent_at AS отправлено,
+			       purged_at AS содержание_удалено_по_сроку
+			  FROM mail_messages WHERE sender_id = $1 ORDER BY id) x`},
+		{"мои_переписки", `SELECT to_jsonb(x) FROM (
+			SELECT s.dialog_id AS переписка, s.peer_id AS собеседник,
+			       s.sent AS моих_писем, s.unread AS непрочитано,
+			       d.created_at AS заведена, s.last_message_at AS последнее_письмо,
+			       s.hidden_at AS убрана_у_меня
+			  FROM mail_sides s JOIN mail_dialogs d ON d.id = s.dialog_id
+			 WHERE s.user_id = $1 ORDER BY s.dialog_id) x`},
+		// ВХОДЯЩИЕ — БЕЗ ТЕКСТА, и это то же правило, по которому в выгрузке нет
+		// чужих реплик: слова другого человека выгружаются по ЕГО требованию, а
+		// не по требованию того, кому он их адресовал. Сказано об этом и в самом
+		// тексте согласия, чтобы отсутствие текста не читалось как потеря.
+		{"входящие_письма", `SELECT to_jsonb(x) FROM (
+			SELECT m.id, m.dialog_id AS переписка, m.sender_id AS отправитель,
+			       m.sent_at AS отправлено
+			  FROM mail_messages m
+			  JOIN mail_sides s ON s.dialog_id = m.dialog_id AND s.user_id = $1
+			 WHERE m.sender_id <> $1 ORDER BY m.id) x`},
+		{"мой_чёрный_список", `SELECT to_jsonb(x) FROM (
+			SELECT blocked_id AS кого, created_at AS когда
+			  FROM mail_blocks WHERE user_id = $1 ORDER BY created_at) x`},
+		{"мои_жалобы_на_письма", `SELECT to_jsonb(x) FROM (
+			SELECT id, message_id AS письмо, quote AS цитата, reason AS причина,
+			       created_at AS подана, resolved_at AS рассмотрена, resolution AS решение
+			  FROM mail_reports WHERE reporter_id = $1 ORDER BY created_at) x`},
 		// Поводы, которые площадка ему показывала. Это его данные, поэтому в
 		// выгрузку они идут; ссылками, а не текстами — чужие реплики остаются
 		// чужими и здесь (см. шапку про то, чего в выгрузке нет).
@@ -356,8 +449,8 @@ func (p *Platform) ExportUser(ctx context.Context, userID int64, w io.Writer) er
 // exportRows выливает результат запроса как элементы JSON-массива. Строки
 // собирает сам Postgres (to_jsonb), поэтому в Go нет ни одной структуры на
 // раздел — добавить поле в выгрузку это одна строка SQL.
-func (p *Platform) exportRows(ctx context.Context, w io.Writer, sql string, userID int64) error {
-	rows, err := p.pool.Query(ctx, sql, userID)
+func (p *Platform) exportRows(ctx context.Context, w io.Writer, sql string, args ...any) error {
+	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return err
 	}

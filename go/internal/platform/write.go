@@ -152,6 +152,16 @@ var (
 // пути не выполняется вовсе, а без него человеку остаётся «подождите немного»,
 // где немного бывает часом. Отказ, не называющий срока, читается как поломка —
 // ровно так он и был прочитан 06.09.2026.
+//
+// $2 у обоих запросов — НИЖНИЙ КРАЙ ПОЛОСЫ идентификаторов, и передаётся он
+// параметром, а не подставляется NativeIDBase внутри enforceRate, как было до
+// 11.09.2026. У заметок и реплик полоса и правда одна («меряем нативные, а не
+// зеркальный след прошлых лет»), но у писем (mail.go) своя последовательность с
+// единицы: жёстко вшитый NativeIDBase сделал бы условие `id >= 1e11` ложным для
+// каждой строки, счёт всегда нулевым — и потолок писем МОЛЧА не работал бы
+// вовсе. Ровно тот класс дефекта, за который проект уже платил дважды (пол
+// собеседника и обращение считались верно и не доезжали до места, где ими
+// пользуются), поэтому полоса теперь видна в каждом вызове.
 type rateQuery struct{ count, nth string }
 
 var (
@@ -387,7 +397,7 @@ func (p *Platform) MayPublishNote(ctx context.Context, userID int64) error {
 	if err := publishGuard(ctx, p.pool, userID); err != nil {
 		return err
 	}
-	return enforceRate(ctx, p.pool, notesRate, userID, time.Now(), noteRates)
+	return enforceRate(ctx, p.pool, notesRate, userID, NativeIDBase, time.Now(), noteRates)
 }
 
 // enforceRate проверяет пороги частоты по нативным публикациям автора.
@@ -396,14 +406,14 @@ func (p *Platform) MayPublishNote(ctx context.Context, userID int64) error {
 // запрос — какая по счёту публикация должна выйти за край окна, чтобы место
 // освободилось. Стоит он одного round-trip на отказ, а даёт единственное, что
 // человеку в этот момент нужно знать.
-func enforceRate(ctx context.Context, q querier, rq rateQuery, authorID int64, now time.Time, rules []rateRule) error {
+func enforceRate(ctx context.Context, q querier, rq rateQuery, authorID, idFrom int64, now time.Time, rules []rateRule) error {
 	for _, r := range rules {
 		var n int
-		if err := q.QueryRow(ctx, rq.count, authorID, NativeIDBase, now.Add(-r.Window)).Scan(&n); err != nil {
+		if err := q.QueryRow(ctx, rq.count, authorID, idFrom, now.Add(-r.Window)).Scan(&n); err != nil {
 			return fmt.Errorf("частота публикаций автора %d: %w", authorID, err)
 		}
 		if n >= r.Max {
-			return &RateLimited{Window: r.Window, Max: r.Max, RetryAt: retryAt(ctx, q, rq, authorID, now, r, n)}
+			return &RateLimited{Window: r.Window, Max: r.Max, RetryAt: retryAt(ctx, q, rq, authorID, idFrom, now, r, n)}
 		}
 	}
 	return nil
@@ -420,9 +430,9 @@ func enforceRate(ctx context.Context, q querier, rq rateQuery, authorID int64, n
 // Нулевое время означает «срок неизвестен» и на страницу выходит прежним
 // расплывчатым текстом: отказ по частоте не должен превращаться в отказ по
 // поломке из-за того, что не сложился второй запрос.
-func retryAt(ctx context.Context, q querier, rq rateQuery, authorID int64, now time.Time, r rateRule, n int) time.Time {
+func retryAt(ctx context.Context, q querier, rq rateQuery, authorID, idFrom int64, now time.Time, r rateRule, n int) time.Time {
 	var oldest time.Time
-	if err := q.QueryRow(ctx, rq.nth, authorID, NativeIDBase, now.Add(-r.Window), n-r.Max).Scan(&oldest); err != nil {
+	if err := q.QueryRow(ctx, rq.nth, authorID, idFrom, now.Add(-r.Window), n-r.Max).Scan(&oldest); err != nil {
 		return time.Time{}
 	}
 	return oldest.Add(r.Window)
