@@ -9,7 +9,7 @@
     <span class="nick {{.Member.Gender.Class}}">{{.Member.Nick}}</span>
     <span class="fine">
       {{if lt .Member.ID 100000000000}}анкета НГС №{{.Member.ID}}{{else}}участник №{{.Member.ID}}{{end}}
-      {{if .Admin}} · администратор{{end}}
+      {{if .AdminRole}} · администратор{{end}}
     </span>
     {{/* Кнопка, а не форма загрузки: своего файла площадка не принимает вовсе —
          это премодерация, хранилище и другой разговор о согласии (Ш5д). Здесь

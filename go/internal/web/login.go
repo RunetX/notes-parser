@@ -235,9 +235,9 @@ func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, status int,
 // показанный код в поле «о себе» на НГС.
 type codePage struct {
 	page
-	ProfileID int64
-	Nick      string
-	Avatar    string // наш путь /media/…, если этого человека знает зеркало
+	ProfileID   int64
+	ProfileNick string
+	Avatar      string // наш путь /media/…, если этого человека знает зеркало
 	// Gender — из анкеты НГС, и нужен он ровно для силуэта: фото зеркало знает
 	// далеко не про всех, а входящий должен узнать на этом экране СЕБЯ.
 	Gender platform.Gender
@@ -332,15 +332,15 @@ func (s *Server) renderCodeState(w http.ResponseWriter, r *http.Request, status 
 		avatar = card.AvatarURL
 	}
 	s.render(w, r, status, "login_code.gohtml", codePage{
-		page:      s.newPage(r, "Вход"),
-		ProfileID: id,
-		Nick:      prof.Nick,
-		Avatar:    avatar,
-		Gender:    prof.Gender,
-		Code:      code,
-		Problem:   problem,
-		Days:      int(platform.ChallengeTTL / (24 * time.Hour)),
-		Resumed:   resumed,
+		page:        s.newPage(r, "Вход"),
+		ProfileID:   id,
+		ProfileNick: prof.Nick,
+		Avatar:      avatar,
+		Gender:      prof.Gender,
+		Code:        code,
+		Problem:     problem,
+		Days:        int(platform.ChallengeTTL / (24 * time.Hour)),
+		Resumed:     resumed,
 	})
 }
 

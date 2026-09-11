@@ -87,7 +87,7 @@ type composePage struct {
 	// меняется: условий авторского окна тут нет вовсе, зато появляется поле
 	// «зачем» — оно уходит в журнал, и без него правка чужого текста осталась бы
 	// записью «кто-то что-то поправил».
-	Admin bool
+	AsAdmin bool
 	// TextLocked — заметка ЗЕРКАЛЬНАЯ, и администратор открыл форму ради одной
 	// картинки: текст копии не правится вообще (см. platform.ErrNotNative), и
 	// поля для него на экране нет вовсе — поле, отвечающее отказом, хуже его
@@ -331,7 +331,7 @@ func (s *Server) editForm(r *http.Request, note platform.NoteView, mode editMode
 		page:       s.newPage(r, "Правка заметки"),
 		Note:       note,
 		Editing:    true,
-		Admin:      admin,
+		AsAdmin:    admin,
 		TextLocked: mode == editShot,
 		Body:       body,
 		Anonymous:  note.Anonymous,

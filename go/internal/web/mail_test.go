@@ -981,3 +981,61 @@ func TestДоборПисемЗаГейтом(t *testing.T) {
 		t.Errorf("добор при выключенной переписке ответил %d", w.Code)
 	}
 }
+
+// Меню каркаса печатает ЧИСЛО, а не сами письма.
+//
+// Оплачено боем 12.09.2026: dialogPage.Letters ([]MessageView) перекрыл
+// одноимённое поле каркаса — счётчик, — и на месте числа в пункте меню встал
+// дамп среза вместе с текстами писем. Соседний page_shadow_test.go запрещает
+// такое соседство имён вовсе, а этот смотрит на страницу: дефект увидели
+// глазами, и проверять его надо там же, где он был виден.
+func TestМенюПечатаетЧислоПисемАНеСамиПисьма(t *testing.T) {
+	m := newFakeMail()
+	m.unread = 2
+	h, mine, _ := mailServer(t, m)
+	if _, err := m.SendMessage(context.Background(), peerID, testProfileID, "тайное письмо"); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/mail/1"), mine)).Body.String()
+	i := strings.Index(body, "acctmenu")
+	if i < 0 {
+		t.Fatal("меню участника не нарисовано вовсе")
+	}
+	menu := body[i:min(i+900, len(body))]
+	if !strings.Contains(menu, `class="mn">2</span>`) {
+		t.Error("в пункте меню нет числа непрочитанных писем")
+	}
+	if strings.Contains(menu, "тайное письмо") || strings.Contains(menu, "[{") {
+		t.Errorf("в пункте меню оказались сами письма: %s", menu)
+	}
+}
+
+// Форма отметки прочитанного стои́т ВСЕГДА и лишь прячется, пока отмечать
+// нечего: письмо, дописанное живым добором на открытой странице, человек видит,
+// и кнопка обязана его накрыть, — а завести её скриптом из ничего нельзя.
+// Оплачено тем же днём: отметил прочитанным, колокольчик погас, а счётчик писем
+// остался гореть, потому что граница стояла на том письме, что нарисовал
+// сервер.
+func TestФормаОтметкиСтоитДажеКогдаОтмечатьНечего(t *testing.T) {
+	quiet := newFakeMail()
+	h, mine, _ := mailServer(t, quiet)
+	// Переписка есть, а непрочитанного нет: письмо своё.
+	if _, err := quiet.SendMessage(context.Background(), testProfileID, peerID, "моё письмо"); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/mail/1"), mine)).Body.String()
+	if !strings.Contains(body, `class="mkread"`) {
+		t.Fatal("формы отметки нет вовсе — живому добору нечего будет открыть")
+	}
+	if !strings.Contains(body, `action="/mail/1/read" hidden`) {
+		t.Error("форма отметки не спрятана, хотя отмечать нечего")
+	}
+
+	loud := newFakeMail()
+	loud.unread = 1
+	h2, mine2, _ := mailServer(t, loud)
+	body2 := do(h2, as(guest(t, "GET", "/mail/1"), mine2)).Body.String()
+	if strings.Contains(body2, `action="/mail/1/read" hidden`) {
+		t.Error("форма отметки спрятана, хотя непрочитанное есть")
+	}
+}

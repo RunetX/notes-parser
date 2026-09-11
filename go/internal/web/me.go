@@ -23,7 +23,11 @@ type mePage struct {
 	Docs   []platform.ConsentDoc
 	Have   platform.Consents
 	Shadow bool // вход не завершён: согласий нет
-	Admin  bool
+	// AdminRole — роль человека, а не право видеть пункт меню: у каркаса Admin
+	// вдобавок требует поднятых инструментов модерации, и одним именем два
+	// вопроса не отвечаются (имя составное ещё и потому, что поле страницы,
+	// названное как поле каркаса, затеняет его — page_shadow_test.go).
+	AdminRole bool
 	// Avatar — показывать ли кнопку «Обновить аватар». Её нет у вошедшего по
 	// приглашению (анкеты НГС у него нет вовсе) и нет, когда сайт недоступен:
 	// кнопка, которая заведомо ответит отказом, хуже её отсутствия.
@@ -192,7 +196,7 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		Docs:        docs,
 		Have:        have,
 		Shadow:      u.Kind == platform.KindShadow,
-		Admin:       u.Role >= platform.RoleAdmin,
+		AdminRole:   u.Role >= platform.RoleAdmin,
 		Avatar:      s.site != nil && platform.IsNGS(u.ID),
 		Problem:     problem,
 		Hidden:      hidden,
@@ -339,8 +343,10 @@ func (s *Server) handleNGSSend(w http.ResponseWriter, r *http.Request) {
 type revokePage struct {
 	page
 	Kind string
-	// Title — заголовок отзываемого документа, ровно тот, что человек подписывал.
-	Title string
+	// DocTitle — заголовок отзываемого документа, ровно тот, что человек
+	// подписывал. Не Title: так зовётся заголовок ВКЛАДКИ у каркаса, и поле
+	// страницы затенило бы его (page_shadow_test.go).
+	DocTitle string
 	// Processing — отзывается ОБЩЕЕ согласие: оно вдобавок закрывает вход.
 	Processing bool
 	// Binding — отзывается НЕОБЯЗАТЕЛЬНОЕ согласие на привязку. Последствия у
@@ -416,7 +422,7 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 		s.render(w, r, http.StatusOK, "revoke.gohtml", revokePage{
 			page:       s.newPage(r, "Отзыв согласия"),
 			Kind:       kind,
-			Title:      doc.Title,
+			DocTitle:   doc.Title,
 			Processing: kind == platform.ConsentProcessing,
 			// Экран обезличивания — про распространение, и показывать его при
 			// отзыве НЕОБЯЗАТЕЛЬНОГО согласия нельзя: обезличивания не будет

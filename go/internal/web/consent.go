@@ -24,7 +24,6 @@ type consentPage struct {
 	Doc  platform.ConsentDoc
 	Step int
 	Of   int
-	Nick string
 }
 
 func (s *Server) handleConsent(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +47,7 @@ func (s *Server) handleConsent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, r, http.StatusOK, "consent.gohtml", consentPage{
 		page: s.newPage(r, "Вход"),
-		Doc:  doc, Step: step, Of: 2, Nick: u.Nick,
+		Doc:  doc, Step: step, Of: 2,
 	})
 }
 

@@ -1075,6 +1075,10 @@ span.rxb { cursor: default; }
   font: inherit; font-size: 26px; line-height: 1; cursor: pointer; color: var(--ink);
 }
 .tnav[hidden] { display: none; }
+/* Та же причина, что строкой выше: форма отметки стоит в .dlgacts всегда и
+   прячется, пока отмечать нечего, — правило названо явно, чтобы будущий
+   `display` у форм полоски не отменил его молча. */
+.mkread[hidden] { display: none; }
 .tprev { left: 0; background: linear-gradient(to right, var(--page) 55%, transparent); }
 .tnext { right: 0; background: linear-gradient(to left, var(--page) 55%, transparent); }
 

@@ -350,6 +350,21 @@ smilePanel(document);
   // колокольчик: лишний запрос ради одной цифры дороже самой цифры, а точное
   // значение приедет со следующей страницей. Пункта нет, пока переписка
   // выключена, — тогда и подкручивать нечего.
+  // Граница «прочитано» идёт за тем, что человек ВИДИТ. Сервер проставил её на
+  // момент показа, а живой добор дописывает страницу дальше — и без этой
+  // подкрутки «Отметить прочитанным» накрывало бы не всё: колокольчик гас, а
+  // счётчик писем оставался гореть (поймано в бою 12.09.2026). Форма нарисована
+  // всегда и лишь спрятана, пока отмечать нечего, — из ничего её здесь не
+  // завести, а без скрипта всё то же самое даёт обновление страницы.
+  var markUpto = function (id) {
+    var form = document.querySelector('.mkread');
+    if (!form || !id) return;
+    var box = form.querySelector('input[name="upto"]');
+    if (!box) return;
+    if (id > (parseInt(box.value, 10) || 0)) box.value = id;
+    form.hidden = false;
+  };
+
   var letters = function () {
     var link = document.querySelector('.acctmenu a[href="/mail"]');
     if (!link) return;
@@ -592,7 +607,7 @@ smilePanel(document);
       // ПИСЬМО встаёт В КОНЕЦ, и места ему искать не надо: переписка идёт по
       // порядку разговора, а не деревом и не от новых к старым, — сёстры, ветки
       // и полосы идентификаторов здесь ни при чём.
-      if (mail) { list.appendChild(f); }
+      if (mail) { list.appendChild(f); markUpto(parseInt(f.id.slice(1), 10)); }
       else if (!m) { placeOnTop(f); }
       else if (linear) { list.insertBefore(f, list.firstChild); }
       else { placeInTree(f); }
