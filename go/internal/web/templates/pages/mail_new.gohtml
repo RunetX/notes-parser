@@ -1,0 +1,35 @@
+{{define "content"}}
+<h1 class="ttl">Письмо</h1>
+
+<div class="dlghead">
+  <div class="author">{{template "avatar" (av .Peer.AvatarURL .Peer.Gender false)}}
+    {{template "nick" (nk .Peer .Peer.Nick false .SignedIn)}}</div>
+</div>
+
+<section class="wbox">
+  {{if .Compose.Problem}}<p class="warn">{{.Compose.Problem}}</p>{{end}}
+  <form method="post" action="/mail/new" class="wform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{/* Адресат едет СКРЫТЫМ ПОЛЕМ, но подделать его нечем: ядро проверяет
+         право писать именно этому человеку в той же транзакции, что и вставку,
+         — подставленный номер получит честный отказ, а не тихо отправленное
+         письмо. */}}
+    <input type="hidden" name="to" value="{{.Peer.ID}}">
+    <textarea name="body" rows="8" required placeholder="Первое письмо"
+      {{- if .Compose.Problem}} autofocus{{end}}>{{.Compose.Body}}</textarea>
+    {{template "smilepick"}}
+    {{template "markpick"}}
+    <div class="wact">
+      <button type="submit">Отправить</button>
+    </div>
+  </form>
+</section>
+
+<p class="fine">Это первое письмо незнакомому человеку. Пока он ни разу не
+ответил, писем подряд можно отправить не больше {{.Unanswered}} — дальше придётся
+подождать ответа. Правило не про вежливость: им площадка отличает разговор от
+рассылки.</p>
+
+<p class="fine">Если писать вам не захотят, переписку закроют, и вы увидите это
+сразу — площадка не делает вид, что письмо ушло.</p>
+{{end}}

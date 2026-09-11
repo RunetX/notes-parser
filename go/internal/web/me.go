@@ -358,6 +358,12 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case kind == platform.ConsentProcessing, kind == platform.ConsentDistribution:
 	case kind == platform.ConsentBinding && r.FormValue("action") == "revoke":
+	// Согласие на переписку — той же породы: отзывается здесь, а даётся на
+	// своём экране (/mail/consent), где перед кнопкой стои́т документ. Отзыв
+	// вдобавок ЗАКРЫВАЕТ ВХОДЯЩИЕ (решение владельца 11.09.2026), то есть это не
+	// «перестать писать», а «перестать получать», — и «дать снова» в общем
+	// списке завело бы согласие мимо текста, который оно подтверждает.
+	case kind == platform.ConsentTalks && r.FormValue("action") == "revoke":
 	default:
 		s.fail(w, r, http.StatusBadRequest, "Такого согласия нет.")
 		return

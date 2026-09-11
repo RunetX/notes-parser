@@ -283,6 +283,11 @@ type Server struct {
 	// колокольчика, ни живого канала. Подключается SetEvents, а не
 	// конструктором: способность необязательная (см. events.go).
 	events Events
+	// mail — личная переписка (эпик L, mail.go): nil ⇒ ни страниц, ни пункта
+	// меню, ни кнопки «Написать». Подключается SetMail по гейту
+	// platform.mail.enabled, и выключенной она означает не «фича на паузе», а
+	// «принимать чужие письма площадка пока не вправе» — см. docs/mail-149fz.md.
+	mail Mail
 	// hub — живой канал (hub.go): nil, если шина не умеет отдавать поток. Живёт
 	// рядом с events, а не внутри, потому что это состояние ПРОЦЕССА (слушатели,
 	// курсоры), а не способность хранилища.
@@ -470,6 +475,19 @@ func (s *Server) routes() http.Handler {
 	// без шины они отвечают «нет такой страницы», как /mod без модерации.
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("POST /events/read", s.handleEventsRead)
+	// Письма (эпик L). Маршруты заведены ВСЕГДА и отвечают «нет такой
+	// страницы», пока переписка выключена, — как /mod без модерации. Литералы
+	// «new» и «consent» побеждают {id} сами: у ServeMux точный сегмент старше
+	// образца, и второго правила для этого не нужно.
+	mux.HandleFunc("GET /mail", s.handleMail)
+	mux.HandleFunc("GET /mail/new", s.handleMailNew)
+	mux.HandleFunc("POST /mail/new", s.handleMailSend)
+	mux.HandleFunc("GET /mail/consent", s.handleMailConsent)
+	mux.HandleFunc("POST /mail/consent", s.handleMailConsentGrant)
+	mux.HandleFunc("GET /mail/{id}", s.handleDialog)
+	mux.HandleFunc("POST /mail/{id}", s.handleDialogReply)
+	mux.HandleFunc("POST /mail/{id}/read", s.handleMailRead)
+	mux.HandleFunc("POST /mail/{id}/hide", s.handleMailHide)
 	// Живой канал. Идёт мимо семафора и срока запроса (см. withGuard и шапку
 	// live.go): соединение живёт минутами, а общий потолок морды — двенадцать
 	// запросов в работе разом при пуле в четыре соединения к базе.
@@ -628,8 +646,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // privateRoots — разделы, которых в поиске быть не должно. Три рода, и все три
 // закрыты по своей причине:
 //
-//	личное      — /me, /events, /u: страница ОДНОГО человека, и в чужом кэше ей
-//	              не место, даже если робот дошёл до неё без сессии. У /u довод
+//	личное      — /me, /events, /mail, /u: страница ОДНОГО человека, и в чужом
+//	              кэше ей не место, даже если робот дошёл до неё без сессии. У
+//	              /mail довод сильнее прочих: там чужие письма, и робот до них
+//	              не должен добираться даже теоретически. У /u довод
 //	              свой: заметки и реплики открыты поиску по отдельности, а
 //	              страница участника собирает их в одно место — и собранное
 //	              закрыто (решение владельца 30.08.2026);
@@ -642,7 +662,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // Совпадение считается по СЕГМЕНТАМ, а не по префиксу строки: «/consent» не
 // должен закрывать «/consents» — это опубликованные документы, и их читать
 // можно и нужно всем.
-var privateRoots = []string{"/me", "/u", "/events", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz", "/shot"}
+var privateRoots = []string{"/me", "/u", "/events", "/mail", "/mod", "/login", "/consent", "/report", "/live", "/fresh", "/healthz", "/shot"}
 
 // privatePath — этот адрес роботам закрыт.
 func privatePath(p string) bool {

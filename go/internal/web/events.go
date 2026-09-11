@@ -192,6 +192,8 @@ func eventTitle(n platform.NotificationView) string {
 		return "Вас упомянули"
 	case platform.ReasonReaction:
 		return "Вашу запись отметили"
+	case platform.ReasonMessage:
+		return "Вам написали"
 	}
 	switch n.Kind {
 	case platform.EventHidden:
@@ -210,6 +212,11 @@ func eventTitle(n platform.NotificationView) string {
 // ведёт он на свою страницу: там написано, за что и до какого числа.
 func eventURL(n platform.NotificationView) string {
 	switch {
+	// Письмо — ПЕРВОЙ веткой, и это не вкусовщина: заметки у него нет вовсе,
+	// поэтому следующая же строка («нет заметки — веди на свою страницу»)
+	// увела бы человека с письма на /me, и молча.
+	case n.DialogID != 0:
+		return "/mail/" + strconv.FormatInt(n.DialogID, 10)
 	case n.NoteID == 0:
 		return "/me"
 	case n.CommentID != 0 && !n.Hidden:

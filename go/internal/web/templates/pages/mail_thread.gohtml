@@ -1,0 +1,63 @@
+{{define "content"}}
+{{$h := .Head}}
+<div class="dlghead">
+  <div class="author">{{template "avatar" (av $h.Peer.AvatarURL $h.Peer.Gender false)}}
+    {{template "nick" (nk $h.Peer $h.Peer.Nick false .SignedIn)}}</div>
+  <div class="dlgacts">
+    {{/* «Прочитано» — форма с POST, а не само открытие страницы: GET-адрес
+         браузер нажимает сам в префетче, и колокольчик гас бы от чужого
+         любопытства. Граница — самое свежее письмо ЭТОЙ страницы. */}}
+    {{if .Markable}}
+    <form method="post" action="/mail/{{$h.DialogID}}/read">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="back" value="{{.Back}}">
+      <input type="hidden" name="upto" value="{{.Top}}">
+      <button type="submit">Отметить прочитанным</button>
+    </form>
+    {{end}}
+    {{/* «Убрать у себя» прячет переписку в СВОЁМ списке и ничего не отнимает у
+         собеседника: новое письмо поднимет её обратно. Это не блокировка, и
+         говорить об этом надо прямо — иначе человек примет одно за другое. */}}
+    <form method="post" action="/mail/{{$h.DialogID}}/hide">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="danger">Убрать у себя</button>
+    </form>
+  </div>
+</div>
+
+{{template "pager" .Pager}}
+
+{{if .Letters}}
+<ul class="lts">
+  {{range .Letters}}{{template "letter" .}}{{end}}
+</ul>
+{{else}}
+<p class="empty">В этой переписке писем не осталось.</p>
+{{end}}
+
+{{template "pager" .Pager}}
+
+<section class="wbox">
+{{if .CanWrite}}
+  {{if .Compose.Problem}}<p class="warn">{{.Compose.Problem}}</p>{{end}}
+  <form method="post" action="/mail/{{$h.DialogID}}" class="wform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <textarea name="body" rows="5" required placeholder="Письмо"
+      {{- if .Compose.Problem}} autofocus{{end}}>{{.Compose.Body}}</textarea>
+    {{template "smilepick"}}
+    {{template "markpick"}}
+    <div class="wact">
+      <button type="submit">Отправить</button>
+    </div>
+  </form>
+{{else}}
+  {{/* Причина называется словами, а форма убирается совсем: форма, которая
+       заведомо ответит отказом, хуже её отсутствия — тот же довод, по которому
+       площадка не рисует кнопку «Обновить аватар» тому, у кого нет анкеты. */}}
+  <p class="warn">{{.Why}}</p>
+{{end}}
+</section>
+
+<p class="fine">Новые письма появляются при обновлении страницы: переписка пока
+не дописывает себя сама. О том, что вам написали, скажет колокольчик.</p>
+{{end}}

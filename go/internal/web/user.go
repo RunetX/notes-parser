@@ -54,6 +54,43 @@ type userPage struct {
 	// Me — своя собственная страница. Нужно ровно затем, чтобы не предлагать
 	// модератору забанить самого себя.
 	Me bool
+	// MailTo — куда ведёт кнопка «Написать»; пусто — кнопки нет. Адрес, а не
+	// «можно ли»: у переписки три исхода (её ещё нет, она уже есть, документ не
+	// подписан), и решать, в какой из них вести, обязано одно место.
+	MailTo string
+	// MailWhy — почему кнопки нет, когда сказать это надо вслух. Непусто только
+	// у чёрного списка: закрытому говорят ПРЯМО (решение владельца 11.09.2026),
+	// а видит эту строку один тот, кому она про него.
+	MailWhy string
+}
+
+// mailButton — куда ведёт «Написать» и что сказать вместо кнопки.
+//
+// Вопрос к ядру ОДИН (CanWriteTo), и ответ его переводится здесь целиком:
+// второго списка правил — «а не тень ли», «а не отозвал ли» — на морде не
+// заводится, иначе кнопка однажды нарисуется там, где отправка откажет.
+func (s *Server) mailButton(r *http.Request, me platform.User, peerID int64) (string, string) {
+	if s.mail == nil || me.ID == 0 || me.ID == peerID {
+		return "", ""
+	}
+	dialog, err := s.mail.CanWriteTo(r.Context(), me.ID, peerID)
+	id := strconv.FormatInt(peerID, 10)
+	switch {
+	case errors.Is(err, platform.ErrNoTalkConsent):
+		// Документ не подписан — ведём к нему, а не прячем кнопку.
+		return "/mail/consent?to=" + id, ""
+	case errors.Is(err, platform.ErrBlockedByPeer), errors.Is(err, platform.ErrBlockedByYou):
+		_, why := mailProblem(err)
+		return "", why
+	case err != nil:
+		// Сюда попадает и ErrNoRecipient, и всё, что случилось по дороге:
+		// молчим. Про первое ядро молчит намеренно, а поломку счётчика писем
+		// человеку на чужой странице объяснять нечем.
+		return "", ""
+	case dialog != 0:
+		return dialogPath(dialog), ""
+	}
+	return "/mail/new?to=" + id, ""
 }
 
 func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +134,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		s.oops(w, r, "реплики участника", err)
 		return
 	}
+	mailTo, mailWhy := s.mailButton(r, me, member.ID)
 	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
 		page:        s.readingPage(r, userTitle(member)),
 		Member:      member,
@@ -106,6 +144,8 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		CanModerate: me.Role >= platform.RoleModerator && s.mod != nil,
 		CanAdmin:    me.Role >= platform.RoleAdmin && s.mod != nil,
 		Me:          me.ID == member.ID,
+		MailTo:      mailTo,
+		MailWhy:     mailWhy,
 	})
 }
 

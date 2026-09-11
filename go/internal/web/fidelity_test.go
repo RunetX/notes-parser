@@ -532,9 +532,32 @@ func TestPageNumberErrors(t *testing.T) {
 // cssRule вырезает тело правила из стилей по его началу: проверять надо
 // именно то, что стоит В ЭТОМ правиле, а не то, что нужное слово где-то в
 // файле есть. Годится и для @media, и для обычного селектора.
+// ruleStart — где НАЧИНАЕТСЯ правило с таким заголовком.
+//
+// Совпадение годится, только если до него в строке нет ничего, кроме отступа, —
+// и это оплачено: у «.ava {» подстрокой оказался «.dlgava .ava {», заведённый
+// для списка писем ВЫШЕ по файлу, после чего проверка «аватар автора 100px»
+// молча переехала на чужое правило. Такая подмена опаснее падения: правило, у
+// которого украли проверку, не проверяется вовсе. Отступ при этом прощается:
+// правила внутри @media сдвинуты. Минус один — такого правила нет.
+func ruleStart(css, header string) int {
+	for i := 0; ; {
+		j := strings.Index(css[i:], header)
+		if j < 0 {
+			return -1
+		}
+		at := i + j
+		line := strings.LastIndexByte(css[:at], '\n') + 1
+		if strings.TrimSpace(css[line:at]) == "" {
+			return at
+		}
+		i = at + 1
+	}
+}
+
 func cssRule(t *testing.T, css, header string) string {
 	t.Helper()
-	i := strings.Index(css, header)
+	i := ruleStart(css, header)
 	if i < 0 {
 		t.Fatalf("в стилях нет правила %s", header)
 	}

@@ -369,6 +369,49 @@ a:hover { text-decoration: underline; }
 .evx.gone { color: var(--meta); font-style: italic; }
 .readall { margin: 0 0 14px; }
 
+/* Письма (эпик L). Вид взят у событий, а не придуман заново: это такой же
+   список строк с непрочитанным, и разнобой между двумя личными разделами
+   читатель заметил бы раньше, чем объяснил. Пузырей и колонок здесь нет
+   намеренно — переписка двоих остаётся страницей площадки, а не чатом. */
+.dlgs, .lts { list-style: none; margin: 0; padding: 0; }
+.dlg {
+  display: flex; gap: 10px;
+  padding: 12px 0 14px; border-bottom: 1px solid var(--rule);
+}
+.dlg:last-child { border-bottom: 0; }
+.dlg.new { border-left: 3px solid var(--accent); padding-left: 11px; }
+/* Лицо в списке мельче авторского: строка здесь про РАЗГОВОР, а не про
+   человека, и стопка стопятидесятых съела бы список — тот же довод, по которому
+   в мордоленте 70, а не 100. */
+.dlgava .ava { width: 48px; height: 48px; }
+/* min-width: 0 обязателен: без него длинное слово в выдержке распирает
+   flex-строку и ломает ширину всей страницы на телефоне. */
+.dlgb { flex: 1; min-width: 0; }
+.dlgtop { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.dlgwho { font-weight: 600; }
+.dlgn {
+  background: var(--accent); color: #fff; border-radius: 9px;
+  padding: 0 6px; font-size: 12px; font-weight: 600;
+}
+.dlgx, .ltx { margin: 4px 0 0; overflow-wrap: anywhere; }
+.dlgx.gone, .ltx.gone { color: var(--meta); font-style: italic; }
+.dlghead {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin: 0 0 14px;
+}
+.dlgacts { display: flex; gap: 8px; flex-wrap: wrap; }
+.lt { padding: 10px 0 12px; border-bottom: 1px solid var(--rule); }
+.lt:last-child { border-bottom: 0; }
+/* СВОЁ письмо отмечено полосой слева — той же приметой, что непрочитанный
+   повод, только серой: это не «посмотри сюда», а «это сказал ты». */
+.lt.mine { border-left: 3px solid var(--rule); padding-left: 11px; }
+.lth { display: flex; gap: 6px; align-items: baseline; color: var(--meta); font-size: 12px; }
+.ltwho { font-weight: 600; color: var(--ink); }
+/* Число писем у пункта меню. Не кружок-значок: пункт и без того строка текста,
+   а второй значок в меню спорил бы с колокольчиком в шапке. */
+.acctmenu .mn { color: var(--accent); font-weight: 600; }
+.uact { margin: 8px 0 0; }
+
 /* Живое дописывание (fresh.go, app.js). Новая реплика или заметка появляется
    сама, без перезагрузки и без нажатий, — и отличается от соседних ровно
    одним: короткой подсветкой, которая гаснет.
