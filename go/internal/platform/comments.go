@@ -13,6 +13,13 @@ import (
 
 // commentViewColumns — комментарии, замаскированные там же, где читаются.
 //
+// САМА ПЛОЩАДКА (kind = 2) спрашивается наравне с тенью и жителем, и это не
+// симметрия ради симметрии: пока под её анкетой выходила одна недельная сводка,
+// признак нужен был только заметке — а с пятничной рубрикой (11.09.2026)
+// площадка заговорила комментариями, и без столбца её реплика приезжала
+// человеком без фото и без пола. Показ доверять этому не может: у ЗАМЕТКИ
+// столбец стоял с 05.09.2026, у реплики нет, и разошлись они молча.
+//
 // Последние четыре поля — адресат: соединение с самим собой по reply_to_id даёт
 // ТЕКУЩИЙ ник того, кому отвечали. Именно поэтому префикс «Ник, » не хранится в
 // теле: переименование и обезличивание меняют подпись сразу везде, включая чужие
@@ -27,6 +34,7 @@ const commentViewColumns = `
 	CASE WHEN c.anonymous THEN 0     ELSE coalesce(u.gender, 0) END,
 	CASE WHEN c.anonymous THEN false ELSE coalesce(u.kind, 0) = 0 END,
 	CASE WHEN c.anonymous THEN false ELSE coalesce(u.persona, false) END,
+	CASE WHEN c.anonymous THEN false ELSE coalesce(u.kind, 0) = 2 END,
 	CASE WHEN c.anonymous THEN 0     ELSE coalesce(u.age, 0)     END,
 	coalesce(c.author_id = $1, false),
 	rc.id, rc.anonymous,
@@ -52,6 +60,7 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 		gender    Gender
 		shadow    bool
 		persona   bool
+		system    bool
 		age       int16
 		replyID   *int64
 		replyAnon *bool
@@ -59,7 +68,7 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 	)
 	err := row.Scan(&c.ID, &c.NoteID, &c.Anonymous, &c.Body, &c.Path, &depth, &c.Status,
 		&c.PublishedAt, &c.EditedAt,
-		&author, &nick, &sha, &mime, &display, &gender, &shadow, &persona, &age, &c.Own,
+		&author, &nick, &sha, &mime, &display, &gender, &shadow, &persona, &system, &age, &c.Own,
 		&replyID, &replyAnon, &replyNick)
 	if err != nil {
 		return CommentView{}, err
@@ -68,7 +77,7 @@ func scanCommentView(row pgx.Row) (CommentView, error) {
 	c.Author = Author{
 		ID: idOf(author), Nick: strOf(nick),
 		AvatarURL: MediaURL(sha, strOf(mime)), Gender: gender, Shadow: shadow,
-		Persona: persona, Age: int(age),
+		Persona: persona, System: system, Age: int(age),
 	}
 	c.Display = strOf(display)
 	// Адресат рисуется, только если строка адресата ещё существует: снесённого

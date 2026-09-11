@@ -257,3 +257,49 @@ func TestQuizStatsCountRight(t *testing.T) {
 		t.Errorf("сводка = %+v", s)
 	}
 }
+
+// Признак «это САМА ПЛОЩАДКА» обязан доехать до РЕПЛИКИ, а не только до заметки.
+//
+// Тест на пути данных, и заведён он по живому случаю 11.09.2026: под заметкой
+// выпуска признак стоял с 05.09, а `commentViewColumns` его не спрашивал вовсе —
+// на боевой странице реплика площадки приезжала «человеком без фото», с силуэтом
+// по умолчанию и без класса подписи. Разметка и показ при этом были верны
+// порознь: дефект жил в том, что величина не доезжает, — тот же род, что у пола
+// собеседника и у обращения.
+func TestПлощадкаУзнаётсяИВРеплике(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	admin := mustAdmin(t, p, "главный")
+	note := mustQuizNote(t, p, admin)
+
+	site, err := p.EnsureSystemUser(ctx, "Зазеркалье")
+	if err != nil {
+		t.Fatalf("служебная анкета: %v", err)
+	}
+	if _, err := p.CreateComment(ctx, NewComment{
+		NoteID: note, AuthorID: site, Body: "В каком году это написано?", Quiz: sampleQuiz(),
+	}); err != nil {
+		t.Fatalf("реплика площадки: %v", err)
+	}
+
+	thread, err := p.Thread(ctx, Viewer{}, note)
+	if err != nil {
+		t.Fatalf("тред: %v", err)
+	}
+	var seen bool
+	for _, c := range thread {
+		if c.Author.ID != site {
+			continue
+		}
+		seen = true
+		if !c.Author.System {
+			t.Error("реплика площадки приехала обычным участником: показ нарисует ей силуэт человека")
+		}
+		if c.Author.Shadow {
+			t.Error("площадка объявлена тенью")
+		}
+	}
+	if !seen {
+		t.Fatal("реплики площадки в треде нет вовсе")
+	}
+}
