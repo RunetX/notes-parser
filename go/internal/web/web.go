@@ -490,6 +490,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /mail/{id}/hide", s.handleMailHide)
 	mux.HandleFunc("POST /mail/block", s.handleMailBlock)
 	mux.HandleFunc("POST /mail/unblock", s.handleMailUnblock)
+	mux.HandleFunc("GET /mail/report", s.handleMailReport)
+	mux.HandleFunc("POST /mail/report", s.handleMailReportSubmit)
 	// Живой канал. Идёт мимо семафора и срока запроса (см. withGuard и шапку
 	// live.go): соединение живёт минутами, а общий потолок морды — двенадцать
 	// запросов в работе разом при пуле в четыре соединения к базе.
@@ -522,6 +524,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /mod", s.handleMod)
 	mux.HandleFunc("GET /mod/log", s.handleModLog)
 	mux.HandleFunc("POST /mod/act", s.handleModAct)
+	mux.HandleFunc("POST /mod/mail", s.handleModMail)
 	mux.HandleFunc("GET /mod/u/{id}", s.handleModUser)
 	mux.HandleFunc("POST /mod/u/{id}", s.handleModUserAct)
 	// Администрирование — соседняя дверь, а не часть очереди: модератор решает

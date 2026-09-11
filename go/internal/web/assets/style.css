@@ -408,6 +408,9 @@ a:hover { text-decoration: underline; }
   display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
 }
 .blocked form { margin-left: auto; }
+/* «Пожаловаться» у письма — с краю и приглушённо: это дверь на крайний случай, а
+   не действие, которым пользуются каждый день. */
+.lth .ltrep { margin-left: auto; color: var(--meta); }
 .lt { padding: 10px 0 12px; border-bottom: 1px solid var(--rule); }
 .lt:last-child { border-bottom: 0; }
 /* СВОЁ письмо отмечено полосой слева — той же приметой, что непрочитанный

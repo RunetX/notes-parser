@@ -168,6 +168,9 @@ const (
 	ActionRole     = "role"
 	ActionAppeal   = "appeal"
 	ActionReport   = "report"
+	// ActionMailDone — жалоба на письмо разобрана. Не dismiss: разобрать её
+	// можно и запретив автору писать, а «отклонено» назвало бы это отказом.
+	ActionMailDone = "mail_done"
 	ActionDismiss  = "dismiss" // жалоба или подозрение отклонены
 	ActionAnonym   = "anonymize"
 	ActionExport   = "export"

@@ -97,6 +97,14 @@ type Moderator interface {
 	// AddReport и Appeal — не модераторские действия, а входы УЧАСТНИКА в
 	// модерацию: жалоба и просьба о пересмотре. Живут здесь, потому что ходят в
 	// ту же очередь; Writer остаётся списком того, что человек публикует.
+	// MailReports и ResolveMailReport — жалобы на письма (эпик L, Ш4). Своим
+	// списком, а не строками общей очереди, и это граница, а не удобство: в
+	// очередь смотрит автомат, а переписку он не видит вовсе — так обещано в
+	// подписанном согласии. Отдаётся здесь РОВНО цитата-снимок; метода, который
+	// показал бы модератору саму переписку, нет ни в одном интерфейсе площадки.
+	MailReports(ctx context.Context, limit int) ([]platform.MailReport, error)
+	ResolveMailReport(ctx context.Context, actor platform.Viewer, reportID int64, resolution string) error
+
 	AddReport(ctx context.Context, reporterID int64, s platform.Subject, reason string) error
 	Appeal(ctx context.Context, userID int64, s platform.Subject) error
 	MyHidden(ctx context.Context, userID int64, limit int) ([]platform.MyCheck, error)
@@ -114,6 +122,14 @@ type modPage struct {
 	Stats      platform.ModerationStats
 	Queue      []platform.ReviewItem
 	AutoHidden []platform.ReviewItem
+	// Mail — есть ли у площадки переписка вовсе. Раздел жалоб на письма
+	// показывается по нему, а не по длине списка: пустой раздел говорит «жалоб
+	// нет», и это ответ, а его отсутствие читалось бы как «их негде смотреть».
+	Mail bool
+	// MailReports — нерассмотренные жалобы на письма. ЦИТАТЫ, а не письма:
+	// открыть переписку модератору нечем, и это не оплошность показа, а
+	// устройство ядра.
+	MailReports []platform.MailReport
 }
 
 // handleMod — очередь модератора.
@@ -137,11 +153,23 @@ func (s *Server) handleMod(w http.ResponseWriter, r *http.Request) {
 		s.oops(w, r, "скрытое автоматом", err)
 		return
 	}
+	// Жалобы на письма спрашиваются, только если переписка у площадки есть:
+	// без неё таблица пуста по построению, и лишний запрос на каждый заход
+	// модератора платился бы ни за что.
+	var reports []platform.MailReport
+	if s.mail != nil {
+		if reports, err = s.mod.MailReports(ctx, queueLimit); err != nil {
+			s.oops(w, r, "жалобы на письма", err)
+			return
+		}
+	}
 	s.render(w, r, http.StatusOK, "mod.gohtml", modPage{
-		page:       s.newPage(r, "Модерация"),
-		Stats:      stats,
-		Queue:      queue,
-		AutoHidden: auto,
+		page:        s.newPage(r, "Модерация"),
+		Stats:       stats,
+		Queue:       queue,
+		AutoHidden:  auto,
+		Mail:        s.mail != nil,
+		MailReports: reports,
 	})
 }
 
@@ -222,6 +250,30 @@ func (s *Server) handleModAct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.afterModAction(w, r, err)
+}
+
+// handleModMail — «разобрано» у жалобы на письмо.
+//
+// Своим маршрутом, а не глаголом в handleModAct: там объект — заметка или
+// реплика (subjectOf), а здесь номер ЖАЛОБЫ, и общий разбор формы пришлось бы
+// учить пятому виду объекта ради одной кнопки. Действий у модератора тут ровно
+// одно: запрет писать он ставит на странице участника, там же, где все прочие
+// решения о людях.
+func (s *Server) handleModMail(w http.ResponseWriter, r *http.Request) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.moderator(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.FormValue("report"), 10, 64)
+	if err != nil || id <= 0 {
+		s.fail(w, r, http.StatusBadRequest, "Непонятно, какая жалоба.")
+		return
+	}
+	actor := platform.Viewer{UserID: u.ID, Role: u.Role}
+	s.afterModAction(w, r, s.mod.ResolveMailReport(r.Context(), actor, id, r.FormValue("reason")))
 }
 
 // noteAction — действия над ТРЕДОМ целиком: объект у них не «заметка или

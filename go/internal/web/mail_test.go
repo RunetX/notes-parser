@@ -10,6 +10,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -43,6 +44,15 @@ type fakeMail struct {
 	// «я закрыл его» с «он закрыл меня» это разные строки. Нормализуй пару — и
 	// тест зеленел бы на том, чего в ядре нет.
 	blocks map[[2]int64]bool
+	// reports — поданные жалобы: проверяется, что нажатие дошло до ядра, а не
+	// что страница нарисовала кнопку.
+	reports []fakeReport
+}
+
+type fakeReport struct {
+	message  int64
+	reporter int64
+	reason   string
 }
 
 func newFakeMail() *fakeMail {
@@ -185,6 +195,48 @@ func (f *fakeMail) HideDialog(_ context.Context, _, id int64) error {
 	return nil
 }
 
+// party — сторона ли этот человек в переписке. У ядра это строка mail_sides, и
+// подделка обязана спрашивать то же: жалоба на чужое письмо не должна проходить
+// и в тесте.
+func (f *fakeMail) party(dialogID, userID int64) bool {
+	for k, id := range f.pair {
+		if id == dialogID {
+			return k[0] == userID || k[1] == userID
+		}
+	}
+	return false
+}
+
+func (f *fakeMail) MailMessage(_ context.Context, me, id int64) (platform.MessageView, int64, error) {
+	for did, ls := range f.letters {
+		if !f.party(did, me) {
+			continue
+		}
+		for _, l := range ls {
+			if l.ID == id {
+				l.FromMe = f.senders[l.ID] == me
+				return l, did, nil
+			}
+		}
+	}
+	return platform.MessageView{}, 0, platform.ErrNotFound
+}
+
+func (f *fakeMail) ReportMessage(ctx context.Context, reporter, id int64, reason string) error {
+	l, _, err := f.MailMessage(ctx, reporter, id)
+	if err != nil {
+		return err
+	}
+	if l.FromMe {
+		return platform.ErrSelfReport
+	}
+	if l.Purged {
+		return platform.ErrMessagePurged
+	}
+	f.reports = append(f.reports, fakeReport{message: id, reporter: reporter, reason: reason})
+	return nil
+}
+
 func (f *fakeMail) BlockUser(_ context.Context, me, peer int64) error {
 	if me == peer {
 		return platform.ErrSelfMessage
@@ -212,6 +264,15 @@ func (f *fakeMail) BlockedList(_ context.Context, me int64) ([]platform.Author, 
 // бессмысленно, а вторая сессия нужна, чтобы прочесть письмо глазами адресата.
 func mailServer(t *testing.T, m Mail) (http.Handler, string, string) {
 	t.Helper()
+	h, mine, theirs, _ := mailModServer(t, m, nil)
+	return h, mine, theirs
+}
+
+// mailModServer — та же сборка, но с модерацией. Отдельным помощником, потому
+// что БЕЗ модерации жалоб на письма не существует вовсе: читать их некому, и
+// кнопка не рисуется — это проверяется своим тестом.
+func mailModServer(t *testing.T, m Mail, mod Moderator) (http.Handler, string, string, *fakeAuth) {
+	t.Helper()
 	auth := newFakeAuth()
 	auth.users[testProfileID] = platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindMember}
 	auth.users[peerID] = platform.User{ID: peerID, Nick: "Полынь-Трава", Kind: platform.KindMember}
@@ -229,12 +290,12 @@ func mailServer(t *testing.T, m Mail) (http.Handler, string, string) {
 	grantConsents(t, auth, peerID)
 	st := &fakeStore{profile: platform.Profile{
 		ID: peerID, Nick: "Полынь-Трава", Kind: platform.KindMember, CreatedAt: time.Now()}}
-	srv := New(Config{BaseURL: "http://127.0.0.1", Log: quietLog()}, st, auth, nil, nil, nil)
+	srv := New(Config{BaseURL: "http://127.0.0.1", Log: quietLog()}, st, auth, nil, mod, nil)
 	t.Cleanup(func() { _ = srv.Close() })
 	if m != nil {
 		srv.SetMail(m)
 	}
-	return srv.routes(), mine, theirs
+	return srv.routes(), mine, theirs, auth
 }
 
 // ГЛАВНАЯ проверка гейта: пока переписка выключена, писем нет ни у кого и ничем.
@@ -700,5 +761,111 @@ func TestСвойЗапретСнимаетсяСоСтраницыУчастн�
 	// другую страницу — он спорил бы с ней.
 	if strings.Contains(body, "на своей странице") {
 		t.Error("причина отсылает на другую страницу, хотя кнопка стои́т рядом")
+	}
+}
+
+// ------------------------------------------------------------------ Ш4
+
+// Жалоба на письмо: кнопка стои́т под ЧУЖИМ письмом, форма показывает ровно то,
+// что уйдёт модератору, и нажатие доходит до ядра.
+func TestЖалобаНаПисьмоНесётОдноПисьмо(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _, _ := mailModServer(t, m, newFakeMod())
+	ctx := context.Background()
+	// Номер письма берётся У ЯДРА, а не выдумывается: у писем своя
+	// последовательность, и «первое письмо — это единица» однажды окажется
+	// неправдой (номера начинаются с переписки).
+	bad, err := m.SendMessage(ctx, peerID, testProfileID, "отдай телефон, иначе")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SendMessage(ctx, testProfileID, peerID, "мой ответ"); err != nil {
+		t.Fatal(err)
+	}
+	letter := strconv.FormatInt(bad.MessageID, 10)
+	body := do(h, as(guest(t, "GET", "/mail/1"), mine)).Body.String()
+	// Кнопка ровно одна: под чужим письмом. На своё жаловаться незачем, и ядро
+	// ответило бы отказом, а площадка мёртвых кнопок не печатает.
+	if n := strings.Count(body, `href="/mail/report?m=`); n != 1 {
+		t.Fatalf("кнопок «Пожаловаться» %d, ожидалась одна (под чужим письмом)", n)
+	}
+
+	form := do(h, as(guest(t, "GET", "/mail/report?m="+letter), mine))
+	if form.Code != http.StatusOK {
+		t.Fatalf("форма жалобы ответила %d", form.Code)
+	}
+	fb := form.Body.String()
+	switch {
+	case !strings.Contains(fb, "отдай телефон"):
+		t.Error("на форме не показано письмо, на которое жалуются")
+	case strings.Contains(fb, "мой ответ"):
+		t.Error("на форме показано СОСЕДНЕЕ письмо: уходить должно одно")
+	case !strings.Contains(fb, "только это письмо"):
+		t.Error("форма не говорит, что уйдёт одно письмо")
+	}
+
+	w := do(h, postAs(t, "/mail/report",
+		url.Values{"m": {letter}, "reason": {"угрожает"}, "back": {"/mail/1"}}, mine))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/mail/1" {
+		t.Fatalf("жалоба ответила %d → %q", w.Code, w.Header().Get("Location"))
+	}
+	if len(m.reports) != 1 || m.reports[0].message != bad.MessageID || m.reports[0].reason != "угрожает" {
+		t.Fatalf("до ядра дошло: %+v", m.reports)
+	}
+}
+
+// На СВОЁ письмо жаловаться нечем и незачем: ни кнопки, ни прохода по прямому
+// адресу — ядро ответило бы ErrSelfReport, и морда говорит то же словами.
+func TestНаСвоёПисьмоЖалобыНет(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _, _ := mailModServer(t, m, newFakeMod())
+	sent, err := m.SendMessage(context.Background(), testProfileID, peerID, "моё письмо")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine2 := strconv.FormatInt(sent.MessageID, 10)
+	if w := do(h, as(guest(t, "GET", "/mail/report?m="+mine2), mine)); w.Code != http.StatusForbidden {
+		t.Errorf("форма жалобы на своё письмо ответила %d", w.Code)
+	}
+	if w := do(h, postAs(t, "/mail/report", url.Values{"m": {mine2}}, mine)); w.Code == http.StatusSeeOther {
+		t.Error("жалоба на своё письмо прошла")
+	}
+}
+
+// ЧУЖОЕ письмо не показывается и не обжалуется: посторонний получает тот же
+// ответ, что и на несуществующее, — существование чужого письма само по себе
+// сведения.
+func TestНаЧужоеПисьмоПожаловатьсяНельзя(t *testing.T) {
+	m := newFakeMail()
+	ctx := context.Background()
+	sent, err := m.SendMessage(ctx, peerID, testProfileID, "письмо двоих")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Третий: сессии у него в этой сборке нет, поэтому проверяется сам вызов
+	// ядра-подделки — она повторяет правило mail_sides.
+	if _, _, err := m.MailMessage(ctx, 606064, sent.MessageID); !errors.Is(err, platform.ErrNotFound) {
+		t.Fatalf("постороннему отдали письмо: %v", err)
+	}
+	if err := m.ReportMessage(ctx, 606064, sent.MessageID, "почитал чужое"); !errors.Is(err, platform.ErrNotFound) {
+		t.Fatalf("посторонний пожаловался на чужое письмо: %v", err)
+	}
+}
+
+// Без модерации кнопки нет вовсе: жалобу некому читать, а кнопка, ведущая на
+// страницу «жалобы сейчас не принимаются», хуже отсутствующей.
+func TestБезМодерацииЖалобыНаПисьмаНет(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m) // mailServer поднимает сервер БЕЗ модерации
+	sent, err := m.SendMessage(context.Background(), peerID, testProfileID, "письмо")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/mail/1"), mine)).Body.String()
+	if strings.Contains(body, "/mail/report") {
+		t.Error("кнопка жалобы стои́т без модерации")
+	}
+	if w := do(h, as(guest(t, "GET", "/mail/report?m="+strconv.FormatInt(sent.MessageID, 10)), mine)); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("форма жалобы без модерации ответила %d", w.Code)
 	}
 }

@@ -34,6 +34,10 @@ type fakeMod struct {
 	reported []platform.Subject
 	appealed []platform.Subject
 	invites  []platform.Invite
+	// mailReports — жалобы на письма, resolved — какие из них разобрали.
+	mailReports []platform.MailReport
+	resolved    []int64
+	resolution  string
 	// edited — что дошло до ядра при правке чужой заметки: текст и «зачем».
 	edited     string
 	editReason string
@@ -239,6 +243,16 @@ func (f *fakeMod) UserByID(_ context.Context, id int64) (platform.User, error) {
 	}
 	return u, nil
 }
+func (f *fakeMod) MailReports(context.Context, int) ([]platform.MailReport, error) {
+	return f.mailReports, f.fail
+}
+
+func (f *fakeMod) ResolveMailReport(_ context.Context, _ platform.Viewer, id int64, resolution string) error {
+	f.resolved = append(f.resolved, id)
+	f.resolution = resolution
+	return f.fail
+}
+
 func (f *fakeMod) AddReport(_ context.Context, _ int64, s platform.Subject, _ string) error {
 	f.reported = append(f.reported, s)
 	return f.fail
@@ -771,3 +785,79 @@ func TestБезМодерацииСтраницНет(t *testing.T) {
 }
 
 func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
+
+// ЖАЛОБЫ НА ПИСЬМА У МОДЕРАТОРА: он видит цитату, ники и время — и НИЧЕГО, что
+// вело бы в саму переписку. Это главная проверка Ш4 со стороны морды: обещание
+// «модератор видит только процитированное» держится тем, что дороги нет, а не
+// тем, что ссылку решили не рисовать.
+func TestМодераторВидитЦитатуИНеВидитПереписки(t *testing.T) {
+	mod := newFakeMod()
+	mod.users[modUserID] = platform.User{ID: modUserID, Nick: "Хатуль мадан",
+		Kind: platform.KindMember, Role: platform.RoleModerator}
+	mod.mailReports = []platform.MailReport{{
+		ID: 7, At: time.Now(), ReporterID: 1493279, ReporterNick: "Рио",
+		AuthorID: 175869, AuthorNick: "Гадёныш", MessageID: 42, DialogID: 3,
+		Quote: "отдай телефон [b]иначе[/b]", Reason: "угрожает",
+	}}
+	auth := newFakeAuth()
+	auth.users[modUserID] = mod.users[modUserID]
+	token, _, err := auth.CreateSession(context.Background(), modUserID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newServerFor(t, &fakeStore{}, auth, nil, mod, nil, Config{})
+	srv.SetMail(newFakeMail())
+	h := srv.routes()
+
+	body := do(h, as(guest(t, "GET", "/mod"), token)).Body.String()
+	switch {
+	case !strings.Contains(body, "Жалобы на письма"):
+		t.Fatal("раздела жалоб на письма нет")
+	case !strings.Contains(body, "отдай телефон"):
+		t.Error("модератору не показана цитата")
+	case !strings.Contains(body, "угрожает"):
+		t.Error("не показана причина жалобы")
+	case !strings.Contains(body, "Гадёныш") || !strings.Contains(body, "Рио"):
+		t.Error("не названы автор письма и жалобщик")
+	}
+	// Знаки разметки в цитате НЕ разбираются: она приезжает обрезанным началом
+	// письма, и рисовать в ней жирный шрифт значит показывать то, чего в письме
+	// нет.
+	if strings.Contains(body, "<b>иначе</b>") {
+		t.Error("цитата разобрана как разметка")
+	}
+	// И ни одной дороги В ТУ САМУЮ переписку: ссылки на неё нет, метода, который
+	// её отдал бы, нет ни в одном интерфейсе. Пункт меню «Письма» в шапке при
+	// этом на месте — это СВОЙ ящик модератора, и отнимать его у него незачем.
+	if strings.Contains(body, `href="/mail/3"`) || strings.Contains(body, "/mail/report") {
+		t.Error("со страницы модератора ведёт дорога в чужую переписку")
+	}
+
+	// «Разобрано» доходит до ядра вместе с тем, что решили.
+	w := do(h, postAs(t, "/mod/mail",
+		url.Values{"report": {"7"}, "reason": {"забанил"}, "back": {"/mod"}}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("«разобрано» ответило %d", w.Code)
+	}
+	if len(mod.resolved) != 1 || mod.resolved[0] != 7 || mod.resolution != "забанил" {
+		t.Fatalf("до ядра дошло: %v %q", mod.resolved, mod.resolution)
+	}
+}
+
+// Без переписки раздела нет вовсе: спрашивать жалобы на письма у площадки, где
+// писем не бывает, незачем — таблица пуста по построению.
+func TestБезПерепискиРазделаЖалобНет(t *testing.T) {
+	mod := newFakeMod()
+	mod.users[modUserID] = platform.User{ID: modUserID, Nick: "Хатуль мадан",
+		Kind: platform.KindMember, Role: platform.RoleModerator}
+	auth := newFakeAuth()
+	auth.users[modUserID] = mod.users[modUserID]
+	token, _, err := auth.CreateSession(context.Background(), modUserID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newFullServer(t, &fakeStore{}, auth, nil, mod, nil, Config{})
+	if body := do(h, as(guest(t, "GET", "/mod"), token)).Body.String(); strings.Contains(body, "Жалобы на письма") {
+		t.Error("раздел жалоб на письма стои́т при выключенной переписке")
+	}
+}

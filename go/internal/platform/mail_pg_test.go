@@ -813,3 +813,157 @@ func TestУборкаПереписки(t *testing.T) {
 		t.Fatalf("стороны пережили свою переписку: %d", left)
 	}
 }
+
+// ЖАЛОБА НА ПИСЬМО — единственная дверь, через которую чужое письмо становится
+// видно третьему человеку, и открывает её получатель.
+//
+// Проверяется здесь всё, ради чего эта дверь устроена именно так: снимок вместо
+// ссылки, чужое письмо недоступно, своё не обжалуется, в очередь автомата
+// ничего не уходит, а в журнале нет ни текста, ни цитаты, ни причины.
+func TestЖалобаНаПисьмо(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	a := mailMember(t, p, 1493279, "Рио")
+	b := mailMember(t, p, 175869, "Гадёныш")
+	c := mailMember(t, p, 606064, "Хатуль мадан")
+
+	const threat = "отдай телефон, иначе приду"
+	sent := sendMail(t, p, a, b, threat)
+
+	// Чужой человек: письма не видит и пожаловаться не может — ответ тот же,
+	// что у чтения чужой переписки.
+	if _, _, err := p.MailMessage(ctx, c, sent.MessageID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("постороннему отдали письмо: %v", err)
+	}
+	if err := p.ReportMessage(ctx, c, sent.MessageID, "почитал чужое"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("посторонний пожаловался на чужое письмо: %v", err)
+	}
+	// Своё письмо не обжалуется.
+	if err := p.ReportMessage(ctx, a, sent.MessageID, "передумал"); !errors.Is(err, ErrSelfReport) {
+		t.Fatalf("жалоба на своё письмо: %v", err)
+	}
+
+	if err := p.ReportMessage(ctx, b, sent.MessageID, "угрожает"); err != nil {
+		t.Fatal(err)
+	}
+	// Повтор молчит: человек не помнит, что уже жаловался, и «отказано» сказало
+	// бы ему не о том.
+	if err := p.ReportMessage(ctx, b, sent.MessageID, "ещё раз"); !errors.Is(err, ErrNothingToDo) {
+		t.Fatalf("повторная жалоба: %v", err)
+	}
+
+	list, err := p.MailReports(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("жалоб %d, ожидалась одна", len(list))
+	}
+	got := list[0]
+	switch {
+	case got.Quote != threat:
+		t.Fatalf("цитата: %q", got.Quote)
+	case got.AuthorID != a || got.AuthorNick != "Рио":
+		t.Fatalf("автор письма: %d %q", got.AuthorID, got.AuthorNick)
+	case got.ReporterID != b || got.ReporterNick != "Гадёныш":
+		t.Fatalf("жалобщик: %d %q", got.ReporterID, got.ReporterNick)
+	case got.Reason != "угрожает":
+		t.Fatalf("причина: %q", got.Reason)
+	}
+
+	// В ОЧЕРЕДЬ АВТОМАТА не ушло ничего: он переписку не видит вовсе, и это
+	// обещано в подписанном согласии.
+	var queued int
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM moderation_queue`).Scan(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 {
+		t.Fatalf("жалоба на письмо завела %d строк в очереди автомата", queued)
+	}
+	// ЗАПИСЬ В ЖУРНАЛЕ ЕСТЬ — без этой проверки соседняя («текста нет»)
+	// зеленела бы и на коде, который не пишет в журнал вовсе.
+	var action, kind string
+	var subject int64
+	if err := p.pool.QueryRow(ctx, `
+		SELECT action, subject_kind, subject_id FROM audit_log
+		 WHERE subject_kind = $1 ORDER BY id DESC LIMIT 1`,
+		SubjectMessage).Scan(&action, &kind, &subject); err != nil {
+		t.Fatalf("записи о жалобе в журнале нет: %v", err)
+	}
+	if action != ActionReport || subject != sent.MessageID {
+		t.Fatalf("в журнале: %s %s %d", action, kind, subject)
+	}
+	// И в ЖУРНАЛЕ нет ни текста письма, ни цитаты, ни причины: журнал
+	// append-only и переживает срок хранения содержания, а закон велит стереть
+	// его через полгода.
+	for _, needle := range []string{threat, "угрожает"} {
+		var n int
+		if err := p.pool.QueryRow(ctx,
+			`SELECT count(*) FROM audit_log t WHERE t::text LIKE '%' || $1 || '%'`, needle).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("в журнале нашлось %d строк с %q", n, needle)
+		}
+	}
+
+	// «Разобрано»: жалоба уходит из списка, повтор молчит, посторонний не
+	// разбирает.
+	moder := Viewer{UserID: c, Role: RoleModerator}
+	if err := p.ResolveMailReport(ctx, Viewer{UserID: b}, got.ID, ""); !errors.Is(err, ErrNotModerator) {
+		t.Fatalf("жалобу разобрал не модератор: %v", err)
+	}
+	if err := p.ResolveMailReport(ctx, moder, got.ID, "забанил"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ResolveMailReport(ctx, moder, got.ID, "ещё раз"); !errors.Is(err, ErrNothingToDo) {
+		t.Fatalf("повторный разбор: %v", err)
+	}
+	if list, err = p.MailReports(ctx, 50); err != nil || len(list) != 0 {
+		t.Fatalf("разобранная жалоба осталась в списке: %d (%v)", len(list), err)
+	}
+}
+
+// Стёртое по сроку содержание жаловаться не даёт: цитировать нечего, и сказать
+// об этом надо прямо — письмо было, а текста уже нет.
+func TestНаСтёртоеПисьмоЖалобыНет(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	a := mailMember(t, p, 1493279, "Рио")
+	b := mailMember(t, p, 175869, "Гадёныш")
+	sent := sendMail(t, p, a, b, "старое письмо")
+
+	rewindMail(t, p, KeepMessageBody+time.Hour)
+	if _, err := p.PruneMail(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ReportMessage(ctx, b, sent.MessageID, "поздно"); !errors.Is(err, ErrMessagePurged) {
+		t.Fatalf("жалоба на стёртое письмо: %v", err)
+	}
+}
+
+// Цитата живёт не дольше оригинала: уборка сносит жалобу вместе с содержанием
+// письма. Иначе снимок оказался бы копией текста, пережившей установленный
+// законом срок, — то есть стирание было бы ненастоящим.
+func TestУборкаСноситЖалобуВместеСПисьмом(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	a := mailMember(t, p, 1493279, "Рио")
+	b := mailMember(t, p, 175869, "Гадёныш")
+	sent := sendMail(t, p, a, b, "письмо с угрозой")
+	if err := p.ReportMessage(ctx, b, sent.MessageID, "угрожает"); err != nil {
+		t.Fatal(err)
+	}
+	rewindMail(t, p, KeepMessageBody+time.Hour)
+	if _, err := p.PruneMail(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := p.pool.QueryRow(ctx,
+		`SELECT count(*) FROM mail_reports WHERE quote LIKE '%угроз%'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("цитата пережила содержание письма: %d строк", n)
+	}
+}

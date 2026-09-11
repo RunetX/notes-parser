@@ -899,6 +899,236 @@ func (p *Platform) BlockedList(ctx context.Context, userID int64) ([]Author, err
 	return out, wrapf(rows.Err(), "чёрный список %d", userID)
 }
 
+const mailMessageQuery = `
+	SELECT m.id, m.sender_id = $2, m.body, m.sent_at, m.purged_at IS NOT NULL, m.dialog_id
+	  FROM mail_messages m
+	  JOIN mail_sides s ON s.dialog_id = m.dialog_id AND s.user_id = $2
+	 WHERE m.id = $1`
+
+// MailMessage — ОДНО письмо своей переписки вместе с номером самой переписки.
+//
+// Нужен ровно затем, чтобы показать человеку, на что он жалуется, ДО нажатия:
+// уходит модератору одно письмо и ни строкой больше, и увидеть это он обязан
+// заранее. Право проверяет тот же JOIN по mail_sides, что и сама жалоба, —
+// чужое письмо отвечает ErrNotFound, как и чужая переписка.
+//
+// Подпись спрашивается, как у чтения переписки: письмо читают, а не обжалуют
+// вслепую. Значит отозвавший согласие формы не увидит — но он не видит и самого
+// письма, и это одно и то же состояние, а не два разных.
+func (p *Platform) MailMessage(ctx context.Context, userID, messageID int64) (MessageView, int64, error) {
+	if err := talkGuard(ctx, p.pool, userID); err != nil {
+		return MessageView{}, 0, err
+	}
+	var (
+		m        MessageView
+		dialogID int64
+	)
+	err := p.pool.QueryRow(ctx, mailMessageQuery, messageID, userID).
+		Scan(&m.ID, &m.FromMe, &m.Body, &m.SentAt, &m.Purged, &dialogID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MessageView{}, 0, ErrNotFound
+	}
+	return m, dialogID, wrapf(err, "письмо %d", messageID)
+}
+
+// ------------------------------------------------------------------ жалоба
+
+// MailQuoteRunes — сколько знаков письма уходит модератору в цитате.
+//
+// Жалоба несёт СНИМОК текста, а не ссылку на письмо, и это главное решение L4.
+// Не ради долговечности — цитата уходит вместе с содержанием оригинала
+// (PruneMail) и жить дольше него не вправе, — а ради ГРАНИЦЫ: у модератора нет
+// и не заводится способа открыть чужую переписку, поэтому цитата есть
+// единственное, что он о письме увидит. Ссылка на письмо такой способ означала
+// бы завести.
+const MailQuoteRunes = 500
+
+// SubjectMessage — пятый вид объекта журнала, и ТОЛЬКО для журнала: письмо.
+// В moderation_queue оно не попадает никогда (автомат переписку не читает), а
+// Subject.Valid() про него отвечает «нет» намеренно — factsOf и общие действия
+// модерации к письму неприменимы, и применимыми им становиться нельзя.
+const SubjectMessage = "message"
+
+// ErrMessagePurged — жаловаться не на что: содержание стёрто по сроку хранения.
+// Отдельной ошибкой, потому что человеку тут надо сказать правду — письмо было,
+// а текста уже нет, — а не «такого письма нет».
+var ErrMessagePurged = errors.New("содержание этого письма уже стёрто по сроку хранения")
+
+// MailReport — жалоба на письмо, как её видит модератор.
+//
+// Ников тут два, а аватаров нет ни одного, и это не экономия: очередь обязана
+// читаться за минуту, а лицо жалобщика решению не помогает ничем. Поля ровно
+// те, по которым решают: кто, на кого, когда, что написано и что сказал сам
+// жалобщик.
+type MailReport struct {
+	ID           int64
+	At           time.Time
+	ReporterID   int64
+	ReporterNick string
+	AuthorID     int64
+	AuthorNick   string
+	MessageID    int64
+	DialogID     int64
+	Quote        string
+	Reason       string
+}
+
+// reportMessageQuery — письмо, на которое жалуются, вместе с доказательством,
+// что жалобщик имеет к нему отношение.
+//
+// JOIN по mail_sides и есть эта проверка, и стои́т она В ЗАПРОСЕ, а не рядом с
+// ним: пожаловаться на письмо из ЧУЖОЙ переписки нельзя по построению, а не по
+// дисциплине вызывающего. Нет строки — ErrNotFound, тот же ответ, что у чтения
+// чужой переписки.
+const reportMessageQuery = `
+	SELECT m.dialog_id, m.sender_id, left(m.body, $3), m.purged_at IS NOT NULL
+	  FROM mail_messages m
+	  JOIN mail_sides s ON s.dialog_id = m.dialog_id AND s.user_id = $2
+	 WHERE m.id = $1`
+
+// ReportMessage — пожаловаться модератору на письмо.
+//
+// Это ЕДИНСТВЕННАЯ дверь, через которую чужое письмо становится видно третьему
+// человеку, и открывает её только получатель. Строки в moderation_queue она НЕ
+// заводит: очередь читает автомат, а автомат переписку не видит вовсе — это
+// обещано в подписанном согласии.
+//
+// Согласия на переписку здесь не спрашивается намеренно — тем же доводом, по
+// которому его не спрашивают у реакции и у обычной жалобы: жалоба есть
+// обращение к человеку, и требовать за неё подпись значило бы закрыть дорогу
+// тому, кто жалуется как раз на происходящее.
+func (p *Platform) ReportMessage(ctx context.Context, reporterID, messageID int64, reason string) error {
+	reason = trimReason(reason)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return wrapf(err, "жалоба на письмо %d", messageID)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	// Тот же вход, что у публикации и у обычной жалобы: жалоба заводит работу
+	// другому человеку, поэтому цена входа у неё та же, что у своих слов.
+	if err := writeGuard(ctx, tx, reporterID); err != nil {
+		return err
+	}
+	var (
+		dialogID, senderID int64
+		quote              string
+		purged             bool
+	)
+	switch err := tx.QueryRow(ctx, reportMessageQuery, messageID, reporterID, MailQuoteRunes).
+		Scan(&dialogID, &senderID, &quote, &purged); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return wrapf(err, "жалоба на письмо %d", messageID)
+	case senderID == reporterID:
+		return ErrSelfReport
+	case purged:
+		return ErrMessagePurged
+	}
+	var open int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM mail_reports WHERE reporter_id = $1 AND resolved_at IS NULL`,
+		reporterID).Scan(&open); err != nil {
+		return wrapf(err, "жалоба на письмо %d", messageID)
+	}
+	if open >= MaxOpenReports {
+		return ErrRateLimited
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO mail_reports (reporter_id, author_id, message_id, dialog_id, quote, reason)
+		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`,
+		reporterID, senderID, messageID, dialogID, quote, reason)
+	if err != nil {
+		return wrapf(err, "жалоба на письмо %d", messageID)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNothingToDo // уже жаловался, и решения ещё не было
+	}
+	// В ЖУРНАЛ идут ЧИСЛА. Ни цитаты, ни причины: журнал append-only, он
+	// переживает и письмо, и его срок хранения, — а закон велит стереть
+	// содержание через полгода. Копия текста в журнале сделала бы это стирание
+	// ненастоящим ровно там, где оно обязано быть настоящим.
+	if err := audit(ctx, tx, reporterID, ActionReport,
+		Subject{Kind: SubjectMessage, ID: messageID},
+		map[string]any{"dialog": dialogID}); err != nil {
+		return err
+	}
+	return wrapf(tx.Commit(ctx), "жалоба на письмо %d", messageID)
+}
+
+const mailReportsQuery = `
+	SELECT r.id, r.created_at, r.reporter_id, rp.nick, r.author_id, au.nick,
+	       r.message_id, r.dialog_id, r.quote, r.reason
+	  FROM mail_reports r
+	  JOIN users rp ON rp.id = r.reporter_id
+	  JOIN users au ON au.id = r.author_id
+	 WHERE r.resolved_at IS NULL
+	 ORDER BY r.created_at LIMIT $1`
+
+// MailReports — нерассмотренные жалобы на письма.
+//
+// Отдаёт РОВНО то, что видит модератор: ники, время, цитату и причину. Метода,
+// который отдал бы саму переписку или соседние письма, здесь нет — и его
+// отсутствие есть единственная надёжная форма обещания «модератор видит только
+// процитированное в жалобе».
+func (p *Platform) MailReports(ctx context.Context, limit int) ([]MailReport, error) {
+	rows, err := p.pool.Query(ctx, mailReportsQuery, clampLimit(limit))
+	if err != nil {
+		return nil, wrapf(err, "жалобы на письма")
+	}
+	defer rows.Close()
+	var out []MailReport
+	for rows.Next() {
+		var r MailReport
+		if err := rows.Scan(&r.ID, &r.At, &r.ReporterID, &r.ReporterNick,
+			&r.AuthorID, &r.AuthorNick, &r.MessageID, &r.DialogID, &r.Quote, &r.Reason); err != nil {
+			return nil, wrapf(err, "жалобы на письма")
+		}
+		out = append(out, r)
+	}
+	return out, wrapf(rows.Err(), "жалобы на письма")
+}
+
+// ResolveMailReport — «разобрано».
+//
+// Отдельным действием журнала (ActionMailDone), а не общим «отклонено»:
+// разобрать жалобу можно и запретив автору писать, и не сделав ничего, — а
+// запись о бане стои́т рядом своей строкой и сама говорит, что было. Резолюция в
+// журнал НЕ идёт по той же причине, по какой не идёт цитата: журнал переживает
+// содержание письма, а пишет резолюцию человек, который цитату только что
+// видел.
+func (p *Platform) ResolveMailReport(ctx context.Context, actor Viewer, reportID int64, resolution string) error {
+	if !actor.CanModerate() {
+		return ErrNotModerator
+	}
+	resolution = trimReason(resolution)
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return wrapf(err, "разбор жалобы %d", reportID)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // после Commit это no-op
+
+	var messageID int64
+	switch err := tx.QueryRow(ctx, `
+		UPDATE mail_reports SET resolved_at = now(), resolved_by = $2, resolution = $3
+		 WHERE id = $1 AND resolved_at IS NULL
+		RETURNING message_id`, reportID, actor.UserID, resolution).Scan(&messageID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		// И «нет такой жалобы», и «её уже разобрали» — одно и то же для того,
+		// кто нажал: работать больше не над чем.
+		return ErrNothingToDo
+	case err != nil:
+		return wrapf(err, "разбор жалобы %d", reportID)
+	}
+	if err := audit(ctx, tx, actor.UserID, ActionMailDone,
+		Subject{Kind: SubjectMessage, ID: messageID},
+		map[string]any{"report": reportID}); err != nil {
+		return err
+	}
+	return wrapf(tx.Commit(ctx), "разбор жалобы %d", reportID)
+}
+
 // ------------------------------------------------------------------ уборка
 
 // MailPruned — что убрала уборка переписки.

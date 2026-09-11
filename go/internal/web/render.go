@@ -83,6 +83,7 @@ var funcs = template.FuncMap{
 	"kindword":    kindWord,
 	"msgname":     messengerName,
 	"letterBody":  letterBodyHTML,
+	"ltr":         letterOf,
 	"avs":         sizedAvatar,
 	"ltplain":     plainLetter,
 	"smile":       smileImg,
@@ -394,6 +395,31 @@ type noteItemData struct {
 
 func commentItem(p notePage, c platform.CommentView) commentItemData {
 	return commentItemData{Page: p, Comment: c}
+}
+
+// letterData — письмо и то немногое, что о нём надо знать странице.
+//
+// Страницы целиком здесь нет, в отличие от commentItemData, и это не экономия:
+// то же письмо будет рисовать живой добор (Ш5), у которого страницы нет вовсе,
+// — а собирать ради одного флага поддельную страницу значит однажды подделать
+// её неверно.
+type letterData struct {
+	Letter platform.MessageView
+	// CanReport — показывать ли «Пожаловаться». Считается ЗДЕСЬ, а не тремя
+	// условиями в шаблоне: на своё письмо жаловаться незачем (ядро ответит
+	// ErrSelfReport), у стёртого по сроку нет содержания, на которое жалуются
+	// (ErrMessagePurged), а без модерации жалобу некому читать. Кнопка, которая
+	// заведомо ответит отказом, хуже её отсутствия.
+	CanReport bool
+}
+
+// letterOf зовётся в шаблонах «ltr», а не «lt», и это не вкус: коротким «lt»
+// зовётся ВСТРОЕННОЕ сравнение («меньше»), и своя функция с этим именем молча
+// его перекрывает. Стоило это получаса поисков — падала не переписка, а «Моя
+// страница», где сравниваются редакции согласий, то есть место, к письмам
+// отношения не имеющее.
+func letterOf(l platform.MessageView, canReport bool) letterData {
+	return letterData{Letter: l, CanReport: canReport && !l.FromMe && !l.Purged}
 }
 
 func noteItem(p feedPage, n platform.NoteView) noteItemData {

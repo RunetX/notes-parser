@@ -50,6 +50,47 @@
 {{end}}
 </ul>
 
+{{if .Mail}}
+{{/* ЖАЛОБЫ НА ПИСЬМА — свой список, а не строки общей очереди, и граница эта
+     проходит по автомату: в очередь смотрит он, а переписку не видит вовсе.
+     Здесь же видно, сколько модератор получает о письме: ник, время, цитату и
+     причину — и ничего сверх. Открыть переписку ему нечем: такого действия нет
+     ни в одном инструменте площадки. */}}
+<h2 class="sub">Жалобы на письма</h2>
+{{if not .MailReports}}
+<p class="empty">Жалоб на письма нет.</p>
+{{end}}
+<ul class="modq">
+{{range .MailReports}}
+  <li class="mitem">
+    <div class="mhead">
+      <span class="lgsub">письмо {{.MessageID}}</span>
+      <a class="mlink" href="/u/{{.AuthorID}}">{{.AuthorNick}}</a>
+      <span class="fine">{{when .At true}}</span>
+    </div>
+    <div class="mrep">Жалоба от {{.ReporterNick}}: {{if .Reason}}{{.Reason}}{{else}}без объяснения{{end}}</div>
+    {{/* ЦИТАТА-СНИМОК, снятая в момент жалобы. Плоским текстом: разбирать в
+         обрезанном начале письма разметку значит рисовать то, чего в нём нет, —
+         тот же довод, что у выдержки в списке переписок. */}}
+    <blockquote class="mquote">{{ltplain .Quote}}</blockquote>
+    <div class="mdec">
+      {{/* Запрет писать стои́т НЕ здесь, а на странице автора, вместе с
+           остальными решениями о людях: второе место для одной и той же кнопки
+           однажды разойдётся с первым. */}}
+      <a class="mlink" href="/u/{{.AuthorID}}">Решения об этом участнике</a>
+      <form method="post" action="/mod/mail">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="report" value="{{.ID}}">
+        <input type="hidden" name="back" value="/mod">
+        <input type="text" name="reason" maxlength="500" placeholder="Что решили (необязательно)">
+        <button type="submit">Разобрано</button>
+      </form>
+    </div>
+  </li>
+{{end}}
+</ul>
+{{end}}
+
 {{/* Второй список — не работа, а КОНТРОЛЬ над машиной: модератор обязан иметь
      возможность пробежать её решения глазами, не дожидаясь, пока обиженный
      автор нажмёт «на пересмотр». */}}

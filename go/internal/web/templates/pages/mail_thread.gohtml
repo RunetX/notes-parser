@@ -47,7 +47,7 @@
 
 {{if .Letters}}
 <ul class="lts">
-  {{range .Letters}}{{template "letter" .}}{{end}}
+  {{range .Letters}}{{template "letter" (ltr . $.CanReport)}}{{end}}
 </ul>
 {{else}}
 <p class="empty">В этой переписке писем не осталось.</p>

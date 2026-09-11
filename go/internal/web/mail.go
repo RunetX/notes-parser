@@ -63,6 +63,13 @@ type Mail interface {
 	BlockUser(ctx context.Context, userID, blockedID int64) error
 	UnblockUser(ctx context.Context, userID, blockedID int64) error
 	BlockedList(ctx context.Context, userID int64) ([]platform.Author, error)
+	// MailMessage и ReportMessage — жалоба на письмо (Ш4). Первое отдаёт ОДНО
+	// письмо своей переписки, чтобы человек увидел до нажатия, что именно уйдёт
+	// модератору; второе кладёт снимок этого письма в очередь жалоб. Метода,
+	// который отдал бы переписку модератору, здесь по-прежнему нет — и не
+	// появится: это и есть обещание «он видит только процитированное».
+	MailMessage(ctx context.Context, userID, messageID int64) (platform.MessageView, int64, error)
+	ReportMessage(ctx context.Context, reporterID, messageID int64, reason string) error
 }
 
 // SetMail подключает переписку. Отдельным вызовом, а не седьмым аргументом
@@ -136,6 +143,9 @@ type dialogPage struct {
 	// Обратный случай (закрыли МЕНЯ) кнопки не даёт вовсе: снять чужой запрет
 	// нельзя, и предлагать это значило бы врать.
 	Blocked bool
+	// CanReport — есть ли кому читать жалобы. Без модерации кнопка вела бы на
+	// страницу, отвечающую «жалобы сейчас не принимаются».
+	CanReport bool
 }
 
 type mailNewPage struct {
@@ -148,6 +158,19 @@ type mailNewPage struct {
 	// настоящих, — страница, разошедшаяся с поведением кнопки, хуже
 	// отсутствующей.
 	Unanswered int
+}
+
+// mailReportPage — форма жалобы на письмо. Цитата показывается ЦЕЛИКОМ тем же
+// шаблоном, что и на странице переписки: человек видит ровно то, что увидит
+// модератор, и второго способа нарисовать письмо у площадки не заводится.
+type mailReportPage struct {
+	page
+	Letter   platform.MessageView
+	DialogID int64
+	// Quote — сколько знаков письма уйдёт в жалобу (platform.MailQuoteRunes).
+	// Числом из ядра, а не словом: длинное письмо уедет модератору началом, и
+	// сказать об этом надо тем же числом, которым режет запрос.
+	Quote int
 }
 
 type mailConsentPage struct {
@@ -264,11 +287,12 @@ func (s *Server) handleDialog(w http.ResponseWriter, r *http.Request) {
 func (s *Server) showDialog(w http.ResponseWriter, r *http.Request, u platform.User,
 	head platform.DialogHead, letters []platform.MessageView, num, pages int, c compose) {
 	p := dialogPage{
-		page:    s.newPage(r, "Переписка с "+head.Peer.Nick),
-		Head:    head,
-		Letters: letters,
-		Pager:   newPager(num, pages, dialogURL(head.DialogID)),
-		Compose: c,
+		page:      s.newPage(r, "Переписка с "+head.Peer.Nick),
+		Head:      head,
+		Letters:   letters,
+		Pager:     newPager(num, pages, dialogURL(head.DialogID)),
+		Compose:   c,
+		CanReport: s.mod != nil,
 	}
 	for _, l := range letters {
 		if l.ID > p.Top {
@@ -518,6 +542,96 @@ func (s *Server) setBlock(w http.ResponseWriter, r *http.Request, on bool) {
 	http.Redirect(w, r, localPath(r.FormValue("back")), http.StatusSeeOther)
 }
 
+// handleMailReport — форма жалобы на письмо.
+//
+// Отдельной страницей, как и жалоба на публикацию: жалоба это текст, и поле
+// ввода под каждым письмом было бы тем же, чего площадка избежала у реакций.
+// Страница вдобавок обязана сказать, ЧТО именно уйдёт модератору, — без этого
+// «пожаловаться» читается как «покажите ему нашу переписку», а уходит ровно
+// одно письмо и ни строкой больше, и показано оно прямо здесь.
+func (s *Server) handleMailReport(w http.ResponseWriter, r *http.Request) {
+	u, ok := s.mailReader(w, r)
+	if !ok {
+		return
+	}
+	if s.mod == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "Жалобы сейчас не принимаются.")
+		return
+	}
+	id, ok := s.messageID(w, r, r.URL.Query().Get("m"))
+	if !ok {
+		return
+	}
+	letter, dialog, err := s.mail.MailMessage(r.Context(), u.ID, id)
+	if err != nil {
+		s.mailReportFail(w, r, err)
+		return
+	}
+	if letter.FromMe {
+		s.fail(w, r, http.StatusForbidden, "Это ваше собственное письмо.")
+		return
+	}
+	if letter.Purged {
+		s.fail(w, r, http.StatusGone,
+			"Содержание этого письма уже стёрто по сроку хранения — жаловаться не на что.")
+		return
+	}
+	s.render(w, r, http.StatusOK, "mail_report.gohtml", mailReportPage{
+		page:     s.newPage(r, "Жалоба на письмо"),
+		Letter:   letter,
+		DialogID: dialog,
+		Quote:    platform.MailQuoteRunes,
+	})
+}
+
+// handleMailReportSubmit — отправка жалобы.
+func (s *Server) handleMailReportSubmit(w http.ResponseWriter, r *http.Request) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.mailReader(w, r)
+	if !ok {
+		return
+	}
+	if s.mod == nil {
+		s.fail(w, r, http.StatusServiceUnavailable, "Жалобы сейчас не принимаются.")
+		return
+	}
+	id, ok := s.messageID(w, r, r.FormValue("m"))
+	if !ok {
+		return
+	}
+	err := s.mail.ReportMessage(r.Context(), u.ID, id, r.FormValue("reason"))
+	switch {
+	case err == nil, errors.Is(err, platform.ErrNothingToDo):
+		// Повторная жалоба на то же письмо — не ошибка: человек просто не
+		// помнит, что уже жаловался, и «отказано» сказало бы ему не о том.
+		http.Redirect(w, r, localPath(r.FormValue("back")), http.StatusSeeOther)
+	default:
+		s.mailReportFail(w, r, err)
+	}
+}
+
+// mailReportFail — отказ на жалобе.
+func (s *Server) mailReportFail(w http.ResponseWriter, r *http.Request, err error) {
+	code, problem := mailProblem(err)
+	if problem == "" {
+		s.oops(w, r, "жалоба на письмо", err)
+		return
+	}
+	s.fail(w, r, code, problem)
+}
+
+// messageID — номер письма из адреса или формы.
+func (s *Server) messageID(w http.ResponseWriter, r *http.Request, raw string) (int64, bool) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		s.fail(w, r, http.StatusNotFound, "Непонятно, на какое письмо жалоба.")
+		return 0, false
+	}
+	return id, true
+}
+
 // handleMailConsent — четвёртый документ.
 //
 // Своим экраном, а не абзацем под формой письма: подпись, данная мимоходом под
@@ -644,6 +758,15 @@ func mailProblem(err error) (int, string) {
 		return http.StatusTooManyRequests,
 			"Вы уже написали " + strconv.Itoa(n) + " " + plural(n, "письмо", "письма", "писем") +
 				" подряд, а ответа не было. Подождите ответа — так честнее и вам, и собеседнику."
+	case errors.Is(err, platform.ErrMessagePurged):
+		return http.StatusGone,
+			"Содержание этого письма уже стёрто по сроку хранения — жаловаться не на что."
+	case errors.Is(err, platform.ErrSelfReport):
+		return http.StatusBadRequest, "Это ваше собственное письмо."
+	case errors.Is(err, platform.ErrNotFound):
+		// Чужое письмо и несуществующее отвечаются ОДИНАКОВО, как и переписка:
+		// существование чужого письма — само по себе сведения.
+		return http.StatusNotFound, "Такого письма нет."
 	case errors.Is(err, platform.ErrRateLimited):
 		// Отказ по частоте перехватывается ЗДЕСЬ, а не отдаётся общему
 		// writeProblem, ради одного слова: у писем свои правила частоты
