@@ -445,3 +445,45 @@ func TestЭкранСогласияПоказываетДокумент(t *testi
 		t.Errorf("после подписи ответили %d → %q", w.Code, w.Header().Get("Location"))
 	}
 }
+
+// Атрибуты картинки в списке переписок обязаны совпадать с показом: место под
+// фотографию браузер держит по ним, и разойдись они с CSS — список прыгал бы на
+// каждой загруженной фотографии. Ровно это правило уже стережёт полосу лиц.
+func TestЛицоВСпискеПисемНеПрыгает(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m)
+	if _, err := m.SendMessage(context.Background(), peerID, testProfileID, "письмо"); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/mail"), mine)).Body.String()
+	if !strings.Contains(body, `width="48" height="48"`) {
+		t.Error("у лица в списке писем нет атрибутов размера или они не 48")
+	}
+	rule := cssRule(t, cssText(t), ".dlgava .ava {")
+	if !strings.Contains(rule, "width: 48px") || !strings.Contains(rule, "height: 48px") {
+		t.Errorf("показ разошёлся с атрибутами: %s", rule)
+	}
+}
+
+// Выдержка в списке — ПЛОСКИЙ текст: она приезжает обрезанной, и разбирать в ней
+// разметку значит рисовать то, чего в письме нет. Знаки снимаются, как в
+// заголовке вкладки.
+func TestВыдержкаВСпискеБезЗнаковРазметки(t *testing.T) {
+	m := newFakeMail()
+	h, mine, _ := mailServer(t, m)
+	if _, err := m.SendMessage(context.Background(), peerID, testProfileID, "помню [b]отлично[/b] :::agree:::"); err != nil {
+		t.Fatal(err)
+	}
+	body := do(h, as(guest(t, "GET", "/mail"), mine)).Body.String()
+	i := strings.Index(body, `class="dlgx"`)
+	if i < 0 {
+		t.Fatal("выдержки нет вовсе")
+	}
+	line := body[i:min(i+200, len(body))]
+	if strings.Contains(line, "[b]") || strings.Contains(line, ":::agree:::") {
+		t.Errorf("в выдержке остались знаки разметки: %s", line)
+	}
+	if !strings.Contains(line, "помню") || !strings.Contains(line, "отлично") {
+		t.Errorf("выдержка потеряла сам текст: %s", line)
+	}
+}

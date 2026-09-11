@@ -8,7 +8,7 @@
   {{range .Dialogs}}
   <li class="dlg{{if .Unread}} new{{end}}">
     <a class="dlgava" href="/mail/{{.DialogID}}" tabindex="-1" aria-hidden="true">
-      {{template "avatar" (av .Peer.AvatarURL .Peer.Gender false)}}</a>
+      {{template "avatar" (avs .Peer.AvatarURL .Peer.Gender false 48)}}</a>
     <div class="dlgb">
       <div class="dlgtop">
         <a class="dlgwho" href="/mail/{{.DialogID}}">{{.Peer.Nick}}</a>
@@ -20,7 +20,7 @@
            текста» (такого не бывает, пустое ядро не примет), а стёртое по
            сроку хранения содержание. */}}
       {{if .Excerpt}}
-      <p class="dlgx">{{if .LastFromMe}}<span class="ltwho">Вы:</span> {{end}}{{.Excerpt}}</p>
+      <p class="dlgx">{{if .LastFromMe}}<span class="ltwho">Вы:</span> {{end}}{{ltplain .Excerpt}}</p>
       {{else}}
       <p class="dlgx gone">Содержание удалено по сроку хранения.</p>
       {{end}}

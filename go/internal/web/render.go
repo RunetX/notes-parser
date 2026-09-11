@@ -83,6 +83,8 @@ var funcs = template.FuncMap{
 	"kindword":    kindWord,
 	"msgname":     messengerName,
 	"letterBody":  letterBodyHTML,
+	"avs":         sizedAvatar,
+	"ltplain":     plainLetter,
 	"smile":       smileImg,
 	"rxlabel":     reactionLabel,
 	"smilelist":   smileList,
@@ -172,17 +174,35 @@ func ageWords(n int) string {
 type avatarArg struct {
 	URL string
 	Sil bool
+	// Size — сторона картинки в точках, она же атрибуты width/height. Поле, а не
+	// константа в шаблоне: аватар показывается в трёх размерах (карточка автора,
+	// полоса лиц, список переписок), а место под него браузер держит по
+	// атрибутам — разойдись они с показом, страница прыгала бы на каждой
+	// загруженной фотографии.
+	Size int
 }
+
+// avatarSize — сторона аватара в колонке автора. Сто, как на НГС.
+const avatarSize = 100
 
 // newAvatar — картинка аватара: своё фото, а нет его — силуэт по умолчанию
 // (silhouette.go). Выбор живёт в Go, а не в шаблоне: условие «фото, иначе пол,
 // но у анонима всегда аноним» на языке шаблонов читается вдвое хуже, а ошибиться
 // в нём стоит показанного лица.
 func newAvatar(url string, g platform.Gender, anonymous bool) avatarArg {
+	return sizedAvatar(url, g, anonymous, avatarSize)
+}
+
+// sizedAvatar — тот же аватар, но меньше. Размер приезжает АРГУМЕНТОМ и уходит в
+// атрибуты картинки, а не задаётся одним лишь CSS: пока фотография грузится,
+// браузер держит место по атрибутам, и разойдись они с показом — список прыгал
+// бы на каждой загрузке. Ровно это правило стережёт тест полосы лиц, и в списке
+// переписок оно то же самое.
+func sizedAvatar(url string, g platform.Gender, anonymous bool, size int) avatarArg {
 	if url == "" || anonymous {
-		return avatarArg{URL: silhouette(g, anonymous), Sil: true}
+		return avatarArg{URL: silhouette(g, anonymous), Sil: true, Size: size}
 	}
-	return avatarArg{URL: url}
+	return avatarArg{URL: url, Size: size}
 }
 
 // commentBodyHTML — тело комментария вместе с обращением.
