@@ -583,6 +583,11 @@ span.rxb { cursor: default; }
 .note.pinned { border-left: 3px solid var(--accent); padding-left: 10px; }
 
 .nfoot { margin-top: 10px; color: var(--meta); font-size: 12px; }
+/* Реакции идут ТОЙ ЖЕ СТРОКОЙ, что и дата (жалоба владельца 11.09.2026:
+   «целая строка на „+“»), поэтому верхнего поля у них здесь нет: 8px были
+   отступом от текста заметки, а внутри строки они разгоняли её высоту. Слева
+   те же 14px, что у «Поправить», — соседи по ряду ходят одним шагом. */
+.nfoot .rx { margin: 0 0 0 14px; }
 .date { color: var(--meta); }
 /* Время, снятое зеркалом, а не отданное сайтом: настоящего НГС не публикует.
    Пунктир — единственный видимый след, чтобы вид не расходился с правдой. */
@@ -1509,6 +1514,7 @@ span.rxb { cursor: default; }
      снимаются: иначе к 12px зазора прибавилось бы правое поле метки. */
   .date, .orig, .edited { margin-left: 0; }
   .nfoot .orig { margin-right: 0; }
+  .nfoot .rx { margin-left: 0; }
   .clink, .addc {
     margin-left: 0; display: inline-flex; align-items: center; gap: 5px;
     min-height: 34px; font-size: 14px;
