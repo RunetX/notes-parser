@@ -174,3 +174,99 @@ func TestШумНеСудитсяПоСтилю(t *testing.T) {
 		t.Error("шуму сошёл с рук ролевой зачин")
 	}
 }
+
+// capturingGen — модель, которая запоминает ЗАДАНИЕ и отвечает готовой репликой.
+// Нужна затем, чтобы держать оба конца одного значения: совпадение поля черновика
+// с полем журнала не доказывает ничего, если в задание ушёл другой ход.
+type capturingGen struct {
+	task string
+	skip bool
+}
+
+func (g *capturingGen) GenerateJSON(_ context.Context, _, task string, _ map[string]any) ([]byte, error) {
+	g.task = task
+	if g.skip {
+		return []byte(`{"action":"skip","reason":"нечего сказать"}`), nil
+	}
+	return []byte(`{"action":"reply","text":"у меня дядя так же машину продавал"}`), nil
+}
+
+// ХОД ДОЕЗЖАЕТ ДО ЖУРНАЛА — и это не пересказ соседнего теста: там ход проверялся
+// в ЗАДАНИИ, а здесь в записи о прогоне, то есть в единственном месте, по
+// которому потом отвечают на вопрос «почему реплики однообразны».
+//
+// Оплачено разбором боевого треда 100000000048 (11.09.2026): замер содержания дал
+// «свой случай» в 27,7 % реплик при доле хода в 15 %, и развести две причины —
+// жребий не доехал до боя либо истории текут через остальные шесть ходов — было
+// нечем, потому что выпавший ход не записывался нигде. Тест падает на коде до
+// этого дня: колонки не было вовсе.
+func TestХодДоезжаетДоЖурнала(t *testing.T) {
+	ctx := context.Background()
+	card := moveCard()
+	svc, w := testService(t, &fakeStage{notes: []StageNote{moveNote}})
+	svc.cfg.MoveRates = map[Move]float64{MoveStory: 1}
+	if err := w.UpsertActor(ctx, Actor{ID: card.ID, Kind: ActorPersona,
+		Nick: card.Persona.Nick}, svc.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	pl := Plan{ID: 1, ActorID: card.ID, NoteID: moveNote.ID}
+	point, err := svc.compose(ctx, Player{Card: card, UserID: 42}, pl, moveNote, nil)
+	if err != nil {
+		t.Fatalf("сборка точки письма: %v", err)
+	}
+	gen := &capturingGen{}
+	d, err := Write(ctx, gen, point, 7)
+	if err != nil {
+		t.Fatalf("реплика: %v", err)
+	}
+	if !strings.Contains(gen.task, "СВОЙ СЛУЧАЙ") {
+		t.Fatal("ход не назван в задании — сверять журнал не с чем")
+	}
+	if _, err := w.RecordGenRun(ctx, svc.genRun(pl, d, GenPosted, "")); err != nil {
+		t.Fatalf("журнал генерации: %v", err)
+	}
+	runs, err := w.GenRuns(ctx, 1)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("чтение журнала: %v (%d строк)", err, len(runs))
+	}
+	if runs[0].Move != MoveStory {
+		t.Errorf("в журнале ход %q, а в задании был свой случай", runs[0].Move)
+	}
+}
+
+// МОЛЧАНИЕ ТОЖЕ НЕСЁТ ХОД, и это половина смысла записи: у боевого треда пять
+// молчаний из семи пришлись на один и тот же брак, и вопрос «каким ходом жители
+// бракуются» стоит ровно столько же, сколько «каким они говорят». Ход
+// присваивается ДО первого круга, поэтому переживает и брак, и отказ модели.
+func TestМолчаниеНесётХод(t *testing.T) {
+	ctx := context.Background()
+	card := moveCard()
+	svc, w := testService(t, &fakeStage{notes: []StageNote{moveNote}})
+	svc.cfg.MoveRates = map[Move]float64{MoveOfftop: 1}
+	if err := w.UpsertActor(ctx, Actor{ID: card.ID, Kind: ActorPersona,
+		Nick: card.Persona.Nick}, svc.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	pl := Plan{ID: 1, ActorID: card.ID, NoteID: moveNote.ID}
+	point, err := svc.compose(ctx, Player{Card: card, UserID: 42}, pl, moveNote, nil)
+	if err != nil {
+		t.Fatalf("сборка точки письма: %v", err)
+	}
+	d, err := Write(ctx, &capturingGen{skip: true}, point, 7)
+	if err != nil {
+		t.Fatalf("реплика: %v", err)
+	}
+	if !d.Skip {
+		t.Fatal("модель промолчала, а черновик этого не говорит")
+	}
+	if _, err := w.RecordGenRun(ctx, svc.genRun(pl, d, GenSkipped, d.Reason)); err != nil {
+		t.Fatalf("журнал генерации: %v", err)
+	}
+	runs, err := w.GenRuns(ctx, 1)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("чтение журнала: %v (%d строк)", err, len(runs))
+	}
+	if runs[0].Move != MoveOfftop {
+		t.Errorf("молчание записано без хода: %q", runs[0].Move)
+	}
+}

@@ -104,7 +104,7 @@
     "seed": 1,
     "per_thread": 400,
     "day_calls": 600,
-    "latency_scale": 0.08,
+    "latency_scale": 0.04,
     "moves": {
       "punch": 0.2,
       "author": 0.2,

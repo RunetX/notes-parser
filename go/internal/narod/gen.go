@@ -123,6 +123,13 @@ type Draft struct {
 	Reason   string   // почему пропустили или почему не вышло
 	Attempts int      // сколько раз спрашивали модель
 	Rejects  []string // брак по кругам — он и едет в gen_runs
+	// Move — ход, которым эту реплику просили сказать. Он не «что вышло», а
+	// «что просили», и лежит здесь ровно потому, что ДРАФТ — единственное, что
+	// доезжает от Write до журнала: реплика, отложенная занятой сценой,
+	// публикуется из heldDraft, минуя и точку, и жребий. Присваивается он один
+	// раз и из p.Move, поэтому записанный ход и ход, которым собран промпт, —
+	// физически одно значение, а не две согласованные копии.
+	Move Move
 }
 
 // writeRetries — сколько раз переспрашивать при браке. Три: столько же у
@@ -147,6 +154,7 @@ func Write(ctx context.Context, gen JSONGenerator, p WritePoint, seed uint64) (D
 		return Draft{}, fmt.Errorf("генерация: нет модели или карточки")
 	}
 	var d Draft
+	d.Move = p.Move
 	feedback := ""
 	for attempt := 1; attempt <= writeRetries; attempt++ {
 		d.Attempts = attempt

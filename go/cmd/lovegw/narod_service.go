@@ -340,7 +340,15 @@ func (c *narodControl) NarodStatus(ctx context.Context) (string, bool) {
 		if r.Verdict == narod.GenPosted {
 			line = firstRunes(r.Text, 60)
 		}
-		fmt.Fprintf(&b, "· %s — %s: %s\n", r.At.Format("02.01 15:04"), r.ActorID, line)
+		// ХОД называется рядом с репликой, а не сводкой внизу: вопрос к этой
+		// строке — «почему они все одинаковые», и отвечает на него ход именно
+		// той реплики, которую читают. У записей до 11.09.2026 хода нет вовсе —
+		// пустое поле пропускается, а не печатается пустыми скобками.
+		move := ""
+		if name := narod.MoveName(r.Move); name != "" {
+			move = " [" + name + "]"
+		}
+		fmt.Fprintf(&b, "· %s — %s%s: %s\n", r.At.Format("02.01 15:04"), r.ActorID, move, line)
 	}
 	return b.String(), enabled
 }

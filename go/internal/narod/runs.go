@@ -49,6 +49,10 @@ type GenRun struct {
 	Reason   string
 	Text     string
 	Rejects  []string
+	// Move — ЧТО житель этой репликой делал (move.go). Пишется и у брака, и у
+	// молчания: вопрос «каким ходом реплики бракуются чаще» стоит денег ровно
+	// столько же, сколько вопрос «каким ходом они выходят».
+	Move Move
 }
 
 // RecordGenRun пишет попытку в журнал.
@@ -59,10 +63,10 @@ func (w *World) RecordGenRun(ctx context.Context, r GenRun) (int64, error) {
 	}
 	res, err := w.db.ExecContext(ctx, `
 		INSERT INTO gen_runs (plan_id, actor_id, at, provider, model, drafts,
-		                      verdict, drop_reason, text_final, evals)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                      verdict, drop_reason, text_final, evals, move)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nullID(r.PlanID), r.ActorID, fmtTime(r.At), r.Provider, r.Model, r.Drafts,
-		r.Verdict, r.Reason, r.Text, string(evals))
+		r.Verdict, r.Reason, r.Text, string(evals), string(r.Move))
 	if err != nil {
 		return 0, fmt.Errorf("журнал генерации %s: %w", r.ActorID, err)
 	}
@@ -74,7 +78,7 @@ func (w *World) RecordGenRun(ctx context.Context, r GenRun) (int64, error) {
 func (w *World) GenRuns(ctx context.Context, limit int) ([]GenRun, error) {
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT id, coalesce(plan_id, 0), actor_id, at, provider, model, drafts,
-		       verdict, drop_reason, text_final, evals
+		       verdict, drop_reason, text_final, evals, move
 		  FROM gen_runs ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -83,11 +87,12 @@ func (w *World) GenRuns(ctx context.Context, limit int) ([]GenRun, error) {
 	var out []GenRun
 	for rows.Next() {
 		var r GenRun
-		var at, evals string
+		var at, evals, move string
 		if err := rows.Scan(&r.ID, &r.PlanID, &r.ActorID, &at, &r.Provider, &r.Model,
-			&r.Drafts, &r.Verdict, &r.Reason, &r.Text, &evals); err != nil {
+			&r.Drafts, &r.Verdict, &r.Reason, &r.Text, &evals, &move); err != nil {
 			return nil, err
 		}
+		r.Move = Move(move)
 		r.At, _ = time.Parse(time.RFC3339, at)
 		_ = json.Unmarshal([]byte(evals), &r.Rejects)
 		out = append(out, r)

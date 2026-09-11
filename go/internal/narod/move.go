@@ -169,6 +169,29 @@ func moveLine(m Move) string {
 	return ""
 }
 
+// MoveName — короткое имя хода для отчёта. Отдельно от moveLine намеренно: то —
+// задание модели, это — слово человеку, и одно вместо другого означало бы либо
+// абзац инструкции в ЛС, либо ярлык вместо задания.
+func MoveName(m Move) string {
+	switch m {
+	case MovePunch:
+		return "панч"
+	case MoveAuthor:
+		return "автору"
+	case MoveGrumble:
+		return "придирка"
+	case MoveShort:
+		return "отмашка"
+	case MoveStory:
+		return "свой случай"
+	case MoveOfftop:
+		return "оффтоп"
+	case MoveOther:
+		return "уточнение"
+	}
+	return ""
+}
+
 // ValidateMoveRates — проверка долей. Отказ на СБОРКЕ, а не на первом такте:
 // служба с опечаткой в ключе выглядит работающей, а один ход из семи молча
 // исчезает.

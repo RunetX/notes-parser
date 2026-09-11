@@ -1271,6 +1271,7 @@ func (s *Service) genRun(pl Plan, d Draft, verdict, reason string) GenRun {
 		PlanID: pl.ID, ActorID: pl.ActorID, At: s.clock.Now(),
 		Provider: s.provider, Model: s.model, Drafts: d.Attempts,
 		Verdict: verdict, Reason: reason, Text: d.Text, Rejects: d.Rejects,
+		Move: d.Move,
 	}
 }
 
