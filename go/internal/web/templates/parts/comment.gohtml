@@ -25,7 +25,15 @@
 <li class="c {{depth $c.Depth}}{{if ne $c.Status 0}} chid{{end}}" id="c{{$c.ID}}"
     data-depth="{{$c.Depth}}" data-parent="{{with $c.ReplyTo}}{{.CommentID}}{{end}}"
     data-time="{{$c.PublishedAt.UnixMilli}}">
-  <div class="cava">{{template "avatar" (av $c.Author.AvatarURL $c.Author.Gender $c.Anonymous)}}</div>
+  {{/* У РЕПЛИКИ САМОЙ ПЛОЩАДКИ в колонке аватара её знак, а не лицо — по тому
+       же доводу, что у её заметки (parts/sitemark.gohtml): у служебной анкеты
+       фотографии нет и быть не может, а на её месте вставал силуэт по
+       умолчанию, то есть картинка, говорящая «человек, у которого нет фото».
+       Человека здесь нет вовсе. До пятничной рубрики площадка в тредах не
+       говорила, поэтому расходились эти два места молча. */}}
+  <div class="cava">
+    {{- if $c.Author.System}}{{template "sitemark-ava" "own"}}
+    {{- else}}{{template "avatar" (av $c.Author.AvatarURL $c.Author.Gender $c.Anonymous)}}{{end}}</div>
   <div class="cbody">
     <div class="chead">
       {{template "nick" (nk $c.Author $c.Name $c.Anonymous .Page.SignedIn)}}

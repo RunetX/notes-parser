@@ -135,6 +135,15 @@ func nickOf(a platform.Author, name string, anonymous, signedIn bool) nickArg {
 	if anonymous {
 		class += " anon"
 	}
+	// ПЛОЩАДКА подписывается как в своей заметке: серым и без ссылки
+	// (parts/sitemark.gohtml). Пола у неё нет и не будет, поэтому класс пола ей
+	// не годится вовсе — без этой строки её имя в треде красилось бы цветом
+	// «неизвестного», то есть ровно как у человека, чей пол мы не узнали.
+	// Ссылки нет по тому же доводу, что в заметке: за именем нет человека, чью
+	// страницу стоило бы открыть.
+	if a.System {
+		return nickArg{ID: a.ID, Name: name, Class: "_site"}
+	}
 	return nickArg{
 		ID:    a.ID,
 		Name:  name,

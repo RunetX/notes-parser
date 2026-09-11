@@ -65,3 +65,69 @@ func TestОбычнаяЗаметкаОстаётсяСЛицом(t *testing.T) 
 		t.Error("под обычной заметкой встал знак площадки вместо автора")
 	}
 }
+
+// РЕПЛИКА ПЛОЩАДКИ подписана так же, как её заметка: знак вместо лица и серое
+// имя без ссылки.
+//
+// Разошлись эти два места молча и по понятной причине: до пятничной рубрики
+// (11.09.2026) площадка в тредах не говорила вовсе — под её анкетой выходила
+// только недельная сводка. С рубрикой она заговорила комментариями, и в колонке
+// аватара у неё встал силуэт по умолчанию, то есть картинка «человек, у которого
+// нет фото» (жалоба владельца в первый же боевой вечер).
+func TestРепликаПлощадкиПодписанаЗнаком(t *testing.T) {
+	st := noteStore()
+	st.thread = []platform.CommentView{{
+		ID: 7, Author: platform.Author{ID: 100000000098, Nick: SiteName, System: true},
+		Body: "В каком году это написано?", Depth: 1,
+		PublishedAt: st.note.PublishedAt,
+	}}
+	body := do(openServer(t, st), guest(t, "GET", "/n/312811")).Body.String()
+
+	cava := between(t, body, `<div class="cava">`, "</div>")
+	if !strings.Contains(cava, `class="ava sitemark"`) {
+		t.Errorf("у реплики площадки нет её знака:\n%s", cava)
+	}
+	if strings.Contains(cava, `class="ava sil"`) {
+		t.Error("под репликой площадки нарисован силуэт человека")
+	}
+	// Имя стои́т в строке даты, а не в колонке аватара, — печатать его дважды
+	// незачем.
+	if strings.Contains(cava, SiteName) {
+		t.Error("имя площадки напечатано ещё и в колонке аватара")
+	}
+	// Серое и без ссылки — ровно как в заметке (решение владельца 11.09.2026:
+	// «цвет ника у Зазеркалья как в заметке тоже будет серый»).
+	if !strings.Contains(body, `class="nick _site">`+SiteName) {
+		t.Error("имя площадки в треде подписано не как в заметке")
+	}
+	if strings.Contains(body, `href="/u/100000000098"`) {
+		t.Error("имя площадки в треде сделано ссылкой на анкету")
+	}
+}
+
+// Охранный к предыдущему: обычный собеседник остаётся с лицом и со ссылкой.
+// Без него тест зеленел бы и на шаблоне, рисующем знак площадки всем подряд.
+func TestОбычнаяРепликаОстаётсяСЛицом(t *testing.T) {
+	body := do(openServer(t, noteStore()), guest(t, "GET", "/n/312811")).Body.String()
+	if strings.Contains(body, `class="ava sitemark"`) {
+		t.Error("под обычной репликой встал знак площадки")
+	}
+	if strings.Contains(body, `class="nick _site"`) {
+		t.Error("обычный собеседник подписан как площадка")
+	}
+}
+
+// between — кусок между первым вхождением from и следующим to.
+func between(t *testing.T, s, from, to string) string {
+	t.Helper()
+	i := strings.Index(s, from)
+	if i < 0 {
+		t.Fatalf("на странице нет %q", from)
+	}
+	rest := s[i+len(from):]
+	j := strings.Index(rest, to)
+	if j < 0 {
+		t.Fatalf("кусок после %q не закрыт", from)
+	}
+	return rest[:j]
+}
