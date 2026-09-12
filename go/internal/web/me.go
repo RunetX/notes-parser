@@ -36,6 +36,23 @@ type mePage struct {
 	// страницей ошибки: «в анкете нет фото» — это не поломка, и уводить с
 	// собственной страницы ради такой строки незачем.
 	Problem string
+	// About и Photos — что человек уже рассказал о себе (эпик M). Показываются
+	// ЗДЕСЬ, а не только на /me/about, по той же причине, по которой в меню
+	// завёлся «Мой профиль»: раздел, о котором говорит одна кнопка, человек не
+	// находит. Пустые поля пропускаются поштучно, а подпись кнопки выводится
+	// из них же — «Рассказать о себе», пока не рассказано ничего.
+	About  platform.About
+	Photos []platform.Photo
+	// PhotoLimit и PhotoFree — сколько фотографий бывает и сколько мест ещё
+	// свободно. Числа приезжают из ЯДРА, а не пишутся словом: потолок держит
+	// база (CHECK на позицию), и написанная рядом тройка разошлась бы с ним
+	// молча — тем же правилом живут пороги частоты в справке.
+	PhotoLimit int
+	PhotoFree  int
+	// AboutHidden — карточку скрыл модератор. Сказать об этом надо здесь:
+	// человек видит свою страницу как обычно и без этой строки решил бы, что
+	// её видят все.
+	AboutHidden bool
 	// Hidden — свои публикации, скрытые модерацией, с причиной и кнопкой
 	// «на пересмотр». Молча исчезнувшая реплика — худшее, что можно сделать с
 	// сообществом, которое только что переехало, поэтому список стоит здесь, а
@@ -190,6 +207,7 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 			s.log.Warn("чёрный список переписки не прочитан", "user", u.ID, "err", err)
 		}
 	}
+	about, photos, aboutHidden := s.myAbout(r, u.ID)
 	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
 		page:        s.newPage(r, "Моя страница"),
 		Member:      card,
@@ -208,6 +226,11 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		NGSStuck:    ngsStuck,
 		NGSStuckAt:  ngsStuckAt,
 		NGSPending:  ngsPending,
+		About:       about,
+		Photos:      photos,
+		AboutHidden: aboutHidden,
+		PhotoLimit:  platform.PhotoLimit,
+		PhotoFree:   platform.PhotoLimit - len(photos),
 		Bindings:    bindings,
 		Blocked:     blocked,
 		// Дверь эта работает, только пока жив САЙТ: код читается со страницы
@@ -217,6 +240,32 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		NGSDoor: platform.IsNGS(u.ID),
 		SiteUp:  s.site != nil,
 	})
+}
+
+// myAbout — рассказ о себе и альбом для показа на «Настройках».
+//
+// Два запроса по первичному ключу и по индексу `user_photos(user_id)` — цена
+// того, что человек видит написанное там же, где всё остальное про него, а не
+// за кнопкой, ведущей на третью страницу. Отказ любого из них страницу НЕ
+// роняет и молчит в лог: «Настройки» нужны и ради согласий, и ради списка
+// скрытого, а раздел «О себе» этого не стоит (тот же довод, что у галочки
+// выноса на НГС).
+//
+// Альбом спрашивается ЦЕЛИКОМ, вместе со скрытым модератором: своё человек
+// обязан видеть всё, иначе снятая фотография выглядит пропавшей и он кладёт её
+// заново, занимая второе место из трёх.
+func (s *Server) myAbout(r *http.Request, id int64) (platform.About, []platform.Photo, bool) {
+	prof, err := s.st.UserProfile(r.Context(), id)
+	if err != nil {
+		s.log.Warn("рассказ о себе не прочитан", "user", id, "err", err)
+		return platform.About{}, nil, false
+	}
+	photos, err := s.st.ProfilePhotos(r.Context(), id, true)
+	if err != nil {
+		s.log.Warn("альбом не прочитан", "user", id, "err", err)
+	}
+	about := platform.About{Bio: prof.Bio, City: prof.City, Job: prof.Job}
+	return about, photos, prof.AboutStatus != platform.StatusVisible
 }
 
 // handleAvatar — «Обновить аватар»: сходить в анкету НГС за фото ещё раз.

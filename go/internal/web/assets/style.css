@@ -1281,6 +1281,25 @@ span.rxb { cursor: default; }
 .whoami { display: flex; gap: 15px; align-items: center; justify-content: center; margin: 18px 0; }
 .whoami .nick { display: block; font-size: 18px; font-weight: 600; }
 .whoami .fine { display: block; }
+/* Имя в шапке настроек. Шапка там ОБЩАЯ со страницей участника (.uhead), а имя
+ * заголовком быть не может — заголовок страницы называет её саму
+ * («Настройки»), и два крупных имени подряд читаются как две страницы. */
+.umeta .nick { display: block; font-size: 18px; font-weight: 600; margin: 0; }
+
+/* «Подробнее» — свёртка объяснения. Настройки отвечают сразу на десяток
+ * вопросов, и распечатанные подряд абзацы прятали САМИ настройки: до нижних
+ * приходилось мотать через полтора экрана прозы. details/summary, а не скрипт
+ * (без JS страница обязана работать), и по одному на настройку, а не одна на
+ * всю страницу: открывают то объяснение, которое сейчас нужно. */
+.why { margin: 6px 0 0; }
+.why > summary {
+  cursor: pointer; color: var(--link); font-size: 13px; width: fit-content;
+}
+.why > summary:hover { text-decoration: underline; }
+.why > p { margin: 8px 0 0; }
+/* Альбом в настройках уже, чем на странице участника: там он колонка в 220
+ * точек, а здесь лёг бы во всю ширину текста и перевесил бы собой раздел. */
+.mealbum { max-width: 22rem; margin-top: 12px; }
 
 /* «Обновить аватар» стоит под ником, у самой карточки: она про то, что видно
  * рядом, — а не в общем ряду кнопок страницы. Мельче кнопки смены ника, потому
@@ -1926,19 +1945,23 @@ span.rxb { cursor: default; }
 /* Свои фотографии на «Рассказе о себе»: снимок, отметка скрытого и кнопка
    «Убрать» — рядом, а не в трёх местах. Ряд складывается в столбец сам, потому
    что на телефоне три снимка со своими кнопками в строку не встают. */
-.myphotos { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 12px; }
-.myphotos li {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  border-top: 1px solid var(--rule); padding-top: 12px;
-  /* Строка не тянется во всю ширину карточки: «Убрать», уехавшее к правому
-     краю экрана, перестаёт читаться как кнопка ЭТОЙ фотографии. */
-  max-width: 32rem;
+/* Свой альбом на «Рассказе о себе»: те же три квадрата в ряд, что на странице
+ * участника и в настройках, — человек правит то, что видит, и переставленные
+ * строкой снимки читались бы как другой альбом. Кнопка «Убрать» стои́т ПОД
+ * своим снимком: строкой справа (так было до 12.09.2026) она уезжала к краю
+ * и переставала читаться как кнопка ЭТОЙ фотографии. */
+.myphotos {
+  list-style: none; margin: 12px 0 0; padding: 0; max-width: 28rem;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
 }
+.myphotos li { display: grid; gap: 6px; justify-items: start; }
 .myphotos img {
-  width: 120px; height: 120px; object-fit: cover; display: block;
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+  /* Пол на случай, если aspect-ratio не понят: иначе картинка схлопнется. */
+  min-height: 90px;
   border: 1px solid var(--rule); border-radius: 3px;
 }
-.myphotos form { margin-left: auto; }
+.myphotos form { margin: 0; }
 
 /* Фотография в очереди модератора — вместе со своей кнопкой: вердикт судит
    карточку целиком, а снимок скрывают поштучно, и кнопка обязана стоять у того

@@ -191,3 +191,54 @@ func TestЗаметкаВПутиВиднаНаСвоейСтранице(t *tes
 		t.Error("строка осталась после того, как заметка доехала")
 	}
 }
+
+// Настройки ПОКАЗЫВАЮТ рассказ о себе, а не прячут его за одной кнопкой.
+//
+// Первая редакция эпика M оставила здесь только дверь на /me/about — и раздел,
+// о котором говорит одна кнопка, человек не находит: 12.09.2026 владелец,
+// глядя на эту самую страницу, спросил, как вообще загружают три фотографии.
+// Теперь видно состояние — что заполнено, сколько снимков из трёх, — и отсюда
+// же ведёт ссылка на свою страницу участника.
+func TestНастройкиПоказываютРассказОСебе(t *testing.T) {
+	auth, token := signedInAs(t, platform.User{
+		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,
+	})
+	grantConsents(t, auth, testProfileID)
+	st := &fakeStore{}
+	st.profile = platform.Profile{ID: testProfileID, Nick: testNick, City: "Бердск", Job: "слесарь"}
+	st.photos = []platform.Photo{{ID: 1, Position: 1, URL: "/media/aa/one.webp"}}
+	h := newFullServer(t, st, auth, &fakeWriter{}, nil, nil, Config{})
+
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	for _, want := range []string{
+		"Бердск", "слесарь", "one.webp",
+		// Число мест — из ядра, а не словом: потолок держит база.
+		"из 3",
+		`href="/me/about"`,
+		// И дорога на свою страницу участника — та, которой не было вовсе.
+		`href="/u/` + itoa64(testProfileID) + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("в настройках нет %q:\n%s", want, tailOf(body))
+		}
+	}
+}
+
+// А пока не рассказано ничего — зовём рассказать, и кнопка называется иначе.
+func TestПустойРассказЗовётЗаполнить(t *testing.T) {
+	auth, token := signedInAs(t, platform.User{
+		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,
+	})
+	grantConsents(t, auth, testProfileID)
+	st := &fakeStore{}
+	st.profile = platform.Profile{ID: testProfileID, Nick: testNick}
+	h := newFullServer(t, st, auth, &fakeWriter{}, nil, nil, Config{})
+
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	if !strings.Contains(body, "Рассказать о себе") {
+		t.Errorf("нет приглашения рассказать о себе:\n%s", tailOf(body))
+	}
+	if strings.Contains(body, "Изменить") {
+		t.Error("предложено изменить то, чего нет")
+	}
+}

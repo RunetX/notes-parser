@@ -36,6 +36,7 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"lovegw/internal/platform"
@@ -105,6 +106,21 @@ type userPage struct {
 type userFact struct {
 	K string
 	V template.HTML
+}
+
+// plainExcerpt — выдержка для списка публикаций: знаки разметки и коды смайлов
+// сняты, лишние пробелы схлопнуты.
+//
+// Ядро режет тело до двухсот рун ДО нас, поэтому на срезе может остаться
+// половина тега («[colo») — её тоже убираем: незакрытая скобка в конце строки
+// выглядит поломкой, а не текстом. Убираем только когда закрывающей скобки за
+// ней нет вовсе, иначе пострадала бы честная квадратная скобка из текста.
+func plainExcerpt(s string, e era) string {
+	s = stripMarkup(s, e)
+	if i := strings.LastIndexByte(s, '['); i >= 0 && !strings.ContainsRune(s[i:], ']') {
+		s = s[:i]
+	}
+	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
 }
 
 func textFact(k, v string) userFact {
@@ -212,6 +228,23 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	if !showAbout {
 		member.Bio, member.City, member.Job = "", "", ""
 	}
+	// Выдержки идут через ТОТ ЖЕ снос знаков, что и заголовок вкладки: список
+	// показывает ПЛОСКИЙ текст, а в базе лежит разметка НГС и коды смайлов — и
+	// до 12.09.2026 они печатались как есть, «[color=red]UPD.» и «:::crazy2:::»
+	// посреди строки (замечание владельца). Эпоха у каждой записи своя, как у
+	// её тела: у заметки 2013 года скобки рисовал сайт, у сегодняшней — мы.
+	for i, n := range notes {
+		notes[i].Excerpt = plainExcerpt(n.Excerpt, eraOf(n.ID, n.At))
+	}
+	for i, c := range comments {
+		e := eraOf(c.ID, c.At)
+		comments[i].Excerpt, comments[i].Note = plainExcerpt(c.Excerpt, e), plainExcerpt(c.Note, e)
+	}
+	// Колонку держат ГОРОД, ЗАНЯТИЕ и АЛЬБОМ — то, что человек рассказал сам.
+	// «Здесь с» уехало в служебную строку под именем и колонки собой больше не
+	// оправдывает: у незаполненного профиля она выходила полосой в 220 точек с
+	// единственной датой, и страница читалась перекошенной (замечание
+	// владельца 12.09.2026).
 	facts := userFacts(member)
 	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
 		page:         s.readingPage(r, userTitle(member)),
@@ -250,14 +283,12 @@ func userFacts(m platform.Profile) []userFact {
 	if m.Job != "" {
 		out = append(out, textFact("Занятие", m.Job))
 	}
-	// «Здесь с» у обезличенной записи не называется: время создания могилы
-	// огрублено до суток НАМЕРЕННО (точное совпало бы с отметкой отзыва до
-	// микросекунды и записало бы соответствие метками времени), и печатать его
-	// рядом со словами «обезличенная запись» значит рассказывать ровно то, что
-	// скрыто.
-	if m.AnonymizedAt == nil && !m.CreatedAt.IsZero() {
-		out = append(out, dateFact("Здесь с", m.CreatedAt))
-	}
+	// «Здесь с» отсюда уехало в служебную строку под именем (12.09.2026): это
+	// справка площадки о записи, а не то, что человек о себе рассказал, — и
+	// колонку, где кроме него ничего нет, оно оправдывать не должно. Там же
+	// стои́т и правило про обезличенных: время создания могилы огрублено до
+	// суток НАМЕРЕННО, и печатать его рядом со словами «обезличенная запись»
+	// значит рассказывать ровно то, что скрыто.
 	return out
 }
 

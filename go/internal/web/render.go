@@ -259,6 +259,12 @@ type page struct {
 	// свой ник с выходом, как на НГС.
 	SignedIn bool
 	Nick     string
+	// MeID — номер вошедшего, и нужен он ровно затем, чтобы меню вело на ЕГО
+	// страницу участника (/u/<id>). До 12.09.2026 такой ссылки не было нигде:
+	// пункт назывался «Мой профиль», вёл на /me, а собственную страницу человек
+	// мог увидеть, только ткнув в своё имя в чужом треде, — то есть страницу,
+	// сделанную для него, он не видел.
+	MeID int64
 	// CSRF — скрытое поле для форм, которые что-то меняют. Пусто у гостя: ему
 	// такие формы и не показываются.
 	CSRF string
@@ -344,6 +350,7 @@ func (s *Server) newPage(r *http.Request, title string) page {
 	}
 	if u, ok := s.me(r); ok {
 		p.SignedIn, p.Nick, p.CSRF = true, u.Nick, csrfToken(s.session(r))
+		p.MeID = u.ID
 		p.Moderator = u.Role >= platform.RoleModerator && s.mod != nil
 		p.Admin = u.Role >= platform.RoleAdmin && s.mod != nil
 		p.Bell = s.events != nil

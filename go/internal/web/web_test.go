@@ -1392,8 +1392,13 @@ func TestHealthFollowsDatabase(t *testing.T) {
 }
 
 // [Ф] Угол участника устроен как на НГС: значок в правом верхнем углу, под ним
-// выпадающее меню. Пунктов там три, у нас два — отдельной страницы настроек
-// площадка не заводит, ник и согласия живут на /me.
+// выпадающее меню.
+//
+// Пункта про себя ДВА, и разведены они по вопросу, с которым сюда идут: «Моя
+// страница» — что видят другие (/u/<id>), «Настройки» — что видно только мне.
+// До 12.09.2026 пункт был один, звался «Мой профиль» и вёл на /me: искавший
+// свой профиль попадал в список настроек, а собственную страницу участника не
+// видел вовсе — ссылки на неё не было НИГДЕ, кроме своего имени в чужом треде.
 func TestAccountMenuHasProfileAndExit(t *testing.T) {
 	h, auth, token := signedInServer(t)
 	grantBoth(t, auth, context.Background())
@@ -1403,10 +1408,15 @@ func TestAccountMenuHasProfileAndExit(t *testing.T) {
 		t.Fatal("на странице нет шапки")
 	}
 	for _, want := range []string{`<details class="acct">`, `<summary`, `href="/me"`,
-		"Мой профиль", `action="/logout"`, "Выход"} {
+		"Моя страница", "Мой профиль", `action="/logout"`, "Выход"} {
 		if !strings.Contains(head, want) {
 			t.Errorf("в меню участника нет %q", want)
 		}
+	}
+	// И ведёт «Моя страница» на СВОЙ номер, а не на общий раздел: пункт,
+	// ведущий в никуда, хуже отсутствующего.
+	if want := `href="/u/` + strconv.FormatInt(testProfileID, 10) + `"`; !strings.Contains(head, want) {
+		t.Errorf("в меню нет ссылки на свою страницу (%s):\n%s", want, head)
 	}
 }
 
@@ -1424,7 +1434,7 @@ func TestAccountMenuWorksWithoutScript(t *testing.T) {
 	if !strings.Contains(menu, "<summary") {
 		t.Fatal("меню не раскрывается разметкой: нет summary")
 	}
-	if !strings.Contains(menu, "Мой профиль") || !strings.Contains(menu, "Выход") {
+	if !strings.Contains(menu, "Моя страница") || !strings.Contains(menu, "Выход") {
 		t.Error("пункты меню приходят не с сервера — без JS их не будет")
 	}
 }

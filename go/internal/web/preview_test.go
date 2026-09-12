@@ -45,10 +45,13 @@ func TestПредпросмотр(t *testing.T) {
 	st.profile.Job = "слесарь-ремонтник"
 	// Снимки — силуэты из своей же статики: боевых фотографий в стенде быть не
 	// должно, а картинка нужна только чтобы увидеть сетку альбома.
+	//
+	// Их ДВА, а не три: при полном альбоме формы «Добавить фотографию» на
+	// экране нет вовсе (кнопка, которая заведомо откажет, хуже отсутствующей),
+	// и посмотреть на главное — как человек кладёт снимок — было бы негде.
 	st.photos = []platform.Photo{
 		{ID: 1, Position: 1, URL: assetURL("profile/male300px.png")},
 		{ID: 2, Position: 2, URL: assetURL("profile/female300px.png")},
-		{ID: 3, Position: 3, URL: assetURL("profile/anonymous300px.png")},
 	}
 	auth, token := signedInAs(t, platform.User{
 		ID: testProfileID, Nick: testNick, Kind: platform.KindMember, Role: platform.RoleAdmin,

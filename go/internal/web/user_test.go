@@ -319,8 +319,13 @@ func TestАнонимНеСтановитсяСсылкой(t *testing.T) {
 	h, _, token := profileServer(t, st, platform.RoleUser)
 
 	body := do(h, as(guest(t, "GET", "/"), token)).Body.String()
-	if strings.Contains(body, `href="/u/`) {
-		t.Errorf("имя анонима стало ссылкой:\n%s", tailOf(body))
+	// Смотрим НИЖЕ шапки: в меню участника с 12.09.2026 стои́т ссылка на свою
+	// страницу, и она к анониму отношения не имеет — общий поиск по странице
+	// с этого дня падал бы всегда.
+	if _, main, ok := strings.Cut(body, "</header>"); !ok {
+		t.Fatal("на странице нет шапки")
+	} else if strings.Contains(main, `href="/u/`) {
+		t.Errorf("имя анонима стало ссылкой:\n%s", tailOf(main))
 	}
 }
 
@@ -495,5 +500,76 @@ func TestКриваяСсылкаНаГруппуГаснет(t *testing.T) {
 	}
 	if got.ProfileID != 1 {
 		t.Error("номер анкеты не должен зависеть от проверки ссылок")
+	}
+}
+
+// В выдержках списка НЕ должно быть знаков разметки и кодов смайлов: список
+// показывает плоский текст, а в теле лежит написанное ЗДЕСЬ, где скобки и
+// смайлы разбираются всегда. До 12.09.2026 они печатались как есть —
+// «[color=red]UPD.» и «:::joy:::» посреди строки (замечание владельца по живой
+// странице).
+func TestВыдержкиБезРазметкиИСмайлов(t *testing.T) {
+	st := profileStore()
+	// Номер из НАТИВНОЙ полосы: у написанного здесь разметка работает
+	// независимо от заката 2014-го, и ровно на таких записях дефект и был.
+	st.pubNotes = []platform.PubNote{{
+		ID: 100000000041, At: time.Now(), Exact: true,
+		Excerpt: "[color=red]UPD.[/color] чиним [b]вход[/b] :::joy:::",
+	}}
+	st.pubComs = []platform.PubComment{{
+		ID: 100000000042, NoteID: 100000000041, At: time.Now(),
+		Excerpt: "[i]а я[/i] бы не поехал", Note: "[b]про третье свидание[/b]",
+	}}
+	h, _, token := profileServer(t, st, platform.RoleUser)
+	body := do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+
+	for _, junk := range []string{"[color=red]", "[/color]", "[b]", "[i]", ":::joy:::"} {
+		if strings.Contains(body, junk) {
+			t.Errorf("в выдержке осталось %q", junk)
+		}
+	}
+	// Слова при этом на месте: снимаются ЗНАКИ, а не текст.
+	for _, want := range []string{"UPD.", "чиним", "вход", "про третье свидание"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("из выдержки пропало %q:\n%s", want, tailOf(body))
+		}
+	}
+}
+
+// «Здесь с» колонку собой НЕ оправдывает: это справка площадки о записи, а не
+// то, что человек о себе рассказал. У незаполненного профиля колонка выходила
+// полосой в 220 точек с единственной датой, и страница читалась перекошенной.
+func TestОднаДатаКолонкуНеДержит(t *testing.T) {
+	st := profileStore()
+	h, _, token := profileServer(t, st, platform.RoleUser)
+	body := do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+
+	if strings.Contains(body, `class="ucols"`) {
+		t.Errorf("колонки нарисованы ради одной даты:\n%s", tailOf(body))
+	}
+	// Сама дата при этом не пропала — она уехала в служебную строку под именем.
+	if !strings.Contains(body, "здесь с") {
+		t.Error("«здесь с» пропало вместе с колонкой")
+	}
+	// А с городом колонка появляется.
+	st.profile.City = "Бердск"
+	h, _, token = profileServer(t, st, platform.RoleUser)
+	body = do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+	if !strings.Contains(body, `class="ucols"`) || !strings.Contains(body, "Бердск") {
+		t.Errorf("заполненный профиль остался без колонок:\n%s", tailOf(body))
+	}
+}
+
+// Своя пустая страница ЗОВЁТ рассказать о себе: человек, впервые сюда попавший,
+// видит список своих реплик и ничего о себе, и догадаться, что город с
+// фотографиями вообще бывают, ему неоткуда.
+func TestПустаяСвояСтраницаЗовётРассказать(t *testing.T) {
+	st := profileStore()
+	st.profile.ID = testProfileID
+	h, _, token := profileServer(t, st, platform.RoleUser)
+	body := do(h, as(guest(t, "GET", "/u/"+itoa64(testProfileID)), token)).Body.String()
+
+	if !strings.Contains(body, `href="/me/about"`) {
+		t.Errorf("на своей пустой странице нет дороги к рассказу о себе:\n%s", tailOf(body))
 	}
 }
