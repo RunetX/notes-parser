@@ -420,7 +420,7 @@ func kindWord(m platform.Profile) string {
 	case m.Persona:
 		return "житель площадки"
 	case m.Kind == platform.KindShadow:
-		return "ещё не переехал сюда с НГС"
+		return "ещё не переехал сюда с прежнего сайта"
 	case m.Kind == platform.KindService:
 		return "служебная анкета"
 	default:

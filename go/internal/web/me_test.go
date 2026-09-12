@@ -30,7 +30,7 @@ func TestГалочкаОтправкиНаНГС(t *testing.T) {
 	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
 
 	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
-	if !strings.Contains(body, "Отправлять мои записи на НГС") {
+	if !strings.Contains(body, "Отправлять мои записи на прежний сайт") {
 		t.Fatal("галочки нет у участника с анкетой НГС")
 	}
 	if !strings.Contains(body, "сейчас выключено") {
@@ -82,7 +82,7 @@ func TestОстановленнаяОтправкаНаНГСОбъясняет�
 	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
 
 	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
-	if !strings.Contains(body, "На НГС не ушло 7 записей") {
+	if !strings.Contains(body, "На прежний сайт не ушло 7 записей") {
 		t.Error("страница молчит о том, что записи не уходят")
 	}
 	if !strings.Contains(body, "/login") {
@@ -90,7 +90,7 @@ func TestОстановленнаяОтправкаНаНГСОбъясняет�
 	}
 
 	wr.ngsStuck = map[int64]int{ngsID: 0}
-	if body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String(); strings.Contains(body, "На НГС не ушло") {
+	if body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String(); strings.Contains(body, "На прежний сайт не ушло") {
 		t.Error("предупреждение осталось после того, как отправка наладилась")
 	}
 }

@@ -837,7 +837,7 @@ func writeProblem(err error) (int, string) {
 		return http.StatusForbidden, "Нужны права администратора."
 	case errors.Is(err, platform.ErrNotNative):
 		return http.StatusForbidden,
-			"Эта заметка пришла с НГС — здесь её копия, и текст копии не правится."
+			"Эта заметка пришла с прежнего сайта — здесь её копия, и текст копии не правится."
 	case errors.Is(err, platform.ErrEditWindowClosed):
 		return http.StatusForbidden,
 			"Окно правки закрыто: заметку можно поправить один раз, первые десять минут и только пока под ней нет ответов."

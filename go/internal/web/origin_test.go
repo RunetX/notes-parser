@@ -14,7 +14,7 @@ import (
 
 func TestOriginMarksBothSides(t *testing.T) {
 	mirror := originOf(312811, false, false)
-	if mirror.Label != "НГС" {
+	if mirror.Label != "прежний сайт" {
 		t.Errorf("зеркальная помечена как %q", mirror.Label)
 	}
 	own := originOf(platform.NativeIDBase+7, false, false)
@@ -32,7 +32,7 @@ func TestOriginMarksBothSides(t *testing.T) {
 // Значков ДВА, а не три: восстановленное из чужих зеркал читателю ничем не
 // отличается от свежего зеркала.
 func TestRestoredLooksLikeMirror(t *testing.T) {
-	if o := originOf(platform.RestoredIDBase+5, false, false); o.Label != "НГС" {
+	if o := originOf(platform.RestoredIDBase+5, false, false); o.Label != "прежний сайт" {
 		t.Errorf("восстановленная помечена как %q: значков должно быть два, а не три", o.Label)
 	}
 }
@@ -96,7 +96,7 @@ func TestOriginBadgeIsASignNotAWord(t *testing.T) {
 	if !strings.Contains(badge, "<svg") {
 		t.Error("метка нарисована не значком")
 	}
-	if !strings.Contains(badge, `<span class="sr-only">НГС</span>`) {
+	if !strings.Contains(badge, `<span class="sr-only">прежний сайт</span>`) {
 		t.Error("у метки пропало имя источника для читалки")
 	}
 	if !strings.Contains(badge, "title=") {
@@ -105,9 +105,9 @@ func TestOriginBadgeIsASignNotAWord(t *testing.T) {
 	// А ВИДИМЫМ текстом источник больше не назван: вычёркиваем спрятанную
 	// подпись и заголовок (он всплывает при наведении, а не печатается) и
 	// смотрим, что от метки осталось для глаза.
-	visible := strings.Replace(badge, `<span class="sr-only">НГС</span>`, "", 1)
+	visible := strings.Replace(badge, `<span class="sr-only">прежний сайт</span>`, "", 1)
 	visible = visible[strings.Index(visible, ">"):]
-	if strings.Contains(visible, "НГС") {
+	if strings.Contains(visible, "прежний сайт") {
 		t.Error("имя источника снова напечатано словом на карточке")
 	}
 }
@@ -300,7 +300,7 @@ func TestSentMarkReachesThePage(t *testing.T) {
 
 	body := do(h, guest(t, "GET", "/n/312811")).Body.String()
 	if !strings.Contains(body, commentOriginOf(mine.ID, true).Title) {
-		t.Error("на странице нет метки «унесено на НГС»")
+		t.Error("на странице нет метки «унесено на прежний сайт»")
 	}
 	// А без отметки в очереди — прежняя метка «написано здесь».
 	st.ngsSent = nil

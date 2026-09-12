@@ -498,7 +498,7 @@ func TestFreshCarriesTheAwayMark(t *testing.T) {
 		ngsSent: map[string]bool{platform.NGSComment + ":100000000009": true},
 	}
 	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0,0")).Body.String()
-	if !strings.Contains(body, "копия ушла на НГС") {
+	if !strings.Contains(body, "копия ушла на прежний сайт") {
 		t.Errorf("добранная реплика приехала без метки выноса:\n%s", body)
 	}
 }
@@ -510,7 +510,7 @@ func TestFreshKeepsPlainMarkWhenNotSent(t *testing.T) {
 	own.ID = 100000000009
 	st := &fakeStore{note: sampleNote(), fresh: []platform.CommentView{own}}
 	body := do(openServer(t, st), guest(t, "GET", "/n/312811/fresh?after=0,0")).Body.String()
-	if strings.Contains(body, "копия ушла на НГС") {
+	if strings.Contains(body, "копия ушла на прежний сайт") {
 		t.Errorf("метка выноса встала у реплики, которая никуда не уезжала:\n%s", body)
 	}
 }

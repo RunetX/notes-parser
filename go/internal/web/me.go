@@ -365,23 +365,23 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.site == nil {
 		s.fail(w, r, http.StatusServiceUnavailable,
-			"Площадка сейчас не может сходить на НГС за фото.")
+			"Площадка сейчас не может сходить на прежний сайт за фото.")
 		return
 	}
 	if !platform.IsNGS(u.ID) {
 		s.fail(w, r, http.StatusBadRequest,
-			"Ваш вход не связан с анкетой НГС — фото брать неоткуда.")
+			"Ваш вход не связан с анкетой на прежнем сайте — фото брать неоткуда.")
 		return
 	}
 	prof, err := s.site.Profile(r.Context(), u.ID)
 	switch {
 	case errors.Is(err, ErrNoProfile):
-		s.showMe(w, r, u, mePage{Problem: "НГС не отдал вашу анкету: она скрыта целиком или удалена. Фото осталось прежним."})
+		s.showMe(w, r, u, mePage{Problem: "Прежний сайт не отдал вашу анкету: она скрыта целиком или удалена. Фото осталось прежним."})
 		return
 	case err != nil:
 		// Отказ ЧУЖОГО сайта не наша поломка, и 500 на своей странице тут врал бы.
 		s.log.Warn("анкета НГС для обновления фото", "user", u.ID, "err", err)
-		s.showMe(w, r, u, mePage{Problem: "НГС сейчас не отвечает. Фото осталось прежним — попробуйте позже."})
+		s.showMe(w, r, u, mePage{Problem: "Прежний сайт сейчас не отвечает. Фото осталось прежним — попробуйте позже."})
 		return
 	}
 	if prof.AvatarURL == "" {
@@ -389,7 +389,7 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		// Своё при этом НЕ снимаем: аватара из своего файла площадка не
 		// принимает, вернуть его было бы неоткуда, а «нажал обновить и остался
 		// без фото» — это потеря по нажатию кнопки.
-		s.showMe(w, r, u, mePage{Problem: "В анкете НГС сейчас нет фото — здесь всё осталось как было."})
+		s.showMe(w, r, u, mePage{Problem: "В вашей анкете на прежнем сайте сейчас нет фото — здесь всё осталось как было."})
 		return
 	}
 	data, err := s.site.Avatar(r.Context(), prof.AvatarURL)

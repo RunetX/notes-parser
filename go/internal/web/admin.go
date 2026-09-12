@@ -203,7 +203,7 @@ func (s *Server) afterAvatar(w http.ResponseWriter, r *http.Request, err error, 
 		s.renderAdmin(w, r, http.StatusOK, adminPage{Told: told})
 	case errors.Is(err, platform.ErrNotPersona):
 		s.renderAdmin(w, r, http.StatusForbidden, adminPage{
-			Problem: "Это анкета живого человека. Фото ему ставит он сам — со своей страницы, из анкеты НГС."})
+			Problem: "Это анкета живого человека. Фото ему ставит он сам — со своей страницы, из своей анкеты на прежнем сайте."})
 	case errors.Is(err, platform.ErrNotFound):
 		s.renderAdmin(w, r, http.StatusNotFound, adminPage{Problem: "Такого жителя нет."})
 	case errors.Is(err, platform.ErrNotAdmin):
@@ -267,7 +267,7 @@ func (s *Server) issueInvite(w http.ResponseWriter, r *http.Request, actor platf
 		r.FormValue("label"), time.Duration(days)*24*time.Hour)
 	switch {
 	case errors.Is(err, platform.ErrNotFound):
-		refuse("Такого участника на площадке нет. Проверьте номер: у переехавшего с НГС он равен номеру его анкеты.")
+		refuse("Такого участника на площадке нет. Проверьте номер: у переехавшего он равен номеру его прежней анкеты.")
 		return
 	case errors.Is(err, platform.ErrAnonymized):
 		refuse("Данные этого участника обезличены по его требованию — привязать к ним никого нельзя.")

@@ -69,8 +69,8 @@ func originOf(id int64, stage bool, sent bool) noteOrigin {
 	if platform.IsNative(id) {
 		if sent {
 			return noteOrigin{
-				Label: SiteName + ", копия ушла на НГС",
-				Title: "Заметка написана здесь, а её копия унесена на НГС — по галочке автора в его профиле",
+				Label: SiteName + ", копия ушла на прежний сайт",
+				Title: "Заметка написана здесь, а её копия унесена на прежний сайт — по галочке автора в его профиле",
 				Icon:  "away",
 			}
 		}
@@ -81,8 +81,8 @@ func originOf(id int64, stage bool, sent bool) noteOrigin {
 		}
 	}
 	return noteOrigin{
-		Label: "НГС",
-		Title: "Заметка пришла с НГС — здесь её копия, поэтому её текст не правится",
+		Label: "прежний сайт",
+		Title: "Заметка пришла с прежнего сайта — здесь её копия, поэтому её текст не правится",
 		Icon:  "mirror",
 	}
 }
@@ -113,8 +113,8 @@ func commentOriginOf(id int64, sent bool) noteOrigin {
 	if platform.IsNative(id) {
 		if sent {
 			return noteOrigin{
-				Label: SiteName + ", копия ушла на НГС",
-				Title: "Реплика написана здесь, а её копия унесена на НГС — там её прочтут те, кто сюда не переехал",
+				Label: SiteName + ", копия ушла на прежний сайт",
+				Title: "Реплика написана здесь, а её копия унесена на прежний сайт — там её прочтут те, кто сюда не переехал",
 				Icon:  "away",
 			}
 		}
@@ -125,8 +125,8 @@ func commentOriginOf(id int64, sent bool) noteOrigin {
 		}
 	}
 	return noteOrigin{
-		Label: "НГС",
-		Title: "Реплика пришла с НГС — здесь её копия",
+		Label: "прежний сайт",
+		Title: "Реплика пришла с прежнего сайта — здесь её копия",
 		Icon:  "mirror",
 	}
 }

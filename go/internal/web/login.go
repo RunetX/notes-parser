@@ -268,20 +268,20 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	id := parseProfileID(r.FormValue("profile"))
 	if id == 0 {
 		s.renderLogin(w, r, http.StatusBadRequest,
-			"Это не похоже на номер анкеты. Нужны цифры из адреса вашей страницы на НГС.")
+			"Это не похоже на номер анкеты. Нужны цифры из адреса вашей страницы на прежнем сайте.")
 		return
 	}
 	prof, err := s.site.Profile(r.Context(), id)
 	if errors.Is(err, ErrNoProfile) {
 		s.renderLogin(w, r, http.StatusNotFound,
-			"Анкеты с номером "+strconv.FormatInt(id, 10)+" на НГС нет. "+
-				"Нужны цифры из адреса вашей страницы — например, love.ngs.ru/profile/1493279/.")
+			"Анкеты с номером "+strconv.FormatInt(id, 10)+" на прежнем сайте нет. "+
+				"Нужны цифры из адреса вашей страницы там — например, …/profile/1493279/.")
 		return
 	}
 	if err != nil {
 		s.log.Error("чтение анкеты НГС", "profile", id, "err", err)
 		s.renderLogin(w, r, http.StatusBadGateway,
-			"НГС сейчас не отвечает. Попробуйте позже — или войдите по приглашению.")
+			"Прежний сайт сейчас не отвечает. Попробуйте позже — или войдите по приглашению.")
 		return
 	}
 	s.startByProfileField(w, r, id, prof)
@@ -363,7 +363,7 @@ func (s *Server) handleLoginCheck(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.log.Error("чтение анкеты НГС", "profile", id, "err", err)
 		s.renderCode(w, r, http.StatusBadGateway, id, SiteProfile{}, code,
-			"НГС сейчас не отвечает. Код ещё жив — попробуйте через минуту.")
+			"Прежний сайт сейчас не отвечает. Код ещё жив — попробуйте через минуту.")
 		return
 	}
 	if !s.checkCode(w, r, id, code, prof) {
@@ -392,7 +392,7 @@ func (s *Server) checkCode(w http.ResponseWriter, r *http.Request,
 		// (замер 18.08.2026, см. love.Profile.Hidden). А вот модерация — при чём:
 		// правку анкеты НГС сначала одобряет человек.
 		s.renderCode(w, r, http.StatusUnauthorized, id, prof, code,
-			"В поле «о себе» кода пока нет. Правку анкеты НГС проверяет модератор — "+
+			"В поле «о себе» кода пока нет. Правку анкеты там проверяет модератор — "+
 				"возможно, она ещё не одобрена.")
 	case errors.Is(err, platform.ErrNoChallenge):
 		// Куку СНИМАЕМ: с возобновлением начатой проверки (startByProfileField)
