@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // JSONGenerator — онлайн-LLM, отвечающий строго по JSON-схеме
@@ -74,9 +75,62 @@ var editorialSchema = map[string]any{
 // вернула валидный по схеме JSON с пустыми week_summary и topics, а тот же
 // запрос минутой позже отработал нормально (44 с). Выпуск еженедельный, и
 // сорванная автопубликация ждёт руки до следующей субботы — переспрос дешевле
-// осечки. Backoff не нужен: чинится не темп запросов, а сам ответ, временные
-// сбои сети и 429/5xx ретраит SDK.
+// осечки.
 const editorialRetries = 3
+
+// editorialBackoff — пауза перед повтором ПОСЛЕ ОТКАЗА ЗАПРОСА. Список короче
+// числа попыток намеренно: последняя пауза повторяется.
+//
+// До 12.09.2026 отказ запроса не повторялся вовсе, и довод стоял тут же:
+// «временные сбои сети и 429/5xx ретраит SDK». Довод неверен ровно для того
+// случая, который и случился: канал до api.anthropic.com идёт через SOCKS-прокси
+// (с RU-IP прямого пути нет), рукопожатие на нём стало срываться, и запрос
+// выел весь llm.requestTimeout — пять минут — не дойдя до модели. SDK такое не
+// ретраит: для него это истёкший дедлайн запроса, а не 5xx. Выпуск 2026-W37
+// не вышел в срок именно поэтому.
+//
+// Арифметика худшего случая: три попытки по пять минут плюс паузы — около
+// восемнадцати минут на слот. Для еженедельной рубрики это дёшево, а приёмник
+// Telegram в ту же ночь выжил на том же канале ровно тем, что повторяет.
+var editorialBackoff = []time.Duration{30 * time.Second, 2 * time.Minute}
+
+// failKind — почему попытка не удалась. Разница не косметическая: брак ответа
+// чинится ПЕРЕСПРОСОМ (причина едет в промпт), отказ запроса — ОЖИДАНИЕМ
+// (промпт не трогаем, ответа не было вовсе).
+type failKind int
+
+const (
+	failNone failKind = iota
+	failRequest
+	failBadAnswer
+)
+
+// pause ждёт d, но не глуше отмены: демон гасят по контексту, а пауза тут
+// измеряется минутами.
+func pause(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// backoffFor — пауза перед (waits+1)-м ожиданием канала.
+func backoffFor(waits int) time.Duration {
+	if len(editorialBackoff) == 0 {
+		return 0
+	}
+	if waits >= len(editorialBackoff) {
+		waits = len(editorialBackoff) - 1
+	}
+	return editorialBackoff[waits]
+}
 
 // retryNote — хвост переспроса. Слепой повтор того же запроса повторил бы и
 // вырожденный ответ, поэтому причина брака едет в промпт.
@@ -95,40 +149,53 @@ func GenerateEditorial(ctx context.Context, gen JSONGenerator, is *Issue) (*Edit
 		return nil, err
 	}
 	base := materials.String()
-	var lastErr error
+	var (
+		badAnswer error // последний БРАК — его причина едет в переспрос
+		lastErr   error // последняя ошибка любого рода: с ней и сдаёмся
+		waits     int   // сколько раз уже ждали канал
+	)
 	for attempt := 0; attempt < editorialRetries; attempt++ {
 		prompt := base
-		if lastErr != nil {
-			prompt += fmt.Sprintf(retryNote, lastErr)
+		if badAnswer != nil {
+			prompt += fmt.Sprintf(retryNote, badAnswer)
 		}
-		ed, retriable, err := generateOnce(ctx, gen, prompt, is)
+		ed, kind, err := generateOnce(ctx, gen, prompt, is)
 		if err == nil {
 			return ed, nil
 		}
 		lastErr = err
-		if !retriable {
-			return nil, err
+		if kind == failBadAnswer {
+			badAnswer = err
+			continue
+		}
+		// Отказ запроса: ответа не было вовсе, переспрашивать не о чем —
+		// ждём канал и повторяем тем же промптом.
+		if attempt+1 < editorialRetries {
+			if err := pause(ctx, backoffFor(waits)); err != nil {
+				return nil, errors.Join(lastErr, err)
+			}
+			waits++
 		}
 	}
 	return nil, fmt.Errorf("редактура: попытки исчерпаны: %w", lastErr)
 }
 
-// generateOnce — одна попытка: запрос, разбор, валидация. retriable отделяет
-// брак ответа (пришёл, но не годится) от ошибки самого запроса — её повторять
-// незачем, сеть и 429/5xx SDK уже отретраил сам.
-func generateOnce(ctx context.Context, gen JSONGenerator, prompt string, is *Issue) (_ *Editorial, retriable bool, err error) {
+// generateOnce — одна попытка: запрос, разбор, валидация. Вид отказа отделяет
+// брак ответа (пришёл, но не годится) от отказа запроса (ответа не было): у них
+// разное лечение — переспрос против ожидания канала.
+func generateOnce(ctx context.Context, gen JSONGenerator, prompt string, is *Issue) (_ *Editorial, kind failKind, err error) {
 	raw, err := gen.GenerateJSON(ctx, editorialSystem, prompt, editorialSchema)
 	if err != nil {
-		return nil, false, err
+		return nil, failRequest, err
 	}
 	var ed Editorial
 	if err := json.Unmarshal(raw, &ed); err != nil {
-		return nil, true, fmt.Errorf("разбор ответа LLM: %w", err)
+		return nil, failBadAnswer, fmt.Errorf("разбор ответа LLM: %w", err)
 	}
 	if err := validateEditorial(&ed, is); err != nil {
-		return nil, true, fmt.Errorf("ответ LLM не прошёл валидацию: %w", err)
+		return nil, failBadAnswer, fmt.Errorf("ответ LLM не прошёл валидацию: %w", err)
 	}
-	return &ed, false, nil
+	return &ed, failNone, nil
 }
 
 // validateEditorial проверяет разметку полей и обязательность рубрик.
