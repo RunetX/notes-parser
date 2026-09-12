@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -83,6 +84,10 @@ type Contacts struct {
 	ProfileID int64
 	Telegram  string
 	MAX       string
+	// OwnerMAX — личный адрес владельца в MAX: не группа и не бот, а человек.
+	// Стои́т рядом со ссылкой на его страницу и нужен ровно там, где та не
+	// работает, — у не вошедшего (см. шапку config.Contacts).
+	OwnerMAX string
 	// BotTelegram и BotMAX — куда идти за ссылкой входа. Живут рядом с
 	// контактами, потому что это тот же вопрос «где нас найти». Полей два:
 	// Telegram и MAX — разные сети, адреса у бота там разные, и ссылка одной в
@@ -313,6 +318,11 @@ type Server struct {
 	// band — мордолента, прочитанная недавно (faces.go). Своё поле, а не общее
 	// с notes: спрашивают их разные страницы и с разной частотой.
 	band faceCache
+	// ownerQR — личный адрес владельца в MAX, нарисованный кодом (qr.go).
+	// Считается ОДИН раз при сборке сервера: настройка за жизнь процесса не
+	// меняется, а рисовать одну и ту же картинку на каждый заход в справку —
+	// это работа ни за чем.
+	ownerQR template.HTML
 	// shots — перекодировщик картинок (shot.go): nil ⇒ файлов площадка не
 	// принимает, и поля файла на форме нет вовсе. Подключается SetShots, а не
 	// конструктором, по той же причине, что и events: способность
@@ -346,7 +356,7 @@ type Server struct {
 // ссылка иначе обнаружилась бы через месяц.
 func checkContacts(c Contacts, log *slog.Logger) Contacts {
 	for name, link := range map[string]*string{
-		"telegram": &c.Telegram, "max": &c.MAX,
+		"telegram": &c.Telegram, "max": &c.MAX, "owner_max": &c.OwnerMAX,
 		"bot_telegram": &c.BotTelegram, "bot_max": &c.BotMAX,
 	} {
 		keepHTTPS(name, link, log)
@@ -403,6 +413,16 @@ func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *
 	setVideoPreviews(cfg.MediaDir, log)
 	s.cfg.Contacts = checkContacts(cfg.Contacts, log)
 	s.cfg.Support = checkSupport(cfg.Support, log)
+	// Код личного контакта рисуется здесь же, рядом с проверкой ссылок, и по
+	// той же причине: адрес приезжает из файла настроек, то есть его пишет рука.
+	// Погашенная кривая ссылка кода не получает вовсе (checkContacts стои́т
+	// строкой выше), а слишком длинную не возьмёт кодировщик — и это не повод не
+	// подняться: строка в лог, раздел «Как связаться» без кода.
+	if qr, err := qrSVG(s.cfg.Contacts.OwnerMAX, qrSide); err != nil {
+		log.Warn("личный адрес в MAX не уложился в QR-код", "err", err)
+	} else {
+		s.ownerQR = qr
+	}
 	if site == nil {
 		log.Warn("клиент НГС не задан — вход по коду в анкете недоступен, остаются приглашения")
 	}

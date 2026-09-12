@@ -33,6 +33,7 @@ package web
 // том, кто обрабатывает данные.
 
 import (
+	"html/template"
 	"net/http"
 	"time"
 
@@ -142,6 +143,11 @@ type helpPage struct {
 	// раздела над пустотой — тот же дефект, что был у «ЧТО ТЕБЯ ЦЕПЛЯЕТ» в
 	// брифе жителя.
 	HasContacts bool
+	// OwnerMAXQR — тот же личный адрес, но КОДОМ (qr.go). Строкой он на странице
+	// не печатается вовсе: семьдесят шесть знаков токена не прочесть глазом и не
+	// перепечатать, а нужны они телефону. Картинка считается один раз при сборке
+	// сервера — из той же настройки, что и ссылка, поэтому разойтись им негде.
+	OwnerMAXQR template.HTML
 	// Demo — ЖИВОЙ СНИМОК карточки ленты: та же заметка, тем же шаблоном, что и
 	// настоящая. Не картинка намеренно — см. demoNote ниже.
 	Demo     feedPage
@@ -249,7 +255,8 @@ func (s *Server) helpData(r *http.Request, current, title string) helpPage {
 		DefaultTheme:     defaultThemeName(),
 		DemoNote:         demoNote(),
 		Contacts:         c,
-		HasContacts:      c.ProfileID != 0 || c.Telegram != "" || c.MAX != "",
+		HasContacts:      c.ProfileID != 0 || c.Telegram != "" || c.MAX != "" || c.OwnerMAX != "",
+		OwnerMAXQR:       s.ownerQR,
 		HasTelegram:      c.Telegram != "" || c.BotTelegram != "",
 		HasMAX:           c.MAX != "" || c.BotMAX != "",
 		Support:          s.cfg.Support,

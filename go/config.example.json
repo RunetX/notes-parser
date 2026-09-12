@@ -142,6 +142,7 @@
       "profile_id": 0,
       "telegram": "",
       "max": "",
+      "owner_max": "",
       "bot_telegram": "",
       "bot_max": ""
     },
