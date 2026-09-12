@@ -82,9 +82,17 @@ const (
 )
 
 // notSystemAuthor — сама площадка в рубрики про ЛЮДЕЙ не идёт. Под служебной
-// анкетой (platform.KindService) выходит этот самый выпуск, и без условия она
-// объявила бы себя «новым лицом» ровно один раз — на второй неделе после
-// заведения. Сводка про сообщество, а не про того, кто её пишет.
+// анкетой (platform.KindService) выходит этот самый выпуск. Сводка про
+// сообщество, а не про того, кто её пишет.
+//
+// Условие обязано стоять у ОБЕИХ историй — авторов заметок и комментаторов, —
+// и до 12.09.2026 стояло только у первой. Прожило это незамеченным три недели
+// ровно потому, что служебная анкета не комментировала вовсе: заметки её в
+// «новые лица» не пускало условие, а реплик у неё не было. Появились они с
+// пятничной рубрикой (11.09.2026) — вопросы там НАДСТРОЙКА над обычным
+// комментарием и подписаны площадкой, — и первый же выпуск объявил её новым
+// лицом с шестью комментариями. Урок общий: у парных запросов правило,
+// добавленное в один, обязано ехать во второй тем же коммитом.
 //
 // Число подставлено в текст по тому же доводу, что и в systemUserQuery: под
 // `kind = 2` подходит частичный индекс, под параметр — нет.
@@ -221,11 +229,12 @@ func collectNotes(rows pgx.Rows) ([]digest.Note, error) {
 	return out, rows.Err()
 }
 
-// commenterHistoryQuery — комментаторы окна и их прошлое. Константой по той же
-// причине, что и окно: план проверяется тестом, а LATERAL здесь обязан идти
-// по индексу (author_id, published_at DESC) — у площадки есть участники со
-// 138 тысячами реплик.
-const commenterHistoryQuery = `
+// commenterHistoryQuery — комментаторы окна и их прошлое. Отдельным именем по
+// той же причине, что и окно: план проверяется тестом, а LATERAL здесь обязан
+// идти по индексу (author_id, published_at DESC) — у площадки есть участники со
+// 138 тысячами реплик. Не константа лишь потому, что склеивается с
+// notSystemAuthor, а тот считается из platform.KindService.
+var commenterHistoryQuery = `
 	WITH win AS (
 		SELECT c.author_id, count(*) AS cnt, min(c.published_at) AS first_in_win
 		FROM comments c
@@ -235,7 +244,7 @@ const commenterHistoryQuery = `
 		GROUP BY c.author_id)
 	SELECT w.author_id, COALESCE(NULLIF(u.nick, ''), ''), w.cnt, w.first_in_win, prev.published_at
 	FROM win w
-	JOIN users u ON u.id = w.author_id
+	JOIN users u ON u.id = w.author_id` + notSystemAuthor + `
 	LEFT JOIN LATERAL (
 		SELECT c2.published_at FROM comments c2
 		WHERE c2.author_id = w.author_id AND c2.status = 0 AND c2.published_at <= $1

@@ -412,3 +412,47 @@ func TestПлощадкаНеПопадаетВНовыеЛица(t *testing.T) 
 		t.Fatal("живой автор из окна пропал — проверять нечего")
 	}
 }
+
+// Вторая половина того же правила, и ровно та, которой не было до 12.09.2026:
+// в «новые лица» площадка попадает не заметками, а РЕПЛИКАМИ — вопросами
+// пятничной рубрики, подписанными ею же. Тест ходит через CommenterHistory,
+// потому что дефект жил в соседнем запросе, а не в общем условии.
+func TestПлощадкаНеПопадаетВНовыеЛицаКомментариями(t *testing.T) {
+	src, p := newSource(t)
+	ctx := t.Context()
+	start, end := time.Now().Add(-24*time.Hour), time.Now().Add(time.Hour)
+
+	sys, err := p.EnsureSystemUser(ctx, "Зазеркалье")
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteID, err := p.CreateNote(ctx, platform.NewNote{AuthorID: sys, Body: "Пятница"})
+	if err != nil {
+		t.Fatalf("заметка рубрики: %v", err)
+	}
+	// Вопрос рубрики — обычный комментарий под своей же заметкой.
+	if _, err := p.CreateComment(ctx, platform.NewComment{
+		NoteID: noteID, AuthorID: sys, Body: "В каком году это написано?",
+	}); err != nil {
+		t.Fatalf("вопрос рубрики: %v", err)
+	}
+	ingestNote(t, p, 312811, 175869, "Гадёныш", start.Add(time.Hour))
+	ingestComment(t, p, 63238879, 312811, 175869, "Гадёныш", start.Add(time.Hour))
+
+	seen, err := src.CommenterHistory(ctx, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var human bool
+	for _, s := range seen {
+		if s.Author == strconv.FormatInt(sys, 10) {
+			t.Errorf("служебная анкета площадки попала в комментаторов недели: %+v", s)
+		}
+		if s.Author == "175869" {
+			human = true
+		}
+	}
+	if !human {
+		t.Fatal("живой комментатор из окна пропал — проверять нечего")
+	}
+}
