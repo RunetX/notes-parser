@@ -1705,9 +1705,12 @@ messages, and all user-facing bot strings are in Russian.
   (`workflow_dispatch`): сборка бинарника у раннера, проверка «сертификатов
   Минцифры в бинарнике ровно 2», `gzip | ssh`, `Dockerfile.prebuilt`,
   `docker compose up -d platform`, healthz через Caddy и откат на `lovegw:prev`,
-  если не ответил. Миграции роботом НЕ накатываются никогда — схему меняет
-  админ в известный момент. Секреты (ssh-ключ с root, PEM'ы) — в окружении
-  `production`, а не в репозитории: он публичный.
+  если не ответил. Миграции роботом НЕ накатываются никогда, и правило это про
+  КНОПКУ, а не про человека: схему накатывает тот, кто ведёт выкатку (эта
+  сессия в том числе), отдельной командой рунбука и ДО подъёма образа —
+  порядок «миграция, потом кнопка» описан в `deploy/platform/README.md`,
+  раздел «миграция приезжает ВМЕСТЕ с образом». Секреты (ssh-ключ
+  с root, PEM'ы) — в окружении `production`, а не в репозитории: он публичный.
 - Deploy: container image via `go/Dockerfile` (multi-stage, `CGO_ENABLED=0` →
   `distroless/static`, ~100 MB: a ~23 MB binary plus a static `ffmpeg` copied in
   for ASR; tzdata baked in via `time/tzdata`). `deploy/` has
