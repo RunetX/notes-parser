@@ -66,6 +66,16 @@ func TestПредпросмотр(t *testing.T) {
 	}
 	stand := newServerFor(t, st, auth, &fakeWriter{}, newFakeMod(), nil, Config{})
 	stand.SetShots(newShots())
+	// Переписка — отдельно: её в дизайн-хендофф не включали вовсе, и посмотреть
+	// на неё под новой палитрой надо именно поэтому.
+	mail := newFakeMail()
+	if _, err := mail.SendMessage(t.Context(), peerID, testProfileID, "Здравствуйте! Видела вашу заметку про гараж."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mail.SendMessage(t.Context(), testProfileID, peerID, "И вам не хворать."); err != nil {
+		t.Fatal(err)
+	}
+	stand.SetMail(mail)
 	h := stand.routes()
 
 	// Вошедшим считается всякий, кто не попросил обратного: кука сессии
@@ -96,7 +106,7 @@ func TestПредпросмотр(t *testing.T) {
 	defer srv.Close()
 
 	t.Logf("вошедшим показывается всё; гость — добавить ?guest=1")
-	for _, p := range []string{"/", "/n/312811", "/u/" + itoa64(testProfileID), "/me", "/me/about", "/help", "/help/read", "/login", "/new"} {
+	for _, p := range []string{"/", "/n/312811", "/u/" + itoa64(testProfileID), "/me", "/me/about", "/mail", "/mail/1", "/help", "/help/read", "/login", "/new"} {
 		t.Logf("%s%s", srv.URL, p)
 	}
 	t.Log("Ctrl+C, когда насмотритесь")
