@@ -42,12 +42,84 @@ import (
 	"lovegw/internal/platform"
 )
 
+// profileView — то, что на странице человека ВИДНО: карточка, справочная
+// колонка, альбом, рассказ и последние публикации.
+//
+// Структура ОДНА на две страницы — свою и чужую, — и это не экономия. С
+// 12.09.2026 «Моя страница» показывает ровно тот же профиль, что видят другие
+// (решение владельца: «к чему отдельно „Мой профиль" и „Моя страница"»), а
+// собранный двумя разными кусками кода он разошёлся бы молча — и человек
+// правил бы не то, что показывают. Рисует обе страницы один шаблон
+// (parts/profile.gohtml) по тому же доводу, по которому у живого добора и
+// страницы один рендер тела реплики.
+type profileView struct {
+	Member platform.Profile
+	// Facts — справочная колонка слева, строками «что — какое». Собирается в
+	// Go, а не перечисляется в шаблоне цепочкой {{if}}: пустое поле
+	// пропускается поштучно (строка «Город: —» хуже отсутствующей — то же
+	// правило, что у контактов в справке), и решить, осталось ли вообще что
+	// показывать, можно только посчитав.
+	Facts []userFact
+	// Photos — альбом (эпик M). Пустой у всех, кто ничего не клал, и у ЖИТЕЛЯ
+	// всегда: лицо ему рисует генератор по промпту, второго лица того же жителя
+	// нарисовать нечем — три «его» фотографии оказались бы тремя разными
+	// людьми.
+	Photos []platform.Photo
+	// HasSide — рисовать ли две колонки. Ответ обязан быть ОДИН на обе половины
+	// сетки: нарисуй мы .ucols без .uside, грид положил бы записи в первую
+	// колонку шириной 220px — страница схлопнулась бы в полосу, и ни один тест
+	// поведения этого бы не увидел.
+	HasSide bool
+	// AboutHidden — карточку скрыл модератор, и смотрящий её всё же видит:
+	// такое бывает у владельца и у модератора. Строка над ней объясняет, почему
+	// другие этого не видят.
+	AboutHidden bool
+	Notes       []platform.PubNote
+	Comments    []platform.PubComment
+	// NotesTrimmed и ComsTrimmed — список показан не целиком. Счётчик у
+	// заголовка называет ВСЁ написанное, а строк под ним два десятка, и без
+	// этой оговорки заголовок «Заметки 412» над двадцатью строками врал бы
+	// ровно так же, как прежняя строка «Заметок 5», под которой было три.
+	NotesTrimmed bool
+	ComsTrimmed  bool
+	// Edit — правка прямо на странице, и непусто оно только у ХОЗЯИНА. Форма
+	// живёт в том же шаблоне, что и показ, ровно затем, чтобы правили то, что
+	// видят: до 12.09.2026 рассказ о себе правился на третьей странице, и
+	// человек её не находил вовсе.
+	Edit *profileEdit
+}
+
+// profileEdit — всё, что нужно формам своей страницы. Отдельной структурой, а
+// не полями страницы: шаблон профиля один на свою и чужую, и «нет правки»
+// обязано быть одним нулевым указателем, а не пятью условиями подряд.
+type profileEdit struct {
+	CSRF string
+	// Signed — подписан ли profile.v1. Не подписан — форм нет вовсе, а есть
+	// ссылка на экран документа: подпись, данная мимоходом под полем ввода,
+	// подписью не является.
+	Signed bool
+	// Limit и Free — сколько фотографий бывает и сколько мест ещё свободно.
+	// Числа приезжают ИЗ ЯДРА: потолок держит база (CHECK на позицию), и
+	// написанная рядом тройка разошлась бы с ним молча.
+	Limit int
+	Free  int
+	// MaxRunes — потолок длины рассказа, тоже из ядра: написанное в шаблоне
+	// число разошлось бы с проверкой молча.
+	MaxRunes int
+	// Shots — перекодировщик поднят, файл принять есть чем. Не поднялся —
+	// страница живёт дальше, просто без поля файла.
+	Shots bool
+	// About — что стои́т в полях формы. На отказе это НАБРАННОЕ человеком, а не
+	// прочитанное из базы: перечитав, мы стёрли бы его работу.
+	About platform.About
+	Saved bool
+	Bad   string
+}
+
 type userPage struct {
 	page
-	Member   platform.Profile
-	Banned   bool
-	Notes    []platform.PubNote
-	Comments []platform.PubComment
+	Prof   profileView
+	Banned bool
 	// CanModerate и CanAdmin — показывать ли решения. Два поля, а не одно:
 	// запрет писать ставит модератор, роли раздаёт только администратор, и это
 	// то самое различие «про слова / про людей», ради которого двери разведены.
@@ -69,32 +141,6 @@ type userPage struct {
 	// текст, отсылающий человека на другую страницу за кнопкой, которую можно
 	// поставить сюда, — это лишний переход и повод забыть, зачем шёл.
 	MailUnblock bool
-	// Facts — справочная колонка слева, строками «что — какое». Собирается
-	// ЗДЕСЬ, а не перечисляется в шаблоне цепочкой {{if}}: пустое поле
-	// пропускается поштучно (строка «Город: —» хуже отсутствующей — то же
-	// правило, что у контактов в справке), и решить, осталось ли вообще что
-	// показывать, можно только посчитав.
-	Facts []userFact
-	// HasSide — рисовать ли две колонки. Ответ обязан быть ОДИН на обе половины
-	// сетки: нарисуй мы .ucols без .uside, грид положил бы записи в первую
-	// колонку шириной 220px — страница схлопнулась бы в полосу, и ни один тест
-	// поведения этого бы не увидел.
-	HasSide bool
-	// NotesTrimmed и ComsTrimmed — список показан не целиком. Счётчик у
-	// заголовка называет ВСЁ написанное, а строк под ним два десятка, и без
-	// этой оговорки заголовок «Заметки 412» над двадцатью строками врал бы
-	// ровно так же, как прежняя строка «Заметок 5», под которой было три.
-	NotesTrimmed bool
-	ComsTrimmed  bool
-	// Photos — альбом (эпик M). Пустой у всех, кто ничего не клал, и у ЖИТЕЛЯ
-	// всегда: лицо ему рисует генератор по промпту, второго лица того же жителя
-	// нарисовать нечем — три «его» фотографии оказались бы тремя разными
-	// людьми.
-	Photos []platform.Photo
-	// AboutHidden — карточку скрыл модератор, и смотрящий её всё же видит:
-	// такое бывает у владельца и у модератора. Строка над ней объясняет, почему
-	// другие этого не видят.
-	AboutHidden bool
 }
 
 // userFact — строка справочной колонки.
@@ -197,17 +243,45 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusNotFound, "Такого участника нет.")
 		return
 	}
-	notes, err := s.st.AuthorNotes(r.Context(), id, 0)
+	mailTo, mailWhy, mailUnblock := s.mailButton(r, me, member.ID)
+	prof, ok := s.profileBody(w, r, me, member, nil)
+	if !ok {
+		return
+	}
+	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
+		page:        s.readingPage(r, userTitle(member)),
+		Prof:        prof,
+		Banned:      member.Banned(time.Now()),
+		CanModerate: me.Role >= platform.RoleModerator && s.mod != nil,
+		CanAdmin:    me.Role >= platform.RoleAdmin && s.mod != nil,
+		Me:          me.ID == member.ID,
+		MailTo:      mailTo,
+		MailWhy:     mailWhy,
+		MailUnblock: mailUnblock,
+	})
+}
+
+// profileBody собирает то, что видно на странице человека, — для своей
+// страницы и для чужой одинаково.
+//
+// Отдельной функцией, а не двумя сборками: до 12.09.2026 «Моя страница» и
+// страница участника показывали РАЗНОЕ про одного и того же человека, и
+// владелец справедливо спросил, к чему их две. Теперь показ один, а различает
+// страницы только edit — правка, которой у чужой нет.
+//
+// Отказ пишет сама (ok=false): у всех трёх запросов свои слова, и собирать их
+// в одну обёртку значило бы потерять, что именно не прочиталось.
+func (s *Server) profileBody(w http.ResponseWriter, r *http.Request, me platform.User, member platform.Profile, edit *profileEdit) (profileView, bool) {
+	notes, err := s.st.AuthorNotes(r.Context(), member.ID, 0)
 	if err != nil {
 		s.oops(w, r, "заметки участника", err)
-		return
+		return profileView{}, false
 	}
-	comments, err := s.st.AuthorComments(r.Context(), id, 0)
+	comments, err := s.st.AuthorComments(r.Context(), member.ID, 0)
 	if err != nil {
 		s.oops(w, r, "реплики участника", err)
-		return
+		return profileView{}, false
 	}
-	mailTo, mailWhy, mailUnblock := s.mailButton(r, me, member.ID)
 	// Скрытую модератором карточку видят ДВОЕ — он сам и её владелец; для всех
 	// остальных её нет вовсе, вместе с рассказом, городом, занятием и снимками.
 	// Решается это ОДНИМ вопросом и здесь, а не тремя условиями в шаблоне:
@@ -219,10 +293,10 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		// Свой альбом и альбом глазами модератора идут целиком: скрытая
 		// фотография, которой владелец у себя не видит, выглядит пропавшей.
 		all := me.ID == member.ID || me.Role >= platform.RoleModerator
-		photos, err = s.st.ProfilePhotos(r.Context(), id, all)
+		photos, err = s.st.ProfilePhotos(r.Context(), member.ID, all)
 		if err != nil {
 			s.oops(w, r, "альбом участника", err)
-			return
+			return profileView{}, false
 		}
 	}
 	if !showAbout {
@@ -244,27 +318,22 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	// «Здесь с» уехало в служебную строку под именем и колонки собой больше не
 	// оправдывает: у незаполненного профиля она выходила полосой в 220 точек с
 	// единственной датой, и страница читалась перекошенной (замечание
-	// владельца 12.09.2026).
+	// владельца 12.09.2026). У ХОЗЯИНА колонка стои́т всегда: в ней живут формы
+	// правки, и прятать их, пока не рассказано ничего, значило бы прятать
+	// единственную дорогу что-нибудь рассказать.
 	facts := userFacts(member)
-	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
-		page:         s.readingPage(r, userTitle(member)),
+	return profileView{
 		Member:       member,
-		Banned:       member.Banned(time.Now()),
-		Notes:        notes,
-		Comments:     comments,
-		CanModerate:  me.Role >= platform.RoleModerator && s.mod != nil,
-		CanAdmin:     me.Role >= platform.RoleAdmin && s.mod != nil,
-		Me:           me.ID == member.ID,
-		MailTo:       mailTo,
-		MailWhy:      mailWhy,
-		MailUnblock:  mailUnblock,
 		Facts:        facts,
 		Photos:       photos,
-		HasSide:      len(facts) > 0 || len(photos) > 0,
+		HasSide:      len(facts) > 0 || len(photos) > 0 || edit != nil,
 		AboutHidden:  showAbout && member.AboutStatus != platform.StatusVisible,
+		Notes:        notes,
+		Comments:     comments,
 		NotesTrimmed: member.Notes > len(notes),
 		ComsTrimmed:  member.Comments > len(comments),
-	})
+		Edit:         edit,
+	}, true
 }
 
 // userFacts — справочная колонка: что о человеке известно СТРОКАМИ, а не
@@ -321,12 +390,12 @@ type userDecisions struct {
 
 func userDecisionsOf(p userPage) userDecisions {
 	return userDecisions{
-		ID:          p.Member.ID,
-		Nick:        p.Member.Nick,
+		ID:          p.Prof.Member.ID,
+		Nick:        p.Prof.Member.Nick,
 		Banned:      p.Banned,
-		BannedUntil: p.Member.BannedUntil,
-		BanReason:   p.Member.BanReason,
-		Role:        p.Member.Role,
+		BannedUntil: p.Prof.Member.BannedUntil,
+		BanReason:   p.Prof.Member.BanReason,
+		Role:        p.Prof.Member.Role,
 		CanAdmin:    p.CanAdmin,
 		CSRF:        p.CSRF,
 		Back:        p.Back,

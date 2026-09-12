@@ -1299,7 +1299,6 @@ span.rxb { cursor: default; }
 .why > p { margin: 8px 0 0; }
 /* Альбом в настройках уже, чем на странице участника: там он колонка в 220
  * точек, а здесь лёг бы во всю ширину текста и перевесил бы собой раздел. */
-.mealbum { max-width: 22rem; margin-top: 12px; }
 
 /* «Обновить аватар» стоит под ником, у самой карточки: она про то, что видно
  * рядом, — а не в общем ряду кнопок страницы. Мельче кнопки смены ника, потому
@@ -1321,7 +1320,12 @@ span.rxb { cursor: default; }
 /* Кнопки про фото стоят В РЯД, а не столбиком: они про одно и то же место на
  * странице, и разнесённые по строкам читались бы как две разные настройки. На
  * узком экране ряд переносится — тем же flex-wrap, что в шапке. */
-.avarow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.avarow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+/* Свёрнутая правка ника стои́т в этом же ряду — «как меня зовут и как я
+   выгляжу» это один вопрос. Раскрытая занимает всю строку: форма с полем и
+   двумя абзацами в колонку кнопки не встаёт. */
+.avarow details { margin: 0; }
+.avarow details[open] { flex: 1 1 100%; }
 .avaform button {
   font: inherit; font-size: 13px; padding: 4px 12px; cursor: pointer;
   border: 1px solid var(--rule); border-radius: 3px; background: var(--btn); color: var(--ink);
@@ -1537,9 +1541,12 @@ span.rxb { cursor: default; }
 .ualbum a {
   display: block; aspect-ratio: 1; border: 1px solid var(--rule); border-radius: 3px;
   overflow: hidden;
-  /* Пол на случай, если aspect-ratio не понят: без него ссылка схлопнется в
-     ноль и альбома не будет вовсе. */
-  min-height: 90px;
+}
+/* Пол на случай, если aspect-ratio не понят: без него ссылка схлопнется в ноль
+   и альбома не будет вовсе. Только там, где не понят: в колонке 220px квадрат
+   выходит по 66 точек, и безусловные 90 делали плитку портретной. */
+@supports not (aspect-ratio: 1) {
+  .ualbum a { min-height: 90px; }
 }
 .ualbum img { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* Плашка рассказа о себе. Коробка общая для всех палитр — она отделяет рассказ
@@ -1559,6 +1566,56 @@ span.rxb { cursor: default; }
 .upub li .fine { display: block; margin-top: 3px; }
 .upub a { overflow-wrap: anywhere; }
 .sub .cnt { font-size: 13px; font-weight: 400; }
+
+/* ------------------------------------------------- своя страница: вкладки и правка
+
+   Вкладок две — «Профиль» и «Настройки», — а страница одна, и ярлык у полоски
+   называет её вслух: «Моей страницей» зовут /me все пять опубликованных
+   согласий («отозвать можно на „Моей странице"»), редакции неизменяемы, и
+   пришедший по документу обязан увидеть на экране те же слова. */
+.metabs { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; margin: 0 0 18px; }
+.metabs .lbl {
+  font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--meta); margin-right: 8px;
+}
+.metabs a {
+  padding: 4px 12px; border: 1px solid var(--rule); border-radius: 3px;
+  text-decoration: none; font-size: 14px;
+}
+.metabs a:hover { border-color: var(--accent); }
+/* Открытая вкладка остаётся ССЫЛКОЙ и лишь помечена заливкой: полоска, из
+   которой текущая кнопка исчезает, читается как другая полоска. */
+.metabs a.on { background: var(--btn); color: var(--ink); border-color: var(--accent); }
+.metabs + .lead { margin: 0 0 22px; color: var(--meta); }
+
+/* Правка на месте: свёрнутая форма рядом с тем, что она правит. Пунктирная
+   рамка у свёрнутой — чтобы её не путали с кнопкой действия: она ничего не
+   делает, она открывает. */
+.edit { margin: 0; }
+.edit > summary {
+  cursor: pointer; color: var(--link); font-size: 14px;
+  display: inline-block; padding: 4px 12px;
+  border: 1px dashed var(--rule); border-radius: 3px;
+}
+.edit > summary:hover { border-color: var(--accent); }
+.edit[open] > summary { margin-bottom: 12px; border-style: solid; }
+.edit > form, .edit > p { margin-top: 10px; }
+.uprof > .edit { margin: 0 0 18px; }
+
+/* Альбом ХОЗЯИНА: те же три квадрата, но под каждым своя кнопка «Убрать» —
+   строкой справа она уезжает к краю колонки и перестаёт читаться как кнопка
+   ЭТОЙ фотографии. */
+.ualbum figure { margin: 0; }
+.ualbum .rm {
+  display: block; width: 100%; margin-top: 4px; padding: 2px 0;
+  font-size: 11px; line-height: 1.4; border: 1px solid var(--rule); border-radius: 3px;
+  background: none; color: var(--meta); cursor: pointer;
+}
+.ualbum .rm:hover { border-color: var(--female); color: var(--female); }
+/* Поле файла в колонке 220px: браузер рисует его во всю ширину, и без
+   max-width оно растянуло бы саму колонку. */
+.addph > summary { cursor: pointer; color: var(--link); font-size: 13px; margin-top: 10px; }
+.addph input[type="file"] { display: block; max-width: 100%; margin: 8px 0; font-size: 12px; }
 
 /* Жители в панели администратора: фото слева, как везде, чтобы менять его
    глядя ровно на то, что меняешь. */
@@ -1942,27 +1999,6 @@ span.rxb { cursor: default; }
 
 /* Картинка заметки в очереди модератора. Миниатюрой и с потолком по высоте:
    очередь обязана читаться за минуту, а не пролистываться. */
-/* Свои фотографии на «Рассказе о себе»: снимок, отметка скрытого и кнопка
-   «Убрать» — рядом, а не в трёх местах. Ряд складывается в столбец сам, потому
-   что на телефоне три снимка со своими кнопками в строку не встают. */
-/* Свой альбом на «Рассказе о себе»: те же три квадрата в ряд, что на странице
- * участника и в настройках, — человек правит то, что видит, и переставленные
- * строкой снимки читались бы как другой альбом. Кнопка «Убрать» стои́т ПОД
- * своим снимком: строкой справа (так было до 12.09.2026) она уезжала к краю
- * и переставала читаться как кнопка ЭТОЙ фотографии. */
-.myphotos {
-  list-style: none; margin: 12px 0 0; padding: 0; max-width: 28rem;
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
-}
-.myphotos li { display: grid; gap: 6px; justify-items: start; }
-.myphotos img {
-  width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
-  /* Пол на случай, если aspect-ratio не понят: иначе картинка схлопнется. */
-  min-height: 90px;
-  border: 1px solid var(--rule); border-radius: 3px;
-}
-.myphotos form { margin: 0; }
-
 /* Фотография в очереди модератора — вместе со своей кнопкой: вердикт судит
    карточку целиком, а снимок скрывают поштучно, и кнопка обязана стоять у того
    снимка, про который она. */

@@ -464,6 +464,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /consent", s.handleConsentGrant)
 	mux.HandleFunc("POST /consent/refuse", s.handleConsentRefuse)
 	mux.HandleFunc("GET /me", s.handleMe)
+	mux.HandleFunc("GET /me/settings", s.handleSettings)
 	mux.HandleFunc("GET /u/{id}", s.handleUser)
 	mux.HandleFunc("POST /me/consent", s.handleMeConsent)
 	mux.HandleFunc("POST /me/nick", s.handleNick)

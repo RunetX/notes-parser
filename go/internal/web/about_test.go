@@ -25,6 +25,9 @@ func aboutServer(t *testing.T, signed bool) (http.Handler, *fakeAuth, *fakeWrite
 	auth, token := signedInAs(t, platform.User{
 		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,
 	})
+	// Обязательные — иначе своя страница уводит на экран входа, и проверять
+	// формы будет негде.
+	grantConsents(t, auth, testProfileID)
 	if signed {
 		doc := currentDoc(t, platform.ConsentProfile)
 		if err := auth.GrantConsent(t.Context(), testProfileID, doc.Kind, doc.Version, ""); err != nil {
@@ -72,18 +75,27 @@ func TestРассказОСебеСперваДокумент(t *testing.T) {
 	}
 }
 
-// А после подписи — форма, и на ней названы числа ИЗ ЯДРА: сколько фотографий
-// бывает. Написанное словом разошлось бы с потолком базы молча.
-func TestПослеПодписиПоявляетсяФорма(t *testing.T) {
+// А после подписи экрана документа больше нет: формы стоят на «Моей странице»,
+// там же, где виден их результат, — и /me/about уводит туда же.
+//
+// Развести показ и правку по разным адресам значит однажды показать одно, а
+// править другое; 12.09.2026 это и случилось — владелец, глядя на свою
+// страницу, спросил, как вообще пользователь загружает свои три фотографии.
+func TestПослеПодписиФормыНаСвоейСтранице(t *testing.T) {
 	h, _, _, _, token := aboutServer(t, true)
-	body := do(h, as(guest(t, "GET", "/me/about"), token)).Body.String()
 
+	if got := do(h, as(guest(t, "GET", "/me/about"), token)).Header().Get("Location"); got != "/me" {
+		t.Errorf("подписавшего увели на %q, а форм там больше нет", got)
+	}
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
 	for _, want := range []string{`name="bio"`, `name="city"`, `name="job"`, `type="file"`} {
 		if !strings.Contains(body, want) {
-			t.Errorf("на форме нет %s", want)
+			t.Errorf("на своей странице нет %s:\n%s", want, tailOf(body))
 		}
 	}
-	if !strings.Contains(body, "не больше 3") {
+	// Потолок назван числом ИЗ ЯДРА: написанное словом разошлось бы с
+	// проверкой базы молча.
+	if !strings.Contains(body, "из 3") {
 		t.Errorf("потолок фотографий не назван числом из ядра:\n%s", tailOf(body))
 	}
 }

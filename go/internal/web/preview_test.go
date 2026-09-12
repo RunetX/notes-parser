@@ -109,7 +109,7 @@ func TestПредпросмотр(t *testing.T) {
 	defer srv.Close()
 
 	t.Logf("вошедшим показывается всё; гость — добавить ?guest=1")
-	for _, p := range []string{"/", "/n/312811", "/u/" + itoa64(testProfileID), "/me", "/me/about", "/mail", "/mail/1", "/help", "/help/read", "/login", "/new"} {
+	for _, p := range []string{"/", "/n/312811", "/u/" + itoa64(testProfileID), "/me", "/me/settings", "/me/about", "/mail", "/mail/1", "/help", "/help/read", "/login", "/new"} {
 		t.Logf("%s%s", srv.URL, p)
 	}
 	t.Log("Ctrl+C, когда насмотритесь")

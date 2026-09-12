@@ -1,18 +1,23 @@
 package web
 
-// «Рассказ о себе» — страница, где человек пишет о себе и кладёт фотографии
+// «Рассказ о себе» — город, занятие, несколько слов и до трёх фотографий
 // (эпик M).
 //
-// СВОЯ страница, а не раздел «Моей»: здесь подписывают документ, и подпись,
-// данная мимоходом под кнопкой в длинном списке настроек, подписью не является.
-// Устройство то же, что у привязки мессенджера: два состояния одним шаблоном —
-// сперва документ и кнопка, потом форма. Это один разговор, и разводить его по
-// двум шаблонам значило бы завести второе место, где решают, что показать.
+// От страницы здесь остался ОДИН экран — документ и кнопка под ним. Сами поля и
+// альбом живут на «Моей странице», там же, где их видно: 12.09.2026 владелец
+// спросил, к чему отдельно «Мой профиль» и «Моя страница», и первая редакция
+// эпика как раз и разводила показ с правкой по разным адресам — человек правил
+// не то, что видит, а нередко и не находил вовсе.
 //
-// Правило показа одно на обе половины: пока документ не подписан, форм нет
-// вовсе, а не «есть, но отвечают отказом». Ядро при этом спрашивается ВТОРОЙ
-// раз при самой записи (aboutGuard): между показом формы и нажатием человек мог
-// нажать «Отозвать», и строка после отзыва была бы обработкой без основания.
+// А вот ПОДПИСЬ переезжать не вправе: документ обязан стоять ДО кнопки, и
+// подпись, данная мимоходом под полем ввода, подписью не является. Поэтому
+// /me/about и осталась — как экран одного разговора, который кончается
+// возвратом на свою страницу уже с формами. Подписавшего сюда не пускают вовсе:
+// смотреть тут больше не на что.
+//
+// Ядро спрашивается ВТОРОЙ раз при самой записи (aboutGuard): между показом
+// формы и нажатием человек мог нажать «Отозвать», и строка после отзыва была бы
+// обработкой без основания.
 
 import (
 	"errors"
@@ -22,31 +27,10 @@ import (
 	"lovegw/internal/platform"
 )
 
-// aboutPage — экран в двух состояниях.
+// aboutPage — экран согласия, и только он.
 type aboutPage struct {
 	page
-	// Doc непустой, пока согласия нет: показывается документ, а не форма.
-	Doc    platform.ConsentDoc
-	Signed bool
-	About  platform.About
-	Photos []platform.Photo
-	// Free — сколько мест в альбоме свободно. Ноль убирает поле файла: кнопка,
-	// отвечающая отказом, хуже её отсутствия.
-	Free int
-	// Limit и MaxRunes приезжают из ядра, а не пишутся в шаблоне словами: числа
-	// у площадки живут в одном месте, и разошедшийся с поведением текст хуже
-	// отсутствующего (тем же правилом справка перестала считать темы руками).
-	Limit    int
-	MaxRunes int
-	// Shots — перекодировщик поднят, файл принять есть чем. Не поднялся —
-	// страница живёт дальше, просто без поля файла: чужой бинарник, который не
-	// отвечает, не повод закрывать рассказ о себе.
-	Shots bool
-	// Hidden — карточку скрыл модератор. Человек обязан увидеть это сам, а не
-	// гадать, почему его страница пуста для других.
-	Hidden bool
-	Saved  bool
-	Bad    string
+	Doc platform.ConsentDoc
 }
 
 func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
@@ -55,12 +39,6 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	s.showAbout(w, r, u, aboutPage{})
-}
-
-// showAbout собирает страницу целиком. Одна дорога на показ, на отказ и на
-// удачную запись: три сборки той же страницы разошлись бы на первой же правке.
-func (s *Server) showAbout(w http.ResponseWriter, r *http.Request, u platform.User, in aboutPage) {
 	doc, err := platform.ConsentDocOf(s.cfg.Operator, platform.ConsentProfile)
 	if err != nil {
 		s.oops(w, r, "текст согласия", err)
@@ -71,42 +49,21 @@ func (s *Server) showAbout(w http.ResponseWriter, r *http.Request, u platform.Us
 		s.oops(w, r, "согласия", err)
 		return
 	}
-	p := in
-	p.page = s.newPage(r, "Рассказ о себе")
-	p.Doc = doc
-	p.Signed = have.Has(platform.ConsentProfile, doc.Version)
-	p.Limit = platform.PhotoLimit
-	p.MaxRunes = platform.MaxAboutRunes
-	p.Shots = s.shots != nil
-
-	if p.Signed {
-		prof, err := s.st.UserProfile(r.Context(), u.ID)
-		if err != nil {
-			s.oops(w, r, "рассказ о себе", err)
-			return
-		}
-		// Набранное на отказе сохраняется: форму человек уже заполнил, и
-		// перечитывать её из базы значило бы стереть его работу.
-		if p.About == (platform.About{}) {
-			p.About = platform.About{Bio: prof.Bio, City: prof.City, Job: prof.Job}
-		}
-		p.Hidden = prof.AboutStatus != platform.StatusVisible
-		// Свой альбом человек видит ЦЕЛИКОМ, включая скрытое модератором:
-		// иначе снятая фотография выглядела бы пропавшей, и он положил бы её
-		// заново.
-		photos, err := s.st.ProfilePhotos(r.Context(), u.ID, true)
-		if err != nil {
-			s.oops(w, r, "альбом", err)
-			return
-		}
-		p.Photos = photos
-		p.Free = platform.PhotoLimit - len(photos)
+	if have.Has(platform.ConsentProfile, doc.Version) {
+		// Уже подписано — здесь смотреть нечего: формы стоят на своей странице.
+		// Сам документ при этом никуда не делся, он лежит в подвале, как и
+		// остальные четыре.
+		http.Redirect(w, r, "/me", http.StatusSeeOther)
+		return
 	}
-	s.render(w, r, http.StatusOK, "about.gohtml", p)
+	s.render(w, r, http.StatusOK, "about.gohtml", aboutPage{
+		page: s.newPage(r, "Рассказ о себе"),
+		Doc:  doc,
+	})
 }
 
-// handleAboutConsent записывает подпись и возвращает на ту же страницу — уже с
-// формой. Отдельным действием от сохранения текста: подписывают документ, а не
+// handleAboutConsent записывает подпись и возвращает на свою страницу — уже с
+// формами. Отдельным действием от сохранения текста: подписывают документ, а не
 // поле ввода.
 func (s *Server) handleAboutConsent(w http.ResponseWriter, r *http.Request) {
 	if !s.postWrite(w, r) {
@@ -126,9 +83,15 @@ func (s *Server) handleAboutConsent(w http.ResponseWriter, r *http.Request) {
 		s.oops(w, r, "согласие на рассказ о себе", err)
 		return
 	}
-	http.Redirect(w, r, "/me/about", http.StatusSeeOther)
+	http.Redirect(w, r, "/me", http.StatusSeeOther)
 }
 
+// handleAboutSave сохраняет город, занятие и рассказ.
+//
+// Удача не уводит редиректом, а перерисовывает ту же страницу со словом
+// «Сохранено»: человек правит запись, глядя на неё, и отправлять его после
+// нажатия куда-то ещё незачем. Отказ возвращает НАБРАННОЕ — перечитав поля из
+// базы, мы стёрли бы его работу.
 func (s *Server) handleAboutSave(w http.ResponseWriter, r *http.Request) {
 	if !s.postWrite(w, r) {
 		return
@@ -145,9 +108,9 @@ func (s *Server) handleAboutSave(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := s.wr.SetAbout(r.Context(), u.ID, in); {
 	case err == nil:
-		s.showAbout(w, r, u, aboutPage{Saved: true})
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Saved: true}}})
 	default:
-		s.showAbout(w, r, u, aboutPage{About: in, Bad: aboutProblem(err)})
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{About: in, Bad: aboutProblem(err)}}})
 	}
 }
 
@@ -170,19 +133,19 @@ func (s *Server) handlePhotoAdd(w http.ResponseWriter, r *http.Request) {
 	// процессора, ни файла, который после отказа убирать будет некому. Тот же
 	// порядок и тот же довод, что у картинки к заметке (MayPublishNote).
 	if err := s.wr.MayTellAbout(r.Context(), u.ID); err != nil {
-		s.showAbout(w, r, u, aboutPage{Bad: aboutProblem(err)})
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Bad: aboutProblem(err)}}})
 		return
 	}
 	shot, bad := s.takeShotSide(r.Context(), r, photoSide)
 	if bad != "" {
-		s.showAbout(w, r, u, aboutPage{Bad: bad})
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Bad: bad}}})
 		return
 	}
 	switch err := s.wr.AddProfilePhoto(r.Context(), u.ID, shot); {
 	case err == nil:
-		http.Redirect(w, r, "/me/about", http.StatusSeeOther)
+		http.Redirect(w, r, "/me", http.StatusSeeOther)
 	default:
-		s.showAbout(w, r, u, aboutPage{Bad: aboutProblem(err)})
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Bad: aboutProblem(err)}}})
 	}
 }
 
@@ -203,9 +166,9 @@ func (s *Server) handlePhotoDrop(w http.ResponseWriter, r *http.Request) {
 	switch err := s.wr.RemoveProfilePhoto(r.Context(), u.ID, pos); {
 	case err == nil, errors.Is(err, platform.ErrNoPhoto):
 		// «Такой уже нет» — не ошибка, а нажатие дважды или возврат по истории.
-		http.Redirect(w, r, "/me/about", http.StatusSeeOther)
+		http.Redirect(w, r, "/me", http.StatusSeeOther)
 	default:
-		s.showAbout(w, r, u, aboutPage{Bad: aboutProblem(err)})
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Bad: aboutProblem(err)}}})
 	}
 }
 
@@ -216,7 +179,7 @@ func (s *Server) handlePhotoDrop(w http.ResponseWriter, r *http.Request) {
 const photoSide = 1600
 
 // aboutProblem переводит отказ ядра на человеческий. Общий список, потому что
-// одни и те же отказы приходят на три формы этой страницы.
+// одни и те же отказы приходят на три формы своей страницы.
 func aboutProblem(err error) string {
 	switch {
 	case errors.Is(err, platform.ErrNoProfileConsent):

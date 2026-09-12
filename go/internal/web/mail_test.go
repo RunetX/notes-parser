@@ -680,21 +680,21 @@ func TestЗакрытыеПеречисленыНаСвоейСтранице(t 
 	if err := m.BlockUser(context.Background(), testProfileID, peerID); err != nil {
 		t.Fatal(err)
 	}
-	body := do(h, as(guest(t, "GET", "/me"), mine)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), mine)).Body.String()
 	if !strings.Contains(body, "Закрытая переписка") || !strings.Contains(body, "Полынь-Трава") {
 		t.Fatal("на своей странице нет закрытых")
 	}
 	if !strings.Contains(body, `value="1372959"`) {
 		t.Error("в форме снятия нет номера закрытого")
 	}
-	w := do(h, postAs(t, "/mail/unblock", url.Values{"to": {"1372959"}, "back": {"/me"}}, mine))
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/me" {
+	w := do(h, postAs(t, "/mail/unblock", url.Values{"to": {"1372959"}, "back": {"/me/settings"}}, mine))
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/me/settings" {
 		t.Fatalf("снятие ответило %d → %q", w.Code, w.Header().Get("Location"))
 	}
 	if m.blocks[[2]int64{testProfileID, peerID}] {
 		t.Fatal("запрет остался после снятия")
 	}
-	if body = do(h, as(guest(t, "GET", "/me"), mine)).Body.String(); strings.Contains(body, "Закрытая переписка") {
+	if body = do(h, as(guest(t, "GET", "/me/settings"), mine)).Body.String(); strings.Contains(body, "Закрытая переписка") {
 		t.Error("раздел остался при пустом списке")
 	}
 }
@@ -703,7 +703,7 @@ func TestЗакрытыеПеречисленыНаСвоейСтранице(t 
 // его вовсе: заголовок над пустотой отвечает на вопрос, которого не задавали.
 func TestБезПерепискиЧёрногоСпискаНет(t *testing.T) {
 	h, mine, _ := mailServer(t, nil)
-	body := do(h, as(guest(t, "GET", "/me"), mine)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), mine)).Body.String()
 	if strings.Contains(body, "Закрытая переписка") {
 		t.Error("раздел чёрного списка стои́т при выключенной переписке")
 	}

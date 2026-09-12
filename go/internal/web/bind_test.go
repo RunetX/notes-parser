@@ -100,7 +100,7 @@ func TestMeShowsBindingsAndUnbinds(t *testing.T) {
 	h, auth, token := bindServer(t)
 	auth.bindings[testProfileID] = []platform.Binding{{Messenger: platform.IdentityTelegram}}
 
-	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if !strings.Contains(body, "Telegram") || !strings.Contains(body, "Отвязать") {
 		t.Fatal("привязка не показана на «Моей странице»")
 	}
@@ -156,7 +156,7 @@ func TestLogoutAllRevokesEverySession(t *testing.T) {
 func TestNoBindingConsentLineForThoseWhoNeverBound(t *testing.T) {
 	h, _, token := bindServer(t)
 
-	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if strings.Contains(body, "Отозвать согласие") {
 		t.Error("не подписывавшему предлагают отозвать согласие на привязку")
 	}
@@ -165,7 +165,7 @@ func TestNoBindingConsentLineForThoseWhoNeverBound(t *testing.T) {
 	if w := do(h, postAs(t, "/me/bind", nil, token)); w.Code != http.StatusOK {
 		t.Fatalf("выдача кода: %d", w.Code)
 	}
-	body = do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	body = do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if !strings.Contains(body, "Отозвать согласие") {
 		t.Error("подписавшему и не привязавшему нечем снять согласие")
 	}

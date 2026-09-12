@@ -1,9 +1,21 @@
 package web
 
-// «Моя страница» — то немногое, что человек может сделать со своими данными без
+// «Моя страница» — всё, что человек может сделать со своими данными без
 // переписки с администратором. Права субъекта в полном объёме (выгрузка,
 // обезличивание) — это Ш7; здесь исполняется то, что обязано работать НЕМЕДЛЕННО
 // и без ручной проверки: отзыв согласия.
+//
+// Вкладок ДВЕ, и заведены они 12.09.2026 решением владельца: «к чему отдельно
+// „Мой профиль" и „Моя страница"… сделай общий вид и отдельно вкладку с
+// настройками, где можно переключить всякие опции». До этого дня пунктов меню
+// было два и вели они на РАЗНОЕ: своя страница показывала список тумблеров,
+// чужая — карточку с рассказом о себе, — и человек, искавший свой профиль,
+// попадал в настройки.
+//
+// Имя «Моя страница» при этом не тронуто, и не из осторожности: так её зовут
+// все пять опубликованных согласий («отозвать можно на „Моей странице"»), а
+// опубликованная редакция неизменяема. Поэтому настройки не отдельная страница,
+// а ВКЛАДКА этой же: отзыв согласия по-прежнему живёт на «Моей странице».
 
 import (
 	"errors"
@@ -17,17 +29,14 @@ import (
 // архив, а повод нажать «на пересмотр»: длиннее двадцати он перестаёт читаться.
 const myHiddenLimit = 20
 
+// mePage — вкладка ПРОФИЛЬ: тот же профиль, что видят другие, плюс правка
+// прямо на нём.
 type mePage struct {
 	page
-	Member platform.Author
-	Docs   []platform.ConsentDoc
-	Have   platform.Consents
-	Shadow bool // вход не завершён: согласий нет
-	// AdminRole — роль человека, а не право видеть пункт меню: у каркаса Admin
-	// вдобавок требует поднятых инструментов модерации, и одним именем два
-	// вопроса не отвечаются (имя составное ещё и потому, что поле страницы,
-	// названное как поле каркаса, затеняет его — page_shadow_test.go).
-	AdminRole bool
+	// Prof — ровно то же, что на /u/<id>: собрано тем же кодом и нарисовано тем
+	// же шаблоном. Расходиться этим двум показам нельзя — человек правит то,
+	// что видит.
+	Prof profileView
 	// Avatar — показывать ли кнопку «Обновить аватар». Её нет у вошедшего по
 	// приглашению (анкеты НГС у него нет вовсе) и нет, когда сайт недоступен:
 	// кнопка, которая заведомо ответит отказом, хуже её отсутствия.
@@ -36,33 +45,31 @@ type mePage struct {
 	// страницей ошибки: «в анкете нет фото» — это не поломка, и уводить с
 	// собственной страницы ради такой строки незачем.
 	Problem string
-	// About и Photos — что человек уже рассказал о себе (эпик M). Показываются
-	// ЗДЕСЬ, а не только на /me/about, по той же причине, по которой в меню
-	// завёлся «Мой профиль»: раздел, о котором говорит одна кнопка, человек не
-	// находит. Пустые поля пропускаются поштучно, а подпись кнопки выводится
-	// из них же — «Рассказать о себе», пока не рассказано ничего.
-	About  platform.About
-	Photos []platform.Photo
-	// PhotoLimit и PhotoFree — сколько фотографий бывает и сколько мест ещё
-	// свободно. Числа приезжают из ЯДРА, а не пишутся словом: потолок держит
-	// база (CHECK на позицию), и написанная рядом тройка разошлась бы с ним
-	// молча — тем же правилом живут пороги частоты в справке.
-	PhotoLimit int
-	PhotoFree  int
-	// AboutHidden — карточку скрыл модератор. Сказать об этом надо здесь:
-	// человек видит свою страницу как обычно и без этой строки решил бы, что
-	// её видят все.
-	AboutHidden bool
-	// Hidden — свои публикации, скрытые модерацией, с причиной и кнопкой
-	// «на пересмотр». Молча исчезнувшая реплика — худшее, что можно сделать с
-	// сообществом, которое только что переехало, поэтому список стоит здесь, а
-	// не «по запросу к администратору».
-	Hidden []platform.MyCheck
 	// Ban — запрет писать: до какого числа и за что. Забаненного мы НЕ выкидываем
 	// из учётной записи (чтение открыто всем), ровно затем, чтобы он эту строку
 	// прочитал.
 	Ban    *time.Time
 	Reason string
+	// Hidden — свои публикации, скрытые модерацией, с причиной и кнопкой
+	// «на пересмотр». Молча исчезнувшая реплика — худшее, что можно сделать с
+	// сообществом, которое только что переехало, поэтому список стоит здесь, а
+	// не «по запросу к администратору». Место ему на ПРОФИЛЕ, а не в
+	// настройках: это про написанное, а не про то, как ведёт себя площадка.
+	Hidden []platform.MyCheck
+}
+
+// settingsPage — вкладка НАСТРОЙКИ: всё, что переключается.
+//
+// Разведены вкладки по вопросу, на который отвечают. Профиль отвечает «кто я и
+// что я написал», настройки — «как площадка себя ведёт и чем я здесь владею»:
+// вынос на НГС, прокрутка, двери входа, переписка, сессии, согласия. Прежде это
+// лежало одним списком под шапкой, и найти в нём что-либо было нечем.
+type settingsPage struct {
+	page
+	Member  platform.Author
+	Problem string
+	Docs    []platform.ConsentDoc
+	Have    platform.Consents
 	// Jump — стоит ли «проматывать к новым» (jump.go). Предпочтение экрана, а не
 	// человека, поэтому приезжает из куки, а не из карточки участника.
 	Jump bool
@@ -85,7 +92,7 @@ type mePage struct {
 	// заголовок над пустотой отвечает на вопрос, которого не задавали.
 	Blocked []platform.Author
 	// Bindings — привязанные мессенджеры: ВТОРАЯ дверь, не зависящая от НГС.
-	// Показываются здесь же, где согласия и вынос, потому что вопрос у них один
+	// Показываются вместе с согласиями и выносом, потому что вопрос у них один
 	// и тот же — «чем я владею на этой площадке».
 	Bindings []platform.Binding
 	// NGSDoor — есть ли у человека анкета НГС (номер лежит в полосе НГС).
@@ -94,12 +101,8 @@ type mePage struct {
 	// ТРИ, а не два, и различать их обязана страница: «анкеты нет вовсе» и
 	// «анкета есть, но сайт молчит» — разные ответы на один вопрос, и второй
 	// нельзя объявлять входом по приглашению.
-	// Нужен не для красоты: у вошедшего по приглашению этой двери нет вовсе, и
-	// сказать ему «войдёте кодом» значило бы соврать.
 	NGSDoor bool
-	// SiteUp — жив ли клиент НГС. Тот же довод, что у кнопки «Обновить аватар»:
-	// про дорогу, которая сейчас заведомо откажет, не обещаем.
-	SiteUp bool
+	SiteUp  bool
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -108,20 +111,140 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	s.showMe(w, r, u, "")
+	s.showMe(w, r, u, mePage{})
 }
 
-// showMe рисует «мою страницу» — при необходимости с сообщением о том, что
-// только что не получилось.
-func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User, problem string) {
+// meReady — прихожая обеих вкладок: вход не завершён, пока не подписаны
+// обязательные согласия, и половины страницы в этом состоянии не показываем.
+func (s *Server) meReady(w http.ResponseWriter, r *http.Request, u platform.User) bool {
 	missing, err := s.auth.MissingConsent(r.Context(), u.ID, s.cfg.Operator)
 	if err != nil {
 		s.oops(w, r, "согласия", err)
-		return
+		return false
 	}
 	if missing.Kind != "" {
 		// Вход не завершён — доводим до конца, а не показываем половину.
 		http.Redirect(w, r, "/consent", http.StatusSeeOther)
+		return false
+	}
+	return true
+}
+
+// showMe рисует вкладку профиля — при необходимости с сообщением о том, что
+// только что не получилось или что сохранилось.
+//
+// Один сборщик на показ, на отказ формы и на удачную запись: три сборки той же
+// страницы разошлись бы на первой же правке.
+func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User, in mePage) {
+	if !s.meReady(w, r, u) {
+		return
+	}
+	card, err := s.auth.MemberCard(r.Context(), u.ID)
+	if err != nil {
+		s.oops(w, r, "карточка участника", err)
+		return
+	}
+	// Профиль читается из той же строки и тем же запросом, что у чужой
+	// страницы. Отказ её НЕ роняет: своя страница нужна человеку и ради списка
+	// скрытого, и ради дороги в настройки, а без этого запроса остаётся
+	// карточка входа — ник, фото и пол у неё те же самые.
+	member, err := s.st.UserProfile(r.Context(), u.ID)
+	if err != nil {
+		s.log.Warn("своя карточка не прочитана", "user", u.ID, "err", err)
+		member = platform.Profile{ID: u.ID, Kind: u.Kind, Role: u.Role}
+	}
+	member.Nick, member.AvatarURL, member.Gender = card.Nick, card.AvatarURL, card.Gender
+	have, err := s.auth.UserConsents(r.Context(), u.ID)
+	if err != nil {
+		s.oops(w, r, "согласия", err)
+		return
+	}
+	doc, err := platform.ConsentDocOf(s.cfg.Operator, platform.ConsentProfile)
+	if err != nil {
+		s.oops(w, r, "текст согласия", err)
+		return
+	}
+	edit := &profileEdit{
+		CSRF:     csrfToken(s.session(r)),
+		Signed:   have.Has(platform.ConsentProfile, doc.Version),
+		Limit:    platform.PhotoLimit,
+		MaxRunes: platform.MaxAboutRunes,
+		Shots:    s.shots != nil,
+		About:    in.Prof.Edit.about(),
+		Saved:    in.Prof.Edit.saved(),
+		Bad:      in.Prof.Edit.bad(),
+	}
+	prof, ok := s.profileBody(w, r, u, member, edit)
+	if !ok {
+		return
+	}
+	// Свободные места считаются от ПОЛНОГО альбома, включая скрытое
+	// модератором: своё человек видит всё (так решает profileBody по признаку
+	// «смотрю на себя»), и снятая модератором фотография иначе выглядела бы
+	// пропавшей — он положил бы её заново, заняв второе место из трёх.
+	edit.Free = platform.PhotoLimit - len(prof.Photos)
+	// Набранное на отказе сохраняется: форму человек уже заполнил, и
+	// перечитывать её из базы значило бы стереть его работу.
+	if edit.About == (platform.About{}) {
+		edit.About = platform.About{Bio: member.Bio, City: member.City, Job: member.Job}
+	}
+	// Свои скрытые публикации спрашиваются по ОЧЕРЕДИ модерации, а не обходом
+	// комментариев по автору: у участника с 138 тыс. реплик такой обход стоит
+	// 53 с и в срок веб-запроса не влезает вовсе (замер 18.08.2026).
+	var hidden []platform.MyCheck
+	if s.mod != nil {
+		hidden, err = s.mod.MyHidden(r.Context(), u.ID, myHiddenLimit)
+		if err != nil {
+			s.oops(w, r, "мои скрытые публикации", err)
+			return
+		}
+	}
+	var ban *time.Time
+	if u.Banned(time.Now()) {
+		ban = u.BannedUntil
+	}
+	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
+		page:    s.newPage(r, "Моя страница"),
+		Prof:    prof,
+		Avatar:  s.site != nil && platform.IsNGS(u.ID),
+		Problem: in.Problem,
+		Ban:     ban,
+		Reason:  u.BanReason,
+		Hidden:  hidden,
+	})
+}
+
+// about, saved и bad читают указатель, которого может не быть: вызывающие
+// приходят с пустым mePage чаще, чем с заполненным, и три проверки на nil в
+// сборщике читались бы хуже трёх методов.
+func (e *profileEdit) about() platform.About {
+	if e == nil {
+		return platform.About{}
+	}
+	return e.About
+}
+
+func (e *profileEdit) saved() bool { return e != nil && e.Saved }
+
+func (e *profileEdit) bad() string {
+	if e == nil {
+		return ""
+	}
+	return e.Bad
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	u, ok := s.me(r)
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	s.showSettings(w, r, u, "")
+}
+
+// showSettings рисует вкладку настроек.
+func (s *Server) showSettings(w http.ResponseWriter, r *http.Request, u platform.User, problem string) {
+	if !s.meReady(w, r, u) {
 		return
 	}
 	docs, err := platform.RequiredConsentDocs(s.cfg.Operator)
@@ -139,24 +262,9 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 		s.oops(w, r, "карточка участника", err)
 		return
 	}
-	// Свои скрытые публикации спрашиваются по ОЧЕРЕДИ модерации, а не обходом
-	// комментариев по автору: у участника с 138 тыс. реплик такой обход стоит
-	// 53 с и в срок веб-запроса не влезает вовсе (замер 18.08.2026).
-	var hidden []platform.MyCheck
-	if s.mod != nil {
-		hidden, err = s.mod.MyHidden(r.Context(), u.ID, myHiddenLimit)
-		if err != nil {
-			s.oops(w, r, "мои скрытые публикации", err)
-			return
-		}
-	}
-	var ban *time.Time
-	if u.Banned(time.Now()) {
-		ban = u.BannedUntil
-	}
-	// Галочка выноса на НГС. Её отказ страницу не роняет: «Моя страница» нужна
-	// человеку и ради согласий, и ради списка скрытого, а состояние одной
-	// галочки этого не стоит.
+	// Галочка выноса на НГС. Её отказ страницу не роняет: настройки нужны
+	// человеку и ради согласий, и ради дверей входа, а состояние одной галочки
+	// этого не стоит.
 	var (
 		ngsSend    bool
 		ngsStuck   int
@@ -197,8 +305,8 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 	// причина без кнопки — сама причина и отсылает сюда. Спрашивается независимо
 	// от согласия: отозвавший его вправе разбирать свои прежние запреты.
 	//
-	// Отказ страницу не роняет, как и у галочки выноса: «Моя страница» нужна
-	// ради согласий и списка скрытого, и одного раздела это не стоит.
+	// Отказ страницу не роняет, как и у галочки выноса: настройки нужны ради
+	// согласий и дверей входа, и одного раздела это не стоит.
 	var blocked []platform.Author
 	if s.mail != nil {
 		if list, err := s.mail.BlockedList(r.Context(), u.ID); err == nil {
@@ -207,65 +315,27 @@ func (s *Server) showMe(w http.ResponseWriter, r *http.Request, u platform.User,
 			s.log.Warn("чёрный список переписки не прочитан", "user", u.ID, "err", err)
 		}
 	}
-	about, photos, aboutHidden := s.myAbout(r, u.ID)
-	s.render(w, r, http.StatusOK, "me.gohtml", mePage{
-		page:        s.newPage(r, "Моя страница"),
+	s.render(w, r, http.StatusOK, "settings.gohtml", settingsPage{
+		page:        s.newPage(r, "Настройки"),
 		Member:      card,
+		Problem:     problem,
 		Docs:        docs,
 		Have:        have,
-		Shadow:      u.Kind == platform.KindShadow,
-		AdminRole:   u.Role >= platform.RoleAdmin,
-		Avatar:      s.site != nil && platform.IsNGS(u.ID),
-		Problem:     problem,
-		Hidden:      hidden,
-		Ban:         ban,
-		Reason:      u.BanReason,
 		Jump:        s.jumpFresh(r),
 		NGSSend:     ngsSend,
 		NGSSendable: platform.IsNGS(u.ID) && u.Kind == platform.KindMember,
 		NGSStuck:    ngsStuck,
 		NGSStuckAt:  ngsStuckAt,
 		NGSPending:  ngsPending,
-		About:       about,
-		Photos:      photos,
-		AboutHidden: aboutHidden,
-		PhotoLimit:  platform.PhotoLimit,
-		PhotoFree:   platform.PhotoLimit - len(photos),
 		Bindings:    bindings,
 		Blocked:     blocked,
 		// Дверь эта работает, только пока жив САЙТ: код читается со страницы
 		// анкеты. Нет клиента НГС — /login про неё и не говорит, и обещать её
 		// здесь значило бы нарисовать кнопку, отвечающую отказом. Тот же довод,
-		// по которому рядом прячется «Обновить аватар».
+		// по которому на профиле прячется «Обновить аватар».
 		NGSDoor: platform.IsNGS(u.ID),
 		SiteUp:  s.site != nil,
 	})
-}
-
-// myAbout — рассказ о себе и альбом для показа на «Настройках».
-//
-// Два запроса по первичному ключу и по индексу `user_photos(user_id)` — цена
-// того, что человек видит написанное там же, где всё остальное про него, а не
-// за кнопкой, ведущей на третью страницу. Отказ любого из них страницу НЕ
-// роняет и молчит в лог: «Настройки» нужны и ради согласий, и ради списка
-// скрытого, а раздел «О себе» этого не стоит (тот же довод, что у галочки
-// выноса на НГС).
-//
-// Альбом спрашивается ЦЕЛИКОМ, вместе со скрытым модератором: своё человек
-// обязан видеть всё, иначе снятая фотография выглядит пропавшей и он кладёт её
-// заново, занимая второе место из трёх.
-func (s *Server) myAbout(r *http.Request, id int64) (platform.About, []platform.Photo, bool) {
-	prof, err := s.st.UserProfile(r.Context(), id)
-	if err != nil {
-		s.log.Warn("рассказ о себе не прочитан", "user", id, "err", err)
-		return platform.About{}, nil, false
-	}
-	photos, err := s.st.ProfilePhotos(r.Context(), id, true)
-	if err != nil {
-		s.log.Warn("альбом не прочитан", "user", id, "err", err)
-	}
-	about := platform.About{Bio: prof.Bio, City: prof.City, Job: prof.Job}
-	return about, photos, prof.AboutStatus != platform.StatusVisible
 }
 
 // handleAvatar — «Обновить аватар»: сходить в анкету НГС за фото ещё раз.
@@ -277,9 +347,9 @@ func (s *Server) myAbout(r *http.Request, id int64) (platform.About, []platform.
 // файлов за четыре недели, случалось по три за сутки, — то есть перенос по
 // просьбе через администратора был бы ежедневной просьбой.
 //
-// Своего файла площадка не принимает вовсе, и это не экономия: чужая картинка —
-// это премодерация, хранилище и другой разговор о согласии (Ш5д). Здесь ровно
-// перенос того, что человек и так показывает на НГС.
+// Своего файла площадка на аватар не принимает, и это не экономия: аватар стои́т
+// под каждой репликой человека за тринадцать лет, а фотография в альбоме
+// разовая и каждую смотрит модератор.
 //
 // Живёт в me.go, а не в write.go, потому что половина её ответов — это «моя
 // страница» с объяснением: отказ чужого сайта не повод уводить человека на
@@ -305,26 +375,26 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 	prof, err := s.site.Profile(r.Context(), u.ID)
 	switch {
 	case errors.Is(err, ErrNoProfile):
-		s.showMe(w, r, u, "НГС не отдал вашу анкету: она скрыта целиком или удалена. Фото осталось прежним.")
+		s.showMe(w, r, u, mePage{Problem: "НГС не отдал вашу анкету: она скрыта целиком или удалена. Фото осталось прежним."})
 		return
 	case err != nil:
 		// Отказ ЧУЖОГО сайта не наша поломка, и 500 на своей странице тут врал бы.
 		s.log.Warn("анкета НГС для обновления фото", "user", u.ID, "err", err)
-		s.showMe(w, r, u, "НГС сейчас не отвечает. Фото осталось прежним — попробуйте позже.")
+		s.showMe(w, r, u, mePage{Problem: "НГС сейчас не отвечает. Фото осталось прежним — попробуйте позже."})
 		return
 	}
 	if prof.AvatarURL == "" {
 		// Фото в анкете нет (силуэт по умолчанию клиент НГС сюда не пропускает).
-		// Своё при этом НЕ снимаем: файлов площадка не принимает, вернуть его
-		// было бы неоткуда, а «нажал обновить и остался без фото» — это потеря
-		// по нажатию кнопки.
-		s.showMe(w, r, u, "В анкете НГС сейчас нет фото — здесь всё осталось как было.")
+		// Своё при этом НЕ снимаем: аватара из своего файла площадка не
+		// принимает, вернуть его было бы неоткуда, а «нажал обновить и остался
+		// без фото» — это потеря по нажатию кнопки.
+		s.showMe(w, r, u, mePage{Problem: "В анкете НГС сейчас нет фото — здесь всё осталось как было."})
 		return
 	}
 	data, err := s.site.Avatar(r.Context(), prof.AvatarURL)
 	if err != nil {
 		s.log.Warn("фото анкеты НГС", "user", u.ID, "err", err)
-		s.showMe(w, r, u, "Фото из анкеты сейчас не забралось. Попробуйте позже.")
+		s.showMe(w, r, u, mePage{Problem: "Фото из анкеты сейчас не забралось. Попробуйте позже."})
 		return
 	}
 	if err := s.wr.SetOwnAvatar(r.Context(), u.ID, prof.AvatarURL, data); err != nil {
@@ -337,11 +407,12 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 // handleAvatarClear — «Убрать фото»: снять аватар и остаться без него.
 //
 // Зачем вторая кнопка рядом с первой. «Обновить аватар» пустую анкету НГС за
-// причину снять фото не считает: своего файла площадка не принимает, и потеря
-// по нажатию кнопки была бы невозвратной. Но у стёршего фото В АНКЕТЕ из этого
-// выходил тупик — на НГС фото уже нет, само оно сюда больше не приезжает, а
-// кнопка отвечает «здесь всё осталось как было» (жалоба владельца, 28.08.2026).
-// Разница между двумя кнопками не в осторожности, а в том, ЧЬЯ это рука.
+// причину снять фото не считает: аватара из своего файла площадка не принимает,
+// и потеря по нажатию кнопки была бы невозвратной. Но у стёршего фото В АНКЕТЕ
+// из этого выходил тупик — на НГС фото уже нет, само оно сюда больше не
+// приезжает, а кнопка отвечает «здесь всё осталось как было» (жалоба владельца,
+// 28.08.2026). Разница между двумя кнопками не в осторожности, а в том, ЧЬЯ это
+// рука.
 //
 // На НГС этот путь не ходит вовсе, и отсюда два следствия: стоит он как обычная
 // запись (costWrite, см. goesToNGS), а работает и при мёртвом сайте — то есть
@@ -378,14 +449,14 @@ func (s *Server) handleNGSSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Значение приходит явным полем, а не «переключи на противоположное»: две
-	// вкладки, открытые на /me, иначе переключали бы галочку друг у друга, и
-	// человек получил бы включённую отправку, нажав «выключить».
+	// вкладки, открытые на настройках, иначе переключали бы галочку друг у
+	// друга, и человек получил бы включённую отправку, нажав «выключить».
 	on := r.FormValue("on") == "1"
 	if err := s.wr.SetNGSSend(r.Context(), u.ID, on); err != nil {
 		s.oops(w, r, "переключение отправки на НГС", err)
 		return
 	}
-	http.Redirect(w, r, "/me", http.StatusSeeOther)
+	http.Redirect(w, r, "/me/settings", http.StatusSeeOther)
 }
 
 // revokePage — экран «что произойдёт, если отозвать».
@@ -398,9 +469,6 @@ type revokePage struct {
 	DocTitle string
 	// Processing — отзывается ОБЩЕЕ согласие: оно вдобавок закрывает вход.
 	Processing bool
-	// Binding — отзывается НЕОБЯЗАТЕЛЬНОЕ согласие на привязку. Последствия у
-	// него совсем другие и все обратимые, поэтому список на экране свой.
-	Binding bool
 }
 
 // handleMeConsent — отзыв и возврат согласия.
@@ -438,6 +506,10 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 	// «перестать писать», а «перестать получать», — и «дать снова» в общем
 	// списке завело бы согласие мимо текста, который оно подтверждает.
 	case kind == platform.ConsentTalks && r.FormValue("action") == "revoke":
+	// Рассказ о себе — той же породы и по тому же доводу: подписывают его на
+	// своём экране (/me/about), где документ стои́т ДО кнопки, а отзыв уносит
+	// город, занятие, текст и все снимки вместе с байтами.
+	case kind == platform.ConsentProfile && r.FormValue("action") == "revoke":
 	default:
 		s.fail(w, r, http.StatusBadRequest, "Такого согласия нет.")
 		return
@@ -456,7 +528,7 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		http.Redirect(w, r, "/me", http.StatusSeeOther)
+		http.Redirect(w, r, "/me/settings", http.StatusSeeOther)
 		return
 	}
 	if r.FormValue("confirm") != "1" {
@@ -473,13 +545,13 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 			Kind:       kind,
 			DocTitle:   doc.Title,
 			Processing: kind == platform.ConsentProcessing,
-			// Экран обезличивания — про распространение, и показывать его при
-			// отзыве НЕОБЯЗАТЕЛЬНОГО согласия нельзя: обезличивания не будет
-			// (RevokeConsent проходит по заметкам только у двух видов), писать
-			// человек не перестанет, и назад отыграется всё до последней буквы.
-			// Четыре обещания подряд, ни одно из которых не сбудется, — это не
-			// строгость, а неправда.
-			Binding: kind == platform.ConsentBinding,
+			// Список последствий выбирает ШАБЛОН, по виду документа: экран
+			// обезличивания годится только двум обязательным. У необязательных
+			// последствия совсем другие, и общий список обещал бы то, чего не
+			// случится, — четыре страшных пункта подряд, ни один из которых не
+			// сбудется, это не строгость, а неправда. Первым такую неправду
+			// получал отзыв переписки: ему обещали, что имя уйдёт со всех
+			// заметок.
 		})
 		return
 	}
@@ -494,5 +566,5 @@ func (s *Server) handleMeConsent(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/me", http.StatusSeeOther)
+	http.Redirect(w, r, "/me/settings", http.StatusSeeOther)
 }

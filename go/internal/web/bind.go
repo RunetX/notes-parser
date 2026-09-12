@@ -108,12 +108,12 @@ func (s *Server) handleUnbind(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := s.auth.Unbind(r.Context(), u.ID, r.FormValue("messenger")); {
 	case err == nil:
-		http.Redirect(w, r, "/me", http.StatusSeeOther)
+		http.Redirect(w, r, "/me/settings", http.StatusSeeOther)
 	// Отвязка того, чего нет, и отвязка неизвестной породы для человека значат
 	// одно: «уже не привязано». Страницей ошибки отвечать здесь не на что —
 	// нажали дважды, вернулись по истории.
 	case errors.Is(err, platform.ErrNoBinding), errors.Is(err, platform.ErrUnknownMessenger):
-		s.showMe(w, r, u, "Этот мессенджер к вашей записи не привязан.")
+		s.showSettings(w, r, u, "Этот мессенджер к вашей записи не привязан.")
 	default:
 		s.oops(w, r, "отвязка мессенджера", err)
 	}

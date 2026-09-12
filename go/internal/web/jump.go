@@ -61,5 +61,5 @@ func (s *Server) handleJump(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.setCookie(w, jumpCookie, "", 0)
 	}
-	http.Redirect(w, r, "/me", http.StatusSeeOther)
+	http.Redirect(w, r, "/me/settings", http.StatusSeeOther)
 }

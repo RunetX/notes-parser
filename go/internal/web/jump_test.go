@@ -23,7 +23,7 @@ func TestJumpPrefIsOnMyPageAndNamesItsState(t *testing.T) {
 	h, auth, token := signedInServer(t)
 	grantBoth(t, auth, nil)
 
-	off := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	off := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if !strings.Contains(off, `action="/me/jump"`) {
 		t.Fatal("на «Моей странице» нет настройки «Проматывать к новым»")
 	}
@@ -41,7 +41,7 @@ func TestJumpPrefIsOnMyPageAndNamesItsState(t *testing.T) {
 		t.Fatalf("кука настройки не выставлена: %+v", c)
 	}
 
-	on := do(h, as(withCookie(guest(t, "GET", "/me"), jumpCookie, "1"), token)).Body.String()
+	on := do(h, as(withCookie(guest(t, "GET", "/me/settings"), jumpCookie, "1"), token)).Body.String()
 	if !strings.Contains(on, "сейчас включено") || !strings.Contains(on, ">Выключить<") {
 		t.Error("включённая настройка не называет своё состояние либо не предлагает выключить")
 	}

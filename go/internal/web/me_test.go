@@ -29,7 +29,7 @@ func TestГалочкаОтправкиНаНГС(t *testing.T) {
 	wr := &fakeWriter{}
 	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
 
-	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if !strings.Contains(body, "Отправлять мои записи на НГС") {
 		t.Fatal("галочки нет у участника с анкетой НГС")
 	}
@@ -81,7 +81,7 @@ func TestОстановленнаяОтправкаНаНГСОбъясняет�
 	}
 	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
 
-	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if !strings.Contains(body, "На НГС не ушло 7 записей") {
 		t.Error("страница молчит о том, что записи не уходят")
 	}
@@ -90,7 +90,7 @@ func TestОстановленнаяОтправкаНаНГСОбъясняет�
 	}
 
 	wr.ngsStuck = map[int64]int{ngsID: 0}
-	if body := do(h, as(guest(t, "GET", "/me"), token)).Body.String(); strings.Contains(body, "На НГС не ушло") {
+	if body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String(); strings.Contains(body, "На НГС не ушло") {
 		t.Error("предупреждение осталось после того, как отправка наладилась")
 	}
 }
@@ -182,63 +182,183 @@ func TestЗаметкаВПутиВиднаНаСвоейСтранице(t *tes
 	}
 	h := newFullServer(t, &fakeStore{}, auth, wr, nil, nil, Config{})
 
-	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
 	if !strings.Contains(body, "ещё не вернулась сюда") {
 		t.Error("страница молчит о заметке, которая в пути")
 	}
 	wr.ngsPending = map[int64]int{ngsID: 0}
-	if body := do(h, as(guest(t, "GET", "/me"), token)).Body.String(); strings.Contains(body, "ещё не вернулась сюда") {
+	if body := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String(); strings.Contains(body, "ещё не вернулась сюда") {
 		t.Error("строка осталась после того, как заметка доехала")
 	}
 }
 
-// Настройки ПОКАЗЫВАЮТ рассказ о себе, а не прячут его за одной кнопкой.
+// СВОЯ СТРАНИЦА И ЧУЖАЯ — ОДИН И ТОТ ЖЕ ПРОФИЛЬ.
 //
-// Первая редакция эпика M оставила здесь только дверь на /me/about — и раздел,
-// о котором говорит одна кнопка, человек не находит: 12.09.2026 владелец,
-// глядя на эту самую страницу, спросил, как вообще загружают три фотографии.
-// Теперь видно состояние — что заполнено, сколько снимков из трёх, — и отсюда
-// же ведёт ссылка на свою страницу участника.
-func TestНастройкиПоказываютРассказОСебе(t *testing.T) {
+// 12.09.2026 владелец спросил: «к чему отдельно „Мой профиль" и „Моя
+// страница"». До того дня своя страница показывала список тумблеров, а
+// карточка с рассказом о себе жила по другому адресу — и человек, искавший
+// свой профиль, попадал в настройки. Теперь показ ОДИН (parts/profile.gohtml),
+// и тест смотрит именно на это: на своей странице стои́т ровно то же, что видят
+// другие.
+func TestСвояСтраницаЭтоТотЖеПрофиль(t *testing.T) {
 	auth, token := signedInAs(t, platform.User{
 		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,
 	})
 	grantConsents(t, auth, testProfileID)
-	st := &fakeStore{}
-	st.profile = platform.Profile{ID: testProfileID, Nick: testNick, City: "Бердск", Job: "слесарь"}
+	st := profileStore()
+	st.profile.ID = testProfileID
+	st.profile.City, st.profile.Job = "Бердск", "слесарь"
 	st.photos = []platform.Photo{{ID: 1, Position: 1, URL: "/media/aa/one.webp"}}
-	h := newFullServer(t, st, auth, &fakeWriter{}, nil, nil, Config{})
+	h := newFullServer(t, st, auth, &fakeWriter{}, newFakeMod(), nil, Config{})
 
-	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	mine := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	theirs := do(h, as(guest(t, "GET", "/u/"+itoa64(testProfileID)), token)).Body.String()
 	for _, want := range []string{
 		"Бердск", "слесарь", "one.webp",
-		// Число мест — из ядра, а не словом: потолок держит база.
-		"из 3",
-		`href="/me/about"`,
-		// И дорога на свою страницу участника — та, которой не было вовсе.
-		`href="/u/` + itoa64(testProfileID) + `"`,
+		// Записи — та же пара списков, что и у постороннего.
+		"про третье свидание", `class="ucols"`,
+	} {
+		if !strings.Contains(mine, want) {
+			t.Errorf("на своей странице нет %q:\n%s", want, tailOf(mine))
+		}
+		if !strings.Contains(theirs, want) {
+			t.Errorf("на чужой странице нет %q — показы разошлись", want)
+		}
+	}
+	// И вкладки называют страницу тем самым именем, которым её зовут пять
+	// опубликованных согласий: «отозвать можно на „Моей странице"».
+	if !strings.Contains(mine, "Моя страница") || !strings.Contains(mine, `href="/me/settings"`) {
+		t.Errorf("нет полоски вкладок с именем страницы:\n%s", tailOf(mine))
+	}
+}
+
+// ПРАВКА СТОИТ ТАМ ЖЕ, ГДЕ ПОКАЗ, и это главное требование владельца:
+// «возможность редактирования сразу из страницы».
+//
+// Формы приходят с СЕРВЕРА и раскрываются разметкой (details/summary): строгий
+// CSP не пускает inline-скриптов, и правка, доступная только при работающем
+// JS, однажды перестала бы быть доступной вовсе.
+func TestПравкаСтоитТамЖеГдеПоказ(t *testing.T) {
+	h, _, _, _, token := aboutServer(t, true)
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+
+	for _, want := range []string{
+		`name="bio"`, `name="city"`, `name="job"`, `type="file"`,
+		`action="/me/about"`, `action="/me/photo"`, `action="/me/nick"`,
+		`<details class="edit"`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("в настройках нет %q:\n%s", want, tailOf(body))
+			t.Errorf("на своей странице нет %q:\n%s", want, tailOf(body))
 		}
 	}
 }
 
-// А пока не рассказано ничего — зовём рассказать, и кнопка называется иначе.
-func TestПустойРассказЗовётЗаполнить(t *testing.T) {
-	auth, token := signedInAs(t, platform.User{
-		ID: testProfileID, Nick: testNick, Kind: platform.KindMember,
-	})
-	grantConsents(t, auth, testProfileID)
-	st := &fakeStore{}
-	st.profile = platform.Profile{ID: testProfileID, Nick: testNick}
-	h := newFullServer(t, st, auth, &fakeWriter{}, nil, nil, Config{})
+// А ЧУЖОЙ странице формы не достаются — ни одному постороннему, ни модератору.
+// Показ общий, правка — нет, и держит это один нулевой указатель (.Edit), а не
+// пять условий в шаблоне.
+func TestНаЧужойСтраницеФормНет(t *testing.T) {
+	st := profileStore()
+	h, _, token := profileServer(t, st, platform.RoleAdmin)
+	body := do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+
+	for _, forbidden := range []string{`name="bio"`, `action="/me/photo"`, `action="/me/nick"`} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("на чужой странице завелось %q", forbidden)
+		}
+	}
+}
+
+// Вкладки не путаются местами: тумблеры — на настройках, профиль — на профиле.
+// Их и разводили затем, чтобы каждая отвечала на свой вопрос.
+func TestВкладкиНеПутаютсяМестами(t *testing.T) {
+	h, _, _, _, token := aboutServer(t, true)
+
+	prof := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	sett := do(h, as(guest(t, "GET", "/me/settings"), token)).Body.String()
+
+	if strings.Contains(prof, "Проматывать к новым") {
+		t.Error("тумблер остался на профиле")
+	}
+	if strings.Contains(sett, `name="bio"`) {
+		t.Error("форма рассказа о себе оказалась в настройках")
+	}
+	if !strings.Contains(sett, "Проматывать к новым") {
+		t.Errorf("тумблера нет и в настройках:\n%s", tailOf(sett))
+	}
+	// Согласия отзываются на «Моей странице» — так обещают пять выпущенных
+	// документов, и вкладка обязана называть её тем же именем.
+	if !strings.Contains(sett, "Моя страница") {
+		t.Error("настройки не называют страницу так, как её зовут согласия")
+	}
+}
+
+// Пока рассказано ЧТО-ТО — форма свёрнута; пока не рассказано ничего — она
+// раскрыта сразу. Раздел, о котором говорит одна свёрнутая строка, человек не
+// находит: 12.09.2026 владелец, глядя на свою страницу, спросил, как вообще
+// пользователь загружает свои три фотографии.
+func TestПустойРассказРаскрытСразу(t *testing.T) {
+	h, _, _, st, token := aboutServer(t, true)
 
 	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
-	if !strings.Contains(body, "Рассказать о себе") {
-		t.Errorf("нет приглашения рассказать о себе:\n%s", tailOf(body))
+	if !strings.Contains(body, `<details class="edit" open>`) {
+		t.Errorf("пустой рассказ не позвал заполнить себя:\n%s", tailOf(body))
 	}
-	if strings.Contains(body, "Изменить") {
-		t.Error("предложено изменить то, чего нет")
+	if !strings.Contains(body, "Рассказать о себе") {
+		t.Error("нет приглашения рассказать о себе")
+	}
+
+	st.profile.Bio = "Гараж вместо кабинета."
+	body = do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+	if strings.Contains(body, `<details class="edit" open>`) {
+		t.Error("заполненный рассказ держит форму раскрытой и отодвигает страницу")
+	}
+	if !strings.Contains(body, "Изменить рассказ о себе") {
+		t.Error("заполненный рассказ нечем изменить")
+	}
+}
+
+// Не подписан документ — форм нет ВОВСЕ, а есть ссылка на экран, где стои́т
+// текст. Подпись, данная мимоходом под полем ввода, подписью не является.
+func TestБезПодписиНаСвоейСтраницеФормНет(t *testing.T) {
+	h, _, _, _, token := aboutServer(t, false)
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+
+	if strings.Contains(body, `name="bio"`) || strings.Contains(body, `type="file"`) {
+		t.Errorf("формы показаны до подписи:\n%s", tailOf(body))
+	}
+	if !strings.Contains(body, `href="/me/about"`) {
+		t.Error("не сказано, где прочитать документ")
+	}
+}
+
+// ЭКРАН ОТЗЫВА НЕ ПУГАЕТ ТЕМ, ЧЕГО НЕ СЛУЧИТСЯ.
+//
+// Список последствий выбирается по виду документа. До 12.09.2026 ветки было
+// две — «привязка» и «всё остальное», — и отзыв согласия на переписку попадал
+// во вторую: человеку обещали, что его имя уйдёт со всех его заметок, а отзыв
+// не трогает их вовсе. Экран, соврав однажды, перестаёт значить что-либо.
+func TestЭкранОтзываГоворитПроСвойДокумент(t *testing.T) {
+	h, _, _, _, token := aboutServer(t, true)
+	ask := func(kind string) string {
+		t.Helper()
+		form := url.Values{"kind": {kind}, "action": {"revoke"}}
+		return do(h, postAs(t, "/me/consent", form, token)).Body.String()
+	}
+
+	if body := ask(platform.ConsentTalks); strings.Contains(body, "уйдёт со всех ваших заметок") {
+		t.Errorf("отзыву переписки обещали обезличивание заметок:\n%s", tailOf(body))
+	} else if !strings.Contains(body, "Входящие письма закроются") {
+		t.Errorf("не сказано главное последствие отзыва переписки:\n%s", tailOf(body))
+	}
+
+	// А у рассказа о себе последствие как раз НЕОБРАТИМОЕ, и молчать о нём
+	// нельзя: файлы сносятся с диска.
+	if body := ask(platform.ConsentProfile); !strings.Contains(body, "УДАЛЯЮТСЯ") {
+		t.Errorf("не сказано, что фотографии сносятся с диска:\n%s", tailOf(body))
+	}
+
+	// Обязательное согласие свой страшный список сохраняет.
+	if body := ask(platform.ConsentDistribution); !strings.Contains(body, "уйдёт со всех ваших заметок") {
+		t.Errorf("отзыв распространения перестал объяснять обезличивание:\n%s", tailOf(body))
 	}
 }
