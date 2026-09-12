@@ -133,3 +133,37 @@ func TestЭкранВходаПриОткрытойПлощадкеОбещае�
 		t.Errorf("открытая площадка не говорит, что читать можно без входа:\n%s", body)
 	}
 }
+
+// Контакт владельца: ссылка на его страницу за воротами ведёт в редирект, а
+// «ссылка, ведущая к отказу, хуже её отсутствия» — правило площадки, записанное
+// в web/user.go. Строка при этом обязана остаться: живой собеседник у площадки
+// есть, и знать об этом гостю надо.
+func TestКонтактВладельцаНеВедётВРедирект(t *testing.T) {
+	cfg := Config{MembersOnly: true, Contacts: Contacts{ProfileID: 1493279}}
+	h := newTestServer(t, &fakeStore{}, cfg)
+
+	body := do(h, guest(t, "GET", "/help")).Body.String()
+	if strings.Contains(body, `href="/u/1493279"`) {
+		t.Errorf("гостю дана ссылка на закрытую страницу:\n%s", body)
+	}
+	if !strings.Contains(body, "Владелец площадки") {
+		t.Errorf("контакт владельца пропал совсем:\n%s", body)
+	}
+}
+
+// А вошедшему — ровно прежняя ссылка: для него страница открыта.
+func TestВошедшемуКонтактВладельцаОстаётсяСсылкой(t *testing.T) {
+	auth := newFakeAuth()
+	auth.users[testProfileID] = platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindMember}
+	token, _, err := auth.CreateSession(context.Background(), testProfileID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{MembersOnly: true, Contacts: Contacts{ProfileID: 1493279}}
+	h := newFullServer(t, &fakeStore{}, auth, nil, nil, nil, cfg)
+
+	body := do(h, as(guest(t, "GET", "/help"), token)).Body.String()
+	if !strings.Contains(body, `href="/u/1493279"`) {
+		t.Errorf("вошедший лишился ссылки на страницу владельца:\n%s", body)
+	}
+}
