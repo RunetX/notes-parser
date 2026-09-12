@@ -71,8 +71,11 @@ func TestСтраницаУчастникаПоказываетНаписанн�
 
 	for _, want := range []string{
 		"Механик Сева",
-		"Заметок 2",
-		"реплик 41",
+		// Счётчик стои́т У ЗАГОЛОВКА того списка, к которому относится
+		// (12.09.2026): прежняя строка «Заметок 2 · реплик 41» жила отдельно от
+		// списков и потому могла с ними разойтись.
+		`<h2 class="sub">Заметки <span class="cnt" title="Всего заметок">2</span></h2>`,
+		`<h2 class="sub">Реплики <span class="cnt" title="Всего реплик">41</span></h2>`,
 		`href="/n/312811"`,
 		"про третье свидание",
 		`href="/n/312811#c63238879"`,
@@ -81,6 +84,76 @@ func TestСтраницаУчастникаПоказываетНаписанн�
 		if !strings.Contains(body, want) {
 			t.Errorf("на странице нет %q", want)
 		}
+	}
+}
+
+// Число у заголовка называет ВСЁ написанное, а показано двадцать последних, и
+// про это сказано словами. Всплывающей подписи здесь мало: на телефоне её нет.
+func TestХвостГоворитЧтоСписокОбрезан(t *testing.T) {
+	st := profileStore()
+	st.profile.Comments = 412 // столько реплик у человека всего, а показана одна
+	st.profile.Notes = 1      // а заметок ровно столько, сколько в списке
+	h, _, token := profileServer(t, st, platform.RoleUser)
+	body := do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+
+	if !strings.Contains(body, `title="Всего реплик">412<`) {
+		t.Error("у заголовка не всё число реплик")
+	}
+	if !strings.Contains(body, "Показаны последние 1.") {
+		t.Errorf("нет оговорки, что список обрезан:\n%s", tailOf(body))
+	}
+	// А у заметок список полон — и оговорки там быть не должно: сказанное без
+	// нужды читается как «показано не всё» у КАЖДОГО списка на странице.
+	if strings.Count(body, "Показаны последние") != 1 {
+		t.Error("оговорка стои́т и там, где показано всё")
+	}
+}
+
+// Колонки рисуются ОБЕ или ни одной. Нарисуй мы .ucols без .uside, грид положил
+// бы записи в первую колонку шириной 220px — страница схлопнулась бы в полосу,
+// и ни один тест поведения этого бы не заметил.
+func TestКолонкиИлиОбеИлиНиОдной(t *testing.T) {
+	for _, tc := range []struct {
+		имя  string
+		сеть func(*fakeStore)
+	}{
+		{"обычный участник", func(*fakeStore) {}},
+		{"обезличенная запись", func(st *fakeStore) {
+			at := time.Now()
+			st.profile.AnonymizedAt = &at
+			st.profile.Nick = ""
+		}},
+	} {
+		t.Run(tc.имя, func(t *testing.T) {
+			st := profileStore()
+			tc.сеть(st)
+			h, _, token := profileServer(t, st, platform.RoleUser)
+			body := do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+			if n, m := strings.Count(body, `class="ucols"`), strings.Count(body, `class="uside"`); n != m {
+				t.Errorf("колонок %d, справочных частей %d", n, m)
+			}
+		})
+	}
+}
+
+// У обезличенной записи справочной колонки нет вовсе: «здесь с» ей не
+// называется (время могилы огрублено до суток намеренно), а больше сказать
+// нечего — и заголовок «О себе» над пустотой был бы тем же дефектом, что
+// «ЧТО ТЕБЯ ЦЕПЛЯЕТ» без единой темы.
+func TestУОбезличеннойЗаписиКолонокНет(t *testing.T) {
+	st := profileStore()
+	at := time.Now()
+	st.profile.AnonymizedAt = &at
+	st.profile.Nick = ""
+	h, _, token := profileServer(t, st, platform.RoleUser)
+	body := do(h, as(guest(t, "GET", profilePath()), token)).Body.String()
+
+	if strings.Contains(body, `class="ucols"`) || strings.Contains(body, "О себе") {
+		t.Errorf("у обезличенной записи нарисована справочная колонка:\n%s", tailOf(body))
+	}
+	// Сами публикации при этом на месте: обезличивание убирает подпись, а не текст.
+	if !strings.Contains(body, "про третье свидание") {
+		t.Error("публикаций не осталось вовсе")
 	}
 }
 

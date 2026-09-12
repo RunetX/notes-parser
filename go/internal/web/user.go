@@ -33,6 +33,7 @@ package web
 
 import (
 	"errors"
+	"html/template"
 	"net/http"
 	"strconv"
 	"time"
@@ -67,6 +68,42 @@ type userPage struct {
 	// текст, отсылающий человека на другую страницу за кнопкой, которую можно
 	// поставить сюда, — это лишний переход и повод забыть, зачем шёл.
 	MailUnblock bool
+	// Facts — справочная колонка слева, строками «что — какое». Собирается
+	// ЗДЕСЬ, а не перечисляется в шаблоне цепочкой {{if}}: пустое поле
+	// пропускается поштучно (строка «Город: —» хуже отсутствующей — то же
+	// правило, что у контактов в справке), и решить, осталось ли вообще что
+	// показывать, можно только посчитав.
+	Facts []userFact
+	// HasSide — рисовать ли две колонки. Ответ обязан быть ОДИН на обе половины
+	// сетки: нарисуй мы .ucols без .uside, грид положил бы записи в первую
+	// колонку шириной 220px — страница схлопнулась бы в полосу, и ни один тест
+	// поведения этого бы не увидел.
+	HasSide bool
+	// NotesTrimmed и ComsTrimmed — список показан не целиком. Счётчик у
+	// заголовка называет ВСЁ написанное, а строк под ним два десятка, и без
+	// этой оговорки заголовок «Заметки 412» над двадцатью строками врал бы
+	// ровно так же, как прежняя строка «Заметок 5», под которой было три.
+	NotesTrimmed bool
+	ComsTrimmed  bool
+}
+
+// userFact — строка справочной колонки.
+//
+// Значение — готовая разметка, а не строка, ровно ради дат: время у нас всегда
+// <time> с новосибирским поясом и подписью у неточного (whenHTML), и второй
+// способ напечатать дату завёл бы на площадке две разные даты. Поэтому
+// собирается оно двумя конструкторами, и голой строки сюда не положить.
+type userFact struct {
+	K string
+	V template.HTML
+}
+
+func textFact(k, v string) userFact {
+	return userFact{K: k, V: template.HTML(template.HTMLEscapeString(v))}
+}
+
+func dateFact(k string, t time.Time) userFact {
+	return userFact{K: k, V: whenHTML(t, false)}
 }
 
 // mailButton — куда ведёт «Написать» и что сказать вместо кнопки.
@@ -146,19 +183,45 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mailTo, mailWhy, mailUnblock := s.mailButton(r, me, member.ID)
+	facts := userFacts(member)
 	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
-		page:        s.readingPage(r, userTitle(member)),
-		Member:      member,
-		Banned:      member.Banned(time.Now()),
-		Notes:       notes,
-		Comments:    comments,
-		CanModerate: me.Role >= platform.RoleModerator && s.mod != nil,
-		CanAdmin:    me.Role >= platform.RoleAdmin && s.mod != nil,
-		Me:          me.ID == member.ID,
-		MailTo:      mailTo,
-		MailWhy:     mailWhy,
-		MailUnblock: mailUnblock,
+		page:         s.readingPage(r, userTitle(member)),
+		Member:       member,
+		Banned:       member.Banned(time.Now()),
+		Notes:        notes,
+		Comments:     comments,
+		CanModerate:  me.Role >= platform.RoleModerator && s.mod != nil,
+		CanAdmin:     me.Role >= platform.RoleAdmin && s.mod != nil,
+		Me:           me.ID == member.ID,
+		MailTo:       mailTo,
+		MailWhy:      mailWhy,
+		MailUnblock:  mailUnblock,
+		Facts:        facts,
+		HasSide:      len(facts) > 0,
+		NotesTrimmed: member.Notes > len(notes),
+		ComsTrimmed:  member.Comments > len(comments),
 	})
+}
+
+// userFacts — справочная колонка: что о человеке известно СТРОКАМИ, а не
+// абзацем. Пустое не попадает сюда вовсе, поэтому шаблону остаётся один range,
+// а не цепочка условий, каждое из которых однажды забудут.
+//
+// Чего здесь нет и не будет: последнего визита (огонёк «онлайн» эпик E не
+// переносил сознательно) и полей анкеты НГС — обещание подписанных согласий
+// прямо говорит, что кроме ника, фотографии и пола оттуда не показывается
+// ничего.
+func userFacts(m platform.Profile) []userFact {
+	var out []userFact
+	// «Здесь с» у обезличенной записи не называется: время создания могилы
+	// огрублено до суток НАМЕРЕННО (точное совпало бы с отметкой отзыва до
+	// микросекунды и записало бы соответствие метками времени), и печатать его
+	// рядом со словами «обезличенная запись» значит рассказывать ровно то, что
+	// скрыто.
+	if m.AnonymizedAt == nil && !m.CreatedAt.IsZero() {
+		out = append(out, dateFact("Здесь с", m.CreatedAt))
+	}
+	return out
 }
 
 // userTitle — заголовок вкладки. Ник, а нет его (обезличенный, тень без имени)
