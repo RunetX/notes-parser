@@ -35,6 +35,12 @@ type fakeWriter struct {
 	aboutFail    error
 	photoAdded   *Shot
 	photoDropped int
+	// photoTaken — у какой фотографии спросили байты.
+	photoTaken int
+	// photoBytes — что отдаёт хранилище на «сделать аватаром». Пусто означает
+	// «такой фотографии нет»: ровно то, чем отвечает ядро на скрытую и на
+	// убранную, и ветка эта на странице своя.
+	photoBytes []byte
 	// cleared — у кого сняли фото. Ноль означает «ядро об этом не просили», и
 	// половина тестов аватара проверяет именно это.
 	cleared int64
@@ -108,6 +114,14 @@ func (f *fakeWriter) MayTellAbout(context.Context, int64) error { return f.about
 func (f *fakeWriter) AddProfilePhoto(_ context.Context, _ int64, shot *Shot) error {
 	f.photoAdded = shot
 	return f.aboutFail
+}
+
+func (f *fakeWriter) ProfilePhotoBytes(_ context.Context, _ int64, position int) ([]byte, error) {
+	f.photoTaken = position
+	if len(f.photoBytes) == 0 {
+		return nil, platform.ErrNoPhoto
+	}
+	return f.photoBytes, nil
 }
 
 func (f *fakeWriter) RemoveProfilePhoto(_ context.Context, _ int64, position int) error {

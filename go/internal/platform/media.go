@@ -181,6 +181,23 @@ func (s *MediaStore) FilePath(sha []byte, mime string) string {
 	return filepath.Join(s.dir, h[:2], h+mediaExt(mime))
 }
 
+// Read — байты файла из хранилища.
+//
+// Единственный читатель — «сделать аватаром» (эпик M): уже принятую фотографию
+// надо уменьшить, а уменьшает её морда, у которой есть перекодировщик. Публичнее
+// от этого файл не становится — он и так лежит по открытому адресу, — здесь
+// просто короткая дорога к тем же байтам, минуя свой же HTTP.
+//
+// Потолок не нужен: в хранилище попадает только то, что мы сами перекодировали,
+// и размер известен из media.
+func (s *MediaStore) Read(m Media) ([]byte, error) {
+	data, err := os.ReadFile(s.FilePath(m.SHA256, m.MIME))
+	if err != nil {
+		return nil, fmt.Errorf("файл %s: %w", MediaURL(m.SHA256, m.MIME), err)
+	}
+	return data, nil
+}
+
 // Has — файл уже в хранилище (проверяется диск, а не база: правда — на диске).
 func (s *MediaStore) Has(sha []byte, mime string) bool {
 	if len(sha) == 0 {

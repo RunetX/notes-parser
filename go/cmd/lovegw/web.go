@@ -227,6 +227,20 @@ func (w webWriter) AddProfilePhoto(ctx context.Context, userID int64, shot *web.
 	return err
 }
 
+// ProfilePhotoBytes — байты своей фотографии для «сделать аватаром».
+//
+// Два шага вместо одного: ядро отвечает, какой файл принадлежит этому человеку
+// и виден ли он, хранилище отдаёт байты. Уменьшает их морда — перекодировщик и
+// очередь к нему живут там, и второго заводить нельзя: ffmpeg на 1 vCPU
+// считается в одном месте.
+func (w webWriter) ProfilePhotoBytes(ctx context.Context, userID int64, position int) ([]byte, error) {
+	m, err := w.Platform.ProfilePhotoMedia(ctx, userID, position)
+	if err != nil {
+		return nil, err
+	}
+	return w.media.Read(m)
+}
+
 // MayTellAbout спрашивается ДО перекодирования: отказ не должен стоить ни
 // процессора, ни файла. Пустой рассказ ядро принимает, поэтому проверка правом и
 // исчерпывается — SetAbout с пустыми полями и есть вопрос «а можно ли вообще».

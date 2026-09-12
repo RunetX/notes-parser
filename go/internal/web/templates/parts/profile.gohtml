@@ -57,6 +57,19 @@
           {{/* «Убрать» стои́т ПОД своим снимком: строкой справа она уезжает к
                краю колонки и перестаёт читаться как кнопка ЭТОЙ фотографии. */}}
           {{if $e}}
+          {{/* Подпись в ОДНО слово: колонка тут 220 точек, плитка — 68, и
+               «Сделать аватаром» ложится в две строки, разъезжаясь с соседней
+               кнопкой. Что она делает, говорит title и строка под альбомом.
+               У СКРЫТОЙ фотографии кнопки нет вовсе: ядро её в аватар не
+               отдаёт (ErrNoPhoto), а кнопка, отвечающая отказом, хуже
+               отсутствующей. */}}
+          {{if not .Hidden}}
+          <form method="post" action="/me/avatar/photo">
+            <input type="hidden" name="csrf" value="{{$e.CSRF}}">
+            <input type="hidden" name="position" value="{{.Position}}">
+            <button type="submit" class="rm" title="Поставить этот снимок своим аватаром">Аватар</button>
+          </form>
+          {{end}}
           <form method="post" action="/me/photo/drop">
             <input type="hidden" name="csrf" value="{{$e.CSRF}}">
             <input type="hidden" name="position" value="{{.Position}}">
@@ -81,9 +94,13 @@
              а место в колонке она занимала бы всегда. */}}
         <details class="addph">
           <summary>Добавить фотографию</summary>
-          <form method="post" action="/me/photo" enctype="multipart/form-data">
+          {{/* data-shrink — скрипту: эту форму можно ускорить, уменьшив снимок
+               до отправки. Без скрипта атрибут не значит ничего, и файл уедет
+               целиком, как уезжал. */}}
+          <form method="post" action="/me/photo" enctype="multipart/form-data" data-shrink>
             <input type="hidden" name="csrf" value="{{$e.CSRF}}">
-            <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp">
+            <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp"
+                   data-maxside="{{$e.Side}}">
             <button type="submit">Положить</button>
           </form>
           <p class="fine">По одной. Каждую смотрит живой модератор, данные
@@ -94,9 +111,10 @@
         <p class="fine">Мест больше нет. Уберите одну, чтобы положить другую.</p>
         {{end}}
         {{if .Photos}}
-        <p class="fine">«Убрать» стирает фотографию по-настоящему: файл сносится
-        с диска. Это единственное место площадки, где удаление означает
-        удаление.</p>
+        <p class="fine">«Аватар» ставит снимок вашим лицом — в ленте и у каждой
+        реплики; для этого он уменьшается, сама фотография остаётся как есть.
+        «Убрать» стирает фотографию по-настоящему: файл сносится с диска. Это
+        единственное место площадки, где удаление означает удаление.</p>
         {{end}}
       {{end}}
     </div>

@@ -172,6 +172,66 @@ func (s *Server) handlePhotoDrop(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleAvatarFromPhoto — сделать аватаром свою фотографию из альбома.
+//
+// Третья дорога к аватару рядом с «Обновить аватар» (из анкеты НГС) и «Убрать»,
+// и заведена она потому, что первая умирает вместе с анкетой: у вошедшего по
+// приглашению её нет вовсе, у владельца её нет с 10.09.2026, а чужой сайт
+// комментариев не принимал месяц. Своя фотография — единственный источник лица,
+// который от love.ngs.ru не зависит.
+//
+// Кладётся УМЕНЬШЕННАЯ копия (avatarSide), а не та же строка хранилища: в ленте
+// двадцать заметок, и двадцать полноразмерных снимков ради двадцати пятаков —
+// это та же арифметика, по которой фото жителя перекодируется в 300 точек.
+// Ссылка на анкету при этом снимается (url пуст): по ней `platform media`
+// отличает «ещё не забрали байты» от «фото своё».
+func (s *Server) handleAvatarFromPhoto(w http.ResponseWriter, r *http.Request) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.writer(w, r)
+	if !ok {
+		return
+	}
+	pos, err := strconv.Atoi(r.FormValue("position"))
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, "Непонятно, какую фотографию ставить.")
+		return
+	}
+	if s.shots == nil {
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{
+			Bad: "Перекодировщик не отвечает — аватар сейчас не поставить. Фотографии это не трогает."}}})
+		return
+	}
+	data, err := s.wr.ProfilePhotoBytes(r.Context(), u.ID, pos)
+	switch {
+	case errors.Is(err, platform.ErrNoPhoto):
+		// Снимок убрали или скрыли, пока страница висела открытой.
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{
+			Bad: "Этой фотографии больше нет — обновите страницу."}}})
+		return
+	case err != nil:
+		s.oops(w, r, "фотография для аватара", err)
+		return
+	}
+	release, ok := s.takeConvertSlot(w, r)
+	if !ok {
+		return
+	}
+	defer release()
+	res, err := s.shots.ConvertTo(r.Context(), data, avatarSide)
+	if err != nil {
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Bad: shotProblem(err)}}})
+		return
+	}
+	switch err := s.wr.SetOwnAvatar(r.Context(), u.ID, "", res.Data); {
+	case err == nil:
+		http.Redirect(w, r, "/me", http.StatusSeeOther)
+	default:
+		s.showMe(w, r, u, mePage{Prof: profileView{Edit: &profileEdit{Bad: aboutProblem(err)}}})
+	}
+}
+
 // photoSide — длинная сторона фотографии профиля. Та же, что у картинки к
 // заметке (imgconv.MaxSide): в альбоме снимок показан квадратом со стороной в
 // сотню точек, но по нажатию открывается целиком, и уменьшать его до размера

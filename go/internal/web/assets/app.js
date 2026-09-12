@@ -751,6 +751,141 @@ smilePanel(document);
   if (!document.hidden) open();
 })();
 
+// Картинка УМЕНЬШАЕТСЯ ПРЯМО В БРАУЗЕРЕ, прежде чем уехать.
+//
+// Замер 12.09.2026: путь до площадки по HTTPS отдаёт 18–38 КБ/с (scp на тот же
+// хост — 700), и фотография с телефона в 7,5 МБ ползёт к нам три минуты. При
+// этом сервер всё равно ужимает её до 1600 точек по длинной стороне — то есть
+// девять десятых веса едут зря, чтобы быть выброшенными на том конце.
+//
+// Уменьшение здесь — УСКОРЕНИЕ, а не правило площадки: потолки, проверка типа и
+// снятие данных съёмки остаются на сервере, и он перекодирует присланное, как
+// перекодировал. Поэтому без скрипта всё работает как работало, оригинал уедет
+// целиком, и поэтому же всякая неудача пережатия молча возвращает оригинал:
+// «медленно» — это неудобство, «не отправилось» — потеря.
+//
+// Сторона берётся из разметки (data-maxside), а не пишется здесь числом: она
+// живёт в Go рядом с доводом, и второе её написание разошлось бы с первым молча.
+function shrinkPicture(file, maxSide, done) {
+  // GIF не трогаем вовсе: анимацию холст не перерисует, а решать за человека,
+  // что она ему не нужна, скрипт ускорения не вправе.
+  var can = window.createImageBitmap && window.DataTransfer && window.File;
+  if (!can || !file || !maxSide || file.type.indexOf('image/') !== 0 || file.type === 'image/gif') {
+    done(null);
+    return;
+  }
+  // imageOrientation: браузер поворачивает снимок по данным съёмки сам, а холст
+  // о них не знает — без этого портретное фото с телефона уехало бы на боку.
+  createImageBitmap(file, { imageOrientation: 'from-image' }).then(function (bmp) {
+    var side = Math.max(bmp.width, bmp.height);
+    // Мелочь не трогаем: пережатие всегда теряет качество, а выигрыш здесь
+    // меньше секунды.
+    if (side <= maxSide && file.size <= 600 * 1024) {
+      bmp.close();
+      done(null);
+      return;
+    }
+    var k = Math.min(1, maxSide / side);
+    var cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(bmp.width * k));
+    cv.height = Math.max(1, Math.round(bmp.height * k));
+    var ctx = cv.getContext('2d');
+    if (!ctx || !cv.toBlob) {
+      bmp.close();
+      done(null);
+      return;
+    }
+    ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
+    bmp.close();
+    cv.toBlob(function (blob) {
+      // Не помогло — шлём оригинал. Так бывает: webp умеют не все, а png,
+      // которым холст отвечает вместо него, бывает ТЯЖЕЛЕЕ снимка с камеры.
+      if (!blob || blob.size >= file.size) {
+        done(null);
+        return;
+      }
+      var name = file.name.replace(/\.[^.]*$/, '') + (blob.type === 'image/webp' ? '.webp' : '.png');
+      done(new File([blob], name, { type: blob.type, lastModified: Date.now() }));
+    }, 'image/webp', 0.85);
+  }, function () {
+    done(null);
+  });
+}
+
+// putPicked кладёт пережатый файл обратно в поле, чтобы обычная форма отправила
+// именно его. FileList не собирается руками — только через DataTransfer, и в
+// старых браузерах это бросает; там остаётся оригинал.
+function putPicked(input, file) {
+  try {
+    var dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Форма ФОТОГРАФИИ ПРОФИЛЯ («Моя страница»). Предзагрузки у неё нет — снимок
+// кладётся сразу, без черновика, — поэтому здесь только уменьшение и честная
+// надпись вместо молчащего экрана: три минуты тишины и были тем, из-за чего
+// загрузку принимали за зависание.
+(function () {
+  'use strict';
+
+  var form = document.querySelector('form[data-shrink]');
+  if (!form) return;
+  var input = form.querySelector('input[type=file][name=shot]');
+  var send = form.querySelector('button[type=submit]');
+  if (!input || !send) return;
+
+  var side = parseInt(input.getAttribute('data-maxside'), 10);
+  var say = document.createElement('p');
+  say.className = 'fine';
+  say.hidden = true;
+  form.appendChild(say);
+
+  var busy = false;
+  var tell = function (text) {
+    say.textContent = text;
+    say.hidden = !text;
+  };
+
+  input.addEventListener('change', function () {
+    if (!input.files || !input.files.length) {
+      tell('');
+      return;
+    }
+    var was = input.files[0];
+    busy = true;
+    send.disabled = true;
+    tell('Готовлю фотографию…');
+    shrinkPicture(was, side, function (small) {
+      busy = false;
+      send.disabled = false;
+      if (!small || !putPicked(input, small)) {
+        tell('');
+        return;
+      }
+      tell('Уменьшил до ' + Math.round(small.size / 1024) + ' КБ (было ' +
+        Math.round(was.size / 1024) + ') — так она доедет быстрее.');
+    });
+  });
+
+  form.addEventListener('submit', function (e) {
+    if (busy) {
+      e.preventDefault();
+      return;
+    }
+    if (input.files && input.files.length) {
+      send.disabled = true;
+      tell('Отправляю фотографию… Не закрывайте страницу.');
+      // Отключённая кнопка формы не мешает отправке (значения у неё нет), но
+      // мешает второму нажатию, а второе нажатие — это второй такой же файл.
+    }
+  });
+})();
+
 // Картинка уходит на сервер СРАЗУ по выбору, а не вместе с заметкой.
 //
 // Что это чинит. Раньше файл ехал телом той же формы: человек писал заметку,
@@ -816,12 +951,21 @@ smilePanel(document);
     wait.hidden = false;
     send.disabled = true;
 
+    // Уменьшаем ДО отправки: полоса прогресса показывает настоящую закачку, и
+    // показывать ей лучше пятьсот килобайт, чем семь мегабайт (shrinkPicture).
+    var picked = input.files[0];
+    shrinkPicture(picked, parseInt(input.getAttribute('data-maxside'), 10), function (small) {
+      upload(small || picked);
+    });
+  });
+
+  function upload(file) {
     var data = new FormData();
     // CSRF первым полем — ровно как в разметке формы: порядок частей multipart
     // это порядок в разметке, и токен обязан быть проверен до чтения файла.
     var csrf = form.querySelector('input[name=csrf]');
     if (csrf) data.append('csrf', csrf.value);
-    data.append('shot', input.files[0]);
+    data.append('shot', file);
 
     var xhr = new XMLHttpRequest();
     xhr.open('POST', '/shot');
@@ -849,7 +993,7 @@ smilePanel(document);
     xhr.addEventListener('abort', idle);
     xhr.addEventListener('timeout', idle);
     xhr.send(data);
-  });
+  }
 })();
 
 // Мордолента: стрелки листания у краёв полосы.

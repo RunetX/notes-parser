@@ -479,6 +479,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /me/nick", s.handleNick)
 	mux.HandleFunc("POST /me/avatar", s.handleAvatar)
 	mux.HandleFunc("POST /me/avatar/clear", s.handleAvatarClear)
+	mux.HandleFunc("POST /me/avatar/photo", s.handleAvatarFromPhoto)
 	mux.HandleFunc("POST /me/jump", s.handleJump)
 	mux.HandleFunc("POST /me/ngssend", s.handleNGSSend)
 	mux.HandleFunc("GET /me/bind", s.handleBind)

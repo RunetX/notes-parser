@@ -273,6 +273,33 @@ func (p *Platform) ProfilePhotos(ctx context.Context, userID int64, all bool) ([
 	return out, wrapf(rows.Err(), "альбом %d", userID)
 }
 
+// ProfilePhotoMedia — файл СВОЕЙ видимой фотографии: ключ и тип, чтобы взять
+// байты из хранилища.
+//
+// Нужен ровно одному делу — «сделать аватаром» (web/about.go): аватар кладётся
+// УМЕНЬШЕННОЙ копией, а не той же строкой, потому что лента из двадцати заметок
+// тянула бы двадцать полноразмерных снимков ради двадцати пятаков (тот же
+// довод, по которому жителю фотография перекодируется в 300 точек).
+//
+// Скрытую модератором не отдаёт, и это не перестраховка: скрытая фотография
+// снята с показа, а аватар и есть показ — самый заметный из всех.
+func (p *Platform) ProfilePhotoMedia(ctx context.Context, userID int64, position int) (Media, error) {
+	var m Media
+	err := p.pool.QueryRow(ctx, `
+		SELECT p.sha256, m.mime, m.width, m.height
+		  FROM user_photos p JOIN media m ON m.sha256 = p.sha256
+		 WHERE p.user_id = $1 AND p.position = $2 AND p.status = 0`,
+		userID, position).Scan(&m.SHA256, &m.MIME, &m.Width, &m.Height)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Media{}, ErrNoPhoto
+	}
+	if err != nil {
+		return Media{}, fmt.Errorf("фотография %d/%d: %w", userID, position, err)
+	}
+	m.URL = MediaURL(m.SHA256, m.MIME)
+	return m, nil
+}
+
 // HidePhotoAsModerator скрывает или возвращает ОДНУ фотографию.
 //
 // Отдельно от вердикта очереди, и это не удобство: вердикт судит карточку
@@ -305,6 +332,26 @@ func (p *Platform) HidePhotoAsModerator(ctx context.Context, actor Viewer, photo
 	}
 	if err != nil {
 		return fmt.Errorf("фотография %d: %w", photoID, err)
+	}
+	// Скрытая фотография уходит со страниц — а она могла смотреть из ЛЕНТЫ:
+	// «Сделать аватаром» кладёт её уменьшенную копию в users.avatar_sha, и
+	// скрытый снимок, продолжающий стоять лицом у каждой реплики, обесценил бы
+	// само скрытие. Поэтому оно снимает и аватар — но только СВОЙ, поставленный
+	// рукой (ngs_avatar_url пуст); привезённый из анкеты НГС модератор снимать
+	// не вправе, он к снимку отношения не имеет.
+	//
+	// Связи «аватар ← из этого снимка» у нас нет: копия уменьшена, и ключ у неё
+	// свой — имя файла есть его содержимое. Значит снимется и аватар, сделанный
+	// из ДРУГОЙ фотографии. Размен назван и сделан в пользу надзора: колонка
+	// ради редкого случая означала бы миграцию, а человек ставит аватар заново
+	// одним нажатием.
+	if hide {
+		if _, err := tx.Exec(ctx, `
+			UPDATE users SET avatar_sha = NULL
+			 WHERE id = $1 AND avatar_sha IS NOT NULL AND ngs_avatar_url = '' AND NOT persona`,
+			owner); err != nil {
+			return fmt.Errorf("аватар владельца %d: %w", owner, err)
+		}
 	}
 	// В журнал идёт ВЛАДЕЛЕЦ, а не номер снимка: журнал отвечает на вопрос «что
 	// сделали с этим человеком», и номер строки, которой через день не станет,

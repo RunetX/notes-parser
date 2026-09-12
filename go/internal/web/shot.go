@@ -222,7 +222,19 @@ func shotProblem(err error) string {
 // перекодирование, а само тело запроса — десять мегабайт, которые к моменту
 // вызова ffmpeg уже лежат у нас дважды.
 func (s *Server) takeShotSlot(w http.ResponseWriter, r *http.Request) (release func(), ok bool) {
-	if s.shotSem == nil || !isMultipart(r) {
+	if !isMultipart(r) {
+		return func() {}, true
+	}
+	return s.takeConvertSlot(w, r)
+}
+
+// takeConvertSlot — тот же слот для работы, у которой тела нет ВОВСЕ: «сделать
+// аватаром» берёт байты уже принятой фотографии (web/about.go). Памяти такая
+// работа ест меньше — тела запроса нет, — но ffmpeg запускает тот же, и
+// считаться он обязан там же: второй счёт рядом с первым однажды разошёлся бы с
+// ним, и на 1 vCPU это было бы видно сразу.
+func (s *Server) takeConvertSlot(w http.ResponseWriter, r *http.Request) (release func(), ok bool) {
+	if s.shotSem == nil {
 		return func() {}, true
 	}
 	t := time.NewTimer(shotsWait)

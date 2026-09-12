@@ -8,6 +8,7 @@ package web
 
 import (
 	"net/http"
+	"strconv"
 	"net/url"
 	"strings"
 	"testing"
@@ -246,5 +247,121 @@ func TestПутьФотографииСчитаетсяПриёмомФайла(
 	r := post(t, "/me/photo", url.Values{})
 	if !isUpload(r) {
 		t.Error("/me/photo не считается приёмом файла: тело порежет потолок текстовой формы")
+	}
+}
+
+// Аватар берётся из СВОЕЙ фотографии — третья дорога к лицу рядом с «Обновить
+// аватар» (из анкеты НГС) и «Убрать». Нужна она потому, что первая умирает
+// вместе с анкетой: у вошедшего по приглашению её нет вовсе, а комментариев
+// сайт месяц не принимал.
+//
+// Проверяется ПУТЬ ДАННЫХ, а не факт ответа: у какой фотографии спросили байты,
+// что ушло в перекодировщик и с какой ссылкой лёг аватар. Пустая ссылка —
+// условие, а не мелочь: по ней `platform media` отличает «байты ещё не забрали»
+// от «фото своё», и непустая вернула бы человеку снимок из анкеты следующим же
+// обходом.
+func TestАватарИзСвоейФотографии(t *testing.T) {
+	h, _, wr, _, token := aboutServer(t, true)
+	wr.photoBytes = []byte("снимок")
+
+	w := do(h, postAs(t, "/me/avatar/photo", url.Values{"position": {"2"}}, token))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("код %d, ожидался 303", w.Code)
+	}
+	if wr.photoTaken != 2 {
+		t.Errorf("байты спросили у места %d, а просили второе", wr.photoTaken)
+	}
+	if wr.avatar.url != "" {
+		t.Errorf("аватар лёг со ссылкой %q — по непустой его перепишет добор из анкеты", wr.avatar.url)
+	}
+	if len(wr.avatar.data) == 0 {
+		t.Error("аватар лёг пустым")
+	}
+}
+
+// Уменьшать обязательно: в ленте двадцать заметок, и двадцать снимков по 1600
+// точек ради двадцати пятаков — та же арифметика, по которой фото жителя
+// перекодируется в 300.
+func TestАватарИзФотографииУменьшается(t *testing.T) {
+	st := profileStore()
+	st.profile.ID = testProfileID
+	auth, token := signedInAs(t, platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindMember})
+	grantConsents(t, auth, testProfileID)
+	doc := currentDoc(t, platform.ConsentProfile)
+	if err := auth.GrantConsent(t.Context(), testProfileID, doc.Kind, doc.Version, ""); err != nil {
+		t.Fatal(err)
+	}
+	wr := &fakeWriter{photoBytes: []byte("снимок")}
+	srv := newServerFor(t, st, auth, wr, newFakeMod(), nil, Config{})
+	shots := newShots()
+	srv.SetShots(shots)
+
+	do(srv.routes(), postAs(t, "/me/avatar/photo", url.Values{"position": {"1"}}, token))
+	if shots.side != avatarSide {
+		t.Errorf("перекодировали до %d точек, а аватару положено %d", shots.side, avatarSide)
+	}
+	if string(shots.seen) != "снимок" {
+		t.Errorf("в перекодировщик ушло %q, а не байты фотографии", shots.seen)
+	}
+}
+
+// Фотографию убрали или скрыли, пока страница висела открытой: это не поломка,
+// а разошедшийся с жизнью экран, и человеку говорят словами.
+func TestАватарИзПропавшейФотографии(t *testing.T) {
+	h, _, wr, _, token := aboutServer(t, true)
+	wr.photoBytes = nil // ядро отвечает ErrNoPhoto
+
+	w := do(h, postAs(t, "/me/avatar/photo", url.Values{"position": {"3"}}, token))
+	if w.Code >= 500 {
+		t.Fatalf("код %d: пропавшая фотография это не поломка площадки", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "больше нет") {
+		t.Error("страница не объясняет, почему аватар не поставился")
+	}
+}
+
+// У СКРЫТОЙ модератором кнопки нет вовсе: ядро её в аватар не отдаёт, а кнопка,
+// отвечающая отказом, хуже отсутствующей.
+func TestСкрытуюФотографиюВАватарНеПредлагают(t *testing.T) {
+	st := profileStore()
+	st.profile.ID = testProfileID
+	st.photos = []platform.Photo{
+		{ID: 1, Position: 1, URL: "/media/a.webp", Status: platform.StatusHiddenMod},
+	}
+	auth, token := signedInAs(t, platform.User{ID: testProfileID, Nick: testNick, Kind: platform.KindMember})
+	grantConsents(t, auth, testProfileID)
+	doc := currentDoc(t, platform.ConsentProfile)
+	if err := auth.GrantConsent(t.Context(), testProfileID, doc.Kind, doc.Version, ""); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServerFor(t, st, auth, &fakeWriter{}, newFakeMod(), nil, Config{})
+	srv.SetShots(newShots())
+	body := do(srv.routes(), as(guest(t, "GET", "/me"), token)).Body.String()
+
+	if strings.Contains(body, "/me/avatar/photo") {
+		t.Error("скрытую модератором фотографию предлагают поставить лицом в ленту")
+	}
+	if !strings.Contains(body, "Убрать") {
+		t.Error("«Убрать» у скрытой фотографии пропало — убирать её человек вправе")
+	}
+}
+
+// Сторона, до которой снимок всё равно уменьшат, ПЕЧАТАЕТСЯ В РАЗМЕТКУ: по ней
+// браузер уменьшает фотографию ДО отправки (assets/app.js), и без неё скрипт
+// молча ничего не делает — а «молча ничего» тут значит три минуты закачки по
+// каналу в 38 КБ/с.
+//
+// Тест на ПУТИ ДАННЫХ, а не на формуле: число в Go и число в разметке — разные
+// места, и разъезжались такие пары в этом проекте не раз.
+func TestСторонаСнимкаЕдетВРазметку(t *testing.T) {
+	h, _, _, _, token := aboutServer(t, true)
+	body := do(h, as(guest(t, "GET", "/me"), token)).Body.String()
+
+	if !strings.Contains(body, "data-shrink") {
+		t.Error("форма фотографии не помечена для уменьшения в браузере")
+	}
+	want := `data-maxside="` + strconv.Itoa(photoSide) + `"`
+	if !strings.Contains(body, want) {
+		t.Errorf("в разметке нет %s — скрипту неоткуда узнать сторону", want)
 	}
 }

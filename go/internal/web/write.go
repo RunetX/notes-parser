@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"time"
 
+	"lovegw/internal/imgconv"
 	"lovegw/internal/platform"
 )
 
@@ -84,6 +85,14 @@ type Writer interface {
 	// зеркала и у аватара, иначе три места начнут по-разному решать, что
 	// считать картинкой.
 	AddProfilePhoto(ctx context.Context, userID int64, shot *Shot) error
+	// ProfilePhotoBytes — байты СВОЕЙ видимой фотографии, чтобы сделать из неё
+	// аватар. Чтение в списке правок стои́т намеренно: дорога разрезана ровно
+	// посередине — файлы видит только этот адаптер (у него хранилище), а
+	// перекодировщик только морда, поэтому ядро отдаёт байты, морда уменьшает до
+	// аватарной стороны, ядро кладёт результат тем же SetOwnAvatar, каким
+	// ложится фото из анкеты НГС. Скрытую модератором не отдаёт вовсе: она снята
+	// с показа, а аватар — самый заметный показ из всех.
+	ProfilePhotoBytes(ctx context.Context, userID int64, position int) ([]byte, error)
 	// RemoveProfilePhoto снимает фотографию И БАЙТЫ. Единственное место, где
 	// площадка чистит хранилище, — почему именно здесь, написано в
 	// platform/about.go.
@@ -125,6 +134,12 @@ type composePage struct {
 	// CanShot — площадка сейчас принимает файлы (есть перекодировщик). Нет —
 	// поля файла в форме нет вовсе.
 	CanShot bool
+	// ShotSide — до какой длинной стороны картинка всё равно будет уменьшена.
+	// Печатается в разметку ради браузера: он уменьшит её ДО отправки, и по
+	// каналу в десятки килобайт в секунду поедет полмегабайта вместо десяти
+	// (assets/app.js). Число живёт в Go, второе его написание в скрипте
+	// разошлось бы молча.
+	ShotSide int
 	// HasShot — у правимой заметки есть картинка, значит есть и «снять».
 	HasShot bool
 	// LostShot — отказ случился, когда файл ехал ТЕЛОМ формы. Браузер его не
@@ -160,6 +175,7 @@ func (s *Server) newNoteForm(r *http.Request, body string, anon, stage bool) com
 		Stage:     stage,
 		CanStage:  s.canStage(r),
 		CanShot:   s.takesShots(),
+		ShotSide:  imgconv.MaxSide,
 	}
 }
 
@@ -353,6 +369,7 @@ func (s *Server) editForm(r *http.Request, note platform.NoteView, mode editMode
 		Anonymous:  note.Anonymous,
 		Problem:    problem,
 		CanShot:    admin && s.takesShots(),
+		ShotSide:   imgconv.MaxSide,
 		HasShot:    has && (mode == editOwn || platform.IsNative(note.ID)),
 		Stage:      note.Stage,
 		// Песочницу предлагаем только там, где ядро согласится: пока под

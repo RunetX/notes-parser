@@ -59,7 +59,8 @@
          этом человек должен до отправки, а не после. */}}
     <label class="shotpick">
       <span>Картинка к заметке (необязательно)</span>
-      <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp">
+      <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp"
+             data-maxside="{{.ShotSide}}">
     </label>
     {{/* Со скриптом файл уходит на сервер СРАЗУ по выбору (shotdraft.go), и это
          место — всё, что затея просит у разметки: полоска на время закачки и

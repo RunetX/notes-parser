@@ -410,3 +410,67 @@ func TestНаКарточкуМожноПожаловаться(t *testing.T) {
 		t.Fatalf("жалоба на карточку: %v", err)
 	}
 }
+
+// Скрытая фотография не должна СМОТРЕТЬ ИЗ ЛЕНТЫ: её уменьшенная копия могла
+// стоять аватаром, и снимок, снятый с показа, продолжал бы попадаться на глаза
+// у каждой реплики — то есть скрытие ничего бы не значило.
+//
+// Снимается при этом только СВОЙ аватар — поставленный рукой (ngs_avatar_url
+// пуст). Привезённый из анкеты НГС модератор снимать не вправе: он к снимку
+// отношения не имеет, а человек остался бы без лица за чужую вину.
+func TestСкрытиеСнимкаСнимаетСвойАватар(t *testing.T) {
+	p := testPlatform(t)
+	ctx := context.Background()
+	store := aboutStore(t, p)
+	mod := mustAdmin(t, p, "Хатуль мадан")
+	actor := Viewer{UserID: mod, Role: RoleModerator}
+
+	hideFirstPhoto := func(t *testing.T, u int64) {
+		t.Helper()
+		photos, err := p.ProfilePhotos(ctx, u, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := p.HidePhotoAsModerator(ctx, actor, photos[0].ID, true, "лишнее"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	avatarOf := func(t *testing.T, u int64) []byte {
+		t.Helper()
+		var sha []byte
+		if err := p.pool.QueryRow(ctx, `SELECT avatar_sha FROM users WHERE id = $1`, u).Scan(&sha); err != nil {
+			t.Fatal(err)
+		}
+		return sha
+	}
+
+	// СВОЙ: фотография из альбома, уменьшенная в аватар (ссылки нет).
+	own := mustUser(t, p, "Примус")
+	m := mustPhoto(t, store, 320, 240)
+	if _, err := p.AddProfilePhoto(ctx, own, &m); err != nil {
+		t.Fatal(err)
+	}
+	small := mustPhoto(t, store, 300, 225)
+	if err := p.SetNGSAvatar(ctx, own, small.SHA256, ""); err != nil {
+		t.Fatal(err)
+	}
+	hideFirstPhoto(t, own)
+	if sha := avatarOf(t, own); sha != nil {
+		t.Error("скрытый снимок остался смотреть из ленты: аватар не снят")
+	}
+
+	// ИЗ АНКЕТЫ: то же скрытие, но лицо привезено зеркалом — оно остаётся.
+	ngs := mustUser(t, p, "Вторник")
+	m2 := mustPhoto(t, store, 320, 240)
+	if _, err := p.AddProfilePhoto(ctx, ngs, &m2); err != nil {
+		t.Fatal(err)
+	}
+	face := mustPhoto(t, store, 100, 100)
+	if err := p.SetNGSAvatar(ctx, ngs, face.SHA256, "https://hsmedia.ru/face.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	hideFirstPhoto(t, ngs)
+	if sha := avatarOf(t, ngs); sha == nil {
+		t.Error("снято фото из анкеты НГС — модератор судил снимок, а не его")
+	}
+}
