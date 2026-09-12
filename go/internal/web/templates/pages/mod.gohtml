@@ -23,8 +23,15 @@
 {{range .Queue}}
   <li class="mitem{{if .Hidden}} mhid{{end}}">
     <div class="mhead">
+      {{/* У карточки человека (эпик M) заметки нет вовсе, и вести из очереди
+           надо на его страницу: там она и показана целиком — рассказ, город,
+           занятие и все снимки. */}}
+      {{if eq .Subject.Kind "profile"}}
+      <a class="mlink" href="/u/{{.Subject.ID}}">рассказ о себе {{.Subject.ID}}</a>
+      {{else}}
       <a class="mlink" href="/n/{{.NoteID}}{{if not (eq .Subject.Kind "note")}}#c{{.Subject.ID}}{{end}}">
         {{if eq .Subject.Kind "note"}}заметка{{else}}комментарий{{end}} {{.Subject.ID}}</a>
+      {{end}}
       {{if .AuthorID}}<a class="mlink" href="/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
       <span class="fine">{{when .QueuedAt true}}</span>
       {{if .Appealed}}<span class="mtag warnbadge">просит пересмотра</span>{{end}}
@@ -41,6 +48,21 @@
          премодерации у картинок нет, — значит человек здесь единственный, кто
          её увидит. Миниатюрой: очередь обязана читаться за минуту. */}}
     {{if .ImageURL}}<a class="mshot" href="{{.ImageURL}}"><img src="{{.ImageURL}}" alt="Картинка заметки" loading="lazy"></a>{{end}}
+    {{/* Фотографии профиля — здесь же и с кнопкой на КАЖДУЮ: вердикт очереди
+         судит карточку целиком, а дурной бывает одна из трёх, и унести с нею
+         рассказ значило бы наказать за то, чего не смотрели. */}}
+    {{range .Photos}}
+    <div class="mphoto">
+      <a class="mshot" href="{{.URL}}"><img src="{{.URL}}" alt="Фотография участника" loading="lazy"></a>
+      <form method="post" action="/mod/photo">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="id" value="{{.ID}}">
+        <input type="hidden" name="hide" value="{{if .Hidden}}0{{else}}1{{end}}">
+        <button type="submit"{{if not .Hidden}} class="danger"{{end}}>
+          {{if .Hidden}}Вернуть фотографию{{else}}Скрыть фотографию{{end}}</button>
+      </form>
+    </div>
+    {{end}}
     {{range .Reports}}
     <div class="mrep">Жалоба{{if .Nick}} от {{.Nick}}{{end}}: {{if .Reason}}{{.Reason}}{{else}}без объяснения{{end}}</div>
     {{end}}
@@ -102,8 +124,15 @@
 {{range .AutoHidden}}
   <li class="mitem mhid">
     <div class="mhead">
+      {{/* У карточки человека (эпик M) заметки нет вовсе, и вести из очереди
+           надо на его страницу: там она и показана целиком — рассказ, город,
+           занятие и все снимки. */}}
+      {{if eq .Subject.Kind "profile"}}
+      <a class="mlink" href="/u/{{.Subject.ID}}">рассказ о себе {{.Subject.ID}}</a>
+      {{else}}
       <a class="mlink" href="/n/{{.NoteID}}{{if not (eq .Subject.Kind "note")}}#c{{.Subject.ID}}{{end}}">
         {{if eq .Subject.Kind "note"}}заметка{{else}}комментарий{{end}} {{.Subject.ID}}</a>
+      {{end}}
       {{if .AuthorID}}<a class="mlink" href="/u/{{.AuthorID}}">{{.AuthorNick}}</a>{{end}}
       <span class="fine">{{if .CheckedAt}}{{when .CheckedAt true}}{{end}}</span>
       {{if .Appealed}}<span class="mtag warnbadge">просит пересмотра</span>{{end}}
@@ -117,6 +146,21 @@
          премодерации у картинок нет, — значит человек здесь единственный, кто
          её увидит. Миниатюрой: очередь обязана читаться за минуту. */}}
     {{if .ImageURL}}<a class="mshot" href="{{.ImageURL}}"><img src="{{.ImageURL}}" alt="Картинка заметки" loading="lazy"></a>{{end}}
+    {{/* Фотографии профиля — здесь же и с кнопкой на КАЖДУЮ: вердикт очереди
+         судит карточку целиком, а дурной бывает одна из трёх, и унести с нею
+         рассказ значило бы наказать за то, чего не смотрели. */}}
+    {{range .Photos}}
+    <div class="mphoto">
+      <a class="mshot" href="{{.URL}}"><img src="{{.URL}}" alt="Фотография участника" loading="lazy"></a>
+      <form method="post" action="/mod/photo">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="id" value="{{.ID}}">
+        <input type="hidden" name="hide" value="{{if .Hidden}}0{{else}}1{{end}}">
+        <button type="submit"{{if not .Hidden}} class="danger"{{end}}>
+          {{if .Hidden}}Вернуть фотографию{{else}}Скрыть фотографию{{end}}</button>
+      </form>
+    </div>
+    {{end}}
     <div class="mtext">{{.Body}}</div>
     {{template "moddec" (dec $ .)}}
   </li>

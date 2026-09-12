@@ -36,12 +36,37 @@ const previewAddr = "127.0.0.1:8791"
 
 func TestПредпросмотр(t *testing.T) {
 	st := profileStore()
+	// Смотрим на СВОЮ страницу: тест-дубль отдаёт карточку только по точному
+	// номеру, а «Рассказ о себе» читает карточку вошедшего.
+	st.profile.ID = testProfileID
 	st.profile.Comments = 412
 	st.profile.Bio = "Слесарь-ремонтник на заводе, руки в мазуте, гараж вместо кабинета."
+	st.profile.City = "Новосибирск"
+	st.profile.Job = "слесарь-ремонтник"
+	// Снимки — силуэты из своей же статики: боевых фотографий в стенде быть не
+	// должно, а картинка нужна только чтобы увидеть сетку альбома.
+	st.photos = []platform.Photo{
+		{ID: 1, Position: 1, URL: assetURL("profile/male300px.png")},
+		{ID: 2, Position: 2, URL: assetURL("profile/female300px.png")},
+		{ID: 3, Position: 3, URL: assetURL("profile/anonymous300px.png")},
+	}
 	auth, token := signedInAs(t, platform.User{
 		ID: testProfileID, Nick: testNick, Kind: platform.KindMember, Role: platform.RoleAdmin,
 	})
-	h := newFullServer(t, st, auth, &fakeWriter{}, newFakeMod(), nil, Config{})
+	// Необязательные согласия тоже подписаны: иначе половина экранов стенда
+	// показывает документ вместо того, ради чего на них смотрят.
+	for _, kind := range []string{platform.ConsentProfile, platform.ConsentBinding} {
+		doc, err := platform.ConsentDocOf(platform.Operator{}, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := auth.GrantConsent(t.Context(), testProfileID, doc.Kind, doc.Version, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stand := newServerFor(t, st, auth, &fakeWriter{}, newFakeMod(), nil, Config{})
+	stand.SetShots(newShots())
+	h := stand.routes()
 
 	// Вошедшим считается всякий, кто не попросил обратного: кука сессии
 	// HttpOnly, скриптом её не поставить, а вводить руками в отладчике при
@@ -71,7 +96,7 @@ func TestПредпросмотр(t *testing.T) {
 	defer srv.Close()
 
 	t.Logf("вошедшим показывается всё; гость — добавить ?guest=1")
-	for _, p := range []string{"/", "/n/312811", profilePath(), "/help", "/help/read", "/login", "/new"} {
+	for _, p := range []string{"/", "/n/312811", "/u/" + itoa64(testProfileID), "/me", "/me/about", "/help", "/help/read", "/login", "/new"} {
 		t.Logf("%s%s", srv.URL, p)
 	}
 	t.Log("Ctrl+C, когда насмотритесь")

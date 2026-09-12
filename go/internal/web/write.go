@@ -72,6 +72,22 @@ type Writer interface {
 	// переголосовать после разгадки значило бы обнулить проценты под вопросом.
 	// Гость сюда не доходит вовсе — его ответ живёт в куке (см. web/quiz.go).
 	AnswerQuiz(ctx context.Context, in platform.QuizAnswer) error
+	// SetAbout — рассказ человека о себе: город, занятие и свободный текст
+	// (эпик M). Пустые поля законны и означают «не рассказываю».
+	SetAbout(ctx context.Context, userID int64, in platform.About) error
+	// MayTellAbout — вправе ли он сейчас что-то о себе писать. Спрашивается ДО
+	// перекодирования фотографии по тому же доводу, что MayPublishNote: отказ
+	// не должен стоить ни процессора, ни файла, убирать который будет некому.
+	MayTellAbout(ctx context.Context, userID int64) error
+	// AddProfilePhoto — фотография на первое свободное место. Морда отдаёт
+	// ПЕРЕКОДИРОВАННЫЕ байты, а не путь: класть их обязан тот же код, что у
+	// зеркала и у аватара, иначе три места начнут по-разному решать, что
+	// считать картинкой.
+	AddProfilePhoto(ctx context.Context, userID int64, shot *Shot) error
+	// RemoveProfilePhoto снимает фотографию И БАЙТЫ. Единственное место, где
+	// площадка чистит хранилище, — почему именно здесь, написано в
+	// platform/about.go.
+	RemoveProfilePhoto(ctx context.Context, userID int64, position int) error
 }
 
 // composePageName — один шаблон и на новую заметку, и на правку: поля те же, и

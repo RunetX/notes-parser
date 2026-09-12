@@ -203,6 +203,32 @@ func (w webWriter) ClearOwnAvatar(ctx context.Context, userID int64) error {
 //
 // sourceURL пуст намеренно: качать было неоткуда, картинку принесли. По этой
 // пустоте своё и отличается от привезённого с НГС (см. шапку platform/media.go).
+// AddProfilePhoto — фотография профиля (эпик M). Порядок тот же, что у
+// картинки к заметке, и по той же причине: user_photos ссылается на media, и
+// строка без файла даёт битую картинку на странице — поломку ВИДИМУЮ, тогда как
+// файл без строки не виден никому.
+//
+// sourceURL пуст: качать было неоткуда, фотографию принесли. По этой пустоте
+// своё и отличается от привезённого с НГС (см. шапку platform/media.go).
+func (w webWriter) AddProfilePhoto(ctx context.Context, userID int64, shot *web.Shot) error {
+	if shot == nil {
+		return platform.ErrNoPhoto
+	}
+	m, err := w.media.PutSized(ctx, shot.Data, "", shot.Width, shot.Height)
+	if err != nil {
+		return err
+	}
+	_, err = w.Platform.AddProfilePhoto(ctx, userID, &m)
+	return err
+}
+
+// MayTellAbout спрашивается ДО перекодирования: отказ не должен стоить ни
+// процессора, ни файла. Пустой рассказ ядро принимает, поэтому проверка правом и
+// исчерпывается — SetAbout с пустыми полями и есть вопрос «а можно ли вообще».
+func (w webWriter) MayTellAbout(ctx context.Context, userID int64) error {
+	return w.Platform.MayTellAbout(ctx, userID)
+}
+
 func (w webWriter) CreateNote(ctx context.Context, in platform.NewNote, shot *web.Shot) (int64, error) {
 	if shot != nil {
 		m, err := w.media.PutSized(ctx, shot.Data, "", shot.Width, shot.Height)

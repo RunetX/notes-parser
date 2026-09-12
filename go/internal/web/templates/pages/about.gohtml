@@ -1,0 +1,99 @@
+{{define "content"}}
+{{if not .Signed}}
+{{/* Первое состояние — документ и кнопка, и порядок этот обязателен: подпись,
+     данная до текста, подписью не является. Тот же экран и та же разметка, что
+     у привязки мессенджера и у согласия на переписку — три экрана одного
+     разговора не должны выглядеть по-разному. */}}
+<section class="enterbox doc">
+  <div class="doctext">{{doc .Doc.Body}}</div>
+
+  <form method="post" action="/me/about/consent" class="agree">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit">Согласен — рассказать о себе</button>
+  </form>
+
+  <p class="fine">Согласие необязательное: без него площадка работает как
+  прежде. Отозвать его можно на «Моей странице» — тогда всё написанное здесь и
+  все фотографии убираются, а файлы сносятся с диска.</p>
+
+  <p class="alt"><a href="/me">Вернуться на мою страницу</a></p>
+</section>
+{{else}}
+<section class="uprof">
+  <h1 class="ttl">Рассказ о себе</h1>
+
+  {{if .Bad}}<p class="bad">{{.Bad}}</p>{{end}}
+  {{if .Saved}}<p class="fine">Сохранено.</p>{{end}}
+  {{if .Hidden}}
+  <p class="warn">Ваша карточка скрыта модератором: город, занятие, рассказ и
+  фотографии сейчас видите только вы. Попросить пересмотра можно на
+  <a href="/me">«Моей странице»</a>.</p>
+  {{end}}
+
+  <p class="fine">Это видно на вашей странице вошедшим участникам. Пустые поля
+  не показываются вовсе — заполнять всё сразу не нужно.</p>
+
+  <form method="post" action="/me/about" class="wform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <p class="nickform">
+      <label for="city">Город</label>
+      <input type="text" id="city" name="city" maxlength="64" value="{{.About.City}}">
+    </p>
+    <p class="nickform">
+      <label for="job">Занятие</label>
+      <input type="text" id="job" name="job" maxlength="64" value="{{.About.Job}}">
+    </p>
+    <label for="bio">О себе</label>
+    <textarea id="bio" name="bio" rows="6" maxlength="{{.MaxRunes}}">{{.About.Bio}}</textarea>
+    {{template "smilepick"}}{{template "markpick"}}
+    <div class="wact"><button type="submit">Сохранить</button></div>
+  </form>
+
+  <h2 class="sub">Фотографии <span class="cnt" title="Всего фотографий">{{len .Photos}}</span></h2>
+  <p class="fine">Их бывает не больше {{.Limit}}: каждую смотрит живой
+  модератор, и альбом, который никто не посмотрит, — это проверка только на
+  бумаге. Данные съёмки — время, место, модель камеры — снимаются при приёме.
+  Файл лежит по открытому адресу: у кого есть ссылка, тот его и увидит.</p>
+
+  {{if .Photos}}
+  <ul class="myphotos">
+    {{range .Photos}}
+    <li>
+      <a href="{{.URL}}"><img src="{{.URL}}" alt="" loading="lazy" decoding="async"></a>
+      {{/* Скрытую модератором человек видит у себя — иначе она выглядела бы
+           пропавшей, и он положил бы её заново, заняв второе место. */}}
+      {{if .Hidden}}<span class="mtag warnbadge">Скрыта модератором</span>{{end}}
+      <form method="post" action="/me/photo/drop">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <input type="hidden" name="position" value="{{.Position}}">
+        <button type="submit" class="danger">Убрать</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  <p class="fine">«Убрать» стирает фотографию по-настоящему: файл сносится с
+  диска, если на него больше ничто не ссылается. Это единственное место
+  площадки, где удаление означает удаление.</p>
+  {{end}}
+
+  {{/* Поля файла нет там, где оно заведомо откажет: места кончились или
+       перекодировщик не поднялся. Кнопка, отвечающая отказом, хуже её
+       отсутствия. */}}
+  {{if and .Shots (gt .Free 0)}}
+  <form method="post" action="/me/photo" enctype="multipart/form-data" class="wform">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label class="shotpick">
+      <span>Добавить фотографию</span>
+      <input type="file" name="shot" accept="image/jpeg,image/png,image/gif,image/webp">
+    </label>
+    <div class="wact"><button type="submit">Положить</button></div>
+  </form>
+  {{else if not .Shots}}
+  <p class="fine">Фотографии сейчас не принимаются: перекодировщик не отвечает.
+  Написанное это не трогает.</p>
+  {{end}}
+
+  <p class="alt"><a href="/me">Вернуться на мою страницу</a></p>
+</section>
+{{end}}
+{{end}}

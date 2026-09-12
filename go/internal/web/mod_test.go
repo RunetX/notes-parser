@@ -24,16 +24,19 @@ const testInviteCode = "T3H-TEST-CODE"
 
 // fakeMod — модерация в памяти.
 type fakeMod struct {
-	queue    []platform.ReviewItem
-	auto     []platform.ReviewItem
-	stats    platform.ModerationStats
-	audit    []platform.AuditEntry
-	mine     []platform.MyCheck
-	users    map[int64]platform.User
-	acts     []string // что позвали, по порядку
-	reported []platform.Subject
-	appealed []platform.Subject
-	invites  []platform.Invite
+	queue []platform.ReviewItem
+	auto  []platform.ReviewItem
+	stats platform.ModerationStats
+	audit []platform.AuditEntry
+	mine  []platform.MyCheck
+	// Фотографии профиля, снятые модератором: номера и то, куда переключали.
+	photoHidden []int64
+	photoHide   bool
+	users       map[int64]platform.User
+	acts        []string // что позвали, по порядку
+	reported    []platform.Subject
+	appealed    []platform.Subject
+	invites     []platform.Invite
 	// mailReports — жалобы на письма, resolved — какие из них разобрали.
 	mailReports []platform.MailReport
 	resolved    []int64
@@ -250,6 +253,15 @@ func (f *fakeMod) MailReports(context.Context, int) ([]platform.MailReport, erro
 func (f *fakeMod) ResolveMailReport(_ context.Context, _ platform.Viewer, id int64, resolution string) error {
 	f.resolved = append(f.resolved, id)
 	f.resolution = resolution
+	return f.fail
+}
+
+// Скрытие ОДНОЙ фотографии профиля (эпик M). Запоминаем пару «номер, скрыть
+// ли»: половина смысла кнопки в том, что она переключатель, а не «убрать».
+func (f *fakeMod) HidePhotoAsModerator(_ context.Context, _ platform.Viewer, id int64, hide bool, reason string) error {
+	f.photoHidden = append(f.photoHidden, id)
+	f.photoHide = hide
+	f.resolution = reason
 	return f.fail
 }
 

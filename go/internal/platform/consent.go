@@ -44,6 +44,7 @@ const (
 	ConsentDistribution = "distribution" // ст. 10.1: распространение
 	ConsentBinding      = "binding"      // привязка мессенджера, НЕОБЯЗАТЕЛЬНОЕ
 	ConsentTalks        = "talks"        // личная переписка, НЕОБЯЗАТЕЛЬНОЕ
+	ConsentProfile      = "profile"      // рассказ о себе и фотографии, НЕОБЯЗАТЕЛЬНОЕ
 )
 
 // Согласия делятся на ОБЯЗАТЕЛЬНЫЕ и необязательные, и деление это — рычаг, а
@@ -76,7 +77,7 @@ var (
 	// Порядок фиксирован: сперва общее согласие, потом распространение —
 	// согласиться на публикацию, не согласившись на обработку, бессмысленно, —
 	// а необязательное идёт последним, потому что оно и читается последним.
-	allConsentKinds = []string{ConsentProcessing, ConsentDistribution, ConsentBinding, ConsentTalks}
+	allConsentKinds = []string{ConsentProcessing, ConsentDistribution, ConsentBinding, ConsentTalks, ConsentProfile}
 )
 
 // Operator — реквизиты того, кто обрабатывает. Подставляются в текст ДО
@@ -396,6 +397,19 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 			return err
 		}
 	}
+	// РАССКАЗ О СЕБЕ И ФОТОГРАФИИ снимаются тем же правилом и по тому же доводу
+	// (эпик M): пока строки живы, отозванное согласие остаётся действующим
+	// основанием. Документ обещает ровно это — «убирает всё разом: город,
+	// занятие, текст и все фотографии вместе с их файлами», — и здесь оно
+	// исполняется, а не откладывается до уборки.
+	var orphans []Media
+	if slices.Contains(kinds, ConsentProfile) {
+		got, err := dropAboutData(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		orphans = got
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE consents SET revoked_at = now()
 		 WHERE user_id = $1 AND kind = ANY($2) AND revoked_at IS NULL`, userID, kinds); err != nil {
@@ -423,5 +437,11 @@ func (p *Platform) RevokeConsent(ctx context.Context, userID int64, kind string)
 			return fmt.Errorf("отзыв согласия %s: %w", kind, err)
 		}
 	}
-	return wrapf(tx.Commit(ctx), "отзыв согласия %s", kind)
+	if err := tx.Commit(ctx); err != nil {
+		return wrapf(err, "отзыв согласия %s", kind)
+	}
+	// Файлы — ПОСЛЕ коммита, как и при обезличивании: файловая операция не
+	// откатывается вместе с транзакцией.
+	p.dropFiles(orphans)
+	return nil
 }

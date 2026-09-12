@@ -85,6 +85,15 @@ type userPage struct {
 	// ровно так же, как прежняя строка «Заметок 5», под которой было три.
 	NotesTrimmed bool
 	ComsTrimmed  bool
+	// Photos — альбом (эпик M). Пустой у всех, кто ничего не клал, и у ЖИТЕЛЯ
+	// всегда: лицо ему рисует генератор по промпту, второго лица того же жителя
+	// нарисовать нечем — три «его» фотографии оказались бы тремя разными
+	// людьми.
+	Photos []platform.Photo
+	// AboutHidden — карточку скрыл модератор, и смотрящий её всё же видит:
+	// такое бывает у владельца и у модератора. Строка над ней объясняет, почему
+	// другие этого не видят.
+	AboutHidden bool
 }
 
 // userFact — строка справочной колонки.
@@ -183,6 +192,26 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mailTo, mailWhy, mailUnblock := s.mailButton(r, me, member.ID)
+	// Скрытую модератором карточку видят ДВОЕ — он сам и её владелец; для всех
+	// остальных её нет вовсе, вместе с рассказом, городом, занятием и снимками.
+	// Решается это ОДНИМ вопросом и здесь, а не тремя условиями в шаблоне:
+	// разойдясь, они однажды показали бы половину скрытого.
+	showAbout := member.AboutStatus == platform.StatusVisible ||
+		me.ID == member.ID || me.Role >= platform.RoleModerator
+	var photos []platform.Photo
+	if showAbout {
+		// Свой альбом и альбом глазами модератора идут целиком: скрытая
+		// фотография, которой владелец у себя не видит, выглядит пропавшей.
+		all := me.ID == member.ID || me.Role >= platform.RoleModerator
+		photos, err = s.st.ProfilePhotos(r.Context(), id, all)
+		if err != nil {
+			s.oops(w, r, "альбом участника", err)
+			return
+		}
+	}
+	if !showAbout {
+		member.Bio, member.City, member.Job = "", "", ""
+	}
 	facts := userFacts(member)
 	s.render(w, r, http.StatusOK, "user.gohtml", userPage{
 		page:         s.readingPage(r, userTitle(member)),
@@ -197,7 +226,9 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		MailWhy:      mailWhy,
 		MailUnblock:  mailUnblock,
 		Facts:        facts,
-		HasSide:      len(facts) > 0,
+		Photos:       photos,
+		HasSide:      len(facts) > 0 || len(photos) > 0,
+		AboutHidden:  showAbout && member.AboutStatus != platform.StatusVisible,
 		NotesTrimmed: member.Notes > len(notes),
 		ComsTrimmed:  member.Comments > len(comments),
 	})
@@ -213,6 +244,12 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 // ничего.
 func userFacts(m platform.Profile) []userFact {
 	var out []userFact
+	if m.City != "" {
+		out = append(out, textFact("Город", m.City))
+	}
+	if m.Job != "" {
+		out = append(out, textFact("Занятие", m.Job))
+	}
 	// «Здесь с» у обезличенной записи не называется: время создания могилы
 	// огрублено до суток НАМЕРЕННО (точное совпало бы с отметкой отзыва до
 	// микросекунды и записало бы соответствие метками времени), и печатать его

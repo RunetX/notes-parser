@@ -149,6 +149,15 @@ func (p *Platform) AnonymizeUser(ctx context.Context, actor Viewer, userID int64
 		 WHERE user_id = $1 AND revoked_at IS NULL`, userID); err != nil {
 		return res, wrapf(err, "обезличивание %d", userID)
 	}
+	// РАССКАЗ О СЕБЕ И ФОТОГРАФИИ уходят целиком, и фотографии — вместе с
+	// байтами (эпик M). Это единственное, что обезличивание не переносит на
+	// могилу, а СТИРАЕТ: у заметок и реплик есть чужие ответы, ради которых их
+	// держат безымянными, а у фотографии ответов нет — и лежит она по открытому
+	// адресу, о чём человеку сказано в подписанном им документе.
+	orphans, err := dropAboutData(ctx, tx, userID)
+	if err != nil {
+		return res, err
+	}
 	// Прежний ряд остаётся пустым: публикаций у него больше нет, имени и фото
 	// тоже. Удалять его нельзя — на него смотрят внешние ключи журнала и
 	// жалоб, а журнал модерации обязан пережить эту операцию.
@@ -168,7 +177,14 @@ func (p *Platform) AnonymizeUser(ctx context.Context, actor Viewer, userID int64
 	}); err != nil {
 		return res, err
 	}
-	return res, wrapf(tx.Commit(ctx), "обезличивание %d", userID)
+	if err := tx.Commit(ctx); err != nil {
+		return res, wrapf(err, "обезличивание %d", userID)
+	}
+	// Файлы — ПОСЛЕ коммита: файловая операция не откатывается вместе с
+	// транзакцией, и порядок «сперва база» единственный, при котором сбой
+	// оставляет мусор, а не битую ссылку.
+	p.dropFiles(orphans)
+	return res, nil
 }
 
 // anonymizeMail переносит на могилу ПЕРЕПИСКУ человека: стороны, пару и жалобы.
@@ -350,11 +366,19 @@ func (p *Platform) ExportUser(ctx context.Context, userID int64, w io.Writer) er
 	if err := write(",\n\"участник\": "); err != nil {
 		return err
 	}
+	about, err := p.aboutOf(ctx, userID)
+	if err != nil {
+		return err
+	}
 	if err := enc.Encode(map[string]any{
 		"id": u.ID, "ник": u.Nick, "вид": int(u.Kind), "роль": int(u.Role),
 		"заведён": u.CreatedAt, "последний_визит": u.LastSeenAt,
 		"запрет_до": u.BannedUntil,
 		"обезличен": u.AnonymizedAt,
+		// Написанное человеком О СЕБЕ (эпик M). Его данные — значит в выгрузку;
+		// пустые поля выгружаются пустыми, а не пропускаются: «здесь ничего нет»
+		// это тоже ответ на вопрос «что вы обо мне знаете».
+		"о_себе": about.Bio, "город": about.City, "занятие": about.Job,
 	}); err != nil {
 		return err
 	}
@@ -416,6 +440,13 @@ func (p *Platform) ExportUser(ctx context.Context, userID int64, w io.Writer) er
 			  FROM mail_messages m
 			  JOIN mail_sides s ON s.dialog_id = m.dialog_id AND s.user_id = $1
 			 WHERE m.sender_id <> $1 ORDER BY m.id) x`},
+		// Фотографии профиля — СПИСКОМ СО ССЫЛКАМИ, а не байтами: файл лежит по
+		// открытому адресу, и человек его уже видит; base64 на три снимка
+		// раздул бы выгрузку впятеро, ничего к ней не прибавив.
+		{"мои_фотографии", `SELECT to_jsonb(x) FROM (
+			SELECT position AS место, added_at AS добавлена,
+			       status AS видимость, '/media/' || encode(sha256, 'hex') AS файл
+			  FROM user_photos WHERE user_id = $1 ORDER BY position) x`},
 		{"мой_чёрный_список", `SELECT to_jsonb(x) FROM (
 			SELECT blocked_id AS кого, created_at AS когда
 			  FROM mail_blocks WHERE user_id = $1 ORDER BY created_at) x`},

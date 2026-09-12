@@ -104,6 +104,12 @@ type Moderator interface {
 	// показал бы модератору саму переписку, нет ни в одном интерфейсе площадки.
 	MailReports(ctx context.Context, limit int) ([]platform.MailReport, error)
 	ResolveMailReport(ctx context.Context, actor platform.Viewer, reportID int64, resolution string) error
+	// HidePhotoAsModerator — скрыть или вернуть ОДНУ фотографию профиля (эпик
+	// M). Отдельно от вердикта очереди: тот судит карточку целиком, а дурной
+	// бывает одна из трёх. Скрытие, а не удаление, по общему правилу площадки —
+	// решение модератора обратимо нажатием, а вернуть удалённую фотографию
+	// человеку было бы неоткуда.
+	HidePhotoAsModerator(ctx context.Context, actor platform.Viewer, photoID int64, hide bool, reason string) error
 
 	AddReport(ctx context.Context, reporterID int64, s platform.Subject, reason string) error
 	Appeal(ctx context.Context, userID int64, s platform.Subject) error
@@ -250,6 +256,32 @@ func (s *Server) handleModAct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.afterModAction(w, r, err)
+}
+
+// handleModPhoto — скрыть или вернуть ОДНУ фотографию профиля (эпик M).
+//
+// Своим маршрутом, а не глаголом в handleModAct, и по тому же доводу, что у
+// жалобы на письмо: там объект разбирает subjectOf (заметка или реплика), а
+// здесь номер СНИМКА, и общий разбор формы пришлось бы учить пятому виду ради
+// одной кнопки. Вердикт очереди при этом остаётся прежним и судит карточку
+// целиком — это разные решения: «весь рассказ не годится» и «вот эта
+// фотография».
+func (s *Server) handleModPhoto(w http.ResponseWriter, r *http.Request) {
+	if !s.postWrite(w, r) {
+		return
+	}
+	u, ok := s.moderator(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.FormValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		s.fail(w, r, http.StatusBadRequest, "Непонятно, какая фотография.")
+		return
+	}
+	actor := platform.Viewer{UserID: u.ID, Role: u.Role}
+	s.afterModAction(w, r, s.mod.HidePhotoAsModerator(
+		r.Context(), actor, id, r.FormValue("hide") == "1", r.FormValue("reason")))
 }
 
 // handleModMail — «разобрано» у жалобы на письмо.

@@ -36,6 +36,7 @@ type fakeStore struct {
 	// hidden — сколько строк ленты скрыто модерацией: их видит только
 	// модератор, и на его постраничку они влияют (см. CountNotes).
 	hidden     int
+	photos     []platform.Photo
 	total      int
 	countCalls int // сколько раз спросили длину ленты (она кэшируется)
 	feedOffset int // что пришло в последний вызов
@@ -118,6 +119,21 @@ func (f *fakeStore) AuthorNotes(context.Context, int64, int) ([]platform.PubNote
 
 func (f *fakeStore) AuthorComments(context.Context, int64, int) ([]platform.PubComment, error) {
 	return f.pubComs, nil
+}
+
+// Альбом. all=true отдаёт и скрытое модератором — отличие видно тесту, потому
+// что чужому скрытая фотография не показывается вовсе.
+func (f *fakeStore) ProfilePhotos(_ context.Context, _ int64, all bool) ([]platform.Photo, error) {
+	if all {
+		return f.photos, nil
+	}
+	var out []platform.Photo
+	for _, p := range f.photos {
+		if !p.Hidden() {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // Мордолента: что отдать и с каким потолком за ней пришли.

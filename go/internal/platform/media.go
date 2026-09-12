@@ -61,7 +61,11 @@ func NewMediaStore(p *Platform, dir string) (*MediaStore, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("каталог медиа %s: %w", dir, err)
 	}
-	return &MediaStore{p: p, dir: dir}, nil
+	s := &MediaStore{p: p, dir: dir}
+	// Платформа узнаёт о хранилище здесь, а не отдельным вызовом: забытый вызов
+	// не падает, он молча оставляет уборку без рук.
+	p.media = s
+	return s, nil
 }
 
 // Dir — корень хранилища.

@@ -56,6 +56,7 @@ var funcs = template.FuncMap{
 	"av":          newAvatar,
 	"nk":          nickOf,
 	"body":        noteBodyHTML,
+	"about":       aboutBodyHTML,
 	"quote":       quoteBodyHTML,
 	"sq":          synthQuote,
 	"doc":         docHTML,

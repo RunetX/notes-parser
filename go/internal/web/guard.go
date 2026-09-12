@@ -415,7 +415,7 @@ func longLived(r *http.Request) bool {
 // Caddyfile, — и расхождение теперь ловится тестом, а не боем.
 //
 // Звёздочка бывает одна и в середине: у правки заметки там стоит её номер.
-var uploadPaths = []string{"/new", "/shot", "/n/*/edit", "/mod/admin/avatar"}
+var uploadPaths = []string{"/new", "/shot", "/n/*/edit", "/mod/admin/avatar", "/me/photo"}
 
 // isUpload — принимает ли маршрут файл. Имя без «note» намеренно: пока функция
 // звалась isNoteUpload, форма фото ЖИТЕЛЯ выглядела не про неё, и путь в список

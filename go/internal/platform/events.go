@@ -196,6 +196,11 @@ func worthTelling(publishedAt time.Time) bool {
 // затевалось.
 func dropUnreadAbout(ctx context.Context, q querier, s Subject) error {
 	kinds := []EventKind{EventComment, EventNote, EventReaction}
+	// У карточки человека поводов не бывает вовсе: приглашений читать её никто
+	// не рассылал, и снимать нечего.
+	if s.Kind == SubjectProfile {
+		return nil
+	}
 	sql := `DELETE FROM notifications n USING events e
 	         WHERE n.event_id = e.id AND n.read_at IS NULL
 	           AND e.kind = ANY($2) AND e.comment_id = $1`
@@ -228,9 +233,17 @@ func dropUserEvents(ctx context.Context, q querier, userID int64) error {
 // subjectRefs — на что ссылается событие о публикации. У заметки комментария
 // нет, у комментария заметка есть всегда: по ней страница событий строит ссылку,
 // не заглядывая в comments.
+//
+// У КАРТОЧКИ ЧЕЛОВЕКА (эпик M) нет ни того, ни другого, и это не пропуск. Оба
+// поля — внешние ключи на notes и comments, и положить в них номер человека
+// значит получить отказ базы: карточка не публикация, ссылаться на неё из ленты
+// событий нечем, а человек и без ссылки знает, где его страница.
 func subjectRefs(s Subject, noteID int64) (note, comment int64) {
-	if s.IsNote() {
+	switch s.Kind {
+	case SubjectNote:
 		return s.ID, 0
+	case SubjectProfile:
+		return 0, 0
 	}
 	return noteID, s.ID
 }

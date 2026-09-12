@@ -88,12 +88,12 @@ t3h.ru {
 	# доехало до Go вовсе.
 	@shot {
 		method POST
-		path /new /shot /n/*/edit /mod/admin/avatar
+		path /new /shot /n/*/edit /mod/admin/avatar /me/photo
 	}
 	@notshot {
 		not {
 			method POST
-			path /new /shot /n/*/edit /mod/admin/avatar
+			path /new /shot /n/*/edit /mod/admin/avatar /me/photo
 		}
 	}
 	request_body @shot {

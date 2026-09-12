@@ -185,6 +185,11 @@ type Store interface {
 	UserProfile(ctx context.Context, id int64) (platform.Profile, error)
 	AuthorNotes(ctx context.Context, id int64, limit int) ([]platform.PubNote, error)
 	AuthorComments(ctx context.Context, id int64, limit int) ([]platform.PubComment, error)
+	// ProfilePhotos — альбом человека (эпик M). all=true отдаёт и скрытое
+	// модератором: скрытую фотографию видят двое — он сам и её владелец.
+	// Отдельным запросом, а не колонкой карточки: снимков до трёх, а карточка
+	// читается на каждой странице участника, и лишнее соединение платили бы все.
+	ProfilePhotos(ctx context.Context, userID int64, all bool) ([]platform.Photo, error)
 	// PersonaFaces — мордолента: жители с фотографией над первой страницей
 	// ленты (faces.go). Отдельным методом, а не полем у ленты: полоса живёт
 	// вне хронологии, спрашивается только на первой странице и порядок у неё
@@ -470,6 +475,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /me/bind", s.handleBindStart)
 	mux.HandleFunc("POST /me/unbind", s.handleUnbind)
 	mux.HandleFunc("POST /me/logout-all", s.handleLogoutAll)
+	// Рассказ о себе и фотографии (эпик M). Своей страницей, а не разделом
+	// «Моей»: здесь подписывают документ, и подпись, данная мимоходом под
+	// кнопкой в длинном списке настроек, подписью не является.
+	mux.HandleFunc("GET /me/about", s.handleAbout)
+	mux.HandleFunc("POST /me/about", s.handleAboutSave)
+	mux.HandleFunc("POST /me/about/consent", s.handleAboutConsent)
+	mux.HandleFunc("POST /me/photo", s.handlePhotoAdd)
+	mux.HandleFunc("POST /me/photo/drop", s.handlePhotoDrop)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 	// События: свои поводы и отметка прочитанного. Маршруты заведены всегда —
 	// без шины они отвечают «нет такой страницы», как /mod без модерации.
@@ -526,6 +539,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /mod/log", s.handleModLog)
 	mux.HandleFunc("POST /mod/act", s.handleModAct)
 	mux.HandleFunc("POST /mod/mail", s.handleModMail)
+	mux.HandleFunc("POST /mod/photo", s.handleModPhoto)
 	mux.HandleFunc("GET /mod/u/{id}", s.handleModUser)
 	mux.HandleFunc("POST /mod/u/{id}", s.handleModUserAct)
 	// Администрирование — соседняя дверь, а не часть очереди: модератор решает

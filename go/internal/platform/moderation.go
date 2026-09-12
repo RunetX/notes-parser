@@ -248,9 +248,19 @@ func NoteSubject(id int64) Subject    { return Subject{Kind: SubjectNote, ID: id
 func CommentSubject(id int64) Subject { return Subject{Kind: SubjectComment, ID: id} }
 func UserSubject(id int64) Subject    { return Subject{Kind: SubjectUser, ID: id} }
 
-// Valid — вид объекта известен модерации публикаций.
+// ProfileSubject — карточка человека. Номер здесь — номер ЕГО САМОГО: карточка
+// одна на человека, своего идентификатора у неё нет и заводить его не за чем.
+func ProfileSubject(id int64) Subject { return Subject{Kind: SubjectProfile, ID: id} }
+
+// Valid — вид объекта известен модерации публикаций. Карточка человека (эпик M)
+// третья: её судят тем же вердиктом и по ней принимают ту же жалобу, потому что
+// рассказ о себе — такой же текст, а фотография профиля — такая же картинка.
 func (s Subject) Valid() bool {
-	return (s.Kind == SubjectNote || s.Kind == SubjectComment) && s.ID > 0
+	switch s.Kind {
+	case SubjectNote, SubjectComment, SubjectProfile:
+		return s.ID > 0
+	}
+	return false
 }
 
 // IsNote — объект это заметка.
@@ -285,6 +295,14 @@ func factsOf(ctx context.Context, q querier, s Subject) (subjectFacts, error) {
 		err = q.QueryRow(ctx,
 			`SELECT note_id, author_id, status, body FROM comments WHERE id = $1`, s.ID).
 			Scan(&f.NoteID, &author, &f.Status, &f.Body)
+	case SubjectProfile:
+		// Карточка сама себе автор: её пишет тот, о ком она. Заметки у неё нет, и
+		// NoteID остаётся нулём — из очереди к ней ведут на /u/<id>.
+		id := s.ID
+		author = &id
+		err = q.QueryRow(ctx,
+			`SELECT about_status, bio FROM users WHERE id = $1`, s.ID).
+			Scan(&f.Status, &f.Body)
 	default:
 		return f, fmt.Errorf("%w: %q", ErrBadSubject, s.Kind)
 	}
@@ -482,6 +500,22 @@ func (p *Platform) setSubjectHidden(ctx context.Context, actor int64, s Subject,
 // Счётчик денормализован (лента не делает COUNT(*)), поэтому скрытие обязано
 // его поправить — иначе под заметкой стоит «Комментарии 42», а видно сорок.
 func moveStatus(ctx context.Context, q querier, s Subject, noteID int64, from, to Status) error {
+	if s.Kind == SubjectProfile {
+		// Скрывается КАРТОЧКА целиком — рассказ, город, занятие и все снимки:
+		// модератор судил то, что видел. Одна дурная фотография из трёх — случай
+		// отдельный, и на него есть своя дверь (HidePhotoAsModerator), а не
+		// вердикт: унести с нею текст значило бы наказать за то, чего не смотрели.
+		// Счётчиков карточка не двигает: она не публикация.
+		tag, err := q.Exec(ctx,
+			`UPDATE users SET about_status = $2 WHERE id = $1 AND about_status = $3`, s.ID, to, from)
+		if err != nil {
+			return wrapf(err, "статус карточки %d", s.ID)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("%s: %w", s, ErrNothingToDo)
+		}
+		return nil
+	}
 	if s.IsNote() {
 		tag, err := q.Exec(ctx,
 			`UPDATE notes SET status = $2 WHERE id = $1 AND status = $3`, s.ID, to, from)
@@ -1137,6 +1171,10 @@ type ReviewItem struct {
 	// не смотрит вовсе — он читает текст. Значит человек в очереди и есть
 	// единственный, кто картинку увидит.
 	ImageURL string
+	// Photos — фотографии профиля, когда строка про карточку человека (эпик M).
+	// Списком, а не одним адресом: их до трёх, а скрывают их поштучно, и
+	// модератору нужен номер каждой. У заметки и комментария список пуст.
+	Photos []Photo
 }
 
 // Hidden — публикация сейчас скрыта модерацией.
@@ -1156,13 +1194,14 @@ func (r ReviewItem) CategoryTitle() string { return CategoryTitle(r.Category) }
 // разборе строки лучше не оставлять драйверу.
 const reviewColumns = `
 	q.subject_kind, q.subject_id, coalesce(q.note_id, 0), coalesce(q.author_id, 0),
-	coalesce(u.nick, ''), coalesce(n.body, c.body, ''),
-	coalesce(n.status, c.status, 0)::smallint, q.queued_at, q.checked_at, q.verdict,
+	coalesce(u.nick, ''), coalesce(n.body, c.body, a.bio, ''),
+	coalesce(n.status, c.status, a.about_status, 0)::smallint, q.queued_at, q.checked_at, q.verdict,
 	q.category, q.reason, q.quote, q.model, q.appealed_at
   FROM moderation_queue q
   LEFT JOIN users    u ON u.id = q.author_id
   LEFT JOIN notes    n ON q.subject_kind = 'note'    AND n.id = q.subject_id
-  LEFT JOIN comments c ON q.subject_kind = 'comment' AND c.id = q.subject_id`
+  LEFT JOIN comments c ON q.subject_kind = 'comment' AND c.id = q.subject_id
+  LEFT JOIN users    a ON q.subject_kind = 'profile' AND a.id = q.subject_id`
 
 // ReviewQueue — то, что ждёт ЧЕЛОВЕКА: автомат передал (verdict = 1), автор
 // обжаловал скрытие или на публикацию пожаловались.
@@ -1186,6 +1225,7 @@ func (p *Platform) ReviewQueue(ctx context.Context, limit int) ([]ReviewItem, er
 	rows, err := p.pool.Query(ctx, `SELECT `+reviewColumns+`
 		 WHERE q.decided_at IS NULL
 		   AND (q.verdict = 1 OR q.appealed_at IS NOT NULL
+		        OR q.subject_kind = 'profile'
 		        OR (q.subject_kind = 'note'
 		            AND EXISTS (SELECT 1 FROM note_images i WHERE i.note_id = q.subject_id)))
 		 ORDER BY q.queued_at
@@ -1297,6 +1337,28 @@ func (p *Platform) attachShots(ctx context.Context, items []ReviewItem) ([]Revie
 		if m, ok := shots[items[i].Subject.ID]; ok {
 			items[i].ImageURL = m.URL
 		}
+	}
+	return p.attachPhotos(ctx, items)
+}
+
+// attachPhotos подвешивает к строкам очереди фотографии профиля.
+//
+// Поштучным запросом на карточку, а не пачкой: карточек в очереди единицы (цель
+// владельца — единицы строк в сутки), и пачка здесь сэкономила бы запросы там,
+// где их и так почти нет, зато развела бы второй способ прочитать альбом.
+//
+// СКРЫТЫЕ ТОЖЕ: модератор — единственный, кто может вернуть снятую фотографию,
+// и список, в котором её не видно, отнял бы у него эту возможность.
+func (p *Platform) attachPhotos(ctx context.Context, items []ReviewItem) ([]ReviewItem, error) {
+	for i := range items {
+		if items[i].Subject.Kind != SubjectProfile {
+			continue
+		}
+		photos, err := p.ProfilePhotos(ctx, items[i].Subject.ID, true)
+		if err != nil {
+			return nil, err
+		}
+		items[i].Photos = photos
 	}
 	return items, nil
 }

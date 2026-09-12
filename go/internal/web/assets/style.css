@@ -1923,6 +1923,28 @@ span.rxb { cursor: default; }
 
 /* Картинка заметки в очереди модератора. Миниатюрой и с потолком по высоте:
    очередь обязана читаться за минуту, а не пролистываться. */
+/* Свои фотографии на «Рассказе о себе»: снимок, отметка скрытого и кнопка
+   «Убрать» — рядом, а не в трёх местах. Ряд складывается в столбец сам, потому
+   что на телефоне три снимка со своими кнопками в строку не встают. */
+.myphotos { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 12px; }
+.myphotos li {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid var(--rule); padding-top: 12px;
+  /* Строка не тянется во всю ширину карточки: «Убрать», уехавшее к правому
+     краю экрана, перестаёт читаться как кнопка ЭТОЙ фотографии. */
+  max-width: 32rem;
+}
+.myphotos img {
+  width: 120px; height: 120px; object-fit: cover; display: block;
+  border: 1px solid var(--rule); border-radius: 3px;
+}
+.myphotos form { margin-left: auto; }
+
+/* Фотография в очереди модератора — вместе со своей кнопкой: вердикт судит
+   карточку целиком, а снимок скрывают поштучно, и кнопка обязана стоять у того
+   снимка, про который она. */
+.mphoto { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+
 .mshot { display: block; margin: 8px 0; }
 .mshot img { max-width: 100%; max-height: 200px; width: auto; height: auto; display: block; border: 1px solid var(--rule); }
 

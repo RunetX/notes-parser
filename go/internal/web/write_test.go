@@ -28,6 +28,13 @@ type fakeWriter struct {
 	reaction   platform.NewReaction
 	quizAnswer platform.QuizAnswer
 	avatar     fakeAvatar
+	// Рассказ о себе и фотографии (эпик M). aboutFail один на все три двери:
+	// отказы у них общие (нет согласия, бан, потолок), и три поля различали бы
+	// то, что ядро не различает.
+	about        platform.About
+	aboutFail    error
+	photoAdded   *Shot
+	photoDropped int
 	// cleared — у кого сняли фото. Ноль означает «ядро об этом не просили», и
 	// половина тестов аватара проверяет именно это.
 	cleared int64
@@ -89,6 +96,23 @@ func (f *fakeWriter) React(_ context.Context, in platform.NewReaction) error {
 func (f *fakeWriter) AnswerQuiz(_ context.Context, in platform.QuizAnswer) error {
 	f.quizAnswer = in
 	return f.fail
+}
+
+func (f *fakeWriter) SetAbout(_ context.Context, _ int64, in platform.About) error {
+	f.about = in
+	return f.aboutFail
+}
+
+func (f *fakeWriter) MayTellAbout(context.Context, int64) error { return f.aboutFail }
+
+func (f *fakeWriter) AddProfilePhoto(_ context.Context, _ int64, shot *Shot) error {
+	f.photoAdded = shot
+	return f.aboutFail
+}
+
+func (f *fakeWriter) RemoveProfilePhoto(_ context.Context, _ int64, position int) error {
+	f.photoDropped = position
+	return f.aboutFail
 }
 
 func (f *fakeWriter) EditNote(_ context.Context, _ int64, in platform.NoteEdit) error {

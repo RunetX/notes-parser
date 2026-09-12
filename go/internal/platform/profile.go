@@ -51,8 +51,17 @@ type Profile struct {
 	// Age — возраст рядом с ником, как в мобильной версии НГС. Ноль означает
 	// «не показываем», и у вошедшего участника он ноль всегда: возраст живёт
 	// только у тени и у жителя (0027_users_age.sql).
-	Age          int
-	Bio          string
+	Age int
+	Bio string
+	// City и Job — что человек рассказал о себе сам (эпик M). У жителя не
+	// заполняются: его город и ремесло уже стоят первыми словами биографии
+	// (narod.PublicBio), и второй раз на той же странице это повтор, а не факт.
+	City string
+	Job  string
+	// AboutStatus — видимость карточки. Скрытую модератором видят двое: он сам
+	// и её владелец. Отдельно от статуса публикаций, потому что карточка не
+	// публикация: у неё нет ни треда, ни ленты, ни счётчика.
+	AboutStatus  Status
 	CreatedAt    time.Time
 	AnonymizedAt *time.Time
 	BannedUntil  *time.Time
@@ -104,7 +113,8 @@ type PubComment struct {
 // которого обезличивание живёт командой, а не кнопкой.
 const profileQuery = `
 	SELECT u.id, u.nick, u.avatar_sha, m.mime, u.gender, u.kind, u.role, u.persona,
-	       coalesce(u.age, 0), u.bio, u.created_at, u.anonymized_at, u.banned_until, u.ban_reason,
+	       coalesce(u.age, 0), u.bio, u.city, u.job, u.about_status,
+	       u.created_at, u.anonymized_at, u.banned_until, u.ban_reason,
 	       (SELECT count(*) FROM notes n
 	         WHERE n.author_id = u.id AND n.status = 0 AND NOT n.anonymous),
 	       (SELECT count(*) FROM comments c
@@ -123,7 +133,8 @@ func (p *Platform) UserProfile(ctx context.Context, id int64) (Profile, error) {
 	)
 	err := p.pool.QueryRow(ctx, profileQuery, id).Scan(
 		&v.ID, &v.Nick, &sha, &mime, &v.Gender, &v.Kind, &v.Role, &v.Persona,
-		&age, &v.Bio, &v.CreatedAt, &v.AnonymizedAt, &v.BannedUntil, &v.BanReason,
+		&age, &v.Bio, &v.City, &v.Job, &v.AboutStatus,
+		&v.CreatedAt, &v.AnonymizedAt, &v.BannedUntil, &v.BanReason,
 		&v.Notes, &v.Comments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, fmt.Errorf("участник %d: %w", id, ErrNotFound)
