@@ -13,11 +13,12 @@
  *
  * Тема живёт в токенах :root, а какая именно — говорит атрибут data-theme.
  * Стоит он на КАЖДОЙ странице: не выбиравший получает тему по умолчанию
- * (web.defaultTheme, «Графит»), поэтому prefers-color-scheme площадка не
- * спрашивает нигде. Палитр четыре, и они двух родов:
+ * (web.defaultTheme, «Витраж»), поэтому prefers-color-scheme площадка не
+ * спрашивает нигде. Палитр шесть, и они трёх родов:
  * «Светлая» (она же голый :root) и «Тёмная» — это НГС, их числа с сайта и
- * закреплены fidelity_test; «Бумага» и «Графит» — наши, и мера у них другая,
- * читаемость вместо соответствия. Правило набора одно, и оплачено оно
+ * закреплены fidelity_test; «Бумага» и «Графит» — наши одиночные, и мера у них
+ * другая, читаемость вместо соответствия; «Витраж» и «Гримуар» — наша ПАРА,
+ * одно оформление в двух яркостях. Правило набора одно, и оплачено оно
  * сокращением с четырёх тем до двух: КАЖДАЯ кнопка обязана показывать то, чего
  * не показывает другая, — прежние «Классика» и «Светлая» отдавали одну и ту же
  * палитру, и нажатие это не подтверждало.
@@ -159,6 +160,109 @@
   --sil-fade: .72;
 }
 
+/* «Гримуар» и «Витраж» — пятая и шестая, и они ПАРА: средневековый фасад
+   (антиква, латунь, витраж) на киберпанковом двигателе (моноширинное
+   служебное, дорожка платы, свечения). Пара нужна потому, что правило набора
+   требует от кнопки показывать то, чего не показывает другая, а «тёмная с
+   загадкой» и «светлая с загадкой» — разные ответы на один вопрос читателя.
+
+   Мера у них та же, что у «Бумаги» и «Графита»: читаемость, а не соответствие
+   НГС. Числа проверены как контраст к --card (#12161d):
+     --ink  #d8d3c6 → 11,4:1
+     --meta #8b909b → 4,6:1  (у НГС на этом месте 2,85:1)
+     --link #a99cf0 → 6,8:1
+     --brass #c2a061 → 6,4:1 — на --nav (#0e1117) 7,6:1
+   У светлой сестры считано к --card (#f7f3ea):
+     --ink #23262e → 13,2:1, --meta #6e6a62 → 5,3:1, --link #5b4bb5 → 7,0:1.
+
+   Четыре имени заведены сверх общего набора, и своих значений у остальных
+   палитр для них нет — значит всякое их употребление обязано нести fallback,
+   иначе правило, случайно вышедшее за пределы темы, подсветит «Бумагу»
+   фиолетовым:
+     --brass — латунь: рамка зеркала, линия над карточкой, капители служебных
+               заголовков. Второй акцент, «средневековый».
+     --glow  — цвет свечения. Живёт только в box-shadow/text-shadow.
+     --pane, --pane2 — грани витража в фоне шапки, две прозрачности. */
+:root[data-theme="grimoire"] {
+  color-scheme: dark;
+  --page: #0b0e13;
+  --card: #12161d;
+  --ink: #d8d3c6;
+  --meta: #8b909b;
+  --rule: #252d3a;
+  --link: #a99cf0;
+  --male: #74b6e6;
+  --female: #e98ea6;
+  --anon: #a9aeb8;
+  --nav: #0e1117;
+  --nav-ink: #e6e1d4;
+  --accent: #9d8fe0;
+  --btn: #181d26;
+  --hl: #1d1a2e;
+  --bb-red: #ef6f70;
+  --bb-green: #7fbf5a;
+  --bb-blue: #6fadde;
+  --bb-purple: #b48ae6;
+  --bb-orange: #e39a45;
+  --bb-pink: #f0a0c0;
+  --bb-cyan: #5fc9c9;
+  --bb-brown: #c08a5e;
+  --bb-yellow: #d8c455;
+  --bb-grey: #9aa3ab;
+  --sil-fade: .72;
+  --brass: #c2a061;
+  --glow: rgba(157, 143, 224, .45);
+  --pane: rgba(157, 143, 224, .07);
+  --pane2: rgba(194, 160, 97, .06);
+}
+
+/* «Витраж» — светлая сестра: тёплый пергамент вместо экрана, чернильная шапка,
+   тот же фиолетовый акцент, приглушённый до читаемого на светлом. Цвета
+   разметки наследуются от голого :root намеренно — они и рассчитаны на светлый
+   лист, повторять их здесь значило бы завести второе место, где их правят. */
+:root[data-theme="stained"] {
+  color-scheme: light;
+  --page: #e6e1d6;
+  --card: #f7f3ea;
+  --ink: #23262e;
+  --meta: #6e6a62;
+  --rule: #d6cebd;
+  --link: #5b4bb5;
+  --male: #2b6f9e;
+  --female: #b23a63;
+  --anon: #5f5a52;
+  --nav: #1c1a24;
+  --nav-ink: #ece6d8;
+  --accent: #5b4bb5;
+  --btn: #efe9dc;
+  --hl: #ece4f5;
+  --brass: #8c6b2a;
+  --glow: rgba(91, 75, 181, .3);
+  --pane: rgba(157, 143, 224, .12);
+  --pane2: rgba(194, 160, 97, .1);
+}
+
+/* Шрифты пары. Заголовки — антиква (фасад), служебное — моноширинное
+   (двигатель); тело НЕ трогается ни в одной теме: заметку в 600 реплик читают
+   телом, а не заголовками, и 14px Arial остаётся как было.
+
+   Файлы наши, с нашего домена (см. assets.go): чужой шрифтовый хост не пускает
+   CSP, да и запрос к нему рассказал бы постороннему сервису, кто открыл
+   страницу. @font-face стои́т вне блоков тем — правило это описание файла, а не
+   палитра, — но качается шрифт только тогда, когда им что-то нарисовано. */
+@font-face {
+  font-family: "Grim Serif";
+  src: url("/assets/font/ebgaramond-500.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Grim Mono";
+  src: url("/assets/font/plexmono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 
@@ -271,10 +375,18 @@ a:hover { text-decoration: underline; }
   min-width: 190px; background: var(--card);
   border: 1px solid var(--rule); border-radius: 3px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+  /* Потолок и прокрутка — с шестой темой (12.09.2026): кнопок оформления стало
+     шесть, то есть три ряда, и у администратора меню доросло до ~355px. В
+     портрет телефона это влезает, в АЛЬБОМНУЮ ориентацию — нет, а обрезанное
+     меню не даёт добраться до «Выхода». dvh, а не vh, по той же причине, что у
+     body: адресная строка ест часть экрана. */
+  max-height: calc(100dvh - 60px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 /* :not(.tbtn) — не придирка. Пункт меню занимает всю ширину и несёт
    разделитель сверху; кнопки оформления внутри одного пункта — ряд, и под этим
-   правилом они вытянулись бы в четыре полосы с четырьмя линиями, а hover пункта
+   правилом они вытянулись бы в шесть полос с шестью линиями, а hover пункта
    стёр бы подсветку выбранной темы. Исключение стоит здесь, чтобы весь набор
    правил про .tbtn остался прежним и общим. */
 .acctmenu a, .acctmenu button:not(.tbtn) {
@@ -287,8 +399,10 @@ a:hover { text-decoration: underline; }
 
 /* Оформление — пункт меню участника, а не подвал (решение владельца
    23.08.2026): тема это настройка «про меня». Ряд кнопок — ОДИН пункт, поэтому
-   разделитель ставится блоку, а не каждой кнопке; две колонки, потому что
-   четыре имени в строку не встают в ширину выпадашки. */
+   разделитель ставится блоку, а не каждой кнопке; две колонки, потому что в
+   строку не встают ни четыре имени, ни шесть — ширину задаёт выпадашка, а не
+   набор. Шесть кнопок ложатся тремя рядами, и порядок набора (web.themes) для
+   них не случаен: слева светлые, справа тёмные. */
 .themes {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
   padding: 10px 18px 12px; border-top: 1px solid var(--rule);
@@ -1361,20 +1475,71 @@ span.rxb { cursor: default; }
    вторая лента, и карточка с телом заметки превратила бы двадцать строк в
    двадцать экранов. */
 
-.uhead { display: flex; gap: 16px; align-items: flex-start; margin: 0 0 14px; }
-.umeta { min-width: 0; }
-.umeta .ttl { margin: 0 0 4px; }
-.ucnt { margin: 6px 0 0; color: var(--meta); }
-.ubio { margin: 0 0 14px; }
+.uhead {
+  display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-end;
+  margin: 0 0 18px; padding-bottom: 18px; border-bottom: 1px solid var(--rule);
+}
+.umeta { min-width: 0; flex: 1 1 14rem; }
+/* Служебная строка стои́т НАД именем: «кто это и под каким номером» человек
+   сверяет, а не читает, — и место такому у ярлыка, а не под заголовком. */
+.umeta .fine { margin: 0 0 4px; }
+.umeta .ttl { margin: 0; }
+.urole { margin: 5px 0 0; color: var(--meta); }
+/* Кнопка прижата к правому краю шапки: действие одно, и место у него своё, а
+   не в столбце сведений. auto слева, а не justify-content, — иначе на узком
+   экране, где .umeta переносится, она уехала бы в середину. */
+.uhead .uact { margin: 0 0 2px auto; }
+.uhead .fine + .avaform { margin-left: auto; }
+
+/* Две колонки: слева справочная часть, справа рассказ и записи. Геометрия
+   стои́т ЗДЕСЬ, а не в блоке темы, хотя пришла вместе с «Гримуаром»: разметка
+   страницы одна на все шесть палитр, и тема меняет цвет, а не устройство. */
+.ucols {
+  display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: 28px; margin-top: 4px;
+}
+.uside > * + *, .umain > * + * { margin-top: 22px; }
+/* Ярлык справочной колонки: капитель, а не заголовок ленты. Цвет и шрифт ей
+   меняет тема, размер и регистр — общие. */
+.ucols .lbl {
+  display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--meta); margin: 0 0 10px; font-weight: 400;
+}
+.ufacts {
+  margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 12px; font-size: 13px;
+}
+.ufacts dt { color: var(--meta); }
+.ufacts dd { margin: 0; overflow-wrap: anywhere; }
+/* Альбом: три квадрата в ряд. Три — решение владельца, а не «пока три»:
+   страница отвечает на «кто это», и каждая фотография это строка в очередь
+   человеку, а двадцать таких строк никто не посмотрит. */
+.ualbum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.ualbum a {
+  display: block; aspect-ratio: 1; border: 1px solid var(--rule); border-radius: 3px;
+  overflow: hidden;
+  /* Пол на случай, если aspect-ratio не понят: без него ссылка схлопнется в
+     ноль и альбома не будет вовсе. */
+  min-height: 90px;
+}
+.ualbum img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Плашка рассказа о себе. Коробка общая для всех палитр — она отделяет рассказ
+   от списка записей, и это устройство страницы; тема добавляет ей только
+   подложку. */
+.ubio {
+  margin: 0; padding: 12px 14px; border-radius: 3px;
+  border: 1px solid var(--rule); border-left: 2px solid var(--accent);
+}
 .ubio .text { margin: 8px 0 0; }
 .mdecs { margin: 0 0 18px; }
 
-.upub { list-style: none; margin: 0 0 18px; padding: 0; }
-.upub li {
-  border-top: 1px solid var(--rule); padding: 8px 0;
-  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline;
-}
+.upub { list-style: none; margin: 0; padding: 0; }
+/* Строка в два уровня: текст, под ним дата. В одну строку длинная выдержка
+   отжимала дату за край. */
+.upub li { border-top: 1px solid var(--rule); padding: 8px 0; }
+.upub li .fine { display: block; margin-top: 3px; }
 .upub a { overflow-wrap: anywhere; }
+.sub .cnt { font-size: 13px; font-weight: 400; }
 
 /* Жители в панели администратора: фото слева, как везде, чтобы менять его
    глядя ровно на то, что меняешь. */
@@ -1472,7 +1637,7 @@ span.rxb { cursor: default; }
    шесть точек кегля, а здесь текст остаётся текстом — его можно увеличить,
    прочитать вслух читалкой и выделить. Ряд складывается в столбец сам
    (flex-wrap), и на узком экране стрелка поворачивается вниз.
-   Цвета — токены, значит все четыре палитры даром. */
+   Цвета — токены, значит все шесть палитр даром. */
 .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 14px 0; }
 .fbox {
   flex: 1 1 9rem; min-width: 8rem; padding: 8px 10px;
@@ -1529,6 +1694,13 @@ span.rxb { cursor: default; }
 /* На телефоне колонка автора ужимается, а отступ ветки уменьшается вчетверо:
    иначе десятый уровень уезжает за край экрана. Отдельной мобильной вёрстки
    у нас нет — в отличие от НГС, где их две и правки в них расходятся. */
+/* На телефоне колонки встают одна под другую: 220px справочной части и текст
+   записей рядом не помещаются, а горизонтальной прокрутки на странице быть не
+   должно. */
+@media (max-width: 640px) {
+  .ucols { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+}
+
 @media (max-width: 700px) {
   :root { --step: 8px; }
   /* ПОЛЕ СЛЕВА ОДНО, А НЕ ДВА ВЛОЖЕННЫХ (жалоба владельца 26.08.2026:
@@ -1763,10 +1935,10 @@ span.rxb { cursor: default; }
 
 /* ─── Пятничный вопрос (эпик J, web/quiz.go) ───────────────────────────────
    Варианты под репликой, которая их задаёт. СВОИХ ЦВЕТОВ здесь нет намеренно:
-   палитр у площадки четыре, и токен, объявленный в одной, молча ломает
-   остальные три (см. TestDarkPalettesRestateWhatBaseWroteForWhite). Верный
+   палитр у площадки шесть, и токен, объявленный в одной, молча ломает
+   остальные пять (см. TestDarkPalettesRestateWhatBaseWroteForWhite). Верный
    ответ показан --accent, который есть везде, а «мимо» — словом: красный
-   пришлось бы заводить четырежды ради одной строки.
+   пришлось бы заводить шестикратно ради одной строки.
 
    Ширина полосы едет КЛАССОМ: CSP без unsafe-inline запрещает и атрибут style,
    тем же правилом, по которому глубина ветки это d1…d12. Шаг пять процентов —
@@ -1822,3 +1994,261 @@ span.rxb { cursor: default; }
 .qfill.qw90 { width: 90%; }
 .qfill.qw95 { width: 95%; }
 .qfill.qw100 { width: 100%; }
+
+/* ------------------------------------------------- «Гримуар» и «Витраж»
+
+   Ниже — только ВИД: цвет, шрифт и свечение. Ни одно правило здесь не двигает
+   и не перекладывает ничего, потому что устройство страницы одно на все шесть
+   палитр, а тема отвечает за палитру. Правило, положившее сетку на
+   [data-theme], означало бы, что в четырёх остальных палитрах страница
+   осталась без сетки, — и заметили бы это не сразу, а когда кто-то переключит
+   тему.
+
+   Селекторы длинные намеренно: правка темы не должна однажды стать правкой
+   всей площадки. Отсюда же следствие про КЕГЛЬ: `:root[data-theme] .ttl` — это
+   (0,3,0), а мобильная ветка `.ttl { font-size: 22px }` — (0,1,0), и
+   медиазапрос специфичности не добавляет. Значит всякий кегль, назначенный
+   здесь, ОБЯЗАН иметь свою мобильную ветку, иначе заголовок в 34px останется
+   таким и на 360 точках.
+
+   Из хендоффа НЕ перенесена метка происхождения точкой (решение владельца
+   12.09.2026): значков четыре, и один из них — песочница, единственное
+   предупреждение читателю «здесь говорит машина». Цветом точки его не
+   заменить, а спрятать значок значило бы снять предупреждение.
+
+   И граница, чтобы её не искали заново: правило Ш5з — про МЕТКИ, а не про
+   узоры. Латунная линия, дорожка под шапкой и блик по зеркалу ничего не
+   сообщают, объяснять их заголовком не нужно и не надо. */
+
+/* Заголовки антиквой — фасад. Тело не трогается ни здесь, ни где-либо ещё:
+   заметку в 600 реплик читают телом, а не заголовками, и сорок тысяч знаков
+   политики — тоже. Заголовки документов, входа и справки взяты поимённо: они
+   не .ttl и не .sub, а остаться единственным островом Arial посреди антиквы
+   хуже, чем не переходить на неё вовсе. */
+:root[data-theme="grimoire"] .ttl,
+:root[data-theme="stained"] .ttl,
+:root[data-theme="grimoire"] .cttl,
+:root[data-theme="stained"] .cttl,
+:root[data-theme="grimoire"] .sub,
+:root[data-theme="stained"] .sub,
+:root[data-theme="grimoire"] .brand,
+:root[data-theme="stained"] .brand,
+:root[data-theme="grimoire"] .enterbox h1,
+:root[data-theme="stained"] .enterbox h1,
+:root[data-theme="grimoire"] .doctext h1,
+:root[data-theme="stained"] .doctext h1,
+:root[data-theme="grimoire"] .doctext h2,
+:root[data-theme="stained"] .doctext h2,
+:root[data-theme="grimoire"] .help h2,
+:root[data-theme="stained"] .help h2 {
+  font-family: "Grim Serif", Georgia, serif;
+  letter-spacing: .01em;
+}
+:root[data-theme="grimoire"] .ttl,
+:root[data-theme="stained"] .ttl { font-size: 34px; line-height: 1.1; }
+:root[data-theme="grimoire"] .brand,
+:root[data-theme="stained"] .brand { font-size: 20px; }
+
+/* Служебное моноширинным: дата, номера страниц, «сколько реплик», код входа.
+   Всё, что человек не читает, а СВЕРЯЕТ или переписывает руками.
+
+   .cnt перечислен по местам, а не взят целиком: тот же класс носит кружок
+   колокольчика (.bell .cnt, min-width 15px), и «99+» моноширинным его
+   распирает. */
+:root[data-theme="grimoire"] .date,
+:root[data-theme="stained"] .date,
+:root[data-theme="grimoire"] .cdate,
+:root[data-theme="stained"] .cdate,
+:root[data-theme="grimoire"] .pg,
+:root[data-theme="stained"] .pg,
+:root[data-theme="grimoire"] .cttl .cnt,
+:root[data-theme="stained"] .cttl .cnt,
+:root[data-theme="grimoire"] .sub .cnt,
+:root[data-theme="stained"] .sub .cnt,
+:root[data-theme="grimoire"] .synth .cnt,
+:root[data-theme="stained"] .synth .cnt,
+:root[data-theme="grimoire"] .upub .fine,
+:root[data-theme="stained"] .upub .fine,
+:root[data-theme="grimoire"] .uhead .fine,
+:root[data-theme="stained"] .uhead .fine,
+:root[data-theme="grimoire"] .code,
+:root[data-theme="stained"] .code {
+  font-family: "Grim Mono", ui-monospace, Consolas, monospace;
+}
+
+/* Витраж в шапке — ГРАНЯМИ, а не картинкой: полосы разной прозрачности под
+   углом. Ни одного файла, ни одного запроса, и на светлой сестре работает тот
+   же код с другими токенами. */
+:root[data-theme="grimoire"] .top,
+:root[data-theme="stained"] .top {
+  background-image: linear-gradient(115deg,
+    var(--pane, transparent) 0 18%, transparent 18% 34%,
+    var(--pane2, transparent) 34% 47%, transparent 47% 63%,
+    var(--pane, transparent) 63% 74%, transparent 74% 88%,
+    var(--pane2, transparent) 88%);
+  border-bottom: 1px solid var(--accent);
+}
+
+/* Дорожка платы под шапкой: импульс пробегает по тонкой линии. Отдельного
+   элемента не заводим — это ::after у шапки, разметка остаётся прежней, а сама
+   шапка и так позиционирована (она липкая).
+
+   Проходов ТРИ, а не бесконечность. Шапка липкая, то есть движение стояло бы
+   у читателя перед глазами всё время, пока он читает тред в девятьсот реплик:
+   WCAG 2.2.2 требует остановки для движения дольше пяти секунд рядом с
+   текстом, а prefers-reduced-motion покрывает только тех, кто его выставил. */
+:root[data-theme="grimoire"] .top::after,
+:root[data-theme="stained"] .top::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: -2px; height: 2px;
+  background-image: linear-gradient(90deg, transparent 45%, var(--nav-ink) 50%, transparent 55%);
+  background-size: 600px 2px;
+  background-repeat: no-repeat;
+  animation: trace 4s linear 3;
+  pointer-events: none;
+}
+@keyframes trace { from { background-position: 0 0; } to { background-position: 600px 0; } }
+
+/* Знак площадки светится, и по нему изредка проходит блик. Свечение —
+   drop-shadow, а не box-shadow: у зеркала есть форма, и квадратный ореол вокруг
+   неё выдал бы, что это картинка в рамке.
+
+   Блик висит на .brand, а не на самом знаке: знак — это <svg>, а
+   псевдоэлементы на SVG браузеры не рисуют ВОВСЕ (хендофф этого не знал, и
+   правило оттуда не работало бы ни в одном браузере). Бегунок сделан движением
+   ФОНА, а не сдвигом элемента: ширина у .brand разная — ниже 460px имя
+   площадки снимается показом, — и сдвиг, подобранный в пикселях, подошёл бы
+   одной из двух. Проходов три, по тому же доводу, что у дорожки. */
+:root[data-theme="grimoire"] .brand .mark,
+:root[data-theme="stained"] .brand .mark {
+  color: var(--brass, currentColor);
+  filter: drop-shadow(0 0 6px var(--glow, transparent));
+}
+:root[data-theme="grimoire"] .brand,
+:root[data-theme="stained"] .brand { position: relative; overflow: hidden; }
+:root[data-theme="grimoire"] .brand::after,
+:root[data-theme="stained"] .brand::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: linear-gradient(105deg, transparent 45%, rgba(255, 255, 255, .45) 50%, transparent 55%);
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: gleam 5.5s ease-in-out 3;
+}
+@keyframes gleam {
+  0%, 60% { background-position: -60% 0; }
+  100%    { background-position: 160% 0; }
+}
+
+/* Движение — украшение, и у кого оно мешает, тот его не получает. Блик и
+   импульс снимаются целиком: без них тема остаётся собой. */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="grimoire"] .top::after,
+  :root[data-theme="stained"] .top::after,
+  :root[data-theme="grimoire"] .brand::after,
+  :root[data-theme="stained"] .brand::after { animation: none; display: none; }
+}
+
+/* Латунная линия над карточкой: переплёт книги, единственная «золотая» деталь
+   на странице. Больше ей быть нельзя — латунь работает, пока её мало. */
+:root[data-theme="grimoire"] .main,
+:root[data-theme="stained"] .main {
+  border: 1px solid var(--rule);
+  border-top: 1px solid var(--brass, var(--rule));
+}
+:root[data-theme="grimoire"] .pin,
+:root[data-theme="stained"] .pin { color: var(--brass, var(--meta)); letter-spacing: .08em; }
+:root[data-theme="grimoire"] .note.pinned,
+:root[data-theme="stained"] .note.pinned { border-left-color: var(--brass, var(--accent)); }
+
+/* Свечение — ТОЛЬКО тень: ни один цвет текста от него не зависит, поэтому
+   контрасты остаются посчитанными выше. Светится главное действие страницы, а
+   не всякая кнопка подряд: свечение здесь — примета «жать сюда». */
+:root[data-theme="grimoire"] .newnote,
+:root[data-theme="stained"] .newnote,
+:root[data-theme="grimoire"] .wform button,
+:root[data-theme="stained"] .wform button { box-shadow: 0 0 16px var(--glow, transparent); }
+
+/* Фокус поля — свечение вместо браузерной обводки, но ВИДИМОЕ: две тени, одна
+   из них в пиксель по контуру. Фокус, который надо искать, это не фокус.
+
+   Обводка не снимается, а делается ПРОЗРАЧНОЙ: в режиме высокой контрастности
+   (forced-colors) тени не рисуются вовсе, и `outline: none` оставил бы человека
+   без фокуса совсем, а прозрачную систему перекрасит своей.
+
+   Поля перечислены отрицанием, а не `input[type="text"]`: у половины полей
+   площадки (.mreason, .mnum в модерации) атрибута type нет вовсе, и половина
+   формы получила бы свечение, а половина — браузерную обводку. */
+:root[data-theme="grimoire"] textarea:focus,
+:root[data-theme="stained"] textarea:focus,
+:root[data-theme="grimoire"] input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="submit"]):focus,
+:root[data-theme="stained"] input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="submit"]):focus {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--glow, transparent);
+}
+
+/* Лицо в мордоленте светится под курсором. Замер 70×70 и отступ в 5px не
+   трогаем, и СДВИГА здесь нет намеренно: у .faces a уже есть свой hover —
+   лицо растёт до 80px, занимая собственные поля, — а полоса подрезана по
+   вертикали (overflow-y: hidden), и приподнятое лицо ушло бы под обрез вместе
+   с тенью. Поэтому светится сама картинка, она внутри гнезда. */
+:root[data-theme="grimoire"] .faces .ava,
+:root[data-theme="stained"] .faces .ava { transition: box-shadow .18s; }
+:root[data-theme="grimoire"] .faces a:hover .ava,
+:root[data-theme="stained"] .faces a:hover .ava {
+  box-shadow: 0 0 0 1px var(--accent), 0 0 14px var(--glow, transparent);
+}
+
+/* Новая реплика: к прежнему затуханию добавляется контур свечения. Сама
+   анимация та же, fresh-in/fresh-glow. */
+:root[data-theme="grimoire"] .c.fresh,
+:root[data-theme="stained"] .c.fresh { box-shadow: inset 0 0 0 1px var(--glow, transparent); }
+
+/* Выбранная тема: на фиолетовом акценте «Гримуара» белая подпись даёт 2,4:1, и
+   читать её нечем. Тёмная на том же фоне — 9,5:1. */
+:root[data-theme="grimoire"] .tbtn.on { color: #12161d; }
+
+/* Страница участника. Ярлык колонки — латунная капитель моноширинным: столбец
+   должен читаться как надпись на полке, а не как ещё одна лента. */
+:root[data-theme="grimoire"] .ucols .lbl,
+:root[data-theme="stained"] .ucols .lbl {
+  font-family: "Grim Mono", ui-monospace, Consolas, monospace;
+  color: var(--brass, var(--meta));
+}
+/* Латунь и свечение достаются ФОТО, а не силуэту: силуэт означает отсутствие
+   фотографии, и золотая рамка вокруг пустоты говорит «смотри сюда» про то,
+   чего нет. Тёмные палитры силуэт, наоборот, гасят (--sil-fade). */
+:root[data-theme="grimoire"] .uhead .ava:not(.sil),
+:root[data-theme="stained"] .uhead .ava:not(.sil) {
+  border-color: var(--brass, var(--rule));
+  box-shadow: 0 0 18px var(--glow, transparent);
+}
+:root[data-theme="grimoire"] .ualbum a,
+:root[data-theme="stained"] .ualbum a { transition: box-shadow .18s, border-color .18s; }
+:root[data-theme="grimoire"] .ualbum a:hover,
+:root[data-theme="stained"] .ualbum a:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 14px var(--glow, transparent);
+}
+
+/* Плашка «это житель площадки» — грань витража слева, а не плоская рамка:
+   единственное место страницы, где сказано, что текст пишет машина. */
+:root[data-theme="grimoire"] .ubio,
+:root[data-theme="stained"] .ubio {
+  background-image: linear-gradient(90deg, var(--pane, transparent), transparent 60%);
+}
+
+/* Мобильные ветки темы. Они здесь, а не в общих @media выше, по той же
+   причине, по которой они вообще нужны: специфичность у темы (0,3,0) выше, чем
+   у общего правила (0,1,0), и медиазапрос её не поднимает. Пороги те же, что у
+   всей площадки (700 и 460), четвёртого порога не заводим. */
+@media (max-width: 700px) {
+  :root[data-theme="grimoire"] .ttl,
+  :root[data-theme="stained"] .ttl { font-size: 22px; }
+}
+@media (max-width: 460px) {
+  :root[data-theme="grimoire"] .brand,
+  :root[data-theme="stained"] .brand { font-size: 16px; }
+}

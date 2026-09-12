@@ -983,15 +983,21 @@ func TestThemeCookieRendersAttribute(t *testing.T) {
 	}
 }
 
-// Тема по умолчанию — «Графит» (решение владельца 30.08.2026). До этого дня
-// умолчания не было вовсе: атрибут не ставился, и вид площадки определяла
-// системная настройка читателя. Проверяем ОБА конца правила, потому что порознь
-// каждый выглядит целым: сервер обязан назвать тему всем, включая гостя и
-// поисковик, а в стилях не должно остаться состояния «темы нет» — иначе первая
-// же страница, где атрибут забыли, покрасится не тем и никто не заметит.
-func TestТемаПоУмолчаниюГрафит(t *testing.T) {
-	if defaultTheme != "graphite" {
-		t.Errorf("тема по умолчанию %q, ожидался graphite", defaultTheme)
+// Тема по умолчанию — «Витраж» (решение владельца 12.09.2026; с 30.08.2026 по
+// этот день был «Графит», а до того умолчания не было вовсе: атрибут не
+// ставился, и вид площадки определяла системная настройка читателя).
+//
+// Проверяем ОБА конца правила, потому что порознь каждый выглядит целым: сервер
+// обязан назвать тему всем, включая гостя и поисковик, а в стилях не должно
+// остаться состояния «темы нет» — иначе первая же страница, где атрибут забыли,
+// покрасится не тем и никто не заметит.
+//
+// Светлота проверяется ЧИСЛОМ, а не именем: решение владельца звучит «встречаем
+// светлой», и переименуй кто-нибудь тему завтра — проверка обязана остаться
+// про то, что человек видит, а не про то, как это названо.
+func TestТемаПоУмолчаниюВитраж(t *testing.T) {
+	if defaultTheme != "stained" {
+		t.Errorf("тема по умолчанию %q, ожидался stained", defaultTheme)
 	}
 	if !validTheme(defaultTheme) {
 		t.Fatal("тема по умолчанию не из набора: кнопки для неё нет, а страница ею красится")
@@ -1002,6 +1008,9 @@ func TestТемаПоУмолчаниюГрафит(t *testing.T) {
 	}
 
 	css := cssText(t)
+	if lum := hexLum(t, palette(t, css, defaultTheme)["card"]); lum <= 0.5 {
+		t.Errorf("тема по умолчанию тёмная (светлота карточки %.2f), а площадка встречает светлой", lum)
+	}
 	// Ни палитры, ни подсветки кнопки «как в системе» больше нет: сервер знает
 	// тему всегда, и второе место, где она решается, было бы вторым мнением.
 	if strings.Contains(css, ":root:not(") {
@@ -1012,7 +1021,15 @@ func TestТемаПоУмолчаниюГрафит(t *testing.T) {
 	}
 	// А тема, названная разметкой, обязана назвать себя и браузеру: полосы
 	// прокрутки и галочки рисует он, и на тёмной странице они иначе светлые.
-	for _, sel := range []string{":root {", `:root[data-theme="graphite"] {`} {
+	// Спрашивается это у КАЖДОЙ палитры, а не у пары «база плюс умолчание»:
+	// седьмую тему заведут без этого разговора.
+	sels := []string{":root {"}
+	for _, th := range themes {
+		if b := themeBlock(th.ID); strings.Contains(css, b) {
+			sels = append(sels, b)
+		}
+	}
+	for _, sel := range sels {
 		if !strings.Contains(cssRule(t, css, sel), "color-scheme:") {
 			t.Errorf("у палитры %s нет color-scheme", sel)
 		}
@@ -1267,6 +1284,60 @@ func TestAssetsAreHashedAndCacheable(t *testing.T) {
 	if w := do(h, httptest.NewRequest("GET", sm, nil)); w.Code != http.StatusOK ||
 		w.Header().Get("Content-Type") != "image/gif" {
 		t.Errorf("смайл: код %d, тип %q", w.Code, w.Header().Get("Content-Type"))
+	}
+}
+
+// Ссылки ИЗ стилей ведут на настоящие адреса — с хешем.
+//
+// Проверка заведена вместе с темой «Гримуар» (12.09.2026), потому что у неё
+// впервые появился @font-face, а адрес статики несёт хеш содержимого: в файле
+// написано /assets/font/x.woff2, отдаётся /assets/font/x.<hash>.woff2, и
+// написанное рукой отдало бы 404. Подставляет адрес init (resolveAssetRefs),
+// но подставляет он ТЕКСТ, и проверить это иначе нечем: 404 на шрифт не роняет
+// ни страницу, ни один тест поведения — страница просто нарисуется другим
+// шрифтом, и заметят это через месяц.
+func TestВСтиляхНетНехешированныхАдресов(t *testing.T) {
+	css := cssText(t)
+	refs := regexp.MustCompile(`url\("([^"]+)"\)`).FindAllStringSubmatch(css, -1)
+	if len(refs) == 0 {
+		t.Skip("в стилях нет ни одной ссылки на файл")
+	}
+	for _, m := range refs {
+		ref := m[1]
+		name, ok := strings.CutPrefix(ref, "/assets/")
+		if !ok {
+			t.Errorf("ссылка %q ведёт мимо нашей статики", ref)
+			continue
+		}
+		if _, known := assets[name]; !known {
+			t.Errorf("ссылка %q не отдаётся ни одним адресом: адрес обязан нести хеш", ref)
+		}
+	}
+}
+
+// Шрифт отдаётся своим типом и с тем же immutable, что остальная статика.
+func TestШрифтОтдаётсяСвоимТипом(t *testing.T) {
+	h := openServer(t, &fakeStore{})
+	for _, name := range []string{"font/ebgaramond-500.woff2", "font/plexmono-400.woff2"} {
+		u := assetURL(name)
+		if u == "" {
+			t.Errorf("шрифта %s нет в статике", name)
+			continue
+		}
+		w := do(h, httptest.NewRequest("GET", u, nil))
+		if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "font/woff2" {
+			t.Errorf("%s: код %d, тип %q", name, w.Code, w.Header().Get("Content-Type"))
+		}
+		if !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
+			t.Errorf("%s отдаётся без immutable", name)
+		}
+	}
+	// Лицензия ехать со шрифтом обязана — этого требует сама OFL, — и читаться
+	// в браузере, а не скачиваться файлом неизвестного назначения.
+	u := assetURL("font/OFL-EBGaramond.txt")
+	if w := do(h, httptest.NewRequest("GET", u, nil)); u == "" || w.Code != http.StatusOK ||
+		!strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+		t.Errorf("лицензия шрифта: адрес %q, код %d, тип %q", u, w.Code, w.Header().Get("Content-Type"))
 	}
 }
 

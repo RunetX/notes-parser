@@ -122,6 +122,13 @@ type helpPage struct {
 	// замером корпуса (platform.ReactionCodes), и второй такой же, набранный в
 	// шаблоне руками, разошёлся бы с настоящим первой же правкой.
 	Reactions []string
+	// ThemeCount и DefaultTheme — сколько у площадки оформлений и каким она
+	// встречает невыбиравшего. Приезжают из web.themes/web.defaultTheme по тому
+	// же правилу, что и всё остальное в этом списке: до 12.09.2026 в справке
+	// стояло «тем четыре… тёмный «Графит»» словами, и в день, когда набор
+	// вырос до шести, а умолчание стало светлым, справка соврала бы молча.
+	ThemeCount   int
+	DefaultTheme string
 	// Contacts — живые контакты. Пустые поля шаблон пропускает: строка
 	// «Telegram: —» хуже отсутствующей строки.
 	Contacts Contacts
@@ -232,6 +239,8 @@ func (s *Server) helpData(r *http.Request, current, title string) helpPage {
 		MailKeepDays:     int(platform.KeepMessageBody / (24 * time.Hour)),
 		MailMetaDays:     int(platform.KeepMessageMeta / (24 * time.Hour)),
 		Reactions:        platform.ReactionCodes,
+		ThemeCount:       len(themes),
+		DefaultTheme:     defaultThemeName(),
 		DemoNote:         demoNote(),
 		Contacts:         c,
 		HasContacts:      c.ProfileID != 0 || c.Telegram != "" || c.MAX != "",

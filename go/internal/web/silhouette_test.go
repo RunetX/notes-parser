@@ -185,9 +185,23 @@ func TestSilhouetteFadesOnlyInDarkPalettes(t *testing.T) {
 	if strings.Contains(cssBlock(t, css, ":root {"), "--sil-fade") {
 		t.Error("светлая палитра гасит силуэт — а на НГС он показан как есть")
 	}
-	for _, sel := range []string{`:root[data-theme="dark"] {`, `:root[data-theme="graphite"] {`} {
-		if !strings.Contains(cssBlock(t, css, sel), "--sil-fade") {
-			t.Errorf("тёмная палитра %s не гасит силуэт", sel)
+	// Тёмные считаются по СВЕТЛОТЕ карточки, а не перечисляются списком:
+	// список пришлось бы дописывать рукой у каждой новой палитры, а
+	// не дописанный не падает — он просто перестаёт проверять. Обе половины
+	// правила спрашиваются в одном цикле, потому что светлой палитре гасить
+	// силуэт так же нельзя, как тёмной — не гасить.
+	for _, th := range themes {
+		sel := themeBlock(th.ID)
+		if !strings.Contains(css, sel) {
+			continue // classic живёт базовым :root, своего блока у неё нет
+		}
+		block := cssBlock(t, css, sel)
+		dark := hexLum(t, palette(t, css, th.ID)["card"]) <= 0.5
+		switch {
+		case dark && !strings.Contains(block, "--sil-fade"):
+			t.Errorf("тёмная палитра «%s» не гасит силуэт", th.Name)
+		case !dark && strings.Contains(block, "--sil-fade"):
+			t.Errorf("светлая палитра «%s» гасит силуэт — а на НГС он показан как есть", th.Name)
 		}
 	}
 }

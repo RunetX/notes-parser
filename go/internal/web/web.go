@@ -564,9 +564,14 @@ func (s *Server) routes() http.Handler {
 func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		// font-src назван отдельно, хотя и наследовался бы от default-src: строка
+		// CSP — то место, где читают, что странице вообще разрешено тянуть, и
+		// «оно работает по запасному пути» здесь надо знать наизусть. Шрифты у
+		// нас свои (assets/font), чужой шрифтовый хост не пускается намеренно.
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
-				"connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+				"font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "+
+				"form-action 'self'; object-src 'none'")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), interest-cohort=()")
