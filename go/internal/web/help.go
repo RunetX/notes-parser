@@ -117,6 +117,11 @@ type helpPage struct {
 	MailUnanswered   int
 	MailKeepDays     int
 	MailMetaDays     int
+	// MailPerPage — писем на странице переписки (letterPageSize). Число тут не
+	// про запрет, а про то, чего человек НЕ УВИДИТ на открытой странице, — и
+	// потому оно из того же разряда: справка, обещающая полсотни там, где их
+	// тридцать, отправляет искать письма не туда, где они лежат.
+	MailPerPage int
 	// Reactions — какие кнопки реакций предлагает ядро. Список приезжает
 	// оттуда по тому же правилу, что окно правки и пороги частоты: набор задан
 	// замером корпуса (platform.ReactionCodes), и второй такой же, набранный в
@@ -238,6 +243,7 @@ func (s *Server) helpData(r *http.Request, current, title string) helpPage {
 		MailUnanswered:   platform.UnansweredMax,
 		MailKeepDays:     int(platform.KeepMessageBody / (24 * time.Hour)),
 		MailMetaDays:     int(platform.KeepMessageMeta / (24 * time.Hour)),
+		MailPerPage:      letterPageSize,
 		Reactions:        platform.ReactionCodes,
 		ThemeCount:       len(themes),
 		DefaultTheme:     defaultThemeName(),

@@ -417,6 +417,7 @@ func TestСправкаОПисьмахБерётЧислаИзЯдра(t *testi
 		{strconv.Itoa(platform.UnansweredMax) + " письма", "письма подряд без ответа"},
 		{strconv.Itoa(int(platform.KeepMessageBody/(24*time.Hour))) + " дней", "срок хранения содержания"},
 		{strconv.Itoa(int(platform.KeepMessageMeta/(24*time.Hour))) + " дней", "срок хранения сведений о передаче"},
+		{strconv.Itoa(letterPageSize) + " писем", "писем на странице переписки"},
 	} {
 		if !strings.Contains(body, c.want) {
 			t.Errorf("%s не совпадает с ядром (нет %q)", c.what, c.want)
