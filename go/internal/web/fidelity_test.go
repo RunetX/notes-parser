@@ -756,7 +756,7 @@ func TestMobileNoteCardIsForFingers(t *testing.T) {
 		t.Error("кнопки полоски действий на телефоне меньше пальца")
 	}
 	// Значки показываются только здесь; на десктопе их не видно вовсе.
-	if !strings.Contains(mobile, ".modbar .ico, .clink .ico { display: inline-block; }") {
+	if !strings.Contains(mobile, ".modbar .ico, .clink .ico, .dlgacts .ico { display: inline-block; }") {
 		t.Error("на телефоне значки не показываются — полоска снова словами")
 	}
 }
@@ -769,7 +769,7 @@ func TestMobileNoteCardIsForFingers(t *testing.T) {
 // глаза даёт title (правило Ш5з о собственных метках).
 func TestMobileLabelsAreHiddenNotRemoved(t *testing.T) {
 	mobile := cssRule(t, cssText(t), "@media (max-width: 700px)")
-	lbl := ".modbar .lbl, .clink .lbl {"
+	lbl := ".modbar .lbl, .clink .lbl, .dlgacts .lbl {"
 	i := strings.Index(mobile, lbl)
 	if i < 0 {
 		t.Fatal("подписи кнопок на телефоне не прячутся вовсе")
