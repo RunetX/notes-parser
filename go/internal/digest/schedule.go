@@ -118,23 +118,68 @@ func issuePublished(ctx context.Context, st *store.Store, cfg ScheduleConfig, we
 	return false, nil
 }
 
+// draftState — что лежит на диске под этот слот.
+type draftState int
+
+const (
+	draftNone    draftState = iota // черновика нет
+	draftPending                   // черновик есть, но рубрики не заполнены
+	draftReady                     // заполнен целиком — можно публиковать
+)
+
+// draftStateOf читает черновик слота. Готовность меряется ТОЙ ЖЕ разборкой,
+// что и публикация (ParseDraft, счётчик Dropped), а не поиском строки в файле:
+// второй ответ на вопрос «выпуск готов?» однажды разошёлся бы с первым.
+//
+// Нечитаемый черновик — это draftPending, а не ошибка: файл правит рука, и
+// застать его посреди правки законно. Наше дело тогда одно — не трогать.
+func draftStateOf(path string) (draftState, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return draftNone, nil
+	}
+	if err != nil {
+		return draftNone, err
+	}
+	defer f.Close()
+	d, err := ParseDraft(f, false)
+	if err != nil || d.Dropped > 0 {
+		return draftPending, nil
+	}
+	return draftReady, nil
+}
+
 // slotAction — решение по последнему прошедшему слоту.
 type slotAction int
 
 const (
 	slotDraft         slotAction = iota // строить черновик
+	slotPublishReady                    // черновик готов заранее — публиковать
 	slotSkipPublished                   // выпуск уже опубликован
-	slotSkipDrafted                     // черновик уже лежит (возможно, правится)
+	slotSkipDrafted                     // черновик лежит недоделанным — правится
 	slotSkipOld                         // слот старше Grace — задним числом не публикуем
 )
 
 // decideSlot — чистое решение по слоту (тестируемость). Порядок важен:
 // готовый выпуск и лежащий черновик не считаются «пропущенным слотом».
-func decideSlot(now time.Time, w Window, grace time.Duration, published, drafted bool) slotAction {
+//
+// Готовый ЗАРАНЕЕ черновик публикуется в слот — это дорога «выпуск собирают
+// накануне, а таймер отправляет в назначенный час». Заведена она 12.09.2026,
+// когда канал до модели слёг и редактура перестала получаться на хосте вовсе;
+// рука при этом остаётся в силе и в обычные недели ничего не меняет.
+//
+// Грань между «готов» и «правится» проводит сам черновик: незаполненный
+// плейсхолдер значит, что работа не кончена, и такой файл по-прежнему
+// неприкосновенен. Просроченный (старше Grace) не публикуется даже готовым —
+// задним числом выпуск не выходит, это правило Grace, и рука его перебивает
+// командой `digest publish`.
+func decideSlot(now time.Time, w Window, grace time.Duration, published bool, ds draftState) slotAction {
 	switch {
 	case published:
 		return slotSkipPublished
-	case drafted:
+	case ds == draftReady && now.Sub(w.End) <= grace:
+		return slotPublishReady
+	case ds != draftNone:
 		return slotSkipDrafted
 	case now.Sub(w.End) > grace:
 		return slotSkipOld
@@ -151,15 +196,19 @@ func processSlot(ctx context.Context, st *store.Store, cfg ScheduleConfig, now t
 	if err != nil {
 		return err
 	}
-	_, statErr := os.Stat(DraftPath(cfg.OutDir, w.ID))
-	drafted := statErr == nil
+	ds, err := draftStateOf(DraftPath(cfg.OutDir, w.ID))
+	if err != nil {
+		return err
+	}
 
-	switch decideSlot(now, w, cfg.Grace, published, drafted) {
+	switch decideSlot(now, w, cfg.Grace, published, ds) {
 	case slotSkipPublished, slotSkipDrafted:
 		return nil
 	case slotSkipOld:
 		log.Warn("дайджест: слот пропущен, догонять поздно", "week", w.ID, "slot", w.End)
 		return nil
+	case slotPublishReady:
+		return publishPrepared(ctx, st, cfg, w, log)
 	}
 
 	is, err := Build(ctx, cfg.Data, w)
@@ -188,7 +237,7 @@ func processSlot(ctx context.Context, st *store.Store, cfg ScheduleConfig, now t
 	// Автопубликация: с редактурой — всегда, «насухо» — только когда LLM не
 	// настроен вовсе (сбой редактуры оставляет выпуск админу).
 	if cfg.AutoPublish && (is.Editorial != nil || cfg.LLM == nil) {
-		summary, err := publishDraft(ctx, st, cfg, w, draftPath)
+		summary, _, err := publishDraft(ctx, st, cfg, w, draftPath)
 		if err != nil {
 			log.Error("дайджест: автопубликация не удалась", "week", w.ID, "err", err)
 			notify(ctx, cfg, fmt.Sprintf(
@@ -208,6 +257,37 @@ func processSlot(ctx context.Context, st *store.Store, cfg ScheduleConfig, now t
 	return nil
 }
 
+// publishPrepared публикует черновик, приготовленный ЗАРАНЕЕ. Ничего не
+// пересобирает: в файле лежит ровно то, что человек видел и одобрил, а второй
+// сбор дал бы другие числа и, вполне возможно, другую заметку недели.
+func publishPrepared(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, log *slog.Logger) error {
+	draftPath := DraftPath(cfg.OutDir, w.ID)
+	if !cfg.AutoPublish {
+		// Черновик приготовил админ, публикует тоже он — сказать ему тут
+		// нечего. И молчать здесь важно: слот обрабатывается ещё и на старте
+		// демона, так что ЛС «выпуск готов» уходило бы на каждый рестарт.
+		log.Debug("дайджест: готовый черновик ждёт руки", "week", w.ID, "draft", draftPath)
+		return nil
+	}
+	summary, done, err := publishDraft(ctx, st, cfg, w, draftPath)
+	if err != nil {
+		log.Error("дайджест: готовый черновик не опубликован", "week", w.ID, "err", err)
+		notify(ctx, cfg, fmt.Sprintf(
+			"📰 Дайджест %s был готов, но публикация сорвалась: %v. Докатите: lovegw digest publish",
+			w.ID, err))
+		return nil
+	}
+	if !done {
+		// Выпуск уже стоял: тик повторный, читателю ничего не досталось —
+		// и владельцу говорить не о чем.
+		log.Debug("дайджест: готовый черновик уже был опубликован", "week", w.ID, "итог", summary)
+		return nil
+	}
+	log.Info("дайджест: опубликован готовый черновик", "week", w.ID, "итог", summary)
+	notify(ctx, cfg, fmt.Sprintf("📰 Дайджест %s опубликован: %s Черновик: %s", w.ID, summary, draftPath))
+	return nil
+}
+
 func notify(ctx context.Context, cfg ScheduleConfig, text string) {
 	if cfg.Notify != nil {
 		cfg.Notify(ctx, text)
@@ -217,24 +297,28 @@ func notify(ctx context.Context, cfg ScheduleConfig, text string) {
 // publishDraft публикует свежесобранный черновик и возвращает сводку. Частичный
 // сбой безопасен: публикация идемпотентна, админ докатывает командой
 // digest publish.
-func publishDraft(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, draftPath string) (string, error) {
+//
+// done говорит, ушло ли что-то НА САМОМ ДЕЛЕ: идемпотентность делает повторный
+// заход безвредным для читателя, но не для владельца — без этого признака
+// второй тик слал бы ему ЛС «выпуск опубликован» о выпуске, опубликованном
+// в прошлый раз.
+func publishDraft(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, draftPath string) (summary string, done bool, err error) {
 	d, err := readDraft(draftPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	summary := ""
 	if cfg.Site != nil {
-		summary, err = publishToSite(ctx, st, cfg, w, d)
+		summary, done, err = publishToSite(ctx, st, cfg, w, d)
 	} else {
-		summary, err = publishToChannels(ctx, st, cfg, w, d)
+		summary, done, err = publishToChannels(ctx, st, cfg, w, d)
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if d.Dropped > 0 {
 		summary += fmt.Sprintf(" (без LLM-рубрик: %d секций выпало)", d.Dropped)
 	}
-	return summary, nil
+	return summary, done, nil
 }
 
 func readDraft(path string) (Draft, error) {
@@ -249,36 +333,40 @@ func readDraft(path string) (Draft, error) {
 // publishToSite — основной путь: выпуск выходит заметкой на площадке, в каналы
 // его несёт исходящий обход. Незакреплённый выпуск — не повод считать
 // публикацию неудавшейся, поэтому про закреп только сообщают.
-func publishToSite(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, d Draft) (string, error) {
+func publishToSite(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, d Draft) (string, bool, error) {
 	noteID, created, err := PublishPlatform(ctx, st, cfg.Site, d, w.ID, cfg.SiteBaseURL)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !created {
-		return fmt.Sprintf("площадка — выпуск уже был опубликован (заметка %d)", noteID), nil
+		return fmt.Sprintf("площадка — выпуск уже был опубликован (заметка %d)", noteID), false, nil
 	}
 	summary := fmt.Sprintf("площадка — заметка %d, в каналы отнесёт исходящий обход", noteID)
 	if err := PinIssue(ctx, st, cfg.Site, noteID); err != nil {
 		summary += fmt.Sprintf("; закрепить не вышло: %v", err)
 	}
-	return summary, nil
+	return summary, true, nil
 }
 
 // publishToChannels — работа без площадки: выпуск уходит прямо в каналы своим
 // сплитом и своими per-sink ссылками на треды.
-func publishToChannels(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, d Draft) (string, error) {
+func publishToChannels(ctx context.Context, st *store.Store, cfg ScheduleConfig, w Window, d Draft) (string, bool, error) {
 	if len(cfg.Publishers) == 0 {
-		return "", errors.New("нет приёмников публикации")
+		return "", false, errors.New("нет приёмников публикации")
 	}
 	var parts []string
+	var done bool
 	for _, p := range cfg.Publishers {
 		sent, err := Publish(ctx, st, p, d, w.ID, cfg.SiteBaseURL)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", p.Name(), err)
+			return "", false, fmt.Errorf("%s: %w", p.Name(), err)
+		}
+		if sent > 0 {
+			done = true
 		}
 		parts = append(parts, fmt.Sprintf("%s — %d ч.", p.Name(), sent))
 	}
-	return strings.Join(parts, ", "), nil
+	return strings.Join(parts, ", "), done, nil
 }
 
 // WriteIssueFiles пишет черновик и материалы выпуска в dir (создавая его).

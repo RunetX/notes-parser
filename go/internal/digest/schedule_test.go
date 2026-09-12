@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,20 +19,58 @@ func TestDecideSlotPrecedence(t *testing.T) {
 	fresh := w.End.Add(time.Hour)
 	stale := w.End.Add(72 * time.Hour)
 	cases := []struct {
-		name               string
-		now                time.Time
-		published, drafted bool
-		want               slotAction
+		name      string
+		now       time.Time
+		published bool
+		draft     draftState
+		want      slotAction
 	}{
-		{"свежий слот — строить", fresh, false, false, slotDraft},
-		{"опубликован — пропуск даже свежего", fresh, true, false, slotSkipPublished},
-		{"черновик лежит — не перетирать", fresh, false, true, slotSkipDrafted},
-		{"протух — задним числом не строим", stale, false, false, slotSkipOld},
-		{"протух, но опубликован — это не «пропущенный»", stale, true, false, slotSkipPublished},
-		{"протух, но черновик есть — правится", stale, false, true, slotSkipDrafted},
+		{"свежий слот — строить", fresh, false, draftNone, slotDraft},
+		{"опубликован — пропуск даже свежего", fresh, true, draftNone, slotSkipPublished},
+		{"черновик недоделан — не перетирать", fresh, false, draftPending, slotSkipDrafted},
+		{"протух — задним числом не строим", stale, false, draftNone, slotSkipOld},
+		{"протух, но опубликован — это не «пропущенный»", stale, true, draftNone, slotSkipPublished},
+		{"протух, но черновик есть — правится", stale, false, draftPending, slotSkipDrafted},
+		// Дорога «собрали накануне — таймер отправил в назначенный час».
+		{"готов заранее — публиковать", fresh, false, draftReady, slotPublishReady},
+		{"готов, но уже опубликован — не второй раз", fresh, true, draftReady, slotSkipPublished},
+		{"готов, но протух — задним числом не публикуем", stale, false, draftReady, slotSkipDrafted},
 	}
 	for _, tc := range cases {
-		if got := decideSlot(tc.now, w, defaultGrace, tc.published, tc.drafted); got != tc.want {
+		if got := decideSlot(tc.now, w, defaultGrace, tc.published, tc.draft); got != tc.want {
+			t.Errorf("%s: %v, ожидалось %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Готовность черновика меряется тем же разбором, что и публикация: файл с
+// незаполненным плейсхолдером — работа не кончена, и трогать его нельзя.
+func TestDraftStateOf(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const head = "<b>📰 Дайджест недели</b> · 05.09–12.09\n---\n"
+	cases := []struct {
+		name string
+		path string
+		want draftState
+	}{
+		{"файла нет", filepath.Join(dir, "нет.txt"), draftNone},
+		{"плейсхолдер на месте", write("p.txt", head+llmWeekSummary+"\n"), draftPending},
+		{"рубрики заполнены", write("r.txt", head+"Неделя прошла в спорах.\n"), draftReady},
+	}
+	for _, tc := range cases {
+		got, err := draftStateOf(tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.want {
 			t.Errorf("%s: %v, ожидалось %v", tc.name, got, tc.want)
 		}
 	}
@@ -142,6 +181,7 @@ func TestProcessSlotAutoPublishWithLLM(t *testing.T) {
 }
 
 func TestProcessSlotLLMFailureFallsBackToManual(t *testing.T) {
+	noBackoff(t) // отказ запроса теперь повторяется: тест про откат, а не про темп
 	ctx := context.Background()
 	st := openStore(t)
 	var notes []string
@@ -189,6 +229,46 @@ func TestProcessSlotAutoPublishDryWithoutLLM(t *testing.T) {
 	}
 	if strings.Contains(pub.posts[0], llmMark) {
 		t.Error("плейсхолдеры не должны попадать в публикацию")
+	}
+}
+
+// Дорога «собрали накануне — таймер отправил в назначенный час»: готовый
+// черновик уходит как есть, без пересборки и без единого обращения к модели.
+// До 12.09.2026 такой файл закрывал слот и не публиковался никогда.
+func TestProcessSlotPublishesPreparedDraft(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	var notes []string
+	cfg := scheduleCfg(t, st, func(_ context.Context, text string) { notes = append(notes, text) })
+	gen := &fakeGen{resp: fullEditorial()}
+	cfg.LLM = gen
+	pub := &fakePub{name: "tg"}
+	cfg.AutoPublish = true
+	cfg.Publishers = []Publisher{pub}
+	now := time.Date(2026, 7, 31, 19, 30, 0, 0, nsk)
+
+	w := SlotFor(now, cfg.Loc, cfg.Weekday, cfg.Hour, 0)
+	const body = "Эту неделю собрали накануне, руками."
+	if err := os.WriteFile(DraftPath(cfg.OutDir, w.ID),
+		[]byte("<b>📰 Дайджест недели</b>\n---\n"+body+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := processSlot(ctx, st, cfg, now, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(pub.posts) != 1 {
+		t.Fatalf("готовый черновик должен уйти в публикацию: %q", pub.posts)
+	}
+	if !strings.Contains(pub.posts[0], body) {
+		t.Errorf("опубликован не приготовленный текст: %q", pub.posts[0])
+	}
+	// Пересборка дала бы другие числа и, возможно, другую заметку недели.
+	if gen.calls != 0 {
+		t.Errorf("готовый черновик не пересобирают: обращений к модели %d", gen.calls)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "опубликован") {
+		t.Errorf("владельцу должно уйти ЛС о публикации: %q", notes)
 	}
 }
 
