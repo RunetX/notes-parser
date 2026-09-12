@@ -107,7 +107,12 @@ func cmdWeb(ctx context.Context, args []string) error {
 			AsOf:      cfg.Platform.Support.AsOf,
 			Payee:     cfg.Platform.Support.Payee,
 		},
-		Log: log,
+		// Ворота: читать могут только вошедшие (решение владельца 12.09.2026).
+		// Живёт признак в config.json морды на хосте, как mail.enabled, и env у
+		// него нет по той же причине — это решение о площадке, а не разница
+		// между стендом и боем.
+		MembersOnly: cfg.Platform.MembersOnly,
+		Log:         log,
 	}, pf, pf, wr, wr, site)
 	// Шина событий: страница «События», колокольчик и живой канал. Морда только
 	// ЧИТАЕТ поводы и отмечает их прочитанными — раздаёт их демон (platbus),

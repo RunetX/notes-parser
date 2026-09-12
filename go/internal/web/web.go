@@ -61,7 +61,12 @@ type Config struct {
 	// Пустой адрес значит, что темы справки нет вовсе, — то же правило, по
 	// которому не печатается пустой контакт.
 	Support Support
-	Log     *slog.Logger
+	// MembersOnly — читать могут только вошедшие: гостю остаются форма входа,
+	// справка и бумаги (openToGuests). Решение владельца 12.09.2026, обратное
+	// тому, что было принято 18.08.2026, — поэтому признак, а не вычеркнутый
+	// слой: у него два настоящих значения, и оба обязаны быть проверяемы.
+	MembersOnly bool
+	Log         *slog.Logger
 }
 
 // Contacts — куда идти за живым человеком. Свой тип, а не config.Contacts:
@@ -423,8 +428,12 @@ func New(cfg Config, st Store, auth Auth, wr Writer, mod Moderator, site Site) *
 	return s
 }
 
-// routes собирает роутер. Слоя «за воротами» здесь больше нет: чтение открыто
-// всем, а вход — это отдельная страница, на которую ведёт кнопка в шапке.
+// routes собирает роутер. Слой «за воротами» здесь СНОВА есть, но не как
+// прежде: он не в роутере, а отдельным мидлваром (withGate), и включается
+// признаком MembersOnly. Так список открытого гостю остаётся ОДНИМ (openToGuests)
+// и читается целиком в одном месте — иначе адрес однажды окажется закрыт в
+// одной проверке и открыт в другой, ровно как это было с privateRoots и
+// robots.txt до того, как их свели к общему списку.
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -565,7 +574,9 @@ func (s *Server) routes() http.Handler {
 
 	// Порядок слоёв: заголовки безопасности достаются и отказам, лог видит их
 	// статус, а потолки стоят ДО withViewer — тот читает сессию из базы.
-	return s.withSecurityHeaders(s.withLog(s.withGuard(s.withViewer(mux))))
+	// Ворота — ПОСЛЕ withViewer и вплотную к mux: им надо знать, вошёл ли
+	// человек, а лог и потолки обязаны видеть и отвороченный запрос.
+	return s.withSecurityHeaders(s.withLog(s.withGuard(s.withViewer(s.withGate(mux)))))
 }
 
 // withSecurityHeaders ставит заголовки, которые дешевле завести сразу, чем
@@ -714,6 +725,30 @@ func (s *Server) handleRobots(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	var b strings.Builder
 	b.WriteString("User-agent: *\n")
+	// ЗАКРЫТАЯ ПЛОЩАДКА говорит роботу правду одной строкой: за воротами ему
+	// всё равно ответят редиректом на вход, и перечислять частности («это
+	// нельзя, а вот это можно») значило бы описывать дверь, которой нет.
+	// Открытым остаётся ровно то, что открыто гостю-человеку (guestRoots), —
+	// иначе робот и человек видели бы разные площадки.
+	//
+	// Карта сайта не объявляется вовсе: она сама за воротами, и ссылка на неё
+	// вела бы робота в редирект. Индексация от этого прекращается — но это
+	// следствие решения закрыть чтение, а не отдельное решение, и согласий оно
+	// не задевает: distribution.v2 РАЗРЕШАЕТ распространение, а перестать
+	// пользоваться разрешением можно без новой редакции и без переподписки.
+	if s.cfg.MembersOnly {
+		b.WriteString("Disallow: /\n")
+		for _, root := range guestRoots {
+			// Служебное роботу не нужно, медиа в выдаче не нужны нам.
+			if root == "/healthz" || root == "/media" {
+				continue
+			}
+			b.WriteString("Allow: " + root + "\n")
+		}
+		b.WriteString("Crawl-delay: 2\n")
+		fmt.Fprint(w, b.String())
+		return
+	}
 	for _, root := range privateRoots {
 		b.WriteString("Disallow: " + root + "\n")
 	}

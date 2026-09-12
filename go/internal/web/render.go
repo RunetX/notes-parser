@@ -324,6 +324,13 @@ type page struct {
 	// их к первой значило бы спрятать от поиска весь архив, кроме двадцати
 	// свежих записей.
 	Canonical string
+	// MembersOnly — площадку читают только вошедшие (web.Config.MembersOnly,
+	// ворота в gate.go). Поле ОБЩЕЙ части, потому что спрашивают его тексты на
+	// разных страницах: экран входа обещает гостю, что читать можно и без
+	// входа, справка «Как читать» — то же самое, а «Ваши данные» рассказывает
+	// про поисковики. Все три фразы становятся неправдой при закрытых воротах, а
+	// справка, разошедшаяся с поведением, хуже отсутствующей.
+	MembersOnly bool
 }
 
 // Capped — счётчик упёрся в потолок, и точное число уже не считалось. Решение о
@@ -338,9 +345,10 @@ func (s *Server) newPage(r *http.Request, title string) page {
 		title = title + " — " + SiteName
 	}
 	p := page{
-		Title: title,
-		Theme: s.theme(r),
-		Back:  localPath(r.URL.RequestURI()),
+		Title:       title,
+		Theme:       s.theme(r),
+		Back:        localPath(r.URL.RequestURI()),
+		MembersOnly: s.cfg.MembersOnly,
 	}
 	if u, ok := s.me(r); ok {
 		p.SignedIn, p.Nick, p.CSRF = true, u.Nick, csrfToken(s.session(r))
